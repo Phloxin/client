@@ -1,0 +1,76 @@
+.admin-layout {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: #313338;
+  color: #dcddde;
+}
+
+.admin-header {
+  padding: 14px 16px;
+  font-weight: 600;
+  font-size: 15px;
+  border-bottom: 1px solid #1e1f22;
+  background: #2b2d31;
+}
+
+.admin-body {
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.admin-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.admin-section label {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #8e9297;
+}
+
+.admin-section select {
+  background: #1e1f22;
+  color: #dcddde;
+  border: none;
+  border-radius: 4px;
+  padding: 8px;
+  font-size: 14px;
+}
+
+.admin-status {
+  font-size: 13px;
+  color: #8e9297;
+}
+
+.login-screen {
+  display: flex;
+  height: 100vh;
+  align-items: center;
+  justify-content: center;
+  background: #313338;
+}
+
+.login-box {
+  background: #2b2d31;
+  border-radius: 8px;
+  padding: 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: 320px;
+}
+
+.login-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: #fff;
+  text-align: center;
+  margin-bottom: 8px;
+}
