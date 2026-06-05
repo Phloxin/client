@@ -5,6 +5,7 @@ import icon from '../../resources/icon.png?asset'
 
 // Store auth token in main process so it persists across windows
 let authToken = null
+let authClient = null
 
 function createWindow() {
   // Create the browser window.
@@ -63,6 +64,14 @@ app.whenReady().then(() => {
   // Return stored token to any window that asks
   ipcMain.handle('get-token', () => {
     return authToken
+  })
+
+  ipcMain.on('store-client', (_, client) => {
+    authClient = client
+  })
+
+  ipcMain.handle('get-client', () => {
+    return authClient
   })
 
   // Login on Admin Window — forward log message to all windows

@@ -2,11 +2,11 @@ import { useState, useEffect } from 'react'
 import './Main.css'
 import '../App.css'
 import { useAuth } from '../context/AuthContext'
-import Channel from '../components/Channel'
+import VoiceChannel from '../components/VoiceChannel'
 import LoginScreen from '../components/LoginScreen'
 
 function Main() {
-  const { token, setToken } = useAuth()
+  const { token, setToken, client, setClient } = useAuth()
   const [channels, setChannels] = useState([])
   const [clients, setClients] = useState([])
   const [log, setLog] = useState([])
@@ -25,6 +25,7 @@ function Main() {
       .then((data) => {
         if (data.token) {
           setToken(data.token)
+          setClient(data.client)
           setLoginError(null)
         } else {
           setLoginError(data.message || 'Login failed')
@@ -105,10 +106,12 @@ function Main() {
         <div className="server-name">CNaps Buddies and Friends</div>
         <div className="channel-section-label">Channels</div>
         {channels.map((ch) => (
-          <Channel
+          <VoiceChannel
             key={ch.id}
             channel={ch}
             clients={clients.filter((c) => c.channel_id === ch.id)}
+            token={token}
+            self={client}
           />
         ))}
         <div className="admin-btn-wrap">

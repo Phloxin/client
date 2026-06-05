@@ -22,3 +22,17 @@ body {
 .admin-btn:hover {
   background: #4752c4;
 }
+
+.join-btn {
+  background: #57f287;
+  color: #000;
+  border: none;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.join-btn:hover {
+  background: #3ba55c;
+}

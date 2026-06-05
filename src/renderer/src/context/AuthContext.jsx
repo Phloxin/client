@@ -4,10 +4,14 @@ const AuthContext = createContext(null)
 
 export function AuthProvider({ children }) {
   const [token, setToken] = useState(null)
+  const [client, setClient] = useState(null)
 
   useEffect(() => {
     window.electron.ipcRenderer.invoke('get-token').then((t) => {
       if (t) setToken(t)
+    })
+    window.electron.ipcRenderer.invoke('get-client').then((c) => {
+      if (c) setClient(c)
     })
   }, [])
 
@@ -16,8 +20,13 @@ export function AuthProvider({ children }) {
     window.electron.ipcRenderer.send('store-token', t)
   }
 
+  const saveClient = (c) => {
+    setClient(c)
+    window.electron.ipcRenderer.send('store-client', JSON.stringify(c))
+  }
+
   return (
-    <AuthContext.Provider value={{ token, setToken: saveToken }}>
+    <AuthContext.Provider value={{ token, setToken: saveToken, client, setClient: saveClient }}>
       {children}
     </AuthContext.Provider>
   )
