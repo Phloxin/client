@@ -5,6 +5,11 @@ import { Device } from 'mediasoup-client'
 const ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
+  {
+    urls: 'turn:47.16.222.82:3478',
+    username: 'test',
+    credential: 'password',
+  },
 ]
 
 // ─── State ──────────────────────────────────────────────────────
@@ -122,6 +127,10 @@ export async function publish(onStream) {
     iceServers: ICE_SERVERS
   })
 
+  producerTransport.on('connectionstatechange', (state) => {
+    console.log('[Soup] Producer transport connection state:', state)
+  })
+
   producerTransport.on('connect', ({ dtlsParameters }, callback, errback) => {
     send('ConnectProducerTransport', { dtlsParameters })
       .then(() => callback())
@@ -167,6 +176,10 @@ export async function subscribe() {
       iceServers: ICE_SERVERS
     })
 
+    consumerTransport.on('connectionstatechange', (state) => {
+      console.log('[Soup] Consumer transport connection state:', state)
+    })
+
     consumerTransport.on('connect', ({ dtlsParameters }, callback, errback) => {
       send('ConnectConsumerTransport', { dtlsParameters })
         .then(() => callback())
@@ -199,6 +212,21 @@ export async function consumeProducer(producerId, kind) {
   })
 
   const stream = new MediaStream([consumer.track])
+
+  // log track state
+  console.log('[Soup] Consumer track state:', consumer.track.readyState, 'muted:', consumer.track.muted)
+
+  // Resume the consumer on the server
+  await send('ResumeConsumer', { id: consumer.id })
+  console.log(`[Soup] Consumer resumed [id:${consumer.id}]`)
+
+  // play audio via DOM element
+  const audioEl = document.createElement('audio')
+  audioEl.srcObject = stream
+  audioEl.autoplay = true
+  document.body.appendChild(audioEl)
+  audioEl.play().catch((err) => console.error('[Soup] Audio play failed:', err))
+
   console.log(`[Soup] Consuming ${kind} [id:${consumer.id}]`)
   return { stream, kind, consumerId: consumer.id }
 }
