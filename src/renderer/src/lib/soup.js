@@ -19,6 +19,7 @@ let producerTransport
 let consumerTransport
 let producers = []
 let currentChannel = null
+let localProducerIds = new Set()
 
 // ─── Pending response handlers ───────────────────────────────────
 const pendingHandlers = []
@@ -58,21 +59,27 @@ export async function connect(token, { onConnect, onDisconnect, onNewProducer } 
       return
     }
 
-    // Route response to pending handler if one exists
+    // Handle server-initiated events BEFORE pending handlers
+    if (message.type === 'NewProducer') {
+      const { id, kind } = message.data
+        if (localProducerIds.has(id)) {
+          console.log('[Soup] Skipping own producer:', id)
+          return
+        }
+      console.log(`[Soup] New producer: ${id} (${kind})`)
+      onNewProducer?.({ producerId: id, kind })
+      consumeProducer(id, kind)
+      return
+    }
+
+    // Route response to pending handler
     if (pendingHandlers.length > 0) {
       const resolve = pendingHandlers.shift()
       resolve(message)
       return
     }
 
-    // Handle server-initiated events
-    if (message.type === 'NewProducer') {
-      const { id, kind } = message.data
-      console.log(`[Soup] New producer: ${id} (${kind})`)
-      onNewProducer?.({ producerId: id, kind })
-      consumeProducer(id, kind)
-      return
-    }
+    console.log('[Soup] Unhandled message:', message)
   }
 
   ws.onclose = (event) => {
@@ -159,6 +166,7 @@ export async function publish(onStream) {
   for (const track of stream.getTracks()) {
     const producer = await producerTransport.produce({ track })
     producers.push(producer)
+    localProducerIds.add(producer.id)
     console.log(`[Soup] Producing ${track.kind} [id:${producer.id}]`)
   }
 
@@ -238,6 +246,7 @@ export function resetMediaState() {
   consumerTransport?.close()
   consumerTransport = null
   producers = []
+  localProducerIds.clear()
   device = null
   currentChannel = null
   console.log('[Soup] Media state reset')
