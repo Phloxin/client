@@ -125,7 +125,7 @@ function mapTransportParams(params) {
 }
 
 // ─── Publish: send local audio ───────────────────────────────────
-export async function publish(onStream) {
+export async function publish(micSettings, onStream) {
   if (!device) await loadDevice()
 
   const rawParams = await send('CreateProducerTransport')
@@ -155,7 +155,15 @@ export async function publish(onStream) {
 
   let stream
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: micSettings.echoCancellation,
+        noiseSuppression: micSettings.noiseSuppression,
+        autoGainControl: micSettings.autoGainControl,
+        sampleRate: micSettings.sampleRate,
+        channelCount: micSettings.channelCount,
+      }
+    })
   } catch (err) {
     console.error('[Soup] getUserMedia failed:', err.name, err.message)
     throw new Error(`Failed to get audio device: ${err.message}`)

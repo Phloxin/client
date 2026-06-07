@@ -104,6 +104,27 @@ app.whenReady().then(() => {
     }
   })
 
+  ipcMain.on('open-settings', () => {
+    const settingsWindow = new BrowserWindow({
+      width: 500,
+      height: 400,
+      title: 'Settings',
+      autoHideMenuBar: true,
+      webPreferences: {
+        preload: join(__dirname, '../preload/index.js'),
+        sandbox: false
+      }
+    })
+
+    if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
+      settingsWindow.loadURL(process.env['ELECTRON_RENDERER_URL'] + '#/settings')
+    } else {
+      settingsWindow.loadFile(join(__dirname, '../renderer/index.html'), {
+        hash: 'settings'
+      })
+    }
+  })
+
   createWindow()
 
   app.on('activate', function () {

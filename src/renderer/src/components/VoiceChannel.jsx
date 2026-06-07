@@ -1,10 +1,12 @@
 import { useState } from 'react'
 import { connect, publish, disconnect } from '../lib/soup'
+import { useSettings } from '../context/SettingsContext'
 
 function VoiceChannel({ channel, clients, token, self }) {
   const [joined, setJoined] = useState(false)
   const [connecting, setConnecting] = useState(false)
   const [error, setError] = useState(null)
+  const { micSettings } = useSettings()
 
   const handleJoin = async () => {
     setConnecting(true)
@@ -27,7 +29,7 @@ function VoiceChannel({ channel, clients, token, self }) {
           setConnecting(false)
           // Step 3 — start publishing after authenticated
           try {
-            await publish((stream) => {
+            await publish(micSettings, (stream) => {
               console.log('[VoiceChannel] Local stream ready')
             })
           } catch (err) {
