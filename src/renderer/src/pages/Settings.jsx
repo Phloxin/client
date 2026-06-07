@@ -22,6 +22,18 @@ function Settings() {
         </div>
 
         <div className="admin-section">
+          <label>Audio Bitrate</label>
+          <select
+            value={micSettings.bitrate}
+            onChange={(e) => updateMicSettings({ bitrate: parseInt(e.target.value) })}
+          >
+            <option value={128000}>128 kbps (High)</option>
+            <option value={256000}>256 kbps (Very High)</option>
+            <option value={510000}>510 kbps (Maximum)</option>
+          </select>
+        </div>
+
+        <div className="admin-section">
           <label>Channel Count</label>
           <select
             value={micSettings.channelCount}

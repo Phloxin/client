@@ -3,11 +3,12 @@ import { createContext, useContext, useState, useEffect } from 'react'
 const SettingsContext = createContext(null)
 
 const DEFAULT_SETTINGS = {
-  echoCancellation: true,
+  echoCancellation: false,
   noiseSuppression: true,
-  autoGainControl: true,
+  autoGainControl: false,
   sampleRate: 48000,
   channelCount: 2,
+  bitrate: 128000,
 }
 
 export function SettingsProvider({ children }) {

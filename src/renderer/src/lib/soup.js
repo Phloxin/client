@@ -172,7 +172,16 @@ export async function publish(micSettings, onStream) {
   onStream?.(stream)
 
   for (const track of stream.getTracks()) {
-    const producer = await producerTransport.produce({ track })
+    const producer = await producerTransport.produce({
+      track,
+      encodings: [{ maxBitrate: micSettings.bitrate }],
+      codecOptions: {
+        opusStereo: micSettings.channelCount === 2,
+        opusMaxPlaybackRate: micSettings.sampleRate,
+        opusDtx: false,
+        opusFec: true,
+      }
+    })
     producers.push(producer)
     localProducerIds.add(producer.id)
     console.log(`[Soup] Producing ${track.kind} [id:${producer.id}]`)
