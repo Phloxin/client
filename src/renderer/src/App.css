@@ -36,3 +36,21 @@ body {
 .join-btn:hover {
   background: #3ba55c;
 }
+
+.video-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+}
+
+.video-tile {
+  border-radius: 6px;
+  overflow: hidden;
+  background: #1e1f22;
+}
+
+.video-tile video {
+  width: 100%;
+  display: block;
+}
