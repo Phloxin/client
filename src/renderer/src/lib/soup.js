@@ -18,8 +18,9 @@ let ws
 let producerTransport
 let consumerTransport
 let producers = []
-let currentChannel = null
 let localProducerIds = new Set()
+let screenProducer = null
+let currentChannel = null
 
 // ─── Pending response handlers ───────────────────────────────────
 const pendingHandlers = []
@@ -35,7 +36,7 @@ function send(type, data = null) {
 }
 
 // ─── Connect to signaling server ────────────────────────────────
-export async function connect(token, { onConnect, onDisconnect, onNewProducer } = {}) {
+export async function connect(token, { onConnect, onDisconnect, onNewProducer, onVideoStream } = {}) {
   // Step 1 — get ticket
   const res = await fetch('/api/server/voice', {
     headers: { Authorization: `Bearer ${token}` }
@@ -68,7 +69,7 @@ export async function connect(token, { onConnect, onDisconnect, onNewProducer } 
         }
       console.log(`[Soup] New producer: ${id} (${kind})`)
       onNewProducer?.({ producerId: id, kind })
-      consumeProducer(id, kind)
+      consumeProducer(id, kind, onVideoStream)
       return
     }
 
@@ -190,6 +191,49 @@ export async function publish(micSettings, onStream) {
   console.log('[Soup] Publishing audio')
 }
 
+// ─── Share screen ────────────────────────────────────────────────
+export async function shareScreen() {
+  if (!producerTransport) throw new Error('Not connected to voice')
+
+  const stream = await navigator.mediaDevices.getDisplayMedia({
+    video: {
+      frameRate: 30,
+      width: { ideal: 1920 },
+      height: { ideal: 1080 }
+    },
+    audio: false
+  })
+
+  const track = stream.getVideoTracks()[0]
+
+  screenProducer = await producerTransport.produce({
+    track,
+    encodings: [{ maxBitrate: 15000000 }],
+    codecOptions: {
+      videoGoogleStartBitrate: 1000
+    },
+    appData: { type: 'screen' }
+  })
+
+  localProducerIds.add(screenProducer.id)
+  console.log(`[Soup] Screen sharing [id:${screenProducer.id}]`)
+
+  track.onended = () => {
+    stopScreenShare()
+  }
+
+  return screenProducer.id
+}
+
+// ─── Stop screen share ───────────────────────────────────────────
+export async function stopScreenShare() {
+  if (!screenProducer) return
+  screenProducer.close()
+  localProducerIds.delete(screenProducer.id)
+  console.log('[Soup] Screen share stopped')
+  screenProducer = null
+}
+
 // ─── Subscribe: receive remote audio ────────────────────────────
 export async function subscribe() {
   if (!device) await loadDevice()
@@ -216,7 +260,7 @@ export async function subscribe() {
 }
 
 // ─── Consume a remote producer ───────────────────────────────────
-export async function consumeProducer(producerId, kind) {
+export async function consumeProducer(producerId, kind, onStream) {
   if (!consumerTransport) await subscribe()
 
   const consumerParams = await send('Consume', {
@@ -245,12 +289,16 @@ export async function consumeProducer(producerId, kind) {
   await send('ResumeConsumer', { id: consumer.id })
   console.log(`[Soup] Consumer resumed [id:${consumer.id}]`)
 
-  // play audio via DOM element
-  const audioEl = document.createElement('audio')
-  audioEl.srcObject = stream
-  audioEl.autoplay = true
-  document.body.appendChild(audioEl)
-  audioEl.play().catch((err) => console.error('[Soup] Audio play failed:', err))
+  // play audio or stream via DOM element
+  if (kind === 'audio') {
+    const audioEl = document.createElement('audio')
+    audioEl.srcObject = stream
+    audioEl.autoplay = true
+    document.body.appendChild(audioEl)
+    audioEl.play().catch((err) => console.error('[Soup] Audio play failed:', err))
+  } else if (kind === 'video') {
+    onStream?.({ stream, kind, consumerId: consumer.id })
+  }
 
   console.log(`[Soup] Consuming ${kind} [id:${consumer.id}]`)
   return { stream, kind, consumerId: consumer.id }
@@ -262,6 +310,8 @@ export function resetMediaState() {
   producerTransport = null
   consumerTransport?.close()
   consumerTransport = null
+  screenProducer?.close()
+  screenProducer = null
   producers = []
   localProducerIds.clear()
   device = null
