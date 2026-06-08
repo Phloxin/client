@@ -208,7 +208,7 @@ export async function shareScreen() {
 
   screenProducer = await producerTransport.produce({
     track,
-    encodings: [{ maxBitrate: 1500000 }],
+    encodings: [{ maxBitrate: 15000000 }],
     codecOptions: {
       videoGoogleStartBitrate: 1000
     },

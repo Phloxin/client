@@ -3,6 +3,7 @@ import './Main.css'
 import '../App.css'
 import { useAuth } from '../context/AuthContext'
 import VoiceChannel from '../components/VoiceChannel'
+import VideoGrid from '../components/VideoGrid'
 import LoginScreen from '../components/LoginScreen'
 
 function Main() {
@@ -13,6 +14,8 @@ function Main() {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [loginError, setLoginError] = useState(null)
+  const [viewMode, setViewMode] = useState('log') // 'log' or 'video'
+  const [allVideoStreams, setAllVideoStreams] = useState([])
 
   // Handle user login - sends credentials to API and stores auth token
   const handleLogin = () => {
@@ -112,6 +115,12 @@ function Main() {
             clients={clients.filter((c) => c.channel_id === ch.id)}
             token={token}
             self={client}
+            onStreamsUpdate={(streams) => {
+              setAllVideoStreams((prev) => {
+                const filtered = prev.filter((s) => s.channelId !== ch.id)
+                return [...filtered, ...streams.map((s) => ({ ...s, channelId: ch.id }))]
+              })
+            }}
           />
         ))}
         <div className="admin-btn-wrap">
@@ -125,12 +134,27 @@ function Main() {
       </aside>
 
       <main className="chat-area">
-        <div className="chat-header">Activity Log</div>
-        <div className="chat-log">
-          {log.map((entry, i) => (
-            <div key={i} className="log-entry">{entry}</div>
-          ))}
+        <div className="chat-header">
+          <div className="header-content">
+            <span>{viewMode === 'log' ? 'Chat Log' : 'Video Streams'}</span>
+            <button 
+              className="view-toggle-btn" 
+              onClick={() => setViewMode(viewMode === 'log' ? 'video' : 'log')}
+            >
+              {viewMode === 'log' ? 'Video' : 'Chat'}
+            </button>
+          </div>
         </div>
+        
+        {viewMode === 'log' ? (
+          <div className="chat-log">
+            {log.map((entry, i) => (
+              <div key={i} className="log-entry">{entry}</div>
+            ))}
+          </div>
+        ) : (
+          <VideoGrid streams={allVideoStreams} />
+        )}
       </main>
     </div>
   )

@@ -1,9 +1,8 @@
 import { useState } from 'react'
 import { connect, publish, disconnect, shareScreen, stopScreenShare } from '../lib/soup'
 import { useSettings } from '../context/SettingsContext'
-import VideoGrid from './VideoGrid'
 
-function VoiceChannel({ channel, clients, token, self }) {
+function VoiceChannel({ channel, clients, token, self, onStreamsUpdate }) {
   const [joined, setJoined] = useState(false)
   const [connecting, setConnecting] = useState(false)
   const [error, setError] = useState(null)
@@ -12,7 +11,13 @@ function VoiceChannel({ channel, clients, token, self }) {
   const { micSettings } = useSettings()
 
   const handleVideoStream = ({ stream, kind, consumerId }) => {
-    setVideoStreams((prev) => [...prev, { stream, consumerId }])
+    setVideoStreams((prev) => {
+      const updated = [...prev, { stream, consumerId }]
+      if (onStreamsUpdate) {
+        onStreamsUpdate(updated)
+      }
+      return updated
+    })
   }
 
   const handleJoin = async () => {
@@ -45,6 +50,9 @@ function VoiceChannel({ channel, clients, token, self }) {
           setJoined(false)
           setSharing(false)
           setVideoStreams([])
+          if (onStreamsUpdate) {
+            onStreamsUpdate([])
+          }
         },
         onVideoStream: handleVideoStream
       })
@@ -59,6 +67,9 @@ function VoiceChannel({ channel, clients, token, self }) {
     setJoined(false)
     setSharing(false)
     setVideoStreams([])
+    if (onStreamsUpdate) {
+      onStreamsUpdate([])
+    }
     try {
       await fetch('/api/server/client', {
         method: 'PATCH',
@@ -117,7 +128,6 @@ function VoiceChannel({ channel, clients, token, self }) {
       {clients.map((c) => (
         <div key={c.id} className="client-indicator">{c.name}</div>
       ))}
-      <VideoGrid streams={videoStreams} />
     </div>
   )
 }
