@@ -180,7 +180,7 @@ Electron IPC is used to communicate between the main process and renderer window
 
 ### Prerequisites
 
-- Node.js 18+
+- Node.js 22 LTS is recommended.
 - npm
 
 ### Install
