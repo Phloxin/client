@@ -1,6 +1,6 @@
 # CSS Organization Visual Guide
 
-## File Hierarchy & What Goes Where
+## File Hierarchy & What Goes Where (JUST AN EXAMPLE, CAN BE OUTDATED)
 
 ```
 src/renderer/src/
@@ -14,17 +14,15 @@ src/renderer/src/
 │   │      • catppuccin-frappe, mocha, nord, dracula
 │   │      • Colors, typography, spacing variables
 │   │
-│   ├── 🌐 globals.css  
-│   │   └─ Global Component Styles
-│   │      • Button styles (.btn, .admin-btn, .join-btn)
-│   │      • Form elements (select, input)
-│   │      • Common layouts (.video-grid, .video-tile)
+│   ├── 🌐 globals.css
+│   │   └─ Truly Global Styles
+│   │      • Base form elements (select, input)
 │   │      • Scrollbar styling
-│   │      • Shared utility classes
+│   │      • Utility classes with no clear owner
+│   │      ⚠️  Button styles live in their page/component CSS, not here
 │   │
 │   ├── 📄 base.css
 │   │   └─ Base Styles & Imports
-│   │      • Imports themes.css
 │   │      • CSS reset (*, box-sizing, margins)
 │   │      • Typography base
 │   │      • HTML/body defaults
@@ -34,7 +32,7 @@ src/renderer/src/
 │   │      • Imports base.css
 │   │      • Imports globals.css
 │   │      • Root container setup
-│   │      ⚠️  Include this in your app!
+│   │      ⚠️  Imported once in main.jsx — do not re-import elsewhere
 │   │
 │   └── 📖 CSS-ARCHITECTURE.md
 │       └─ Detailed Documentation
@@ -48,6 +46,7 @@ src/renderer/src/
 │          • nextTheme()
 │          • getAvailableThemes()
 │          • localStorage integration
+│          • IPC broadcast to all Electron windows
 │
 ├── 📦 hooks/ ───────────────────────────────────────────────────────
 │   └── 🪝 useTheme.js
@@ -59,67 +58,83 @@ src/renderer/src/
 │          • theme change events
 │
 ├── 📦 components/ ──────────────────────────────────────────────────
-│   └── 🎨 ThemeSwitcher/
-│       ├── ThemeSwitcher.jsx
-│       │   └─ Theme Selector Component
-│       │      • UI for theme selection
-│       │      • Shows all 4 themes
-│       │      • Visual previews
-│       │      • Easy integration
-│       │
-│       └── ThemeSwitcher.css
-│           └─ Component Styles
-│              • .theme-switcher
-│              • .theme-options
-│              • .theme-preview
+│   │
+│   ├── 🎨 ThemeSwitcher.jsx + ThemeSwitcher.css
+│   │   └─ Theme Selector Component
+│   │      • UI for theme selection
+│   │      • Shows all 4 themes
+│   │      • .theme-switcher, .theme-options, .theme-option
+│   │
+│   ├── 🔐 LoginScreen.jsx + LoginScreen.css
+│   │   └─ Login Form Component
+│   │      • .login-screen, .login-box, .login-title
+│   │      • .admin-section (login form fields)
+│   │      • Self-contained — imports only its own CSS
+│   │
+│   ├── 📹 VideoGrid.jsx + VideoGrid.css
+│   │   └─ Video Stream Grid
+│   │      • .video-grid, .video-tile
+│   │
+│   └── 🎙️  VoiceChannel.jsx + VoiceChannel.css
+│       └─ Voice Channel Row
+│          • .join-btn, .leave-btn, .share-btn
 │
 ├── 📦 pages/ ───────────────────────────────────────────────────────
-│   ├── 📄 Main.css
+│   │
+│   ├── 📄 Main.jsx + Main.css
 │   │   └─ Main Page Layout
 │   │      • .layout, .sidebar, .chat-area
-│   │      • Page-specific positioning
-│   │      • Uses CSS variables
-│   │      ✨ All colors now themed
+│   │      • .settings-btn, .view-toggle-btn
+│   │      • .chat-log, .log-entry, .btn-wrap
+│   │      • .loading
+│   │      ✨ All colors use CSS variables
 │   │
-│   ├── 📄 Admin.css
-│   │   └─ Admin Page Styles
-│   │      • .admin-layout, .admin-header
-│   │      • .admin-section, .login-screen
-│   │      • Uses CSS variables
-│   │      ✨ All colors now themed
+│   ├── 📄 Admin.jsx + Admin.css
+│   │   └─ Admin Page
+│   │      • .admin-layout, .admin-header, .admin-body
+│   │      • .admin-section, .admin-status, .admin-btn
+│   │      ✨ All colors use CSS variables
 │   │
-│   └── (Settings.jsx) 
-│       └─ Uses Admin.css layout
+│   └── 📄 Settings.jsx + Settings.css
+│       └─ Settings Page
+│          • .settings-layout, .settings-header, .settings-body
+│          • .settings-section, .settings-status
+│          ✨ All colors use CSS variables
 │
 ├── 🎨 App.css
 │   └─ App Component Styles
 │      • Body base styles
 │      • App-level overrides
-│      • Uses CSS variables
-│      ✨ All colors now themed
+│      ✨ All colors use CSS variables
 │
 └── 📄 main.jsx
     └─ App Entry Point
-       ✨ UPDATED: Added initializeTheme()
+       ✨ Calls initializeTheme() and listenForThemeUpdates()
 ```
 
 ## CSS Cascade & Specificity
 
 ```
 main.jsx
-  ↓ (initializes theme)
+  ↓ (initializes theme, listens for IPC theme updates)
   ↓
 main.css ──────────┐
   ├─ imports ─────→ base.css ─────────┐
-  │                                   ├─ imports ─→ themes.css ← 🎨 THEME VARS
-  └─ imports ─────→ globals.css ──────┘
+  │                                   └─ imports ─→ themes.css ← 🎨 THEME VARS
+  └─ imports ─────→ globals.css
                       (uses variables)
 
-Each page/component imports its CSS:
-  App.jsx ────→ App.css (uses variables)
-  Main.jsx ───→ Main.css (uses variables)
-  Admin.jsx ──→ Admin.css (uses variables)
-  Settings.jsx → Admin.css (uses variables)
+Each page imports only its own CSS:
+  App.jsx      ──→ App.css
+  Main.jsx     ──→ Main.css
+  Admin.jsx    ──→ Admin.css
+  Settings.jsx ──→ Settings.css   (not Admin.css)
+
+Each component imports only its own CSS:
+  LoginScreen.jsx  ──→ LoginScreen.css   (not Admin.css)
+  ThemeSwitcher.jsx ─→ ThemeSwitcher.css
+  VideoGrid.jsx    ──→ VideoGrid.css
+  VoiceChannel.jsx ──→ VoiceChannel.css
 ```
 
 ## Data Flow: Theme Switching
@@ -139,18 +154,18 @@ Variables update instantly
           ↓
 All components using var(--color-*) update
           ↓
-Custom event: 'theme-changed'
+localStorage saves preference
           ↓
-Component state updates (if listening)
+IPC broadcasts to all Electron windows
           ↓
-✨ Smooth theme transition
+✨ Smooth theme transition across all windows
 ```
 
 ## Variable Resolution Example
 
 ### When theme = "catppuccin-frappe"
 ```css
-:root, [data-theme="catppuccin-frappe"] {
+[data-theme="catppuccin-frappe"] {
   --color-text: #c6d0f5;
   --color-primary: #8caaee;
 }
@@ -167,117 +182,120 @@ Component state updates (if listening)
 ### When theme switches to "nord"
 ```css
 [data-theme="nord"] {
-  --color-text: #eceff4;              /* New value */
-  --color-primary: #88c0d0;           /* New value */
+  --color-text: #eceff4;
+  --color-primary: #88c0d0;
 }
 ```
 
-### Variable resolution updates
+### Variable resolution updates automatically
 ```css
 .my-button {
   color: var(--color-text);           /* Now #eceff4 */
   background: var(--color-primary);   /* Now #88c0d0 */
 }
-/* ✨ CSS automatically updates without changing the rule! */
+/* ✨ CSS updates without touching the rule */
 ```
 
 ## Component Styling Guidelines
 
-### 🟢 Global Components (globals.css)
-Used across multiple pages/components
+### 🟢 Truly Global (globals.css)
+No clear owner, used everywhere
 ```css
+select {
+  background: var(--color-background-mute);
+  border: 1px solid var(--color-border);
+}
+```
+
+### 🟡 Page-Scoped (pages/*.css)
+Owned by a specific page, not shared
+```css
+/* Admin.css */
 .admin-btn {
   background: var(--color-primary);
   color: var(--color-background);
-  /* Shared button style */
+}
+
+/* Main.css */
+.settings-btn {
+  background: var(--color-primary);
+  color: var(--color-background);
 }
 ```
 
-### 🟡 Page-Specific Styles (pages/*.css)
-Unique to a particular page
+### 🔵 Component-Scoped (components/*.css)
+Tightly coupled to one component
 ```css
-.sidebar {
-  width: 240px;
-  background: var(--color-background-soft);
-  /* Main page only */
+/* VoiceChannel.css */
+.join-btn {
+  background: var(--color-success);
 }
 ```
 
-### 🔵 Component-Specific Styles (components/*.css)
-Tightly coupled to component
+## Style Ownership Map
+
+| Class | File | Notes |
+|-------|------|-------|
+| `.layout`, `.sidebar` | `Main.css` | Main page layout |
+| `.settings-btn` | `Main.css` | Sidebar nav buttons |
+| `.view-toggle-btn` | `Main.css` | Chat/video toggle |
+| `.admin-layout`, `.admin-btn` | `Admin.css` | Admin page only |
+| `.admin-section`, `.admin-status` | `Admin.css` | Admin page only |
+| `.settings-layout` | `Settings.css` | Settings page only |
+| `.login-screen`, `.login-box` | `LoginScreen.css` | Login component |
+| `.join-btn`, `.leave-btn`, `.share-btn` | `VoiceChannel.css` | Channel buttons |
+| `.theme-switcher`, `.theme-option` | `ThemeSwitcher.css` | Theme picker |
+| `.video-grid`, `.video-tile` | `VideoGrid.css` | Video layout |
+
+## Adding New Styles: Decision Tree
+
+```
+Is this style used in more than one unrelated page or component?
+  ├─ YES → Is it a base HTML element (input, select, scrollbar)?
+  │          ├─ YES → globals.css
+  │          └─ NO  → Reconsider. Can you rename the class to be
+  │                   page-specific and duplicate it? Explicit > implicit.
+  └─ NO  → Is it inside a component (VoiceChannel, VideoGrid, etc.)?
+             ├─ YES → components/<ComponentName>.css
+             └─ NO  → pages/<PageName>.css
+```
+
+## Quick Reference
+
+| Type | Location | Example class |
+|------|----------|---------------|
+| Base HTML elements | `globals.css` | `select`, `input` |
+| Page layout | `pages/*.css` | `.sidebar`, `.admin-layout` |
+| Page buttons | `pages/*.css` | `.admin-btn`, `.settings-btn` |
+| Component styles | `components/*.css` | `.join-btn`, `.login-box` |
+| Theme variables | `themes.css` | `--color-primary` |
+| App-level overrides | `App.css` | `body`, `.app` |
+
+## What Not To Do
+
 ```css
-.theme-switcher {
-  display: flex;
-  gap: var(--spacing-lg);
-  /* ThemeSwitcher component only */
-}
+/* ❌ Never import another page's CSS */
+/* In LoginScreen.jsx: */
+import '../pages/Admin.css'   /* Wrong — creates hidden dependency */
+
+/* ✅ Each file imports only its own CSS */
+import './LoginScreen.css'    /* Correct */
 ```
 
-## Migration Summary
-
-### Before ❌
 ```css
-.button {
-  background: #8caaee;     /* Hardcoded */
-  color: #303446;          /* Hardcoded */
-  padding: 8px;            /* Magic number */
-}
+/* ❌ Never hardcode colors */
+.btn { background: #8caaee; }
+
+/* ✅ Always use variables */
+.btn { background: var(--color-primary); }
 ```
 
-### After ✅
 ```css
-.button {
-  background: var(--color-primary);      /* Variable */
-  color: var(--color-background);        /* Variable */
-  padding: var(--spacing-sm);            /* Variable */
-}
+/* ❌ Don't put page-specific buttons in globals */
+/* globals.css */
+.admin-btn { ... }   /* Wrong — only Admin.jsx uses this */
+
+/* ✅ Put them in the page that owns them */
+/* Admin.css */
+.admin-btn { ... }   /* Correct */
 ```
-
-## Quick Reference: Where to Add New Styles
-
-| Type | Location | Example |
-|------|----------|---------|
-| Global button | `globals.css` | `.btn-special` |
-| Page layout | `pages/*.css` | `.page-header` |
-| Component | `components/*.css` | `.my-component` |
-| Override | `App.css` | App-level tweaks |
-
-## Imports Order (Important!)
-
-1. **themes.css** - Defines all variables
-2. **base.css** - Uses variables from themes
-3. **globals.css** - Uses variables from base
-4. **main.css** - Imports all above
-5. **Page CSS** - Imports main.css implicitly through main.jsx
-6. **Component CSS** - Uses variables from globals
-
-## Testing Theme Changes
-
-### Manual Test
-1. Open DevTools
-2. Run: `setTheme('nord')` (need to import)
-3. Verify all colors update
-4. Check localStorage has theme saved
-5. Refresh page - theme persists ✅
-
-### Component Test
-```javascript
-import { useTheme } from '../hooks/useTheme';
-
-function Test() {
-  const { theme, setCurrentTheme } = useTheme();
-  
-  return (
-    <>
-      <p>Current: {theme}</p>
-      <button onClick={() => setCurrentTheme('dracula')}>
-        Switch to Dracula
-      </button>
-    </>
-  );
-}
-```
-
----
-
-**Everything is connected and ready to use!** 🎉

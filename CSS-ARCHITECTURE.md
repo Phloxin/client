@@ -10,17 +10,19 @@ This project uses a comprehensive CSS theming system with CSS custom properties 
 src/renderer/src/
 ├── assets/
 │   ├── base.css           # Reset, typography, base imports
-│   ├── globals.css        # Global component styles (buttons, forms, etc.)
+│   ├── globals.css        # Truly global styles (form elements, scrollbars)
 │   ├── themes.css         # Theme variable definitions
 │   └── main.css           # Main entry point (imports all assets)
 ├── App.css                # App component-specific styles
 ├── pages/
 │   ├── Admin.css          # Admin page-specific styles
-│   ├── Main.css           # Main page layout styles
+│   ├── Main.css           # Main page layout and sidebar styles
 │   └── Settings.css       # Settings page-specific styles
 └── components/
-    ├── Channel.jsx        # Component files (styles inline or co-located)
-    └── ...
+    ├── LoginScreen.css    # Login screen styles
+    ├── ThemeSwitcher.css  # Theme switcher component styles
+    ├── VideoGrid.css      # Video grid component styles
+    └── VoiceChannel.css   # Voice channel component styles
 ```
 
 ## Theme System
@@ -116,25 +118,33 @@ window.addEventListener('theme-changed', (e) => {
 
 ### Global Styles (`globals.css`)
 
-Use for styles that apply across multiple components:
-- Button styles (`.btn`, `.btn-primary`, `.admin-btn`, `.join-btn`)
-- Form elements (inputs, selects)
-- Common layouts (`.video-grid`)
+Reserved for styles that are genuinely shared across the entire app with no clear owner:
+- Base form elements (select, input)
 - Scrollbar styling
+- Utility classes used everywhere
+
+Button styles are **not** in globals — each button class is owned by the page or component that uses it to avoid implicit cross-page dependencies.
 
 ### Page-Specific Styles (`pages/*.css`)
 
-Use for page layouts and page-level components:
-- Layout structures (`.layout`, `.sidebar`, `.chat-area`)
-- Page-specific positioning
-- Page-specific sections
+Each page owns its own layout, sections, buttons, and status elements:
 
-### Component Styles
+| File | Owns |
+|------|------|
+| `Main.css` | `.layout`, `.sidebar`, `.chat-area`, `.settings-btn`, `.view-toggle-btn` |
+| `Admin.css` | `.admin-layout`, `.admin-section`, `.admin-btn`, `.admin-status` |
+| `Settings.css` | `.settings-layout`, `.settings-section`, `.settings-status` |
 
-Keep with component files when styles are tightly coupled:
-- Small, focused component styles
-- Component-specific animations
-- Override global styles when necessary
+### Component Styles (`components/*.css`)
+
+Each component with non-trivial styling has a co-located CSS file:
+
+| File | Owns |
+|------|------|
+| `LoginScreen.css` | `.login-screen`, `.login-box`, `.login-title`, `.admin-section` (login context) |
+| `ThemeSwitcher.css` | `.theme-switcher`, `.theme-options`, `.theme-option` |
+| `VideoGrid.css` | `.video-grid`, `.video-tile` |
+| `VoiceChannel.css` | `.join-btn`, `.leave-btn`, `.share-btn` |
 
 ## Adding New Colors
 
@@ -174,15 +184,8 @@ Keep with component files when styles are tightly coupled:
 ## Best Practices
 
 1. **Always use variables** - Never hardcode colors in component CSS
-2. **Consistent spacing** - Use the spacing scale variables (`--spacing-*`)
-3. **Font sizing** - Use the font size scale (`--font-size-*`)
-4. **Responsive design** - Keep in mind when using fixed sizes
-5. **Component isolation** - Keep component styles separate from global styles
+2. **Own your styles** - Each page and component imports only its own CSS file; never import another page's stylesheet
+3. **Consistent spacing** - Use the spacing scale variables (`--spacing-*`)
+4. **Font sizing** - Use the font size scale (`--font-size-*`)
+5. **Component isolation** - A component should never depend on styles leaking in from a sibling page or component
 6. **Transitions** - Use `transition: ... 0.15s` for smooth theme switching
-
-## Migration Notes
-
-- Old hardcoded colors have been replaced with CSS variables
-- Duplicate button styles have been consolidated to `globals.css`
-- Typography is now consistent across all pages
-- All colors now support theme switching
