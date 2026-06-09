@@ -1,0 +1,34 @@
+.video-grid {
+  display: grid;
+  gap: var(--spacing-lg);
+  padding: var(--spacing-lg);
+  height: 100%;
+  overflow: auto;
+  align-content: start;
+}
+
+.video-grid.empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.empty-message {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-lg);
+}
+
+.video-tile {
+  border-radius: var(--border-radius-md);
+  overflow: hidden;
+  background: var(--color-background-soft);
+  aspect-ratio: 16/9;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.video-tile video {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+}

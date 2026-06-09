@@ -1,4 +1,4 @@
-import '../pages/Admin.css'
+import './LoginScreen.css'
 
 function LoginScreen({ username, password, onUsernameChange, onPasswordChange, onLogin, loginError }) {
   return (
@@ -25,7 +25,7 @@ function LoginScreen({ username, password, onUsernameChange, onPasswordChange, o
             onKeyDown={(e) => e.key === 'Enter' && onLogin()}
           />
         </div>
-        <button className="admin-btn" onClick={onLogin}>Login</button>
+        <button className="login-btn" onClick={onLogin}>Login</button>
         {loginError && <div className="admin-status" style={{ color: '#ed4245' }}>{loginError}</div>}
       </div>
     </div>

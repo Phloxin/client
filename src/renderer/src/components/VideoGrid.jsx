@@ -1,3 +1,5 @@
+import './VideoGrid.css'
+
 function VideoGrid({ streams, selectedStreamId, onSelect }) {
   if (!streams.length) return (
     <div className="video-grid empty">

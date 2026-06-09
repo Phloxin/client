@@ -1,21 +1,20 @@
 import { useSettings } from '../context/SettingsContext'
 import { ThemeSwitcher } from '../components/ThemeSwitcher';
-import '../App.css'
-import './Admin.css'
+import './Settings.css'
 
 function Settings() {
   const { micSettings, updateMicSettings } = useSettings()
 
   return (
-    <div className="admin-layout">
-      <div className="admin-header">Settings</div>
-      <div className="admin-body">
+    <div className="settings-layout">
+      <div className="settings-header">Settings</div>
+      <div className="settings-body">
 
         <ThemeSwitcher />
 
         <div className="channel-section-label">Microphone</div>
 
-        <div className="admin-section">
+        <div className="settings-section">
           <label>Sample Rate</label>
           <select
             value={micSettings.sampleRate}
@@ -26,7 +25,7 @@ function Settings() {
           </select>
         </div>
 
-        <div className="admin-section">
+        <div className="settings-section">
           <label>Audio Bitrate</label>
           <select
             value={micSettings.bitrate}
@@ -38,7 +37,7 @@ function Settings() {
           </select>
         </div>
 
-        <div className="admin-section">
+        <div className="settings-section">
           <label>Channel Count</label>
           <select
             value={micSettings.channelCount}
@@ -49,7 +48,7 @@ function Settings() {
           </select>
         </div>
 
-        <div className="admin-section" style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+        <div className="settings-section" style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
           <input
             type="checkbox"
             id="echoCancellation"
@@ -59,7 +58,7 @@ function Settings() {
           <label htmlFor="echoCancellation">Echo Cancellation</label>
         </div>
 
-        <div className="admin-section" style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+        <div className="settings-section" style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
           <input
             type="checkbox"
             id="noiseSuppression"
@@ -69,7 +68,7 @@ function Settings() {
           <label htmlFor="noiseSuppression">Noise Suppression</label>
         </div>
 
-        <div className="admin-section" style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+        <div className="settings-section" style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
           <input
             type="checkbox"
             id="autoGainControl"
@@ -79,7 +78,7 @@ function Settings() {
           <label htmlFor="autoGainControl">Auto Gain Control</label>
         </div>
 
-        <div className="admin-status" style={{ color: '#57f287' }}>Settings saved automatically</div>
+        <div className="settings-status" style={{ color: '#57f287' }}>Settings saved automatically</div>
       </div>
     </div>
   )

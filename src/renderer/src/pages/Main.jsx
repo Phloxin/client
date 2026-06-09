@@ -155,11 +155,11 @@ function Main() {
             }}
           />
         ))}
-        <div className="admin-btn-wrap">
-          <button className="admin-btn" style={{ marginBottom: 8 }} onClick={() => window.electron.ipcRenderer.send('open-settings')}>
+        <div className="btn-wrap">
+          <button className="settings-btn" style={{ marginBottom: 8 }} onClick={() => window.electron.ipcRenderer.send('open-settings')}>
             Settings
           </button>
-          <button className="admin-btn" onClick={() => window.electron.ipcRenderer.send('open-admin')}>
+          <button className="settings-btn" onClick={() => window.electron.ipcRenderer.send('open-admin')}>
             Admin Panel
           </button>
         </div>

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { connect, publish, disconnect, shareScreen, stopScreenShare } from '../lib/soup'
 import { useSettings } from '../context/SettingsContext'
+import './VoiceChannel.css'
 
 function VoiceChannel({ channel, clients, token, self, onStreamsUpdate }) {
   const [joined, setJoined] = useState(false)
@@ -149,7 +150,7 @@ function VoiceChannel({ channel, clients, token, self, onStreamsUpdate }) {
         <div style={{ display: 'flex', gap: 4 }}>
           {joined && (
             <button
-              className="join-btn"
+              className="share-btn"
               onClick={handleScreenShare}
               style={{ background: sharing ? '#faa61a' : '#5865f2' }}
             >
@@ -161,7 +162,7 @@ function VoiceChannel({ channel, clients, token, self, onStreamsUpdate }) {
               {connecting ? '...' : 'Join'}
             </button>
           ) : (
-            <button className="join-btn" onClick={handleLeave} style={{ background: '#ed4245' }}>
+            <button className="leave-btn" onClick={handleLeave} style={{ background: '#ed4245' }}>
               Leave
             </button>
           )}
