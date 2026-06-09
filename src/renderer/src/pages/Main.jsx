@@ -17,6 +17,19 @@ function Main() {
   const [loginError, setLoginError] = useState(null)
   const [viewMode, setViewMode] = useState('log') // 'log' or 'video'
   const [allVideoStreams, setAllVideoStreams] = useState([])
+  const [selectedStreamId, setSelectedStreamId] = useState(null)
+
+  // Keep a focused stream selected when streams change
+  useEffect(() => {
+    if (!allVideoStreams.length) {
+      setSelectedStreamId(null)
+      return
+    }
+
+    if (!selectedStreamId || !allVideoStreams.some((s) => s.consumerId === selectedStreamId)) {
+      setSelectedStreamId(allVideoStreams[0].consumerId)
+    }
+  }, [allVideoStreams, selectedStreamId])
 
   // Handle user login - sends credentials to API and stores auth token
   const handleLogin = () => {
@@ -172,7 +185,11 @@ function Main() {
             ))}
           </div>
         ) : (
-          <VideoGrid streams={allVideoStreams} />
+          <VideoGrid
+            streams={allVideoStreams}
+            selectedStreamId={selectedStreamId}
+            onSelect={setSelectedStreamId}
+          />
         )}
       </main>
     </div>

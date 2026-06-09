@@ -222,7 +222,10 @@ export async function shareScreen() {
     stopScreenShare()
   }
 
-  return screenProducer.id
+  return {
+    id: screenProducer.id,
+    stream
+  }
 }
 
 // ─── Stop screen share ───────────────────────────────────────────

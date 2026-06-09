@@ -12,7 +12,15 @@ function VoiceChannel({ channel, clients, token, self, onStreamsUpdate }) {
 
   const handleVideoStream = ({ stream, kind, consumerId }) => {
     setVideoStreams((prev) => {
-      const updated = [...prev, { stream, consumerId }]
+      const updated = [...prev, {
+        stream,
+        consumerId,
+        kind,
+        isSelf: false,
+        channelId: channel.id,
+        channelName: channel.name,
+        label: `${channel.name} ${kind === 'video' ? 'Stream' : 'Feed'}`
+      }]
       if (onStreamsUpdate) {
         onStreamsUpdate(updated)
       }
@@ -88,9 +96,44 @@ function VoiceChannel({ channel, clients, token, self, onStreamsUpdate }) {
     if (sharing) {
       await stopScreenShare()
       setSharing(false)
+      setVideoStreams((prev) => {
+        const remaining = prev.filter((item) => !item.isSelf)
+        if (onStreamsUpdate) {
+          onStreamsUpdate(remaining)
+        }
+        return remaining
+      })
     } else {
       try {
-        await shareScreen()
+        const screen = await shareScreen()
+        if (screen?.stream) {
+          screen.stream.getVideoTracks()[0].onended = () => {
+            stopScreenShare()
+            setSharing(false)
+            setVideoStreams((prev) => {
+              const remaining = prev.filter((item) => !item.isSelf)
+              if (onStreamsUpdate) {
+                onStreamsUpdate(remaining)
+              }
+              return remaining
+            })
+          }
+
+          setVideoStreams((prev) => {
+            const updated = [...prev, {
+              stream: screen.stream,
+              consumerId: screen.id,
+              kind: 'video',
+              isSelf: true,
+              channelName: channel.name,
+              label: `${self.name || 'You'} (You)`
+            }]
+            if (onStreamsUpdate) {
+              onStreamsUpdate(updated)
+            }
+            return updated
+          })
+        }
         setSharing(true)
       } catch (err) {
         console.error('[VoiceChannel] Screen share failed:', err)
