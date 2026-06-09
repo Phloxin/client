@@ -2,7 +2,6 @@
  * Theme Switcher Utility
  * 
  * Provides functions to switch between available themes.
- * Available themes: 'catppuccin-frappe', 'catppuccin-mocha', 'nord', 'dracula'
  * 
  * Usage:
  *   import { setTheme, getTheme, getAvailableThemes } from './themeUtils';
@@ -13,12 +12,22 @@
  */
 
 const THEME_KEY = 'app-theme';
-const DEFAULT_THEME = 'catppuccin-frappe';
+const DEFAULT_THEME = 'classic-dark';
 
 export const AVAILABLE_THEMES = [
   {
+    id: 'classic-dark',
+    name: 'Classic Dark',
+    description: 'A clean, neutral dark theme'
+  },
+  {
+    id: 'classic-light',
+    name: 'Classic Light',
+    description: 'A clean, neutral light theme'
+  },
+  {
     id: 'catppuccin-frappe',
-    name: 'Catppuccin Frappe',
+    name: 'Catppuccin Frappé',
     description: 'A warm, cozy dark theme'
   },
   {
@@ -35,13 +44,32 @@ export const AVAILABLE_THEMES = [
     id: 'dracula',
     name: 'Dracula',
     description: 'A vibrant, high contrast dark theme'
+  },
+  {
+    id: 'tokyo-night',
+    name: 'Tokyo Night',
+    description: 'Deep navy blues inspired by Tokyo at night'
+  },
+  {
+    id: 'gruvbox-dark',
+    name: 'Gruvbox Dark',
+    description: 'Warm earthy browns and retro groove colors'
+  },
+  {
+    id: 'one-dark-pro',
+    name: 'One Dark Pro',
+    description: 'The classic Atom-inspired neutral dark theme'
+  },
+  {
+    id: 'rose-pine',
+    name: 'Rosé Pine',
+    description: 'Muted dusty purples with a soft, elegant feel'
   }
 ];
 
 /**
- * Set the current theme
- * @param {string} themeId - The ID of the theme to set
- * @returns {boolean} - True if theme was set successfully
+ * Apply a theme to the document without persisting or broadcasting.
+ * @param {string} themeId
  */
 function applyTheme(themeId) {
   document.documentElement.setAttribute('data-theme', themeId);
@@ -52,6 +80,10 @@ function applyTheme(themeId) {
   );
 }
 
+/**
+ * Broadcast theme change to all Electron windows via IPC.
+ * @param {string} themeId
+ */
 function notifyThemeChange(themeId) {
   try {
     if (window?.electron?.ipcRenderer?.send) {
@@ -62,6 +94,11 @@ function notifyThemeChange(themeId) {
   }
 }
 
+/**
+ * Set the current theme, persist to localStorage, and broadcast via IPC.
+ * @param {string} themeId - The ID of the theme to set
+ * @returns {boolean} - True if theme was set successfully
+ */
 export function setTheme(themeId) {
   const validTheme = AVAILABLE_THEMES.find(t => t.id === themeId);
   if (!validTheme) {
@@ -83,15 +120,16 @@ export function setTheme(themeId) {
 }
 
 /**
- * Get the current theme ID
- * @returns {string} - The ID of the currently active theme
+ * Get the current theme ID from the document attribute.
+ * @returns {string}
  */
 export function getTheme() {
   return document.documentElement.getAttribute('data-theme') || DEFAULT_THEME;
 }
 
 /**
- * Initialize theme from localStorage or system preference
+ * Initialize theme from localStorage on app start.
+ * Falls back to the default theme if nothing is saved.
  */
 export function initializeTheme() {
   let theme = DEFAULT_THEME;
@@ -108,6 +146,9 @@ export function initializeTheme() {
   applyTheme(theme);
 }
 
+/**
+ * Listen for theme changes broadcast from other Electron windows via IPC.
+ */
 export function listenForThemeUpdates() {
   try {
     if (window?.electron?.ipcRenderer?.on) {
@@ -123,24 +164,24 @@ export function listenForThemeUpdates() {
 }
 
 /**
- * Get all available themes
- * @returns {Array} - Array of theme objects
+ * Get all available themes.
+ * @returns {Array}
  */
 export function getAvailableThemes() {
   return [...AVAILABLE_THEMES];
 }
 
 /**
- * Get theme by ID
- * @param {string} themeId - The ID of the theme
- * @returns {Object|null} - The theme object or null if not found
+ * Get a theme object by ID.
+ * @param {string} themeId
+ * @returns {Object|null}
  */
 export function getThemeById(themeId) {
   return AVAILABLE_THEMES.find(t => t.id === themeId) || null;
 }
 
 /**
- * Cycle to the next theme
+ * Cycle to the next theme in the list.
  * @returns {string} - The ID of the new theme
  */
 export function nextTheme() {
