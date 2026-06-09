@@ -1,5 +1,7 @@
 import { useSettings } from '../context/SettingsContext'
+import { ThemeSwitcher } from '../components/ThemeSwitcher';
 import '../App.css'
+import './Admin.css'
 
 function Settings() {
   const { micSettings, updateMicSettings } = useSettings()
@@ -8,6 +10,9 @@ function Settings() {
     <div className="admin-layout">
       <div className="admin-header">Settings</div>
       <div className="admin-body">
+
+        <ThemeSwitcher />
+
         <div className="channel-section-label">Microphone</div>
 
         <div className="admin-section">

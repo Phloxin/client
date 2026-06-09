@@ -1,3 +1,5 @@
+import '../pages/Admin.css'
+
 function LoginScreen({ username, password, onUsernameChange, onPasswordChange, onLogin, loginError }) {
   return (
     <div className="login-screen">

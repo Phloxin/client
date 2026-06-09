@@ -1,24 +1,29 @@
+/* ============================================================================
+   ADMIN LAYOUT STYLES
+   ============================================================================ */
+
 .admin-layout {
   display: flex;
   flex-direction: column;
   height: 100vh;
-  background: #313338;
-  color: #dcddde;
+  background: var(--color-background);
+  color: var(--color-text);
 }
 
 .admin-header {
-  padding: 14px 16px;
-  font-weight: 600;
-  font-size: 15px;
-  border-bottom: 1px solid #1e1f22;
-  background: #2b2d31;
+  padding: 14px var(--spacing-lg);
+  font-weight: var(--font-weight-semibold);
+  font-size: var(--font-size-lg);
+  border-bottom: 1px solid var(--color-background-mute);
+  background: var(--color-background-soft);
 }
 
 .admin-body {
-  padding: 20px;
+  padding: var(--spacing-xl);
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: var(--spacing-lg);
+  overflow-y: auto;
 }
 
 .admin-section {
@@ -28,49 +33,68 @@
 }
 
 .admin-section label {
-  font-size: 12px;
-  font-weight: 700;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-bold);
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: #8e9297;
+  color: var(--color-text-tertiary);
 }
 
 .admin-section select {
-  background: #1e1f22;
-  color: #dcddde;
-  border: none;
-  border-radius: 4px;
-  padding: 8px;
-  font-size: 14px;
+  background: var(--color-background-mute);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius-sm);
+  padding: var(--spacing-sm);
+  font-size: var(--font-size-md);
+  font-family: var(--font-family-primary);
+  cursor: pointer;
+  transition: border-color 0.15s, background-color 0.15s;
+}
+
+.admin-section select:hover {
+  border-color: var(--color-border-light);
+}
+
+.admin-section select:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  background: var(--color-background-soft);
 }
 
 .admin-status {
-  font-size: 13px;
-  color: #8e9297;
+  font-size: var(--font-size-base);
+  color: var(--color-text-tertiary);
+  padding-top: var(--spacing-md);
 }
+
+/* ============================================================================
+   LOGIN SCREEN STYLES
+   ============================================================================ */
 
 .login-screen {
   display: flex;
   height: 100vh;
   align-items: center;
   justify-content: center;
-  background: #313338;
+  background: var(--color-background);
 }
 
 .login-box {
-  background: #2b2d31;
-  border-radius: 8px;
+  background: var(--color-background-soft);
+  border-radius: var(--border-radius-md);
   padding: 32px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: var(--spacing-lg);
   width: 320px;
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.3);
 }
 
 .login-title {
   font-size: 18px;
-  font-weight: 600;
-  color: #fff;
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text);
   text-align: center;
-  margin-bottom: 8px;
+  margin-bottom: var(--spacing-md);
 }

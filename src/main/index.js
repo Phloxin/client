@@ -114,7 +114,7 @@ app.whenReady().then(() => {
   ipcMain.on('open-settings', () => {
     const settingsWindow = new BrowserWindow({
       width: 500,
-      height: 400,
+      height: 600,
       title: 'Settings',
       autoHideMenuBar: true,
       webPreferences: {
@@ -130,6 +130,13 @@ app.whenReady().then(() => {
         hash: 'settings'
       })
     }
+  })
+
+  ipcMain.on('theme-changed-ipc', (_, themeId) => {
+    const windows = BrowserWindow.getAllWindows()
+    windows.forEach((win) => {
+      win.webContents.send('theme-changed-ipc', themeId)
+    })
   })
 
   createWindow()

@@ -1,0 +1,150 @@
+/* ============================================================================
+   GLOBAL COMPONENT STYLES
+   ============================================================================ */
+
+/* Button Styles */
+button {
+  font-family: var(--font-family-primary);
+  font-size: var(--font-size-base);
+  cursor: pointer;
+  border: none;
+  border-radius: var(--border-radius-sm);
+  transition: background-color 0.15s, color 0.15s;
+}
+
+.btn {
+  padding: var(--spacing-sm) var(--spacing-md);
+  font-weight: var(--font-weight-semibold);
+  border: none;
+  border-radius: var(--border-radius-sm);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+/* Primary Button */
+.btn-primary {
+  background: var(--color-primary);
+  color: var(--color-background);
+  font-weight: var(--font-weight-semibold);
+}
+
+.btn-primary:hover {
+  background: var(--color-primary-hover);
+}
+
+/* Admin-specific Button */
+.admin-btn {
+  width: 100%;
+  background: var(--color-primary);
+  color: var(--color-background);
+  border: none;
+  border-radius: var(--border-radius-sm);
+  padding: var(--spacing-sm);
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-semibold);
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+
+.admin-btn:hover {
+  background: var(--color-primary-hover);
+}
+
+/* Join Button */
+.join-btn {
+  background: var(--color-success);
+  color: var(--color-background);
+  border: none;
+  border-radius: var(--border-radius-sm);
+  padding: 2px var(--spacing-sm);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+
+.join-btn:hover {
+  background: var(--color-success-hover);
+}
+
+/* Select/Form Elements */
+select {
+  background: var(--color-background-mute);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius-sm);
+  padding: var(--spacing-sm);
+  font-size: var(--font-size-md);
+  font-family: var(--font-family-primary);
+  cursor: pointer;
+  transition: border-color 0.15s, background-color 0.15s;
+}
+
+select:hover {
+  border-color: var(--color-border-light);
+}
+
+select:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  background: var(--color-background-soft);
+}
+
+/* ============================================================================
+   VIDEO GRID LAYOUT
+   ============================================================================ */
+.video-grid {
+  display: grid;
+  gap: var(--spacing-lg);
+  padding: var(--spacing-lg);
+  height: 100%;
+  overflow: auto;
+  align-content: start;
+}
+
+.video-grid.empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.empty-message {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-lg);
+}
+
+.video-tile {
+  border-radius: var(--border-radius-md);
+  overflow: hidden;
+  background: var(--color-background-soft);
+  aspect-ratio: 16/9;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.video-tile video {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+}
+
+/* ============================================================================
+   SCROLLBAR STYLING
+   ============================================================================ */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--color-background);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-surface);
+  border-radius: var(--border-radius-sm);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-border-light);
+}

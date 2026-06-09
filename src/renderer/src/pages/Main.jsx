@@ -5,6 +5,7 @@ import { useAuth } from '../context/AuthContext'
 import VoiceChannel from '../components/VoiceChannel'
 import VideoGrid from '../components/VideoGrid'
 import LoginScreen from '../components/LoginScreen'
+import { DEV_MODE, MOCK_TOKEN, MOCK_CLIENT, MOCK_CHANNELS, MOCK_CLIENTS } from '../lib/mock'
 
 function Main() {
   const { token, setToken, client, setClient } = useAuth()
@@ -19,6 +20,15 @@ function Main() {
 
   // Handle user login - sends credentials to API and stores auth token
   const handleLogin = () => {
+    
+    //DEV MODE
+    if (DEV_MODE) {
+      setToken(MOCK_TOKEN)
+      setClient(MOCK_CLIENT)
+      setLoginError(null)
+      return
+    }
+
     fetch('/api/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -35,11 +45,20 @@ function Main() {
         }
       })
       .catch(() => setLoginError('Login failed'))
+
   }
 
   // Fetch channels/clients and set up WebSocket + IPC listeners on mount
   useEffect(() => {
     if (!token) return
+
+    //DEV MODE
+    if (DEV_MODE) {
+      setChannels(MOCK_CHANNELS)
+      setClients(MOCK_CLIENTS)
+      setLog(['Connected to server (dev mode)'])
+      return
+    }
 
     Promise.all([
       fetch('/api/server/channel', {
@@ -100,7 +119,7 @@ function Main() {
   }
 
   // Show loading message while fetching channels
-  if (!channels.length) return <div className="loading">Hang tight Big Yahu....</div>
+  if (!channels.length) return <div className="loading">Hang tight....</div>
 
   // Render main dashboard with sidebar and activity log
   return (
