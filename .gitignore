@@ -5,4 +5,3 @@ out
 .eslintcache
 *.log*
 .env.development
-.env.production
