@@ -1,9 +1,13 @@
 import './VideoGrid.css'
+import {IconVideoMinus} from '@tabler/icons-react'
 
 function VideoGrid({ streams, selectedStreamId, onSelect }) {
   if (!streams.length) return (
     <div className="video-grid empty">
-      <div className="empty-message">No active video streams</div>
+      <div className="empty-message">
+        <IconVideoMinus size={100} />
+        No Active Streams
+      </div>
     </div>
   )
 

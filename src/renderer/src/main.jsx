@@ -4,6 +4,7 @@ import { HashRouter } from 'react-router-dom'
 import { AuthProvider } from './context/AuthContext'
 import { SettingsProvider } from './context/SettingsContext'
 import './assets/main.css'
+import '@tabler/icons-webfont/dist/tabler-icons.min.css'
 import { initializeTheme, listenForThemeUpdates } from './lib/themeUtils'
 import App from './App'
 

@@ -2,10 +2,11 @@ import { useState, useEffect } from 'react'
 import './Main.css'
 import '../App.css'
 import { useAuth } from '../context/AuthContext'
-import VoiceChannel from '../components/VoiceChannel'
+import SideBar from '../components/SideBar'
 import VideoGrid from '../components/VideoGrid'
 import LoginScreen from '../components/LoginScreen'
 import { DEV_MODE, MOCK_TOKEN, MOCK_CLIENT, MOCK_CHANNELS, MOCK_CLIENTS } from '../lib/mock'
+import { IconVideoFilled, IconMessage2Filled, IconMessage, IconVideo } from '@tabler/icons-react'
 
 function Main() {
   const { token, setToken, client, setClient } = useAuth()
@@ -25,7 +26,6 @@ function Main() {
       setSelectedStreamId(null)
       return
     }
-
     if (!selectedStreamId || !allVideoStreams.some((s) => s.consumerId === selectedStreamId)) {
       setSelectedStreamId(allVideoStreams[0].consumerId)
     }
@@ -33,8 +33,6 @@ function Main() {
 
   // Handle user login - sends credentials to API and stores auth token
   const handleLogin = () => {
-    
-    //DEV MODE
     if (DEV_MODE) {
       setToken(MOCK_TOKEN)
       setClient(MOCK_CLIENT)
@@ -58,14 +56,12 @@ function Main() {
         }
       })
       .catch(() => setLoginError('Login failed'))
-
   }
 
   // Fetch channels/clients and set up WebSocket + IPC listeners on mount
   useEffect(() => {
     if (!token) return
 
-    //DEV MODE
     if (DEV_MODE) {
       setChannels(MOCK_CHANNELS)
       setClients(MOCK_CLIENTS)
@@ -87,12 +83,9 @@ function Main() {
     }).catch((err) => console.error('Failed to fetch:', err))
 
     const ws = new WebSocket('ws://47.16.222.82:3000/ws')
-
     ws.onopen = () => console.log('WebSocket connected')
-
     ws.onmessage = (event) => {
       const { ev, data } = JSON.parse(event.data)
-
       if (ev === 'NewUser') {
         setClients((prev) => [...prev, data])
         setLog((prev) => [...prev, `${data.name} joined the server`])
@@ -103,7 +96,6 @@ function Main() {
         setLog((prev) => [...prev, `Unknown event: ${ev}`])
       }
     }
-
     ws.onclose = () => console.log('WebSocket disconnected')
     ws.onerror = (err) => console.error('WebSocket error:', err)
 
@@ -117,67 +109,64 @@ function Main() {
     }
   }, [token])
 
-  // Render login screen when user is not authenticated
+  // Merge stream updates from a specific channel into the global streams list
+  const handleStreamsUpdate = (channelId, streams) => {
+    setAllVideoStreams((prev) => {
+      const filtered = prev.filter((s) => s.channelId !== channelId)
+      return [...filtered, ...streams.map((s) => ({ ...s, channelId }))]
+    })
+  }
+
   if (!token) {
     return (
-    <LoginScreen
-      username={username}
-      password={password}
-      onUsernameChange={setUsername}
-      onPasswordChange={setPassword}
-      onLogin={handleLogin}
-      loginError={loginError}
-    />
+      <LoginScreen
+        username={username}
+        password={password}
+        onUsernameChange={setUsername}
+        onPasswordChange={setPassword}
+        onLogin={handleLogin}
+        loginError={loginError}
+      />
     )
   }
 
-  // Show loading message while fetching channels
   if (!channels.length) return <div className="loading">Hang tight....</div>
 
-  // Render main dashboard with sidebar and activity log
   return (
     <div className="layout">
-      <aside className="sidebar">
-        <div className="server-name">CNaps Buddies and Friends</div>
-        <div className="channel-section-label">Channels</div>
-        {channels.map((ch) => (
-          <VoiceChannel
-            key={ch.id}
-            channel={ch}
-            clients={clients.filter((c) => c.channel_id === ch.id)}
-            token={token}
-            self={client}
-            onStreamsUpdate={(streams) => {
-              setAllVideoStreams((prev) => {
-                const filtered = prev.filter((s) => s.channelId !== ch.id)
-                return [...filtered, ...streams.map((s) => ({ ...s, channelId: ch.id }))]
-              })
-            }}
-          />
-        ))}
-        <div className="btn-wrap">
-          <button className="settings-btn" style={{ marginBottom: 8 }} onClick={() => window.electron.ipcRenderer.send('open-settings')}>
-            Settings
-          </button>
-          <button className="settings-btn" onClick={() => window.electron.ipcRenderer.send('open-admin')}>
-            Admin Panel
-          </button>
-        </div>
-      </aside>
+      <SideBar
+        channels={channels}
+        clients={clients}
+        token={token}
+        self={client}
+        onStreamsUpdate={handleStreamsUpdate}
+      />
 
       <main className="chat-area">
         <div className="chat-header">
           <div className="header-content">
-            <span>{viewMode === 'log' ? 'Chat Log' : 'Video Streams'}</span>
-            <button 
-              className="view-toggle-btn" 
+            <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              {viewMode === 'log' ? (
+                <>
+                  <IconMessage size={18} stroke={2} />
+                  Chat Log
+                </>
+              ) : (
+                <>
+                  <IconVideo size={18} stroke={2} />
+                  Video Streams
+                </>
+              )}
+            </span>
+            <button
+              className="view-toggle-btn"
               onClick={() => setViewMode(viewMode === 'log' ? 'video' : 'log')}
             >
-              {viewMode === 'log' ? 'Video' : 'Chat'}
+              {viewMode === 'log' ? <IconVideoFilled size={18}/> : <IconMessage2Filled size={18}/>}
             </button>
           </div>
         </div>
-        
+
         {viewMode === 'log' ? (
           <div className="chat-log">
             {log.map((entry, i) => (

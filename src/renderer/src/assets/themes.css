@@ -36,9 +36,9 @@ body[data-theme="classic-dark"] {
 html[data-theme="classic-light"],
 body[data-theme="classic-light"] {
   /* Primary Colors */
-  --color-background: #f5f5f5;
-  --color-background-soft: #ffffff;
-  --color-background-mute: #ebebeb;
+  --color-background: #ffffff;
+  --color-background-soft: #f5f5f5;
+  --color-background-mute: #d4d4d4;
   --color-surface: #e0e0e0;
 
   /* Text Colors */
