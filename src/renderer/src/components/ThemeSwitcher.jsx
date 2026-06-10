@@ -13,7 +13,7 @@ export function ThemeSwitcher() {
   return (
     <div className="theme-switcher">
       <div className="theme-switcher-header">
-        <h3>Appearance</h3>
+        <h3>Theme</h3>
         <p className="theme-switcher-description">
           Choose your preferred color theme
         </p>

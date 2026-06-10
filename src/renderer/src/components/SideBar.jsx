@@ -4,7 +4,7 @@ import './Sidebar.css'
 import {IconSettings, IconShield} from '@tabler/icons-react'
 
 const MIN_WIDTH = 180
-const MAX_WIDTH = 400
+const MAX_WIDTH = 550
 const DEFAULT_WIDTH = 240
 
 function Sidebar({ channels, clients, token, self, onStreamsUpdate }) {

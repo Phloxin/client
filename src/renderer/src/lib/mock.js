@@ -10,14 +10,14 @@ export const MOCK_CLIENT = {
 }
 
 export const MOCK_CHANNELS = [
-  { id: 1, name: 'League of Normals', clients: [1, 2] },
-  { id: 2, name: 'Tel Aviv', clients: [] },
-  { id: 3, name: 'Office Hours', clients: [3] },
+  { id: 1, name: 'Voice Channel 1', clients: [1, 2] },
+  { id: 2, name: 'Voice Channel 2', clients: [] },
+  { id: 3, name: 'Voice Channel 3', clients: [3] },
 ]
 
 export const MOCK_CLIENTS = [
   { id: 1, name: 'DevUser', channel_id: 1 },
-  { id: 2, name: 'Alice', channel_id: 1 },
-  { id: 3, name: 'Bob', channel_id: 3 },
-  { id: 4, name: 'Charlie', channel_id: null },
+  { id: 2, name: 'Chris', channel_id: 1 },
+  { id: 3, name: 'John', channel_id: 3 },
+  { id: 4, name: 'Tim', channel_id: null },
 ]

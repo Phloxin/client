@@ -211,36 +211,6 @@ body[data-theme="tokyo-night"] {
 }
 
 /* ============================================================================
-   GRUVBOX DARK (Warm Earthy Theme)
-   ============================================================================ */
-html[data-theme="gruvbox-dark"],
-body[data-theme="gruvbox-dark"] {
-  /* Primary Colors */
-  --color-background: #282828;
-  --color-background-soft: #1d2021;
-  --color-background-mute: #141617;
-  --color-surface: #3c3836;
-
-  /* Text Colors */
-  --color-text: #ebdbb2;
-  --color-text-secondary: #d5c4a1;
-  --color-text-tertiary: #bdae93;
-  --color-text-muted: rgba(235, 219, 178, 0.5);
-
-  /* Accent Colors */
-  --color-primary: #83a598;
-  --color-primary-hover: #8ec07c;
-  --color-success: #b8bb26;
-  --color-success-hover: #d9d95e;
-  --color-danger: #fb4934;
-  --color-warning: #fabd2f;
-
-  /* Border Colors */
-  --color-border: #3c3836;
-  --color-border-light: #504945;
-}
-
-/* ============================================================================
    ONE DARK PRO (Atom-Inspired Theme)
    ============================================================================ */
 html[data-theme="one-dark-pro"],
@@ -268,34 +238,4 @@ body[data-theme="one-dark-pro"] {
   /* Border Colors */
   --color-border: #3e4451;
   --color-border-light: #4b5263;
-}
-
-/* ============================================================================
-   ROSÉ PINE (Muted Dusty Dark Theme)
-   ============================================================================ */
-html[data-theme="rose-pine"],
-body[data-theme="rose-pine"] {
-  /* Primary Colors */
-  --color-background: #191724;
-  --color-background-soft: #1f1d2e;
-  --color-background-mute: #161320;
-  --color-surface: #26233a;
-
-  /* Text Colors */
-  --color-text: #e0def4;
-  --color-text-secondary: #c5c3d6;
-  --color-text-tertiary: #908caa;
-  --color-text-muted: rgba(224, 222, 244, 0.4);
-
-  /* Accent Colors */
-  --color-primary: #c4a7e7;
-  --color-primary-hover: #d4b8f5;
-  --color-success: #9ccfd8;
-  --color-success-hover: #b0dfe7;
-  --color-danger: #eb6f92;
-  --color-warning: #f6c177;
-
-  /* Border Colors */
-  --color-border: #2a2739;
-  --color-border-light: #393552;
 }
