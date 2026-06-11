@@ -4,6 +4,7 @@
   height: 100vh;
   background: var(--color-background);
   color: var(--color-text);
+  user-select: none; 
 }
 
 .settings-header {
@@ -226,6 +227,22 @@
   color: var(--color-text);
 }
 
+.settings-toggle-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-toggle-copy label {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text);
+  text-transform: none;
+  letter-spacing: normal;
+}
+
 .settings-toggle-row input[type='checkbox'] {
   width: 18px;
   height: 18px;
@@ -395,5 +412,5 @@
   cursor: pointer;
 }
 .vg-test-btn:hover {
-  background: var(--color-background-soft);
+  background: var(--color-background);
 }

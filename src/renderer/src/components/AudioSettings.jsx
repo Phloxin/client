@@ -4,7 +4,6 @@ import VolumeGateMeter from './VolumeGateMeter'
 function AudioSettings({ micSettings, updateMicSettings }) {
   const [audioDevices, setAudioDevices] = useState([])
 
-  // Enumerate audio input devices on mount
   useEffect(() => {
     const getDevices = async () => {
       try {
@@ -29,6 +28,8 @@ function AudioSettings({ micSettings, updateMicSettings }) {
       </div>
 
       <div className="settings-panel-group">
+
+        {/* 1. Microphone Device */}
         <div className="settings-section">
           <label>Microphone Device</label>
           <select
@@ -44,72 +45,14 @@ function AudioSettings({ micSettings, updateMicSettings }) {
           </select>
         </div>
 
-        <div className="settings-section">
-          <label>Sample Rate</label>
-          <select
-            value={micSettings.sampleRate}
-            onChange={(e) => updateMicSettings({ sampleRate: parseInt(e.target.value) })}
-          >
-            <option value={44100}>44100 Hz</option>
-            <option value={48000}>48000 Hz</option>
-          </select>
-        </div>
-
-        <div className="settings-section">
-          <label>Audio Bitrate</label>
-          <select
-            value={micSettings.bitrate}
-            onChange={(e) => updateMicSettings({ bitrate: parseInt(e.target.value) })}
-          >
-            <option value={128000}>128 kbps (High)</option>
-            <option value={256000}>256 kbps (Very High)</option>
-            <option value={510000}>510 kbps (Maximum)</option>
-          </select>
-        </div>
-
-        <div className="settings-section">
-          <label>Channel Count</label>
-          <select
-            value={micSettings.channelCount}
-            onChange={(e) => updateMicSettings({ channelCount: parseInt(e.target.value) })}
-          >
-            <option value={1}>Mono</option>
-            <option value={2}>Stereo</option>
-          </select>
-        </div>
-
+        {/* 2. Volume Gate toggle + meter */}
         <div className="settings-section settings-toggle-row">
-          <label htmlFor="echoCancellation">Echo Cancellation</label>
-          <input
-            type="checkbox"
-            id="echoCancellation"
-            checked={micSettings.echoCancellation}
-            onChange={(e) => updateMicSettings({ echoCancellation: e.target.checked })}
-          />
-        </div>
-
-        <div className="settings-section settings-toggle-row">
-          <label htmlFor="noiseSuppression">Noise Suppression</label>
-          <input
-            type="checkbox"
-            id="noiseSuppression"
-            checked={micSettings.noiseSuppression}
-            onChange={(e) => updateMicSettings({ noiseSuppression: e.target.checked })}
-          />
-        </div>
-
-        <div className="settings-section settings-toggle-row">
-          <label htmlFor="autoGainControl">Auto Gain Control</label>
-          <input
-            type="checkbox"
-            id="autoGainControl"
-            checked={micSettings.autoGainControl}
-            onChange={(e) => updateMicSettings({ autoGainControl: e.target.checked })}
-          />
-        </div>
-
-        <div className="settings-section settings-toggle-row">
-          <label htmlFor="useVolumeGate">Use Volume Gate</label>
+          <div className="settings-toggle-copy">
+            <label htmlFor="useVolumeGate">Use Volume Gate</label>
+            <p className="settings-section-desc">
+              Silences your mic when ambient noise falls below a set level, cutting background sound between words.
+            </p>
+          </div>
           <input
             type="checkbox"
             id="useVolumeGate"
@@ -118,19 +61,71 @@ function AudioSettings({ micSettings, updateMicSettings }) {
           />
         </div>
 
-        {micSettings.useVolumeGate && (
-          <div className="settings-section">
-            <label>Volume Gate Threshold</label>
+        <div className="settings-section">
+          <label>Volume Gate Threshold</label>
+          <p className="settings-section-desc">
+            Drag the marker to set the cut-off level. Audio below the marker is filtered out.
+            {!micSettings.useVolumeGate && ' Enable the volume gate above to apply this during calls.'}
+          </p>
+          <VolumeGateMeter
+            gateEnabled={micSettings.useVolumeGate}
+            threshold={micSettings.volumeGateThreshold}
+            onThresholdChange={(value) => updateMicSettings({ volumeGateThreshold: value })}
+            micSettings={micSettings}
+          />
+        </div>
+
+        {/* 3. Echo Cancellation */}
+        <div className="settings-section settings-toggle-row">
+          <div className="settings-toggle-copy">
+            <label htmlFor="echoCancellation">Echo Cancellation</label>
             <p className="settings-section-desc">
-              Drag the threshold marker to set microphone sensitivity. Audio below the threshold is filtered out.
+              Removes echoes caused by your speakers being picked up by your microphone.
             </p>
-            <VolumeGateMeter
-              threshold={micSettings.volumeGateThreshold}
-              onThresholdChange={(value) => updateMicSettings({ volumeGateThreshold: value })}
-              micSettings={micSettings}
-            />
+            <p className="settings-section-desc">
+              PLEASE NOTE: This feature interferes with the microphone test above, be sure to disable it.
+            </p>
           </div>
-        )}
+          <input
+            type="checkbox"
+            id="echoCancellation"
+            checked={micSettings.echoCancellation}
+            onChange={(e) => updateMicSettings({ echoCancellation: e.target.checked })}
+          />
+        </div>
+
+        {/* 4. Noise Suppression */}
+        <div className="settings-section settings-toggle-row">
+          <div className="settings-toggle-copy">
+            <label htmlFor="noiseSuppression">Noise Suppression</label>
+            <p className="settings-section-desc">
+              Filters out steady background noise such as fans, air conditioning, and keyboard clicks.
+            </p>
+          </div>
+          <input
+            type="checkbox"
+            id="noiseSuppression"
+            checked={micSettings.noiseSuppression}
+            onChange={(e) => updateMicSettings({ noiseSuppression: e.target.checked })}
+          />
+        </div>
+
+        {/* 5. Auto Gain Control */}
+        <div className="settings-section settings-toggle-row">
+          <div className="settings-toggle-copy">
+            <label htmlFor="autoGainControl">Auto Gain Control</label>
+            <p className="settings-section-desc">
+              Automatically adjusts microphone volume to maintain a consistent input level.
+            </p>
+          </div>
+          <input
+            type="checkbox"
+            id="autoGainControl"
+            checked={micSettings.autoGainControl}
+            onChange={(e) => updateMicSettings({ autoGainControl: e.target.checked })}
+          />
+        </div>
+
       </div>
 
       <div className="settings-status">Settings saved automatically</div>

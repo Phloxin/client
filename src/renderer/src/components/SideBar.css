@@ -11,6 +11,7 @@
   border: 1px solid var(--color-border);
   border-radius: 10px;
   position: relative;
+  user-select: none; 
 }
 
 .server-header {
