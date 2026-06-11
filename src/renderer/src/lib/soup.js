@@ -22,6 +22,7 @@ let localProducerIds = new Set()
 let screenProducer = null
 let currentChannel = null
 let volumeGateProcessor = null
+let subscribePromise = null
 
 // ─── Pending response handlers ───────────────────────────────────
 const pendingHandlers = []
@@ -237,6 +238,67 @@ export async function publish(micSettings, onStream) {
   console.log('[Soup] Publishing audio')
 }
 
+// ─── Republish: replace audio track with new settings ───────────
+export async function republish(micSettings) {
+  if (!producerTransport) throw new Error('Not connected to voice')
+
+  // Close existing audio producers
+  const audioProducers = producers.filter((p) => p.kind === 'audio')
+  for (const producer of audioProducers) {
+    localProducerIds.delete(producer.id)
+    producer.close()
+  }
+  producers = producers.filter((p) => p.kind !== 'audio')
+
+  // Get a fresh stream with updated constraints
+  let stream
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        deviceId: micSettings.deviceId && micSettings.deviceId !== 'default' ? { exact: micSettings.deviceId } : undefined,
+        echoCancellation: micSettings.echoCancellation,
+        noiseSuppression: micSettings.noiseSuppression,
+        autoGainControl: micSettings.autoGainControl,
+        sampleRate: micSettings.sampleRate,
+        channelCount: micSettings.channelCount,
+      }
+    })
+  } catch (err) {
+    console.error('[Soup] republish getUserMedia failed:', err.name, err.message)
+    throw new Error(`Failed to get audio device: ${err.message}`)
+  }
+
+  // Re-apply volume gate if enabled
+  let processedStream = stream
+  if (micSettings.useVolumeGate) {
+    try {
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)()
+      processedStream = applyVolumeGate(audioContext, stream, micSettings.volumeGateThreshold)
+    } catch (err) {
+      console.error('[Soup] republish volume gate failed:', err)
+    }
+  }
+
+  // Produce the new track on the existing transport
+  for (const track of processedStream.getTracks()) {
+    const producer = await producerTransport.produce({
+      track,
+      encodings: [{ maxBitrate: micSettings.bitrate }],
+      codecOptions: {
+        opusStereo: micSettings.channelCount === 2,
+        opusMaxPlaybackRate: micSettings.sampleRate,
+        opusDtx: false,
+        opusFec: true,
+      }
+    })
+    producers.push(producer)
+    localProducerIds.add(producer.id)
+    console.log(`[Soup] Republished ${track.kind} [id:${producer.id}]`)
+  }
+
+  console.log('[Soup] Audio republished with new settings')
+}
+
 // ─── Share screen ────────────────────────────────────────────────
 export async function shareScreen() {
   if (!producerTransport) throw new Error('Not connected to voice')
@@ -251,12 +313,13 @@ export async function shareScreen() {
   })
 
   const track = stream.getVideoTracks()[0]
+  track.contentHint = 'detail'
 
   screenProducer = await producerTransport.produce({
     track,
-    encodings: [{ maxBitrate: 15000000 }],
+    encodings: [{ maxBitrate: 15000000, scalabilityMode: 'L1T1' }],
     codecOptions: {
-      videoGoogleStartBitrate: 1000
+      videoGoogleStartBitrate: 8000
     },
     appData: { type: 'screen' }
   })
@@ -284,10 +347,19 @@ export async function stopScreenShare() {
 }
 
 // ─── Subscribe: receive remote audio ────────────────────────────
+// Promise lock — concurrent NewProducer events share one in-flight
+// transport setup instead of each creating their own and stomping.
 export async function subscribe() {
-  if (!device) await loadDevice()
+  if (consumerTransport) return
 
-  if (!consumerTransport) {
+  if (subscribePromise) {
+    await subscribePromise
+    return
+  }
+
+  subscribePromise = (async () => {
+    if (!device) await loadDevice()
+
     const rawParams = await send('CreateConsumerTransport')
     consumerTransport = device.createRecvTransport({
       ...mapTransportParams(rawParams),
@@ -303,9 +375,12 @@ export async function subscribe() {
         .then(() => callback())
         .catch((err) => errback(err))
     })
-  }
 
-  console.log('[Soup] Consumer transport ready')
+    console.log('[Soup] Consumer transport ready')
+  })()
+
+  await subscribePromise
+  subscribePromise = null
 }
 
 // ─── Consume a remote producer ───────────────────────────────────
@@ -366,6 +441,7 @@ export function resetMediaState() {
   device = null
   currentChannel = null
   volumeGateProcessor = null
+  subscribePromise = null
   console.log('[Soup] Media state reset')
 }
 

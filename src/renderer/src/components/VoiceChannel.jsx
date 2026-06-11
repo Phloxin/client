@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { connect, publish, disconnect, shareScreen, stopScreenShare } from '../lib/soup'
+import { useState, useEffect, useRef } from 'react'
+import { connect, publish, republish, disconnect, shareScreen, stopScreenShare } from '../lib/soup'
 import { useSettings } from '../context/SettingsContext'
 import './VoiceChannel.css'
 import { IconVolume } from '@tabler/icons-react'
@@ -11,6 +11,20 @@ function VoiceChannel({ channel, clients, token, self, onStreamsUpdate }) {
   const [sharing, setSharing] = useState(false)
   const [videoStreams, setVideoStreams] = useState([])
   const { micSettings } = useSettings()
+
+  const joinedRef = useRef(false)
+
+  // Keep joinedRef in sync with joined state
+  useEffect(() => { joinedRef.current = joined }, [joined])
+
+  // Republish audio whenever mic settings change while in a channel
+  useEffect(() => {
+    if (!joinedRef.current) return
+    republish(micSettings).catch((err) => {
+      console.error('[VoiceChannel] Republish failed:', err)
+      setError(err.message)
+    })
+  }, [micSettings])
 
   const handleVideoStream = ({ stream, kind, consumerId }) => {
     setVideoStreams((prev) => {
