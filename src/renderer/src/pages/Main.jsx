@@ -5,6 +5,7 @@ import { useAuth } from '../context/AuthContext'
 import SideBar from '../components/SideBar'
 import VideoGrid from '../components/VideoGrid'
 import LoginScreen from '../components/LoginScreen'
+import Settings from './Settings'
 import { DEV_MODE, MOCK_TOKEN, MOCK_CLIENT, MOCK_CHANNELS, MOCK_CLIENTS } from '../lib/mock'
 import { IconVideoFilled, IconMessage2Filled, IconMessage, IconVideo } from '@tabler/icons-react'
 
@@ -117,6 +118,8 @@ function Main() {
     })
   }
 
+  const [showSettings, setShowSettings] = useState(false)
+
   if (!token) {
     return (
       <LoginScreen
@@ -140,6 +143,8 @@ function Main() {
         token={token}
         self={client}
         onStreamsUpdate={handleStreamsUpdate}
+        // provide a renderer-level openSettings hook
+        onOpenSettings={() => setShowSettings(true)}
       />
 
       <main className="chat-area">
@@ -181,6 +186,16 @@ function Main() {
           />
         )}
       </main>
+      {showSettings && (
+        <div className="settings-overlay" onClick={() => setShowSettings(false)}>
+          <div className="settings-modal" onClick={(e) => e.stopPropagation()}>
+            <button className="settings-close-btn" onClick={() => setShowSettings(false)}>
+              ×
+            </button>
+            <Settings />
+          </div>
+        </div>
+      )}
     </div>
   )
 }

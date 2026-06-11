@@ -111,26 +111,9 @@ app.whenReady().then(() => {
     }
   })
 
-  ipcMain.on('open-settings', () => {
-    const settingsWindow = new BrowserWindow({
-      width: 500,
-      height: 600,
-      title: 'Settings',
-      autoHideMenuBar: true,
-      webPreferences: {
-        preload: join(__dirname, '../preload/index.js'),
-        sandbox: false
-      }
-    })
-
-    if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
-      settingsWindow.loadURL(process.env['ELECTRON_RENDERER_URL'] + '#/settings')
-    } else {
-      settingsWindow.loadFile(join(__dirname, '../renderer/index.html'), {
-        hash: 'settings'
-      })
-    }
-  })
+  // Settings are now rendered as an in-app overlay in the main window.
+  // The previous IPC handler that opened a separate settings BrowserWindow
+  // has been intentionally removed to keep settings inside the main UI.
 
   ipcMain.on('theme-changed-ipc', (_, themeId) => {
     const windows = BrowserWindow.getAllWindows()

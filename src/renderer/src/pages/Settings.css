@@ -276,3 +276,44 @@
     margin-right: var(--spacing-sm);
   }
 }
+
+/* Overlay modal styles when Settings is shown in-app */
+.settings-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 24px;
+}
+
+.settings-modal {
+  position: relative;
+  width: min(1000px, 96%);
+  height: min(760px, 92%);
+  border-radius: var(--border-radius-lg);
+  overflow: hidden;
+  background: var(--color-background);
+  box-shadow: 0 20px 40px rgba(0,0,0,0.45);
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-modal .settings-layout {
+  height: auto;
+  max-height: calc(100% - 0px);
+}
+
+.settings-close-btn {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 1010;
+  background: transparent;
+  border: none;
+  color: var(--color-text);
+  font-size: 22px;
+  cursor: pointer;
+}

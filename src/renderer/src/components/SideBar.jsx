@@ -7,7 +7,7 @@ const MIN_WIDTH = 180
 const MAX_WIDTH = 550
 const DEFAULT_WIDTH = 240
 
-function Sidebar({ channels, clients, token, self, onStreamsUpdate }) {
+function Sidebar({ channels, clients, token, self, onStreamsUpdate, onOpenSettings }) {
   const [width, setWidth] = useState(() => {
     const saved = localStorage.getItem('sidebar-width')
     return saved ? parseInt(saved) : DEFAULT_WIDTH
@@ -77,7 +77,16 @@ function Sidebar({ channels, clients, token, self, onStreamsUpdate }) {
       <div className="btn-wrap">
         <button
           className="settings-btn"
-          onClick={() => window.electron.ipcRenderer.send('open-settings')}
+          onClick={() => {
+            if (typeof onOpenSettings === 'function') {
+              onOpenSettings()
+            } else if (typeof window.openSettings === 'function') {
+              window.openSettings()
+            } else {
+              // fallback to main process IPC for older behavior
+              window.electron.ipcRenderer.send('open-settings')
+            }
+          }}
         >
           <IconSettings size={20}/>
           Settings
