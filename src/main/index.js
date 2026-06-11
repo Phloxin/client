@@ -10,7 +10,7 @@ let authClient = null
 function createWindow() {
   // Create the browser window.
   const mainWindow = new BrowserWindow({
-    width: 900,
+    width: 1100,
     height: 670,
     show: false,
     autoHideMenuBar: true,
@@ -111,25 +111,15 @@ app.whenReady().then(() => {
     }
   })
 
-  ipcMain.on('open-settings', () => {
-    const settingsWindow = new BrowserWindow({
-      width: 500,
-      height: 400,
-      title: 'Settings',
-      autoHideMenuBar: true,
-      webPreferences: {
-        preload: join(__dirname, '../preload/index.js'),
-        sandbox: false
-      }
-    })
+  // Settings are now rendered as an in-app overlay in the main window.
+  // The previous IPC handler that opened a separate settings BrowserWindow
+  // has been intentionally removed to keep settings inside the main UI.
 
-    if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
-      settingsWindow.loadURL(process.env['ELECTRON_RENDERER_URL'] + '#/settings')
-    } else {
-      settingsWindow.loadFile(join(__dirname, '../renderer/index.html'), {
-        hash: 'settings'
-      })
-    }
+  ipcMain.on('theme-changed-ipc', (_, themeId) => {
+    const windows = BrowserWindow.getAllWindows()
+    windows.forEach((win) => {
+      win.webContents.send('theme-changed-ipc', themeId)
+    })
   })
 
   createWindow()

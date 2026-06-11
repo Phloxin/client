@@ -1,48 +1,62 @@
-function VideoGrid({ streams }) {
+import './VideoGrid.css'
+import {IconVideoMinus} from '@tabler/icons-react'
+
+function VideoGrid({ streams, selectedStreamId, onSelect }) {
   if (!streams.length) return (
     <div className="video-grid empty">
-      <div className="empty-message">No active video streams</div>
+      <div className="empty-message">
+        <IconVideoMinus size={100} />
+        No Active Streams
+      </div>
     </div>
   )
 
-  // Calculate optimal grid layout
-  const count = streams.length
-  let cols = 1
-  let rows = 1
+  const sortedStreams = [...streams].sort((a, b) => {
+    if (a.isSelf && !b.isSelf) return 1
+    if (!a.isSelf && b.isSelf) return -1
+    return 0
+  })
 
-  if (count === 1) {
-    cols = 1
-    rows = 1
-  } else if (count === 2) {
-    cols = 2
-    rows = 1
-  } else if (count === 3 || count === 4) {
-    cols = 2
-    rows = 2
-  } else if (count === 5 || count === 6) {
-    cols = 3
-    rows = 2
-  } else if (count === 7 || count === 8 || count === 9) {
-    cols = 3
-    rows = 3
-  } else {
-    cols = Math.ceil(Math.sqrt(count))
-    rows = Math.ceil(count / cols)
-  }
+  const selectedStream = sortedStreams.find((s) => s.consumerId === selectedStreamId) || sortedStreams[0]
 
   return (
-    <div className="video-grid" style={{ gridTemplateColumns: `repeat(${cols}, 1fr)` }}>
-      {streams.map(({ stream, consumerId }) => (
-        <div key={consumerId} className="video-tile">
-          <video
-            autoPlay
-            playsInline
-            ref={(el) => {
-              if (el) el.srcObject = stream
-            }}
-          />
+    <div className="video-viewer">
+      <div className="video-focus">
+        <video
+          autoPlay
+          playsInline
+          ref={(el) => {
+            if (el) el.srcObject = selectedStream.stream
+          }}
+        />
+        <div className="focus-label">
+          <span>{selectedStream.label || `Stream ${selectedStream.consumerId}`}</span>
+          <span>{selectedStream.channelName || ''}</span>
         </div>
-      ))}
+      </div>
+
+      <div className="video-gallery">
+        {sortedStreams.map(({ stream, consumerId, label, channelName }, index) => (
+          <button
+            key={consumerId}
+            type="button"
+            className={`video-thumbnail ${selectedStream.consumerId === consumerId ? 'selected' : ''}`}
+            onClick={() => onSelect?.(consumerId)}
+          >
+            <video
+              autoPlay
+              playsInline
+              muted
+              ref={(el) => {
+                if (el) el.srcObject = stream
+              }}
+            />
+            <div className="thumb-label">
+              {label || `Stream ${index + 1}`}{channelName ? ` • ${channelName}` : ''}
+            </div>
+          </button>
+        ))}
+      </div>
     </div>
   )
 }

@@ -1,0 +1,114 @@
+/* ============================================================================
+   THEME SWITCHER COMPONENT STYLES
+   ============================================================================ */
+
+.theme-switcher {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-lg);
+  padding: var(--spacing-lg);
+  background: var(--color-background-soft);
+  border-radius: var(--border-radius-md);
+}
+
+.theme-switcher-header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+}
+
+.theme-switcher-header h3 {
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text);
+  margin: 0;
+}
+
+.theme-switcher-description {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+  margin: 0;
+}
+
+/* Theme Options Grid */
+.theme-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: var(--spacing-md);
+}
+
+.theme-option {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+  padding: var(--spacing-md);
+  background: var(--color-background-mute);
+  border: 2px solid transparent;
+  border-radius: var(--border-radius-sm);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  text-align: left;
+}
+
+.theme-option:hover {
+  background: var(--color-background);
+  border-color: var(--color-border-light);
+}
+
+.theme-option.active {
+  border-color: var(--color-primary);
+  background: var(--color-background);
+}
+
+.theme-option-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+}
+
+.theme-option-name {
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text);
+  display: block;
+}
+
+.theme-option-desc {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  display: block;
+}
+
+.theme-option-check {
+  color: var(--color-primary);
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+}
+
+/* Theme Switcher Info */
+.theme-switcher-info {
+  padding: var(--spacing-md);
+  background: var(--color-background-mute);
+  border-radius: var(--border-radius-sm);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.theme-switcher-info p {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.theme-switcher-info p:not(:last-child) {
+  margin-bottom: var(--spacing-sm);
+}
+
+.theme-switcher-info strong {
+  color: var(--color-text);
+  font-weight: var(--font-weight-semibold);
+}
+
+.text-muted {
+  color: var(--color-text-tertiary) !important;
+}

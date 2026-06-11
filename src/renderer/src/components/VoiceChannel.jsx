@@ -1,6 +1,8 @@
-import { useState } from 'react'
-import { connect, publish, disconnect, shareScreen, stopScreenShare } from '../lib/soup'
+import { useState, useEffect, useRef } from 'react'
+import { connect, publish, republish, disconnect, shareScreen, stopScreenShare } from '../lib/soup'
 import { useSettings } from '../context/SettingsContext'
+import './VoiceChannel.css'
+import { IconVolume } from '@tabler/icons-react'
 
 function VoiceChannel({ channel, clients, token, self, onStreamsUpdate }) {
   const [joined, setJoined] = useState(false)
@@ -10,12 +12,32 @@ function VoiceChannel({ channel, clients, token, self, onStreamsUpdate }) {
   const [videoStreams, setVideoStreams] = useState([])
   const { micSettings } = useSettings()
 
+  const joinedRef = useRef(false)
+
+  // Keep joinedRef in sync with joined state
+  useEffect(() => { joinedRef.current = joined }, [joined])
+
+  // Republish audio whenever mic settings change while in a channel
+  useEffect(() => {
+    if (!joinedRef.current) return
+    republish(micSettings).catch((err) => {
+      console.error('[VoiceChannel] Republish failed:', err)
+      setError(err.message)
+    })
+  }, [micSettings])
+
   const handleVideoStream = ({ stream, kind, consumerId }) => {
     setVideoStreams((prev) => {
-      const updated = [...prev, { stream, consumerId }]
-      if (onStreamsUpdate) {
-        onStreamsUpdate(updated)
-      }
+      const updated = [...prev, {
+        stream,
+        consumerId,
+        kind,
+        isSelf: false,
+        channelId: channel.id,
+        channelName: channel.name,
+        label: `${channel.name} ${kind === 'video' ? 'Stream' : 'Feed'}`
+      }]
+      if (onStreamsUpdate) onStreamsUpdate(updated)
       return updated
     })
   }
@@ -38,7 +60,7 @@ function VoiceChannel({ channel, clients, token, self, onStreamsUpdate }) {
           setJoined(true)
           setConnecting(false)
           try {
-            await publish(micSettings, (stream) => {
+            await publish(micSettings, () => {
               console.log('[VoiceChannel] Local stream ready')
             })
           } catch (err) {
@@ -50,9 +72,7 @@ function VoiceChannel({ channel, clients, token, self, onStreamsUpdate }) {
           setJoined(false)
           setSharing(false)
           setVideoStreams([])
-          if (onStreamsUpdate) {
-            onStreamsUpdate([])
-          }
+          if (onStreamsUpdate) onStreamsUpdate([])
         },
         onVideoStream: handleVideoStream
       })
@@ -67,9 +87,7 @@ function VoiceChannel({ channel, clients, token, self, onStreamsUpdate }) {
     setJoined(false)
     setSharing(false)
     setVideoStreams([])
-    if (onStreamsUpdate) {
-      onStreamsUpdate([])
-    }
+    if (onStreamsUpdate) onStreamsUpdate([])
     try {
       await fetch('/api/server/client', {
         method: 'PATCH',
@@ -88,9 +106,38 @@ function VoiceChannel({ channel, clients, token, self, onStreamsUpdate }) {
     if (sharing) {
       await stopScreenShare()
       setSharing(false)
+      setVideoStreams((prev) => {
+        const remaining = prev.filter((item) => !item.isSelf)
+        if (onStreamsUpdate) onStreamsUpdate(remaining)
+        return remaining
+      })
     } else {
       try {
-        await shareScreen()
+        const screen = await shareScreen()
+        if (screen?.stream) {
+          screen.stream.getVideoTracks()[0].onended = () => {
+            stopScreenShare()
+            setSharing(false)
+            setVideoStreams((prev) => {
+              const remaining = prev.filter((item) => !item.isSelf)
+              if (onStreamsUpdate) onStreamsUpdate(remaining)
+              return remaining
+            })
+          }
+
+          setVideoStreams((prev) => {
+            const updated = [...prev, {
+              stream: screen.stream,
+              consumerId: screen.id,
+              kind: 'video',
+              isSelf: true,
+              channelName: channel.name,
+              label: `${self.name || 'You'} (You)`
+            }]
+            if (onStreamsUpdate) onStreamsUpdate(updated)
+            return updated
+          })
+        }
         setSharing(true)
       } catch (err) {
         console.error('[VoiceChannel] Screen share failed:', err)
@@ -100,13 +147,14 @@ function VoiceChannel({ channel, clients, token, self, onStreamsUpdate }) {
   }
 
   return (
-    <div>
-      <div className="channel-item" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        {channel.name}
-        <div style={{ display: 'flex', gap: 4 }}>
+    <div className={`channel-item${joined ? ' active' : ''}`}>
+      <div className="channel-row">
+        <IconVolume size={20}/>
+        <span className="channel-name">{channel.name}</span>
+        <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
           {joined && (
             <button
-              className="join-btn"
+              className="share-btn"
               onClick={handleScreenShare}
               style={{ background: sharing ? '#faa61a' : '#5865f2' }}
             >
@@ -118,7 +166,7 @@ function VoiceChannel({ channel, clients, token, self, onStreamsUpdate }) {
               {connecting ? '...' : 'Join'}
             </button>
           ) : (
-            <button className="join-btn" onClick={handleLeave} style={{ background: '#ed4245' }}>
+            <button className="leave-btn" onClick={handleLeave} style={{ background: '#ed4245' }}>
               Leave
             </button>
           )}
