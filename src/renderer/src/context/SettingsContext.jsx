@@ -9,6 +9,9 @@ const DEFAULT_SETTINGS = {
   sampleRate: 48000,
   channelCount: 2,
   bitrate: 128000,
+  deviceId: 'default',
+  useVolumeGate: false,
+  volumeGateThreshold: 30,
 }
 
 export function SettingsProvider({ children }) {

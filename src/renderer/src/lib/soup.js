@@ -21,6 +21,7 @@ let producers = []
 let localProducerIds = new Set()
 let screenProducer = null
 let currentChannel = null
+let volumeGateProcessor = null
 
 // ─── Pending response handlers ───────────────────────────────────
 const pendingHandlers = []
@@ -115,6 +116,37 @@ async function loadDevice() {
   console.log('[Soup] Device loaded')
 }
 
+// ─── Apply Volume Gate to Audio Stream ───────────────────────────
+function applyVolumeGate(audioContext, stream, threshold) {
+  const source = audioContext.createMediaStreamSource(stream)
+  const analyser = audioContext.createAnalyser()
+  const gate = audioContext.createGain()
+  const destination = audioContext.createMediaStreamDestination()
+
+  analyser.fftSize = 256
+  source.connect(analyser)
+  analyser.connect(gate)
+  gate.connect(destination)
+
+  const dataArray = new Uint8Array(analyser.frequencyBinCount)
+
+  const checkLevel = () => {
+    analyser.getByteFrequencyData(dataArray)
+    const average = dataArray.reduce((a, b) => a + b) / dataArray.length
+    const normalized = (average / 255) * 100
+
+    // If audio is below threshold, mute; otherwise pass through
+    gate.gain.setValueAtTime(normalized >= threshold ? 1 : 0, audioContext.currentTime)
+
+    requestAnimationFrame(checkLevel)
+  }
+
+  checkLevel()
+
+  // Return the gated stream
+  return destination.stream
+}
+
 // ─── Map snake_case transport params to mediasoup camelCase ───────
 function mapTransportParams(params) {
   return {
@@ -158,6 +190,7 @@ export async function publish(micSettings, onStream) {
   try {
     stream = await navigator.mediaDevices.getUserMedia({
       audio: {
+        deviceId: micSettings.deviceId && micSettings.deviceId !== 'default' ? { exact: micSettings.deviceId } : undefined,
         echoCancellation: micSettings.echoCancellation,
         noiseSuppression: micSettings.noiseSuppression,
         autoGainControl: micSettings.autoGainControl,
@@ -170,9 +203,22 @@ export async function publish(micSettings, onStream) {
     throw new Error(`Failed to get audio device: ${err.message}`)
   }
 
-  onStream?.(stream)
+  // Apply volume gate if enabled
+  let processedStream = stream
+  if (micSettings.useVolumeGate) {
+    try {
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)()
+      processedStream = applyVolumeGate(audioContext, stream, micSettings.volumeGateThreshold)
+      console.log('[Soup] Volume gate applied, threshold:', micSettings.volumeGateThreshold)
+    } catch (err) {
+      console.error('[Soup] Failed to apply volume gate:', err)
+      // Fall back to unprocessed stream
+    }
+  }
 
-  for (const track of stream.getTracks()) {
+  onStream?.(processedStream)
+
+  for (const track of processedStream.getTracks()) {
     const producer = await producerTransport.produce({
       track,
       encodings: [{ maxBitrate: micSettings.bitrate }],
@@ -319,6 +365,7 @@ export function resetMediaState() {
   localProducerIds.clear()
   device = null
   currentChannel = null
+  volumeGateProcessor = null
   console.log('[Soup] Media state reset')
 }
 

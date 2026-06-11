@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { IconPalette, IconMicrophone, IconAdjustments } from '@tabler/icons-react'
 import { useSettings } from '../context/SettingsContext'
 import { ThemeSwitcher } from '../components/ThemeSwitcher'
+import AudioSettings from '../components/AudioSettings'
 import './Settings.css'
 
 const sections = [
@@ -72,82 +73,7 @@ function Settings() {
           )}
 
           {activeSection === 'audio' && (
-            <div className="settings-panel-card">
-              <div className="settings-panel-header">
-                <div>
-                  <h2>Audio</h2>
-                  <p>Adjust microphone capture quality and audio processing.</p>
-                </div>
-              </div>
-
-              <div className="settings-panel-group">
-                <div className="settings-section">
-                  <label>Sample Rate</label>
-                  <select
-                    value={micSettings.sampleRate}
-                    onChange={(e) => updateMicSettings({ sampleRate: parseInt(e.target.value) })}
-                  >
-                    <option value={44100}>44100 Hz</option>
-                    <option value={48000}>48000 Hz</option>
-                  </select>
-                </div>
-
-                <div className="settings-section">
-                  <label>Audio Bitrate</label>
-                  <select
-                    value={micSettings.bitrate}
-                    onChange={(e) => updateMicSettings({ bitrate: parseInt(e.target.value) })}
-                  >
-                    <option value={128000}>128 kbps (High)</option>
-                    <option value={256000}>256 kbps (Very High)</option>
-                    <option value={510000}>510 kbps (Maximum)</option>
-                  </select>
-                </div>
-
-                <div className="settings-section">
-                  <label>Channel Count</label>
-                  <select
-                    value={micSettings.channelCount}
-                    onChange={(e) => updateMicSettings({ channelCount: parseInt(e.target.value) })}
-                  >
-                    <option value={1}>Mono</option>
-                    <option value={2}>Stereo</option>
-                  </select>
-                </div>
-
-                <div className="settings-section settings-toggle-row">
-                  <label htmlFor="echoCancellation">Echo Cancellation</label>
-                  <input
-                    type="checkbox"
-                    id="echoCancellation"
-                    checked={micSettings.echoCancellation}
-                    onChange={(e) => updateMicSettings({ echoCancellation: e.target.checked })}
-                  />
-                </div>
-
-                <div className="settings-section settings-toggle-row">
-                  <label htmlFor="noiseSuppression">Noise Suppression</label>
-                  <input
-                    type="checkbox"
-                    id="noiseSuppression"
-                    checked={micSettings.noiseSuppression}
-                    onChange={(e) => updateMicSettings({ noiseSuppression: e.target.checked })}
-                  />
-                </div>
-
-                <div className="settings-section settings-toggle-row">
-                  <label htmlFor="autoGainControl">Auto Gain Control</label>
-                  <input
-                    type="checkbox"
-                    id="autoGainControl"
-                    checked={micSettings.autoGainControl}
-                    onChange={(e) => updateMicSettings({ autoGainControl: e.target.checked })}
-                  />
-                </div>
-              </div>
-
-              <div className="settings-status">Settings saved automatically</div>
-            </div>
+            <AudioSettings micSettings={micSettings} updateMicSettings={updateMicSettings} />
           )}
 
           {activeSection === 'general' && (
