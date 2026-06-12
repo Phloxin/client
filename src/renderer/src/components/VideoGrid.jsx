@@ -28,7 +28,7 @@ function VideoGrid({ streams, selectedStreamId, onSelect }) {
           ref={(el) => { if (el) el.srcObject = selectedStream.stream }}
         />
         <div className="focus-label">
-          <span>{'CLIENT NAME HERE' || `Stream ${selectedStream.consumerId}`}</span>
+          <span>{selectedStream.label || `Stream ${selectedStream.consumerId}`}</span>
         </div>
       </div>
 
@@ -47,7 +47,7 @@ function VideoGrid({ streams, selectedStreamId, onSelect }) {
               ref={(el) => { if (el) el.srcObject = stream }}
             />
             <div className="thumb-label">
-              {'CLIENT NAME HERE'}
+              {label || `Stream ${consumerId}`}
             </div>
           </button>
         ))}

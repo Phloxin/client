@@ -111,11 +111,33 @@
   gap: var(--spacing-sm);
   font-size: var(--font-size-sm);
   color: var(--color-text-muted);
-  padding: 1px 0 2px 34px;
+  padding: 1px 0 2px 18px;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
   min-width: 0;
+}
+
+.mic-indicator {
+  flex-shrink: 0;
+}
+
+.mic-indicator:not(.muted):not(.deafened) {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-border-light);
+  transition: background-color 0.1s ease;
+}
+
+.mic-indicator.speaking {
+  background: var(--color-success);
+}
+
+.mic-indicator.muted,
+.mic-indicator.deafened {
+  color: var(--color-danger);
 }
 
 .client-avatar {
@@ -178,6 +200,17 @@
 .control-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+.control-btn.active {
+  background: color-mix(in srgb, var(--color-danger) 18%, transparent);
+  color: var(--color-danger);
+  border-color: color-mix(in srgb, var(--color-danger) 35%, transparent);
+}
+
+.control-btn.active:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-danger) 28%, transparent);
+  color: var(--color-danger);
 }
 
 .btn-wrap {

@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef, forwardRef, useImperativeHandle } from 'react'
-import { connect, publish, republish, disconnect, shareScreen, stopScreenShare, rebindCallbacks } from '../lib/soup'
+import { connect, publish, republish, disconnect, shareScreen, stopScreenShare, rebindCallbacks, createSpeakingDetector } from '../lib/soup'
 import { useSettings } from '../context/SettingsContext'
+import ClientIndicator from './ClientIndicator'
 import './VoiceChannel.css'
 import { IconVolume } from '@tabler/icons-react'
 
 const VoiceChannel = forwardRef(function VoiceChannel(
-  { channel, clients, token, self, onStreamsUpdate, onJoinedChange, onSharingChange, onRequestJoin },
+  { channel, clients, token, self, micMuted, deafened, onStreamsUpdate, onJoinedChange, onSharingChange, onRequestJoin },
   ref
 ) {
   const [joined, setJoined] = useState(false)
@@ -13,9 +14,11 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   const [error, setError] = useState(null)
   const [sharing, setSharing] = useState(false)
   const [videoStreams, setVideoStreams] = useState([])
+  const [speakingClients, setSpeakingClients] = useState({})
   const { micSettings } = useSettings()
 
   const joinedRef = useRef(false)
+  const localSpeakingCleanupRef = useRef(null)
 
   // Keep joinedRef in sync with joined state
   useEffect(() => { joinedRef.current = joined }, [joined])
@@ -24,16 +27,36 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   useEffect(() => { onJoinedChange?.(channel.id, joined) }, [joined])
   useEffect(() => { onSharingChange?.(channel.id, sharing) }, [sharing])
 
+  const handleClientSpeaking = (clientId, isSpeaking) => {
+    setSpeakingClients((prev) => {
+      if (!!prev[clientId] === isSpeaking) return prev
+      return { ...prev, [clientId]: isSpeaking }
+    })
+  }
+
+  const startLocalSpeakingDetector = (stream) => {
+    localSpeakingCleanupRef.current?.()
+    localSpeakingCleanupRef.current = createSpeakingDetector(stream, (isSpeaking) => {
+      handleClientSpeaking(self.id, isSpeaking)
+    })
+  }
+
   // Republish audio whenever mic settings change while in a channel
   useEffect(() => {
     if (!joinedRef.current) return
-    republish(micSettings).catch((err) => {
+    republish(micSettings, startLocalSpeakingDetector).catch((err) => {
       console.error('[VoiceChannel] Republish failed:', err)
       setError(err.message)
     })
   }, [micSettings])
 
-  const handleVideoStream = ({ stream, kind, consumerId }) => {
+  // Clean up local speaking detector on unmount
+  useEffect(() => () => { localSpeakingCleanupRef.current?.() }, [])
+
+  const handleVideoStream = ({ stream, kind, consumerId, clientId }) => {
+    const client = clients.find((c) => c.id === clientId)
+    const label = client?.name || `${channel.name} ${kind === 'video' ? 'Stream' : 'Feed'}`
+
     setVideoStreams((prev) => {
       const updated = [...prev, {
         stream,
@@ -42,7 +65,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
         isSelf: false,
         channelId: channel.id,
         channelName: channel.name,
-        label: `${channel.name} ${kind === 'video' ? 'Stream' : 'Feed'}`
+        label
       }]
       if (onStreamsUpdate) onStreamsUpdate(updated)
       return updated
@@ -77,8 +100,9 @@ const VoiceChannel = forwardRef(function VoiceChannel(
           setJoined(true)
           setConnecting(false)
           try {
-            await publish(micSettings, () => {
+            await publish(micSettings, (stream) => {
               console.log('[VoiceChannel] Local stream ready')
+              startLocalSpeakingDetector(stream)
             })
           } catch (err) {
             console.error('[VoiceChannel] Publish failed:', err)
@@ -89,9 +113,13 @@ const VoiceChannel = forwardRef(function VoiceChannel(
           setJoined(false)
           setSharing(false)
           setVideoStreams([])
+          setSpeakingClients({})
+          localSpeakingCleanupRef.current?.()
+          localSpeakingCleanupRef.current = null
           if (onStreamsUpdate) onStreamsUpdate([])
         },
-        onVideoStream: handleVideoStream
+        onVideoStream: handleVideoStream,
+        onClientSpeaking: handleClientSpeaking
       })
     } catch (err) {
       setError(err.message)
@@ -111,12 +139,14 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     // must already be active to catch it.
     rebindCallbacks({
       onVideoStream: handleVideoStream,
+      onClientSpeaking: handleClientSpeaking,
       onTransportsDisconnected: async () => {
         setJoined(true)
         setConnecting(false)
         try {
-          await publish(micSettings, () => {
+          await publish(micSettings, (stream) => {
             console.log('[VoiceChannel] Local stream ready')
+            startLocalSpeakingDetector(stream)
           })
         } catch (err) {
           console.error('[VoiceChannel] Publish failed:', err)
@@ -146,6 +176,9 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     setJoined(false)
     setSharing(false)
     setVideoStreams([])
+    setSpeakingClients({})
+    localSpeakingCleanupRef.current?.()
+    localSpeakingCleanupRef.current = null
     if (onStreamsUpdate) onStreamsUpdate([])
   }
 
@@ -154,6 +187,9 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     setJoined(false)
     setSharing(false)
     setVideoStreams([])
+    setSpeakingClients({})
+    localSpeakingCleanupRef.current?.()
+    localSpeakingCleanupRef.current = null
     if (onStreamsUpdate) onStreamsUpdate([])
     try {
       await fetch('/api/server/client', {
@@ -228,7 +264,13 @@ const VoiceChannel = forwardRef(function VoiceChannel(
       </div>
       {error && <div style={{ color: '#ed4245', fontSize: 11, paddingLeft: 16 }}>{error}</div>}
       {clients.map((c) => (
-        <div key={c.id} className="client-indicator">{c.name}</div>
+        <ClientIndicator
+          key={c.id}
+          client={c}
+          speaking={!!speakingClients[c.id]}
+          micMuted={c.id === self.id ? micMuted : !!c.self_mute}
+          deafened={c.id === self.id ? deafened : !!c.self_deaf}
+        />
       ))}
     </div>
   )

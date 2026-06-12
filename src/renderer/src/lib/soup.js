@@ -24,6 +24,10 @@ let currentChannel = null
 let volumeGateProcessor = null
 let subscribePromise = null
 let activeCallbacks = {}
+let remoteCleanups = []
+let remoteAudioElements = []
+let micMuted = false
+let soundMuted = false
 
 // ─── Pending response handlers ───────────────────────────────────
 const pendingHandlers = []
@@ -39,8 +43,8 @@ function send(type, data = null) {
 }
 
 // ─── Connect to signaling server ────────────────────────────────
-export async function connect(token, { onConnect, onDisconnect, onNewProducer, onVideoStream, onTransportsDisconnected } = {}) {
-  activeCallbacks = { onConnect, onDisconnect, onNewProducer, onVideoStream, onTransportsDisconnected }
+export async function connect(token, { onConnect, onDisconnect, onNewProducer, onVideoStream, onTransportsDisconnected, onClientSpeaking } = {}) {
+  activeCallbacks = { onConnect, onDisconnect, onNewProducer, onVideoStream, onTransportsDisconnected, onClientSpeaking }
 
   // Step 1 — get ticket
   const res = await fetch('/api/server/voice', {
@@ -67,14 +71,14 @@ export async function connect(token, { onConnect, onDisconnect, onNewProducer, o
 
     // Handle server-initiated events BEFORE pending handlers
     if (message.type === 'NewProducer') {
-      const { id, kind } = message.data
+      const { id, kind, client_id } = message.data
         if (localProducerIds.has(id)) {
           console.log('[Soup] Skipping own producer:', id)
           return
         }
       console.log(`[Soup] New producer: ${id} (${kind})`)
       activeCallbacks.onNewProducer?.({ producerId: id, kind })
-      consumeProducer(id, kind, activeCallbacks.onVideoStream)
+      consumeProducer(id, kind, activeCallbacks.onVideoStream, client_id)
       return
     }
 
@@ -158,6 +162,49 @@ function applyVolumeGate(audioContext, stream, threshold) {
 
   // Return the gated stream
   return destination.stream
+}
+
+// ─── Detect speaking activity on an audio stream ──────────────────
+// Returns a stop function. Calls onChange(isSpeaking) whenever the
+// speaking state changes, and once more with false on stop.
+export function createSpeakingDetector(stream, onChange, { threshold = 8, holdMs = 150 } = {}) {
+  if (!stream.getAudioTracks().length) return () => {}
+
+  const audioContext = new (window.AudioContext || window.webkitAudioContext)()
+  const source = audioContext.createMediaStreamSource(stream)
+  const analyser = audioContext.createAnalyser()
+  analyser.fftSize = 256
+  source.connect(analyser)
+
+  const data = new Uint8Array(analyser.frequencyBinCount)
+  let speaking = false
+  let lastAbove = 0
+  let rafId
+
+  const tick = () => {
+    analyser.getByteFrequencyData(data)
+    const avg = data.reduce((a, b) => a + b, 0) / data.length
+    const level = (avg / 255) * 100
+    const now = performance.now()
+
+    if (level >= threshold) lastAbove = now
+
+    const isSpeaking = now - lastAbove < holdMs
+    if (isSpeaking !== speaking) {
+      speaking = isSpeaking
+      onChange(speaking)
+    }
+
+    rafId = requestAnimationFrame(tick)
+  }
+  tick()
+
+  return () => {
+    cancelAnimationFrame(rafId)
+    if (speaking) onChange(false)
+    try { source.disconnect() } catch {}
+    try { audioContext.close() } catch {}
+  }
 }
 
 // ─── Map snake_case transport params to mediasoup camelCase ───────
@@ -244,6 +291,7 @@ export async function publish(micSettings, onStream) {
     })
     producers.push(producer)
     localProducerIds.add(producer.id)
+    if (micMuted) producer.pause()
     console.log(`[Soup] Producing ${track.kind} [id:${producer.id}]`)
   }
 
@@ -251,7 +299,7 @@ export async function publish(micSettings, onStream) {
 }
 
 // ─── Republish: replace audio track with new settings ───────────
-export async function republish(micSettings) {
+export async function republish(micSettings, onStream) {
   if (!producerTransport) throw new Error('Not connected to voice')
 
   // Close existing audio producers
@@ -291,6 +339,8 @@ export async function republish(micSettings) {
     }
   }
 
+  onStream?.(processedStream)
+
   // Produce the new track on the existing transport
   for (const track of processedStream.getTracks()) {
     const producer = await producerTransport.produce({
@@ -305,6 +355,7 @@ export async function republish(micSettings) {
     })
     producers.push(producer)
     localProducerIds.add(producer.id)
+    if (micMuted) producer.pause()
     console.log(`[Soup] Republished ${track.kind} [id:${producer.id}]`)
   }
 
@@ -396,7 +447,7 @@ export async function subscribe() {
 }
 
 // ─── Consume a remote producer ───────────────────────────────────
-export async function consumeProducer(producerId, kind, onStream) {
+export async function consumeProducer(producerId, kind, onStream, clientId) {
   if (!consumerTransport) await subscribe()
 
   const consumerParams = await send('Consume', {
@@ -430,10 +481,25 @@ export async function consumeProducer(producerId, kind, onStream) {
     const audioEl = document.createElement('audio')
     audioEl.srcObject = stream
     audioEl.autoplay = true
+    audioEl.muted = soundMuted
     document.body.appendChild(audioEl)
     audioEl.play().catch((err) => console.error('[Soup] Audio play failed:', err))
+    remoteAudioElements.push(audioEl)
+    remoteCleanups.push(() => {
+      audioEl.pause()
+      audioEl.srcObject = null
+      audioEl.remove()
+      remoteAudioElements = remoteAudioElements.filter((el) => el !== audioEl)
+    })
+
+    if (clientId != null) {
+      const stopDetector = createSpeakingDetector(stream, (isSpeaking) => {
+        activeCallbacks.onClientSpeaking?.(clientId, isSpeaking)
+      })
+      remoteCleanups.push(stopDetector)
+    }
   } else if (kind === 'video') {
-    onStream?.({ stream, kind, consumerId: consumer.id })
+    onStream?.({ stream, kind, consumerId: consumer.id, clientId })
   }
 
   console.log(`[Soup] Consuming ${kind} [id:${consumer.id}]`)
@@ -454,6 +520,9 @@ export function resetMediaState() {
   currentChannel = null
   volumeGateProcessor = null
   subscribePromise = null
+  remoteCleanups.forEach((fn) => fn())
+  remoteCleanups = []
+  remoteAudioElements = []
   console.log('[Soup] Media state reset')
 }
 
@@ -462,7 +531,30 @@ export function rebindCallbacks(newCallbacks) {
   activeCallbacks = { ...activeCallbacks, ...newCallbacks }
 }
 
+// ─── Mute controls ────────────────────────────────────────────────
+// Pauses/resumes local audio producers so other clients stop receiving them.
+export function setMicMuted(muted) {
+  micMuted = muted
+  producers
+    .filter((p) => p.kind === 'audio')
+    .forEach((p) => (muted ? p.pause() : p.resume()))
+}
+
+// Mutes/unmutes playback of all remote audio elements (deafen).
+export function setSoundMuted(muted) {
+  soundMuted = muted
+  remoteAudioElements.forEach((el) => { el.muted = muted })
+}
+
 // ─── Getters ─────────────────────────────────────────────────────
 export function isConnected() {
   return ws?.readyState === WebSocket.OPEN
+}
+
+export function isMicMuted() {
+  return micMuted
+}
+
+export function isSoundMuted() {
+  return soundMuted
 }

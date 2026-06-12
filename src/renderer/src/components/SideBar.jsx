@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import VoiceChannel from './VoiceChannel'
+import { setMicMuted, setSoundMuted } from '../lib/soup'
 import './SideBar.css'
 import {IconSettings, IconShield, IconDoorExit, IconHeadphones, IconHeadphonesOff, IconMicrophone, IconMicrophoneOff, IconScreenShare, IconScreenShareOff} from '@tabler/icons-react'
 
@@ -7,7 +8,7 @@ const MIN_WIDTH = 180
 const MAX_WIDTH = 550
 const DEFAULT_WIDTH = 240
 
-function Sidebar({ channels, clients, token, self, onStreamsUpdate, onOpenSettings }) {
+function Sidebar({ channels, clients, token, self, onStreamsUpdate, onOpenSettings, onStatusChange }) {
   const [width, setWidth] = useState(() => {
     const saved = localStorage.getItem('sidebar-width')
     return saved ? parseInt(saved) : DEFAULT_WIDTH
@@ -15,7 +16,24 @@ function Sidebar({ channels, clients, token, self, onStreamsUpdate, onOpenSettin
 
   const [joinedChannelId, setJoinedChannelId] = useState(null)
   const [sharing, setSharing] = useState(false)
+  const [micMuted, setMicMutedState] = useState(false)
+  const [soundMuted, setSoundMutedState] = useState(false)
   const channelRefs = useRef({})
+
+  // Apply mute state to soup whenever it changes. Deafening (soundMuted)
+  // also silences the mic, regardless of the independent mic-mute toggle.
+  useEffect(() => {
+    setMicMuted(micMuted || soundMuted)
+  }, [micMuted, soundMuted])
+
+  useEffect(() => {
+    setSoundMuted(soundMuted)
+  }, [soundMuted])
+
+  // Let other clients know our mic-mute / deafen status
+  useEffect(() => {
+    onStatusChange?.(micMuted, soundMuted)
+  }, [micMuted, soundMuted])
 
   const isDragging = useRef(false)
   const sidebarRef = useRef(null)
@@ -73,6 +91,8 @@ function Sidebar({ channels, clients, token, self, onStreamsUpdate, onOpenSettin
           clients={clients.filter((c) => c.channel_id === ch.id)}
           token={token}
           self={self}
+          micMuted={micMuted}
+          deafened={soundMuted}
           onStreamsUpdate={(streams) => {
             onStreamsUpdate(ch.id, streams)
           }}
@@ -116,11 +136,19 @@ function Sidebar({ channels, clients, token, self, onStreamsUpdate, onOpenSettin
           </button>
         </div>
         <div className="control-row">
-          <button className="control-btn" title="Mute Microphone">
-            <IconMicrophoneOff size={20}/>
+          <button
+            className={`control-btn${micMuted ? ' active' : ''}`}
+            title={micMuted ? 'Unmute Microphone' : 'Mute Microphone'}
+            onClick={() => setMicMutedState((m) => !m)}
+          >
+            {micMuted ? <IconMicrophoneOff size={20}/> : <IconMicrophone size={20}/>}
           </button>
-          <button className="control-btn" title="Mute Sound">
-            <IconHeadphonesOff size={20}/>
+          <button
+            className={`control-btn${soundMuted ? ' active' : ''}`}
+            title={soundMuted ? 'Undeafen' : 'Mute Sound'}
+            onClick={() => setSoundMutedState((m) => !m)}
+          >
+            {soundMuted ? <IconHeadphonesOff size={20}/> : <IconHeadphones size={20}/>}
           </button>
           <button
             className="control-btn"

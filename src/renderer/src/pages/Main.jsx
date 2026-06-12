@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import './Main.css'
 import '../App.css'
 import { useAuth } from '../context/AuthContext'
@@ -20,6 +20,7 @@ function Main() {
   const [viewMode, setViewMode] = useState('log') // 'log' or 'video'
   const [allVideoStreams, setAllVideoStreams] = useState([])
   const [selectedStreamId, setSelectedStreamId] = useState(null)
+  const eventsWsRef = useRef(null)
 
   // Keep a focused stream selected when streams change
   useEffect(() => {
@@ -84,9 +85,22 @@ function Main() {
     }).catch((err) => console.error('Failed to fetch:', err))
 
     const ws = new WebSocket('ws://47.16.222.82:3000/ws')
-    ws.onopen = () => console.log('WebSocket connected')
+    eventsWsRef.current = ws
+    ws.onopen = () => {
+      console.log('WebSocket connected')
+      ws.send(JSON.stringify({ op: 0, data: { token } }))
+    }
     ws.onmessage = (event) => {
-      const { ev, data } = JSON.parse(event.data)
+      const message = JSON.parse(event.data)
+
+      // Audio status update (mic mute / deafen) broadcast from another client
+      if (message.op === 1) {
+        const { client_id, self_mute, self_deaf } = message.data
+        setClients((prev) => prev.map((c) => c.id === client_id ? { ...c, self_mute, self_deaf } : c))
+        return
+      }
+
+      const { ev, data } = message
       if (ev === 'NewUser') {
         setClients((prev) => [...prev, data])
         setLog((prev) => [...prev, `${data.name} joined the server`])
@@ -97,7 +111,10 @@ function Main() {
         setLog((prev) => [...prev, `Unknown event: ${ev}`])
       }
     }
-    ws.onclose = () => console.log('WebSocket disconnected')
+    ws.onclose = () => {
+      console.log('WebSocket disconnected')
+      eventsWsRef.current = null
+    }
     ws.onerror = (err) => console.error('WebSocket error:', err)
 
     window.electron.ipcRenderer.on('log-message', (_, message) => {
@@ -106,9 +123,17 @@ function Main() {
 
     return () => {
       ws.close()
+      eventsWsRef.current = null
       window.electron.ipcRenderer.removeAllListeners('log-message')
     }
   }, [token])
+
+  // Broadcast our mic-mute / deafen status to other clients
+  const sendStatus = (selfMute, selfDeaf) => {
+    if (eventsWsRef.current?.readyState === WebSocket.OPEN) {
+      eventsWsRef.current.send(JSON.stringify({ op: 1, data: { self_mute: selfMute, self_deaf: selfDeaf } }))
+    }
+  }
 
   // Merge stream updates from a specific channel into the global streams list
   const handleStreamsUpdate = (channelId, streams) => {
@@ -143,6 +168,7 @@ function Main() {
         token={token}
         self={client}
         onStreamsUpdate={handleStreamsUpdate}
+        onStatusChange={sendStatus}
         // provide a renderer-level openSettings hook
         onOpenSettings={() => setShowSettings(true)}
       />
