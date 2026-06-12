@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import VoiceChannel from './VoiceChannel'
-import './Sidebar.css'
+import './SideBar.css'
 import {IconSettings, IconShield} from '@tabler/icons-react'
 
 const MIN_WIDTH = 180

@@ -305,7 +305,7 @@ export async function shareScreen() {
 
   const stream = await navigator.mediaDevices.getDisplayMedia({
     video: {
-      frameRate: 30,
+      frameRate: 60,
       width: { ideal: 1920 },
       height: { ideal: 1080 }
     },

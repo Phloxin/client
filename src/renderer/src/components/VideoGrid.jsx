@@ -1,5 +1,5 @@
 import './VideoGrid.css'
-import {IconVideoMinus} from '@tabler/icons-react'
+import { IconVideoMinus } from '@tabler/icons-react'
 
 function VideoGrid({ streams, selectedStreamId, onSelect }) {
   if (!streams.length) return (
@@ -25,17 +25,14 @@ function VideoGrid({ streams, selectedStreamId, onSelect }) {
         <video
           autoPlay
           playsInline
-          ref={(el) => {
-            if (el) el.srcObject = selectedStream.stream
-          }}
+          ref={(el) => { if (el) el.srcObject = selectedStream.stream }}
         />
         <div className="focus-label">
-          <span>{selectedStream.label || `Stream ${selectedStream.consumerId}`}</span>
-          <span>{selectedStream.channelName || ''}</span>
+          <span>{'CLIENT NAME HERE' || `Stream ${selectedStream.consumerId}`}</span>
         </div>
       </div>
 
-      <div className="video-gallery">
+      <div className="video-carousel">
         {sortedStreams.map(({ stream, consumerId, label, channelName }, index) => (
           <button
             key={consumerId}
@@ -47,12 +44,10 @@ function VideoGrid({ streams, selectedStreamId, onSelect }) {
               autoPlay
               playsInline
               muted
-              ref={(el) => {
-                if (el) el.srcObject = stream
-              }}
+              ref={(el) => { if (el) el.srcObject = stream }}
             />
             <div className="thumb-label">
-              {label || `Stream ${index + 1}`}{channelName ? ` • ${channelName}` : ''}
+              {'CLIENT NAME HERE'}
             </div>
           </button>
         ))}

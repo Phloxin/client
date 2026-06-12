@@ -132,7 +132,7 @@ function VoiceChannel({ channel, clients, token, self, onStreamsUpdate }) {
               kind: 'video',
               isSelf: true,
               channelName: channel.name,
-              label: `${self.name || 'You'} (You)`
+              label: `${self.name || 'You'}`
             }]
             if (onStreamsUpdate) onStreamsUpdate(updated)
             return updated
