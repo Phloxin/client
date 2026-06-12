@@ -251,9 +251,34 @@
 }
 
 .settings-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-md);
   font-size: var(--font-size-base);
   color: var(--color-text-tertiary);
   padding-top: var(--spacing-md);
+}
+
+.settings-apply-btn {
+  background: var(--color-primary);
+  color: var(--color-background);
+  border: none;
+  border-radius: var(--border-radius-sm);
+  padding: 7px 18px;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.settings-apply-btn:hover:not(:disabled) {
+  opacity: 0.85;
+}
+
+.settings-apply-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 @media (max-width: 699px) {
@@ -364,7 +389,7 @@
   border-radius: 999px;
   background: var(--color-background-mute);
   overflow: hidden;
-  cursor: ew-resize;
+  cursor: pointer;
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.02);
 }
 
@@ -386,6 +411,7 @@
   background: var(--color-accent, #f59e0b);
   transform: translateX(-1px);
   border-radius: 2px;
+  pointer-events: none;
 }
 
 .volume-gate-info {

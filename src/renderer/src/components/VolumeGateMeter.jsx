@@ -11,7 +11,6 @@ function VolumeGateMeter({ threshold, onThresholdChange, micSettings, gateEnable
   const meterRafRef = useRef(null)
   const testRafRef = useRef(null)
   const meterRef = useRef(null)
-  const isDraggingRef = useRef(false)
   const audioCtxRef = useRef(null)
   const streamRef = useRef(null)
   const sourceRef = useRef(null)
@@ -179,19 +178,7 @@ function VolumeGateMeter({ threshold, onThresholdChange, micSettings, gateEnable
     tick()
   }
 
-  // ── Drag handling ─────────────────────────────────────────────────
-  const startDrag = (clientX) => {
-    isDraggingRef.current = true
-    updateFromClientX(clientX)
-  }
-
-  const stopDrag = () => { isDraggingRef.current = false }
-
-  const moveDrag = (clientX) => {
-    if (!isDraggingRef.current) return
-    updateFromClientX(clientX)
-  }
-
+  // ── Click-to-set handling ──────────────────────────────────────────
   const updateFromClientX = (clientX) => {
     const el = meterRef.current
     if (!el) return
@@ -200,31 +187,12 @@ function VolumeGateMeter({ threshold, onThresholdChange, micSettings, gateEnable
     onThresholdChange(Math.round(pct))
   }
 
-  useEffect(() => {
-    const onMove = (e) => moveDrag(e.clientX)
-    const onTouchMove = (e) => moveDrag(e.touches[0].clientX)
-    const onUp = () => stopDrag()
-
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
-    window.addEventListener('touchmove', onTouchMove, { passive: true })
-    window.addEventListener('touchend', onUp)
-
-    return () => {
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
-      window.removeEventListener('touchmove', onTouchMove)
-      window.removeEventListener('touchend', onUp)
-    }
-  }, [])
-
   return (
     <div className="volume-gate-meter">
       <div
         className="vg-bar"
         ref={meterRef}
-        onMouseDown={(e) => startDrag(e.clientX)}
-        onTouchStart={(e) => startDrag(e.touches[0].clientX)}
+        onClick={(e) => updateFromClientX(e.clientX)}
         role="slider"
         aria-valuemin={0}
         aria-valuemax={100}
@@ -236,12 +204,7 @@ function VolumeGateMeter({ threshold, onThresholdChange, micSettings, gateEnable
         }}
       >
         <div className="vg-fill" style={{ width: `${audioLevel}%` }} />
-        <div
-          className="vg-marker"
-          style={{ left: `${threshold}%` }}
-          onMouseDown={(e) => { e.stopPropagation(); startDrag(e.clientX) }}
-          onTouchStart={(e) => { e.stopPropagation(); startDrag(e.touches[0].clientX) }}
-        />
+        <div className="vg-marker" style={{ left: `${threshold}%` }} />
       </div>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 }}>
         <button

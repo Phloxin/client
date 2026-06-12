@@ -3,6 +3,7 @@ import VolumeGateMeter from './VolumeGateMeter'
 
 function AudioSettings({ micSettings, updateMicSettings }) {
   const [audioDevices, setAudioDevices] = useState([])
+  const [draftSettings, setDraftSettings] = useState(micSettings)
 
   useEffect(() => {
     const getDevices = async () => {
@@ -17,6 +18,16 @@ function AudioSettings({ micSettings, updateMicSettings }) {
 
     getDevices()
   }, [])
+
+  const updateDraft = (changes) => {
+    setDraftSettings((prev) => ({ ...prev, ...changes }))
+  }
+
+  const isDirty = JSON.stringify(draftSettings) !== JSON.stringify(micSettings)
+
+  const handleApply = () => {
+    updateMicSettings(draftSettings)
+  }
 
   return (
     <div className="settings-panel-card">
@@ -33,8 +44,8 @@ function AudioSettings({ micSettings, updateMicSettings }) {
         <div className="settings-section">
           <label>Microphone Device</label>
           <select
-            value={micSettings.deviceId || 'default'}
-            onChange={(e) => updateMicSettings({ deviceId: e.target.value })}
+            value={draftSettings.deviceId || 'default'}
+            onChange={(e) => updateDraft({ deviceId: e.target.value })}
           >
             <option value="default">Default Device</option>
             {audioDevices.map((device) => (
@@ -56,22 +67,22 @@ function AudioSettings({ micSettings, updateMicSettings }) {
           <input
             type="checkbox"
             id="useVolumeGate"
-            checked={micSettings.useVolumeGate}
-            onChange={(e) => updateMicSettings({ useVolumeGate: e.target.checked })}
+            checked={draftSettings.useVolumeGate}
+            onChange={(e) => updateDraft({ useVolumeGate: e.target.checked })}
           />
         </div>
 
         <div className="settings-section">
           <label>Volume Gate Threshold</label>
           <p className="settings-section-desc">
-            Drag the marker to set the cut-off level. Audio below the marker is filtered out.
-            {!micSettings.useVolumeGate && ' Enable the volume gate above to apply this during calls.'}
+            Click the bar to set the cut-off level. Audio below the marker is filtered out.
+            {!draftSettings.useVolumeGate && ' Enable the volume gate above to apply this during calls.'}
           </p>
           <VolumeGateMeter
-            gateEnabled={micSettings.useVolumeGate}
-            threshold={micSettings.volumeGateThreshold}
-            onThresholdChange={(value) => updateMicSettings({ volumeGateThreshold: value })}
-            micSettings={micSettings}
+            gateEnabled={draftSettings.useVolumeGate}
+            threshold={draftSettings.volumeGateThreshold}
+            onThresholdChange={(value) => updateDraft({ volumeGateThreshold: value })}
+            micSettings={draftSettings}
           />
         </div>
 
@@ -89,8 +100,8 @@ function AudioSettings({ micSettings, updateMicSettings }) {
           <input
             type="checkbox"
             id="echoCancellation"
-            checked={micSettings.echoCancellation}
-            onChange={(e) => updateMicSettings({ echoCancellation: e.target.checked })}
+            checked={draftSettings.echoCancellation}
+            onChange={(e) => updateDraft({ echoCancellation: e.target.checked })}
           />
         </div>
 
@@ -105,8 +116,8 @@ function AudioSettings({ micSettings, updateMicSettings }) {
           <input
             type="checkbox"
             id="noiseSuppression"
-            checked={micSettings.noiseSuppression}
-            onChange={(e) => updateMicSettings({ noiseSuppression: e.target.checked })}
+            checked={draftSettings.noiseSuppression}
+            onChange={(e) => updateDraft({ noiseSuppression: e.target.checked })}
           />
         </div>
 
@@ -121,14 +132,19 @@ function AudioSettings({ micSettings, updateMicSettings }) {
           <input
             type="checkbox"
             id="autoGainControl"
-            checked={micSettings.autoGainControl}
-            onChange={(e) => updateMicSettings({ autoGainControl: e.target.checked })}
+            checked={draftSettings.autoGainControl}
+            onChange={(e) => updateDraft({ autoGainControl: e.target.checked })}
           />
         </div>
 
       </div>
 
-      <div className="settings-status">Settings saved automatically</div>
+      <div className="settings-status">
+        <span>{isDirty ? 'You have unsaved changes' : 'Settings saved'}</span>
+        <button className="settings-apply-btn" onClick={handleApply} disabled={!isDirty}>
+          Apply
+        </button>
+      </div>
     </div>
   )
 }

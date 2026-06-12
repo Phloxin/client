@@ -21,6 +21,13 @@ function Main() {
   const [allVideoStreams, setAllVideoStreams] = useState([])
   const [selectedStreamId, setSelectedStreamId] = useState(null)
   const eventsWsRef = useRef(null)
+  const channelsRef = useRef([])
+  const clientsRef = useRef([])
+
+  // Keep refs to the latest channels/clients so the events websocket handler
+  // (created once in the effect below) can look them up without stale closures.
+  useEffect(() => { channelsRef.current = channels }, [channels])
+  useEffect(() => { clientsRef.current = clients }, [clients])
 
   // Keep a focused stream selected when streams change
   useEffect(() => {
@@ -104,8 +111,20 @@ function Main() {
         setClients((prev) => [...prev, data])
         setLog((prev) => [...prev, `${data.name} joined the server`])
       } else if (ev === 'ClientModified') {
+        const channelName = (id) => channelsRef.current.find((ch) => ch.id === id)?.name || 'Unknown Channel'
+        const oldChannelId = clientsRef.current.find((c) => c.id === data.id)?.channel_id
+
+        let message
+        if (data.channel_id == null) {
+          message = `${data.name} left ${channelName(oldChannelId)}`
+        } else if (oldChannelId == null) {
+          message = `${data.name} joined ${channelName(data.channel_id)}`
+        } else {
+          message = `${data.name} moved to ${channelName(data.channel_id)}`
+        }
+
+        setLog((prev) => [...prev, message])
         setClients((prev) => prev.map((c) => c.id === data.id ? { ...c, channel_id: data.channel_id } : c))
-        setLog((prev) => [...prev, `${data.name} moved to a new channel`])
       } else {
         setLog((prev) => [...prev, `Unknown event: ${ev}`])
       }
