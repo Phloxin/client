@@ -105,6 +105,26 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   const switchTo = async () => {
     setConnecting(true)
     setError(null)
+
+    // Rebind callbacks BEFORE the PATCH — TransportsDisconnected can arrive
+    // as soon as the server processes the PATCH, so this channel's handler
+    // must already be active to catch it.
+    rebindCallbacks({
+      onVideoStream: handleVideoStream,
+      onTransportsDisconnected: async () => {
+        setJoined(true)
+        setConnecting(false)
+        try {
+          await publish(micSettings, () => {
+            console.log('[VoiceChannel] Local stream ready')
+          })
+        } catch (err) {
+          console.error('[VoiceChannel] Publish failed:', err)
+          setError(err.message)
+        }
+      }
+    })
+
     try {
       await fetch('/api/server/client', {
         method: 'PATCH',
@@ -113,22 +133,6 @@ const VoiceChannel = forwardRef(function VoiceChannel(
           Authorization: `Bearer ${token}`
         },
         body: JSON.stringify({ client_id: self.id, channel_id: channel.id })
-      })
-
-      rebindCallbacks({
-        onVideoStream: handleVideoStream,
-        onTransportsDisconnected: async () => {
-          setJoined(true)
-          setConnecting(false)
-          try {
-            await publish(micSettings, () => {
-              console.log('[VoiceChannel] Local stream ready')
-            })
-          } catch (err) {
-            console.error('[VoiceChannel] Publish failed:', err)
-            setError(err.message)
-          }
-        }
       })
     } catch (err) {
       setError(err.message)
