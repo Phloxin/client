@@ -1,10 +1,13 @@
-import { useState, useEffect, useRef } from 'react'
-import { connect, publish, republish, disconnect, shareScreen, stopScreenShare } from '../lib/soup'
+import { useState, useEffect, useRef, forwardRef, useImperativeHandle } from 'react'
+import { connect, publish, republish, disconnect, shareScreen, stopScreenShare, rebindCallbacks } from '../lib/soup'
 import { useSettings } from '../context/SettingsContext'
 import './VoiceChannel.css'
 import { IconVolume } from '@tabler/icons-react'
 
-function VoiceChannel({ channel, clients, token, self, onStreamsUpdate }) {
+const VoiceChannel = forwardRef(function VoiceChannel(
+  { channel, clients, token, self, onStreamsUpdate, onJoinedChange, onSharingChange, onRequestJoin },
+  ref
+) {
   const [joined, setJoined] = useState(false)
   const [connecting, setConnecting] = useState(false)
   const [error, setError] = useState(null)
@@ -16,6 +19,10 @@ function VoiceChannel({ channel, clients, token, self, onStreamsUpdate }) {
 
   // Keep joinedRef in sync with joined state
   useEffect(() => { joinedRef.current = joined }, [joined])
+
+  // Let the sidebar know when this channel becomes the joined/sharing one
+  useEffect(() => { onJoinedChange?.(channel.id, joined) }, [joined])
+  useEffect(() => { onSharingChange?.(channel.id, sharing) }, [sharing])
 
   // Republish audio whenever mic settings change while in a channel
   useEffect(() => {
@@ -40,6 +47,16 @@ function VoiceChannel({ channel, clients, token, self, onStreamsUpdate }) {
       if (onStreamsUpdate) onStreamsUpdate(updated)
       return updated
     })
+  }
+
+  const handleDoubleClick = () => {
+    if (!joined) {
+      if (onRequestJoin) {
+        onRequestJoin(handleJoin, switchTo)
+      } else {
+        handleJoin()
+      }
+    }
   }
 
   const handleJoin = async () => {
@@ -80,6 +97,52 @@ function VoiceChannel({ channel, clients, token, self, onStreamsUpdate }) {
       setError(err.message)
       setConnecting(false)
     }
+  }
+
+  // Move to this channel without closing the websocket. The server will
+  // respond with TransportsDisconnected, which resets media state and
+  // triggers a republish via the rebound onTransportsDisconnected callback.
+  const switchTo = async () => {
+    setConnecting(true)
+    setError(null)
+    try {
+      await fetch('/api/server/client', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ client_id: self.id, channel_id: channel.id })
+      })
+
+      rebindCallbacks({
+        onVideoStream: handleVideoStream,
+        onTransportsDisconnected: async () => {
+          setJoined(true)
+          setConnecting(false)
+          try {
+            await publish(micSettings, () => {
+              console.log('[VoiceChannel] Local stream ready')
+            })
+          } catch (err) {
+            console.error('[VoiceChannel] Publish failed:', err)
+            setError(err.message)
+          }
+        }
+      })
+    } catch (err) {
+      setError(err.message)
+      setConnecting(false)
+    }
+  }
+
+  // Stop being the active channel locally, without disconnecting the
+  // websocket (used when switching to a different channel).
+  const deactivate = () => {
+    setJoined(false)
+    setSharing(false)
+    setVideoStreams([])
+    if (onStreamsUpdate) onStreamsUpdate([])
   }
 
   const handleLeave = async () => {
@@ -146,31 +209,18 @@ function VoiceChannel({ channel, clients, token, self, onStreamsUpdate }) {
     }
   }
 
+  useImperativeHandle(ref, () => ({
+    leave: handleLeave,
+    toggleShare: handleScreenShare,
+    switchTo,
+    deactivate
+  }))
+
   return (
-    <div className={`channel-item${joined ? ' active' : ''}`}>
+    <div className={`channel-item${joined ? ' active' : ''}`} onDoubleClick={handleDoubleClick}>
       <div className="channel-row">
         <IconVolume size={20}/>
         <span className="channel-name">{channel.name}</span>
-        <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
-          {joined && (
-            <button
-              className="share-btn"
-              onClick={handleScreenShare}
-              style={{ background: sharing ? '#faa61a' : '#5865f2' }}
-            >
-              {sharing ? 'Stop' : 'Share'}
-            </button>
-          )}
-          {!joined ? (
-            <button className="join-btn" onClick={handleJoin} disabled={connecting}>
-              {connecting ? '...' : 'Join'}
-            </button>
-          ) : (
-            <button className="leave-btn" onClick={handleLeave} style={{ background: '#ed4245' }}>
-              Leave
-            </button>
-          )}
-        </div>
       </div>
       {error && <div style={{ color: '#ed4245', fontSize: 11, paddingLeft: 16 }}>{error}</div>}
       {clients.map((c) => (
@@ -178,6 +228,6 @@ function VoiceChannel({ channel, clients, token, self, onStreamsUpdate }) {
       ))}
     </div>
   )
-}
+})
 
 export default VoiceChannel

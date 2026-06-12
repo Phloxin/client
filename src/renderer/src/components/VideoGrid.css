@@ -12,6 +12,7 @@
 }
 
 .empty-message {
+  user-select: none;
   color: var(--color-text-secondary);
   font-size: var(--font-size-lg);
   display: flex;

@@ -23,6 +23,7 @@ let screenProducer = null
 let currentChannel = null
 let volumeGateProcessor = null
 let subscribePromise = null
+let activeCallbacks = {}
 
 // ─── Pending response handlers ───────────────────────────────────
 const pendingHandlers = []
@@ -38,7 +39,9 @@ function send(type, data = null) {
 }
 
 // ─── Connect to signaling server ────────────────────────────────
-export async function connect(token, { onConnect, onDisconnect, onNewProducer, onVideoStream } = {}) {
+export async function connect(token, { onConnect, onDisconnect, onNewProducer, onVideoStream, onTransportsDisconnected } = {}) {
+  activeCallbacks = { onConnect, onDisconnect, onNewProducer, onVideoStream, onTransportsDisconnected }
+
   // Step 1 — get ticket
   const res = await fetch('/api/server/voice', {
     headers: { Authorization: `Bearer ${token}` }
@@ -58,7 +61,7 @@ export async function connect(token, { onConnect, onDisconnect, onNewProducer, o
     // Authenticated confirmation
     if (message.type === 'Authenticated') {
       console.log('[Soup] Authenticated')
-      onConnect?.()
+      activeCallbacks.onConnect?.()
       return
     }
 
@@ -70,8 +73,17 @@ export async function connect(token, { onConnect, onDisconnect, onNewProducer, o
           return
         }
       console.log(`[Soup] New producer: ${id} (${kind})`)
-      onNewProducer?.({ producerId: id, kind })
-      consumeProducer(id, kind, onVideoStream)
+      activeCallbacks.onNewProducer?.({ producerId: id, kind })
+      consumeProducer(id, kind, activeCallbacks.onVideoStream)
+      return
+    }
+
+    // Server is moving us to a different channel — transports must be
+    // torn down and re-established, but the websocket stays open.
+    if (message.type === 'TransportsDisconnected') {
+      console.log('[Soup] Transports disconnected, resetting media state')
+      resetMediaState()
+      activeCallbacks.onTransportsDisconnected?.()
       return
     }
 
@@ -89,7 +101,7 @@ export async function connect(token, { onConnect, onDisconnect, onNewProducer, o
     console.log('[Soup] WebSocket disconnected — code:', event.code, 'reason:', event.reason)
     currentChannel = null
     resetMediaState()
-    onDisconnect?.()
+    activeCallbacks.onDisconnect?.()
   }
 
   ws.onerror = (err) => {
@@ -443,6 +455,11 @@ export function resetMediaState() {
   volumeGateProcessor = null
   subscribePromise = null
   console.log('[Soup] Media state reset')
+}
+
+// ─── Rebind callbacks (e.g. when switching channels) ──────────────
+export function rebindCallbacks(newCallbacks) {
+  activeCallbacks = { ...activeCallbacks, ...newCallbacks }
 }
 
 // ─── Getters ─────────────────────────────────────────────────────
