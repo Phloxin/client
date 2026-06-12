@@ -91,16 +91,15 @@ function Main() {
       ws.send(JSON.stringify({ op: 0, data: { token } }))
     }
     ws.onmessage = (event) => {
-      const message = JSON.parse(event.data)
+      const { ev, data } = JSON.parse(event.data)
 
       // Audio status update (mic mute / deafen) broadcast from another client
-      if (message.op === 1) {
-        const { client_id, self_mute, self_deaf } = message.data
-        setClients((prev) => prev.map((c) => c.id === client_id ? { ...c, self_mute, self_deaf } : c))
+      if (ev === 'VoiceStateUpdate') {
+        const { client_id, muted, deaf } = data
+        setClients((prev) => prev.map((c) => c.id === client_id ? { ...c, self_mute: muted, self_deaf: deaf } : c))
         return
       }
 
-      const { ev, data } = message
       if (ev === 'NewUser') {
         setClients((prev) => [...prev, data])
         setLog((prev) => [...prev, `${data.name} joined the server`])
