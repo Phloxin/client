@@ -20,6 +20,7 @@ let consumerTransport
 let producers = []
 let localProducerIds = new Set()
 let screenProducer = null
+let screenAudioProducer = null
 let currentChannel = null
 let volumeGateProcessor = null
 let subscribePromise = null
@@ -85,14 +86,14 @@ export async function connect(token, { onConnect, onDisconnect, onNewProducer, o
 
     // Handle server-initiated events BEFORE pending handlers
     if (message.type === 'NewProducer') {
-      const { id, kind, client_id } = message.data
+      const { id, kind, client_id, produced_type } = message.data
         if (localProducerIds.has(id)) {
           console.log('[Soup] Skipping own producer:', id)
           return
         }
-      console.log(`[Soup] New producer: ${id} (${kind})`)
+      console.log(`[Soup] New producer: ${id} (${kind}, ${produced_type})`)
       activeCallbacks.onNewProducer?.({ producerId: id, kind })
-      consumeProducer(id, kind, activeCallbacks.onVideoStream, client_id)
+      consumeProducer(id, kind, activeCallbacks.onVideoStream, client_id, produced_type)
       return
     }
 
@@ -104,6 +105,10 @@ export async function connect(token, { onConnect, onDisconnect, onNewProducer, o
       if (entry) {
         entry.consumer.close()
         remoteConsumers.delete(id)
+        if (entry.cleanup) {
+          entry.cleanup()
+          remoteCleanups = remoteCleanups.filter((fn) => fn !== entry.cleanup)
+        }
         if (entry.kind === 'video') {
           activeCallbacks.onConsumerClosed?.(entry.consumerId)
         }
@@ -282,10 +287,13 @@ export async function publish(micSettings, onStream) {
       .catch((err) => errback(err))
   })
 
-  producerTransport.on('produce', ({ kind, rtpParameters }, callback, errback) => {
+  producerTransport.on('produce', ({ kind, rtpParameters, appData }, callback, errback) => {
     send('Produce', {
-      kind,
-      rtp_params: rtpParameters
+      produce_params: {
+        rtp_params: rtpParameters,
+        kind
+      },
+      produced_type: appData?.produced ?? 'Audio'
     })
       .then((res) => callback({ id: res.id }))
       .catch((err) => errback(err))
@@ -336,7 +344,8 @@ export async function publish(micSettings, onStream) {
         opusMaxPlaybackRate: micSettings.sampleRate,
         opusDtx: false,
         opusFec: true,
-      }
+      },
+      appData: { produced: 'Audio' }
     })
     producers.push(producer)
     localProducerIds.add(producer.id)
@@ -405,7 +414,8 @@ export async function republish(micSettings, onStream) {
           opusMaxPlaybackRate: micSettings.sampleRate,
           opusDtx: false,
           opusFec: true,
-        }
+        },
+        appData: { produced: 'Audio' }
       })
       producers.push(producer)
       localProducerIds.add(producer.id)
@@ -462,7 +472,7 @@ export async function shareScreen() {
       width: { ideal: 1920 },
       height: { ideal: 1080 }
     },
-    audio: false
+    audio: true
   })
 
   const track = stream.getVideoTracks()[0]
@@ -474,11 +484,27 @@ export async function shareScreen() {
     codecOptions: {
       videoGoogleStartBitrate: 8000
     },
-    appData: { type: 'screen' }
+    appData: { produced: 'ScreenShare' }
   })
 
   localProducerIds.add(screenProducer.id)
   console.log(`[Soup] Screen sharing [id:${screenProducer.id}]`)
+
+  // System/tab audio is only available for some sources (e.g. full screens
+  // on Windows) - produce it alongside the video when the browser gives us one.
+  const audioTrack = stream.getAudioTracks()[0]
+  if (audioTrack) {
+    screenAudioProducer = await producerTransport.produce({
+      track: audioTrack,
+      codecOptions: {
+        opusDtx: false,
+        opusFec: true,
+      },
+      appData: { produced: 'ScreenShareAudio' }
+    })
+    localProducerIds.add(screenAudioProducer.id)
+    console.log(`[Soup] Screen audio sharing [id:${screenAudioProducer.id}]`)
+  }
 
   track.onended = () => {
     stopScreenShare()
@@ -499,8 +525,17 @@ export async function stopScreenShare() {
   // Tell the server we're done with this producer so it can close the
   // server-side mediasoup Producer and any consumers peers have for it.
   notify('CloseProducer', { id: producerId })
-  console.log('[Soup] Screen share stopped')
   screenProducer = null
+
+  if (screenAudioProducer) {
+    const audioProducerId = screenAudioProducer.id
+    screenAudioProducer.close()
+    localProducerIds.delete(audioProducerId)
+    notify('CloseProducer', { id: audioProducerId })
+    screenAudioProducer = null
+  }
+
+  console.log('[Soup] Screen share stopped')
 }
 
 // ─── Subscribe: receive remote audio ────────────────────────────
@@ -541,7 +576,7 @@ export async function subscribe() {
 }
 
 // ─── Consume a remote producer ───────────────────────────────────
-export async function consumeProducer(producerId, kind, onStream, clientId) {
+export async function consumeProducer(producerId, kind, onStream, clientId, producedType) {
   if (!consumerTransport) await subscribe()
 
   const consumerParams = await send('Consume', {
@@ -571,6 +606,8 @@ export async function consumeProducer(producerId, kind, onStream, clientId) {
   console.log(`[Soup] Consumer resumed [id:${consumer.id}]`)
 
   // play audio or stream via DOM element
+  let cleanup = null
+
   if (kind === 'audio') {
     const audioEl = document.createElement('audio')
     audioEl.srcObject = stream
@@ -579,19 +616,24 @@ export async function consumeProducer(producerId, kind, onStream, clientId) {
     document.body.appendChild(audioEl)
     audioEl.play().catch((err) => console.error('[Soup] Audio play failed:', err))
     remoteAudioElements.push(audioEl)
-    remoteCleanups.push(() => {
+
+    // Screen/tab audio isn't the client's voice - don't feed it into the
+    // speaking indicator.
+    let stopDetector = null
+    if (clientId != null && producedType !== 'ScreenShareAudio') {
+      stopDetector = createSpeakingDetector(stream, (isSpeaking) => {
+        activeCallbacks.onClientSpeaking?.(clientId, isSpeaking)
+      })
+    }
+
+    cleanup = () => {
       audioEl.pause()
       audioEl.srcObject = null
       audioEl.remove()
       remoteAudioElements = remoteAudioElements.filter((el) => el !== audioEl)
-    })
-
-    if (clientId != null) {
-      const stopDetector = createSpeakingDetector(stream, (isSpeaking) => {
-        activeCallbacks.onClientSpeaking?.(clientId, isSpeaking)
-      })
-      remoteCleanups.push(stopDetector)
+      stopDetector?.()
     }
+    remoteCleanups.push(cleanup)
   } else if (kind === 'video') {
     // If this client already had a video producer (e.g. restarted screen
     // share before a ProducerClosed notice arrived), close out the stale
@@ -607,7 +649,7 @@ export async function consumeProducer(producerId, kind, onStream, clientId) {
     onStream?.({ stream, kind, consumerId: consumer.id, clientId })
   }
 
-  remoteConsumers.set(producerId, { consumer, consumerId: consumer.id, kind, clientId })
+  remoteConsumers.set(producerId, { consumer, consumerId: consumer.id, kind, clientId, producedType, cleanup })
 
   console.log(`[Soup] Consuming ${kind} [id:${consumer.id}]`)
   return { stream, kind, consumerId: consumer.id }
@@ -621,6 +663,8 @@ export function resetMediaState() {
   consumerTransport = null
   screenProducer?.close()
   screenProducer = null
+  screenAudioProducer?.close()
+  screenAudioProducer = null
   producers = []
   localProducerIds.clear()
   device = null
