@@ -111,11 +111,33 @@
   gap: var(--spacing-sm);
   font-size: var(--font-size-sm);
   color: var(--color-text-muted);
-  padding: 1px 0 2px 34px;
+  padding: 1px 0 2px 18px;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
   min-width: 0;
+}
+
+.mic-indicator {
+  flex-shrink: 0;
+}
+
+.mic-indicator:not(.muted):not(.deafened) {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-border-light);
+  transition: background-color 0.1s ease;
+}
+
+.mic-indicator.speaking:not(.muted):not(.deafened) {
+  background: var(--color-success);
+}
+
+.mic-indicator.muted,
+.mic-indicator.deafened {
+  color: var(--color-danger);
 }
 
 .client-avatar {
@@ -141,8 +163,57 @@
   flex-shrink: 0;
 }
 
-.btn-wrap {
+.control-rows {
   margin-top: auto;
+  padding: var(--spacing-sm);
+  border-top: 1px solid var(--color-border);
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+}
+
+.control-row {
+  display: flex;
+  gap: var(--spacing-xs);
+}
+
+.control-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: var(--color-text-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius-sm);
+  padding: 7px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.control-btn:hover:not(:disabled) {
+  background: var(--color-border);
+  color: var(--color-text);
+  border-color: var(--color-border-light);
+}
+
+.control-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.control-btn.active {
+  background: color-mix(in srgb, var(--color-danger) 18%, transparent);
+  color: var(--color-danger);
+  border-color: color-mix(in srgb, var(--color-danger) 35%, transparent);
+}
+
+.control-btn.active:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-danger) 28%, transparent);
+  color: var(--color-danger);
+}
+
+.btn-wrap {
   padding: var(--spacing-sm);
   border-top: 1px solid var(--color-border);
   display: flex;

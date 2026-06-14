@@ -1,0 +1,200 @@
+/* ============================================================================
+   SCREEN SOURCE PICKER — modal for choosing a screen/window to share
+   ============================================================================ */
+
+.source-picker-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1100;
+  padding: 24px;
+}
+
+.source-picker-modal {
+  width: min(880px, 96%);
+  height: min(640px, 90%);
+  border-radius: var(--border-radius-lg);
+  overflow: hidden;
+  background: var(--color-background);
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.45);
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Tabs ────────────────────────────────────────────────────────────────── */
+
+.source-picker-tabs {
+  display: flex;
+  justify-content: center;
+  gap: 4px;
+  padding: 0 22px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.source-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 16px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.source-tab:hover {
+  color: var(--color-text);
+}
+
+.source-tab.active {
+  color: var(--color-text);
+  border-bottom-color: var(--color-primary);
+}
+
+/* ── Body ────────────────────────────────────────────────────────────────── */
+
+.source-picker-body {
+  padding: 18px 22px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+.source-picker-loading,
+.source-picker-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 40px;
+  color: var(--color-text-secondary);
+}
+
+.source-picker-error {
+  color: #ed4245;
+}
+
+.spin {
+  animation: source-spin 0.9s linear infinite;
+}
+
+@keyframes source-spin {
+  to { transform: rotate(360deg); }
+}
+
+.source-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+}
+
+/* ── Source card ───────────────────────────────────────────────────────────── */
+
+.source-card {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 10px;
+  background: var(--color-background-secondary, #06070d);
+  cursor: pointer;
+  overflow: hidden;
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+
+.source-card:hover {
+  transform: translateY(-1px);
+  border-color: var(--color-border-light);
+}
+
+.source-card.selected {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-primary) 30%, transparent);
+}
+
+.source-thumb {
+  aspect-ratio: 16 / 9;
+  background: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.source-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.source-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+}
+
+.source-name span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.source-icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+/* ── Footer ────────────────────────────────────────────────────────────────── */
+
+.source-picker-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 16px 22px;
+  border-top: 1px solid var(--color-border);
+}
+
+.picker-btn {
+  padding: 8px 18px;
+  border: none;
+  border-radius: var(--border-radius);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, opacity 0.15s ease;
+}
+
+.picker-btn.secondary {
+  background: var(--color-background-secondary, #1e1f26);
+  color: var(--color-text);
+}
+
+.picker-btn.secondary:hover {
+  background: var(--color-border);
+}
+
+.picker-btn.primary {
+  background: var(--color-primary);
+  color: #fff;
+}
+
+.picker-btn.primary:hover {
+  opacity: 0.9;
+}
+
+.picker-btn.primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

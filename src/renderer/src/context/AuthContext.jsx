@@ -11,7 +11,14 @@ export function AuthProvider({ children }) {
       if (t) setToken(t)
     })
     window.electron.ipcRenderer.invoke('get-client').then((c) => {
-      if (c) setClient(c)
+      if (!c) return
+      // The client is persisted as a JSON string (see saveClient), so parse it
+      // back into an object. Guard against a corrupted value and clear it.
+      try {
+        setClient(typeof c === 'string' ? JSON.parse(c) : c)
+      } catch {
+        window.electron.ipcRenderer.send('clear-auth')
+      }
     })
   }, [])
 

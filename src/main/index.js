@@ -1,11 +1,46 @@
-import { app, shell, BrowserWindow, ipcMain, session, desktopCapturer } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, session, desktopCapturer, safeStorage } from 'electron'
 import { join } from 'path'
+import { readFileSync, writeFileSync, unlinkSync } from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 
 // Store auth token in main process so it persists across windows
 let authToken = null
 let authClient = null
+
+// ─── Encrypted auth persistence ───────────────────────────────────
+// Persists the token/client to disk (encrypted via the OS keychain) so the
+// user stays logged in across app restarts. Falls back to in-memory-only
+// storage if encryption isn't available on this platform.
+function authFilePath() {
+  return join(app.getPath('userData'), 'auth.json')
+}
+
+function readAuthFile() {
+  if (!safeStorage.isEncryptionAvailable()) return { token: null, client: null }
+  try {
+    const raw = readFileSync(authFilePath(), 'utf-8')
+    const data = JSON.parse(raw)
+    return {
+      token: data.token ? safeStorage.decryptString(Buffer.from(data.token, 'base64')) : null,
+      client: data.client ? safeStorage.decryptString(Buffer.from(data.client, 'base64')) : null
+    }
+  } catch {
+    return { token: null, client: null }
+  }
+}
+
+function persistAuth() {
+  if (!safeStorage.isEncryptionAvailable()) return
+  try {
+    const data = {}
+    if (authToken != null) data.token = safeStorage.encryptString(authToken).toString('base64')
+    if (authClient != null) data.client = safeStorage.encryptString(authClient).toString('base64')
+    writeFileSync(authFilePath(), JSON.stringify(data))
+  } catch (err) {
+    console.error('Failed to persist auth data:', err)
+  }
+}
 
 function createWindow() {
   // Create the browser window.
@@ -53,19 +88,53 @@ app.whenReady().then(() => {
     optimizer.watchWindowShortcuts(window)
   })
 
-  // Enable screen capture via getDisplayMedia in renderer
+  // The source the renderer's picker selected for the next screen-share
+  // request. Read by the display-media handler below when getDisplayMedia runs.
+  let selectedScreenSourceId = null
+
+  // Return the list of capturable screens/windows (with thumbnails) so the
+  // renderer can show its own source picker.
+  ipcMain.handle('get-screen-sources', async () => {
+    const sources = await desktopCapturer.getSources({
+      types: ['screen', 'window'],
+      thumbnailSize: { width: 320, height: 180 },
+      fetchWindowIcons: true
+    })
+    return sources.map((source) => ({
+      id: source.id,
+      name: source.name,
+      isScreen: source.id.startsWith('screen:'),
+      thumbnail: source.thumbnail.toDataURL(),
+      appIcon: source.appIcon && !source.appIcon.isEmpty() ? source.appIcon.toDataURL() : null
+    }))
+  })
+
+  // Remember which source the user picked for the upcoming share.
+  ipcMain.on('set-screen-source', (_, sourceId) => {
+    selectedScreenSourceId = sourceId
+  })
+
+  // Enable screen capture via getDisplayMedia in renderer. Honors the source
+  // chosen via the picker, falling back to the first available source.
   session.defaultSession.setDisplayMediaRequestHandler((request, callback) => {
-    desktopCapturer.getSources({ types: ['screen'] }).then((sources) => {
-      callback({ video: sources[0], audio: 'loopback' })
+    desktopCapturer.getSources({ types: ['screen', 'window'] }).then((sources) => {
+      const chosen = sources.find((s) => s.id === selectedScreenSourceId) || sources[0]
+      callback({ video: chosen, audio: 'loopback' })
     })
   })
 
   // IPC test
   ipcMain.on('ping', () => console.log('pong'))
 
+  // Load any previously persisted auth from disk
+  const persisted = readAuthFile()
+  authToken = persisted.token
+  authClient = persisted.client
+
   // Store token from any window
   ipcMain.on('store-token', (_, token) => {
     authToken = token
+    persistAuth()
   })
 
   // Return stored token to any window that asks
@@ -75,10 +144,20 @@ app.whenReady().then(() => {
 
   ipcMain.on('store-client', (_, client) => {
     authClient = client
+    persistAuth()
   })
 
   ipcMain.handle('get-client', () => {
     return authClient
+  })
+
+  // Clear persisted + in-memory auth (e.g. on logout or token invalidation)
+  ipcMain.on('clear-auth', () => {
+    authToken = null
+    authClient = null
+    try {
+      unlinkSync(authFilePath())
+    } catch {}
   })
 
   // Login on Admin Window — forward log message to all windows

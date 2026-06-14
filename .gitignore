@@ -4,4 +4,6 @@ out
 .DS_Store
 .eslintcache
 *.log*
-.env.development
+.env
+.env.*
+!.env.example

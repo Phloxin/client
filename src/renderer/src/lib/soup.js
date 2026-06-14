@@ -23,6 +23,15 @@ let screenProducer = null
 let currentChannel = null
 let volumeGateProcessor = null
 let subscribePromise = null
+let activeCallbacks = {}
+let remoteCleanups = []
+let remoteAudioElements = []
+let micMuted = false
+let soundMuted = false
+// Tracks remote consumers by the producer id they're consuming, so they
+// can be closed and removed when that producer goes away (either because
+// a new one replaces it, or the server tells us it closed).
+let remoteConsumers = new Map()
 
 // ─── Pending response handlers ───────────────────────────────────
 const pendingHandlers = []
@@ -37,8 +46,20 @@ function send(type, data = null) {
   })
 }
 
+// ─── Send a fire-and-forget notification (no response expected) ──
+// Use for telling the server we've closed a producer/consumer we own.
+// Does NOT push onto pendingHandlers, so an unanswered message can't
+// desync the response queue for subsequent send() calls.
+function notify(type, data = null) {
+  const message = data ? { type, data } : { type }
+  ws.send(JSON.stringify(message))
+  console.log(`[Soup] Notify: ${type}`, message)
+}
+
 // ─── Connect to signaling server ────────────────────────────────
-export async function connect(token, { onConnect, onDisconnect, onNewProducer, onVideoStream } = {}) {
+export async function connect(token, { onConnect, onDisconnect, onNewProducer, onVideoStream, onTransportsDisconnected, onClientSpeaking, onConsumerClosed } = {}) {
+  activeCallbacks = { onConnect, onDisconnect, onNewProducer, onVideoStream, onTransportsDisconnected, onClientSpeaking, onConsumerClosed }
+
   // Step 1 — get ticket
   const res = await fetch('/api/server/voice', {
     headers: { Authorization: `Bearer ${token}` }
@@ -58,20 +79,45 @@ export async function connect(token, { onConnect, onDisconnect, onNewProducer, o
     // Authenticated confirmation
     if (message.type === 'Authenticated') {
       console.log('[Soup] Authenticated')
-      onConnect?.()
+      activeCallbacks.onConnect?.()
       return
     }
 
     // Handle server-initiated events BEFORE pending handlers
     if (message.type === 'NewProducer') {
-      const { id, kind } = message.data
+      const { id, kind, client_id } = message.data
         if (localProducerIds.has(id)) {
           console.log('[Soup] Skipping own producer:', id)
           return
         }
       console.log(`[Soup] New producer: ${id} (${kind})`)
-      onNewProducer?.({ producerId: id, kind })
-      consumeProducer(id, kind, onVideoStream)
+      activeCallbacks.onNewProducer?.({ producerId: id, kind })
+      consumeProducer(id, kind, activeCallbacks.onVideoStream, client_id)
+      return
+    }
+
+    // A remote producer we were consuming has closed (e.g. the other
+    // client stopped screen sharing) — close our consumer and remove its tile.
+    if (message.type === 'ProducerClosed') {
+      const { id } = message.data
+      const entry = remoteConsumers.get(id)
+      if (entry) {
+        entry.consumer.close()
+        remoteConsumers.delete(id)
+        if (entry.kind === 'video') {
+          activeCallbacks.onConsumerClosed?.(entry.consumerId)
+        }
+        console.log(`[Soup] Remote producer closed [id:${id}], consumer removed`)
+      }
+      return
+    }
+
+    // Server is moving us to a different channel — transports must be
+    // torn down and re-established, but the websocket stays open.
+    if (message.type === 'TransportsDisconnected') {
+      console.log('[Soup] Transports disconnected, resetting media state')
+      resetMediaState()
+      activeCallbacks.onTransportsDisconnected?.()
       return
     }
 
@@ -89,7 +135,7 @@ export async function connect(token, { onConnect, onDisconnect, onNewProducer, o
     console.log('[Soup] WebSocket disconnected — code:', event.code, 'reason:', event.reason)
     currentChannel = null
     resetMediaState()
-    onDisconnect?.()
+    activeCallbacks.onDisconnect?.()
   }
 
   ws.onerror = (err) => {
@@ -118,6 +164,8 @@ async function loadDevice() {
 }
 
 // ─── Apply Volume Gate to Audio Stream ───────────────────────────
+// Returns the gated stream and a stop() function that cancels the
+// level-check loop and closes the audio context.
 function applyVolumeGate(audioContext, stream, threshold) {
   const source = audioContext.createMediaStreamSource(stream)
   const analyser = audioContext.createAnalyser()
@@ -130,6 +178,7 @@ function applyVolumeGate(audioContext, stream, threshold) {
   gate.connect(destination)
 
   const dataArray = new Uint8Array(analyser.frequencyBinCount)
+  let rafId
 
   const checkLevel = () => {
     analyser.getByteFrequencyData(dataArray)
@@ -139,13 +188,68 @@ function applyVolumeGate(audioContext, stream, threshold) {
     // If audio is below threshold, mute; otherwise pass through
     gate.gain.setValueAtTime(normalized >= threshold ? 1 : 0, audioContext.currentTime)
 
-    requestAnimationFrame(checkLevel)
+    rafId = requestAnimationFrame(checkLevel)
   }
 
   checkLevel()
 
-  // Return the gated stream
-  return destination.stream
+  const stop = () => {
+    cancelAnimationFrame(rafId)
+    try { source.disconnect() } catch {}
+    try { audioContext.close() } catch {}
+  }
+
+  return { stream: destination.stream, stop }
+}
+
+// Stop the currently active volume gate processor (if any), releasing its
+// AudioContext and level-check loop.
+function stopVolumeGate() {
+  volumeGateProcessor?.()
+  volumeGateProcessor = null
+}
+
+// ─── Detect speaking activity on an audio stream ──────────────────
+// Returns a stop function. Calls onChange(isSpeaking) whenever the
+// speaking state changes, and once more with false on stop.
+export function createSpeakingDetector(stream, onChange, { threshold = 8, holdMs = 150 } = {}) {
+  if (!stream.getAudioTracks().length) return () => {}
+
+  const audioContext = new (window.AudioContext || window.webkitAudioContext)()
+  const source = audioContext.createMediaStreamSource(stream)
+  const analyser = audioContext.createAnalyser()
+  analyser.fftSize = 256
+  source.connect(analyser)
+
+  const data = new Uint8Array(analyser.frequencyBinCount)
+  let speaking = false
+  let lastAbove = 0
+  let rafId
+
+  const tick = () => {
+    analyser.getByteFrequencyData(data)
+    const avg = data.reduce((a, b) => a + b, 0) / data.length
+    const level = (avg / 255) * 100
+    const now = performance.now()
+
+    if (level >= threshold) lastAbove = now
+
+    const isSpeaking = now - lastAbove < holdMs
+    if (isSpeaking !== speaking) {
+      speaking = isSpeaking
+      onChange(speaking)
+    }
+
+    rafId = requestAnimationFrame(tick)
+  }
+  tick()
+
+  return () => {
+    cancelAnimationFrame(rafId)
+    if (speaking) onChange(false)
+    try { source.disconnect() } catch {}
+    try { audioContext.close() } catch {}
+  }
 }
 
 // ─── Map snake_case transport params to mediasoup camelCase ───────
@@ -204,12 +308,16 @@ export async function publish(micSettings, onStream) {
     throw new Error(`Failed to get audio device: ${err.message}`)
   }
 
-  // Apply volume gate if enabled
+  // Apply volume gate if enabled (stop any previous gate first so its
+  // AudioContext and level-check loop don't leak)
+  stopVolumeGate()
   let processedStream = stream
   if (micSettings.useVolumeGate) {
     try {
       const audioContext = new (window.AudioContext || window.webkitAudioContext)()
-      processedStream = applyVolumeGate(audioContext, stream, micSettings.volumeGateThreshold)
+      const gated = applyVolumeGate(audioContext, stream, micSettings.volumeGateThreshold)
+      processedStream = gated.stream
+      volumeGateProcessor = gated.stop
       console.log('[Soup] Volume gate applied, threshold:', micSettings.volumeGateThreshold)
     } catch (err) {
       console.error('[Soup] Failed to apply volume gate:', err)
@@ -232,23 +340,21 @@ export async function publish(micSettings, onStream) {
     })
     producers.push(producer)
     localProducerIds.add(producer.id)
+    if (micMuted) producer.pause()
     console.log(`[Soup] Producing ${track.kind} [id:${producer.id}]`)
   }
 
   console.log('[Soup] Publishing audio')
 }
 
-// ─── Republish: replace audio track with new settings ───────────
-export async function republish(micSettings) {
+// ─── Republish: apply new mic settings to the existing producer ──
+// Reuses the existing audio producer(s) via replaceTrack() instead of
+// closing and re-negotiating a brand-new producer with the server on
+// every settings change.
+export async function republish(micSettings, onStream) {
   if (!producerTransport) throw new Error('Not connected to voice')
 
-  // Close existing audio producers
   const audioProducers = producers.filter((p) => p.kind === 'audio')
-  for (const producer of audioProducers) {
-    localProducerIds.delete(producer.id)
-    producer.close()
-  }
-  producers = producers.filter((p) => p.kind !== 'audio')
 
   // Get a fresh stream with updated constraints
   let stream
@@ -268,32 +374,79 @@ export async function republish(micSettings) {
     throw new Error(`Failed to get audio device: ${err.message}`)
   }
 
-  // Re-apply volume gate if enabled
+  // Re-apply volume gate if enabled (stop any previous gate first so its
+  // AudioContext and level-check loop don't leak)
+  stopVolumeGate()
   let processedStream = stream
   if (micSettings.useVolumeGate) {
     try {
       const audioContext = new (window.AudioContext || window.webkitAudioContext)()
-      processedStream = applyVolumeGate(audioContext, stream, micSettings.volumeGateThreshold)
+      const gated = applyVolumeGate(audioContext, stream, micSettings.volumeGateThreshold)
+      processedStream = gated.stream
+      volumeGateProcessor = gated.stop
     } catch (err) {
       console.error('[Soup] republish volume gate failed:', err)
     }
   }
 
-  // Produce the new track on the existing transport
-  for (const track of processedStream.getTracks()) {
-    const producer = await producerTransport.produce({
-      track,
-      encodings: [{ maxBitrate: micSettings.bitrate }],
-      codecOptions: {
-        opusStereo: micSettings.channelCount === 2,
-        opusMaxPlaybackRate: micSettings.sampleRate,
-        opusDtx: false,
-        opusFec: true,
+  onStream?.(processedStream)
+
+  const newTracks = processedStream.getTracks()
+
+  if (audioProducers.length === 0) {
+    // No existing producer to reuse (first publish hasn't happened yet) -
+    // produce fresh, mirroring publish().
+    for (const track of newTracks) {
+      const producer = await producerTransport.produce({
+        track,
+        encodings: [{ maxBitrate: micSettings.bitrate }],
+        codecOptions: {
+          opusStereo: micSettings.channelCount === 2,
+          opusMaxPlaybackRate: micSettings.sampleRate,
+          opusDtx: false,
+          opusFec: true,
+        }
+      })
+      producers.push(producer)
+      localProducerIds.add(producer.id)
+      if (micMuted) producer.pause()
+      console.log(`[Soup] Republished ${track.kind} [id:${producer.id}]`)
+    }
+
+    console.log('[Soup] Audio republished with new settings')
+    return
+  }
+
+  // Swap the track on each existing audio producer in place. The
+  // server-side producer (and any consumers peers already created for it)
+  // stays alive, so peers keep receiving the same producer id.
+  for (let i = 0; i < audioProducers.length; i++) {
+    const producer = audioProducers[i]
+    const track = newTracks[i]
+    if (!track) continue
+
+    await producer.replaceTrack({ track })
+
+    // Update bitrate on the existing RTP sender without renegotiating.
+    // Note: opusStereo/opusMaxPlaybackRate are negotiated at produce()
+    // time and can't be changed without a brand-new producer - changing
+    // sampleRate/channelCount won't retroactively update those params.
+    const sender = producer.rtpSender
+    if (sender) {
+      const params = sender.getParameters()
+      if (params.encodings?.length) {
+        params.encodings[0].maxBitrate = micSettings.bitrate
+        try {
+          await sender.setParameters(params)
+        } catch (err) {
+          console.warn('[Soup] Failed to update bitrate:', err)
+        }
       }
-    })
-    producers.push(producer)
-    localProducerIds.add(producer.id)
-    console.log(`[Soup] Republished ${track.kind} [id:${producer.id}]`)
+    }
+
+    if (micMuted) producer.pause()
+    else producer.resume()
+    console.log(`[Soup] Replaced track on producer [id:${producer.id}]`)
   }
 
   console.log('[Soup] Audio republished with new settings')
@@ -340,8 +493,12 @@ export async function shareScreen() {
 // ─── Stop screen share ───────────────────────────────────────────
 export async function stopScreenShare() {
   if (!screenProducer) return
+  const producerId = screenProducer.id
   screenProducer.close()
-  localProducerIds.delete(screenProducer.id)
+  localProducerIds.delete(producerId)
+  // Tell the server we're done with this producer so it can close the
+  // server-side mediasoup Producer and any consumers peers have for it.
+  notify('CloseProducer', { id: producerId })
   console.log('[Soup] Screen share stopped')
   screenProducer = null
 }
@@ -384,7 +541,7 @@ export async function subscribe() {
 }
 
 // ─── Consume a remote producer ───────────────────────────────────
-export async function consumeProducer(producerId, kind, onStream) {
+export async function consumeProducer(producerId, kind, onStream, clientId) {
   if (!consumerTransport) await subscribe()
 
   const consumerParams = await send('Consume', {
@@ -418,11 +575,39 @@ export async function consumeProducer(producerId, kind, onStream) {
     const audioEl = document.createElement('audio')
     audioEl.srcObject = stream
     audioEl.autoplay = true
+    audioEl.muted = soundMuted
     document.body.appendChild(audioEl)
     audioEl.play().catch((err) => console.error('[Soup] Audio play failed:', err))
+    remoteAudioElements.push(audioEl)
+    remoteCleanups.push(() => {
+      audioEl.pause()
+      audioEl.srcObject = null
+      audioEl.remove()
+      remoteAudioElements = remoteAudioElements.filter((el) => el !== audioEl)
+    })
+
+    if (clientId != null) {
+      const stopDetector = createSpeakingDetector(stream, (isSpeaking) => {
+        activeCallbacks.onClientSpeaking?.(clientId, isSpeaking)
+      })
+      remoteCleanups.push(stopDetector)
+    }
   } else if (kind === 'video') {
-    onStream?.({ stream, kind, consumerId: consumer.id })
+    // If this client already had a video producer (e.g. restarted screen
+    // share before a ProducerClosed notice arrived), close out the stale
+    // consumer/tile before adding the new one.
+    for (const [pid, entry] of remoteConsumers) {
+      if (entry.kind === 'video' && entry.clientId === clientId) {
+        entry.consumer.close()
+        remoteConsumers.delete(pid)
+        activeCallbacks.onConsumerClosed?.(entry.consumerId)
+        break
+      }
+    }
+    onStream?.({ stream, kind, consumerId: consumer.id, clientId })
   }
+
+  remoteConsumers.set(producerId, { consumer, consumerId: consumer.id, kind, clientId })
 
   console.log(`[Soup] Consuming ${kind} [id:${consumer.id}]`)
   return { stream, kind, consumerId: consumer.id }
@@ -440,12 +625,44 @@ export function resetMediaState() {
   localProducerIds.clear()
   device = null
   currentChannel = null
-  volumeGateProcessor = null
+  stopVolumeGate()
   subscribePromise = null
+  remoteCleanups.forEach((fn) => fn())
+  remoteCleanups = []
+  remoteAudioElements = []
+  remoteConsumers.clear()
   console.log('[Soup] Media state reset')
+}
+
+// ─── Rebind callbacks (e.g. when switching channels) ──────────────
+export function rebindCallbacks(newCallbacks) {
+  activeCallbacks = { ...activeCallbacks, ...newCallbacks }
+}
+
+// ─── Mute controls ────────────────────────────────────────────────
+// Pauses/resumes local audio producers so other clients stop receiving them.
+export function setMicMuted(muted) {
+  micMuted = muted
+  producers
+    .filter((p) => p.kind === 'audio')
+    .forEach((p) => (muted ? p.pause() : p.resume()))
+}
+
+// Mutes/unmutes playback of all remote audio elements (deafen).
+export function setSoundMuted(muted) {
+  soundMuted = muted
+  remoteAudioElements.forEach((el) => { el.muted = muted })
 }
 
 // ─── Getters ─────────────────────────────────────────────────────
 export function isConnected() {
   return ws?.readyState === WebSocket.OPEN
+}
+
+export function isMicMuted() {
+  return micMuted
+}
+
+export function isSoundMuted() {
+  return soundMuted
 }
