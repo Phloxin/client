@@ -53,6 +53,16 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   // Clean up local speaking detector on unmount
   useEffect(() => () => { localSpeakingCleanupRef.current?.() }, [])
 
+  // Remove a remote video tile whose consumer was closed (e.g. the
+  // remote client restarted screen share, replacing its old producer)
+  const handleConsumerClosed = (consumerId) => {
+    setVideoStreams((prev) => {
+      const updated = prev.filter((s) => s.consumerId !== consumerId)
+      if (onStreamsUpdate) onStreamsUpdate(updated)
+      return updated
+    })
+  }
+
   const handleVideoStream = ({ stream, kind, consumerId, clientId }) => {
     const client = clients.find((c) => c.id === clientId)
     const label = client?.name || `${channel.name} ${kind === 'video' ? 'Stream' : 'Feed'}`
@@ -119,7 +129,8 @@ const VoiceChannel = forwardRef(function VoiceChannel(
           if (onStreamsUpdate) onStreamsUpdate([])
         },
         onVideoStream: handleVideoStream,
-        onClientSpeaking: handleClientSpeaking
+        onClientSpeaking: handleClientSpeaking,
+        onConsumerClosed: handleConsumerClosed
       })
     } catch (err) {
       setError(err.message)
@@ -140,6 +151,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     rebindCallbacks({
       onVideoStream: handleVideoStream,
       onClientSpeaking: handleClientSpeaking,
+      onConsumerClosed: handleConsumerClosed,
       onTransportsDisconnected: async () => {
         setJoined(true)
         setConnecting(false)

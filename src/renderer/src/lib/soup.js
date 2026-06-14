@@ -28,6 +28,10 @@ let remoteCleanups = []
 let remoteAudioElements = []
 let micMuted = false
 let soundMuted = false
+// Tracks each remote client's current video consumer, so that when they
+// publish a new video producer (e.g. restarting screen share) the stale
+// one is closed and removed instead of leaving a phantom tile behind.
+let remoteVideoConsumers = new Map()
 
 // ─── Pending response handlers ───────────────────────────────────
 const pendingHandlers = []
@@ -53,8 +57,8 @@ function notify(type, data = null) {
 }
 
 // ─── Connect to signaling server ────────────────────────────────
-export async function connect(token, { onConnect, onDisconnect, onNewProducer, onVideoStream, onTransportsDisconnected, onClientSpeaking } = {}) {
-  activeCallbacks = { onConnect, onDisconnect, onNewProducer, onVideoStream, onTransportsDisconnected, onClientSpeaking }
+export async function connect(token, { onConnect, onDisconnect, onNewProducer, onVideoStream, onTransportsDisconnected, onClientSpeaking, onConsumerClosed } = {}) {
+  activeCallbacks = { onConnect, onDisconnect, onNewProducer, onVideoStream, onTransportsDisconnected, onClientSpeaking, onConsumerClosed }
 
   // Step 1 — get ticket
   const res = await fetch('/api/server/voice', {
@@ -573,6 +577,16 @@ export async function consumeProducer(producerId, kind, onStream, clientId) {
       remoteCleanups.push(stopDetector)
     }
   } else if (kind === 'video') {
+    // If this client already had a video producer (e.g. restarted screen
+    // share), close out the stale consumer/tile before adding the new one.
+    if (clientId != null) {
+      const previous = remoteVideoConsumers.get(clientId)
+      if (previous) {
+        previous.consumer.close()
+        activeCallbacks.onConsumerClosed?.(previous.consumerId)
+      }
+      remoteVideoConsumers.set(clientId, { consumerId: consumer.id, consumer })
+    }
     onStream?.({ stream, kind, consumerId: consumer.id, clientId })
   }
 
@@ -597,6 +611,7 @@ export function resetMediaState() {
   remoteCleanups.forEach((fn) => fn())
   remoteCleanups = []
   remoteAudioElements = []
+  remoteVideoConsumers.clear()
   console.log('[Soup] Media state reset')
 }
 
