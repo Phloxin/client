@@ -28,10 +28,10 @@ let remoteCleanups = []
 let remoteAudioElements = []
 let micMuted = false
 let soundMuted = false
-// Tracks each remote client's current video consumer, so that when they
-// publish a new video producer (e.g. restarting screen share) the stale
-// one is closed and removed instead of leaving a phantom tile behind.
-let remoteVideoConsumers = new Map()
+// Tracks remote consumers by the producer id they're consuming, so they
+// can be closed and removed when that producer goes away (either because
+// a new one replaces it, or the server tells us it closed).
+let remoteConsumers = new Map()
 
 // ─── Pending response handlers ───────────────────────────────────
 const pendingHandlers = []
@@ -93,6 +93,22 @@ export async function connect(token, { onConnect, onDisconnect, onNewProducer, o
       console.log(`[Soup] New producer: ${id} (${kind})`)
       activeCallbacks.onNewProducer?.({ producerId: id, kind })
       consumeProducer(id, kind, activeCallbacks.onVideoStream, client_id)
+      return
+    }
+
+    // A remote producer we were consuming has closed (e.g. the other
+    // client stopped screen sharing) — close our consumer and remove its tile.
+    if (message.type === 'ProducerClosed') {
+      const { id } = message.data
+      const entry = remoteConsumers.get(id)
+      if (entry) {
+        entry.consumer.close()
+        remoteConsumers.delete(id)
+        if (entry.kind === 'video') {
+          activeCallbacks.onConsumerClosed?.(entry.consumerId)
+        }
+        console.log(`[Soup] Remote producer closed [id:${id}], consumer removed`)
+      }
       return
     }
 
@@ -578,17 +594,20 @@ export async function consumeProducer(producerId, kind, onStream, clientId) {
     }
   } else if (kind === 'video') {
     // If this client already had a video producer (e.g. restarted screen
-    // share), close out the stale consumer/tile before adding the new one.
-    if (clientId != null) {
-      const previous = remoteVideoConsumers.get(clientId)
-      if (previous) {
-        previous.consumer.close()
-        activeCallbacks.onConsumerClosed?.(previous.consumerId)
+    // share before a ProducerClosed notice arrived), close out the stale
+    // consumer/tile before adding the new one.
+    for (const [pid, entry] of remoteConsumers) {
+      if (entry.kind === 'video' && entry.clientId === clientId) {
+        entry.consumer.close()
+        remoteConsumers.delete(pid)
+        activeCallbacks.onConsumerClosed?.(entry.consumerId)
+        break
       }
-      remoteVideoConsumers.set(clientId, { consumerId: consumer.id, consumer })
     }
     onStream?.({ stream, kind, consumerId: consumer.id, clientId })
   }
+
+  remoteConsumers.set(producerId, { consumer, consumerId: consumer.id, kind, clientId })
 
   console.log(`[Soup] Consuming ${kind} [id:${consumer.id}]`)
   return { stream, kind, consumerId: consumer.id }
@@ -611,7 +630,7 @@ export function resetMediaState() {
   remoteCleanups.forEach((fn) => fn())
   remoteCleanups = []
   remoteAudioElements = []
-  remoteVideoConsumers.clear()
+  remoteConsumers.clear()
   console.log('[Soup] Media state reset')
 }
 
