@@ -34,6 +34,13 @@ let soundMuted = false
 // a new one replaces it, or the server tells us it closed).
 let remoteConsumers = new Map()
 
+// Only the focused stream's screen-share audio should be audible - the
+// client whose ScreenShareAudio should currently be unmuted, plus the
+// volume/mute settings to apply to it.
+let focusedClientId = null
+let focusedVolume = 1
+let focusedMuted = false
+
 // ─── Pending response handlers ───────────────────────────────────
 const pendingHandlers = []
 
@@ -510,9 +517,13 @@ export async function shareScreen() {
     stopScreenShare()
   }
 
+  // Local preview is video-only - the audio track is already produced above,
+  // and playing it back locally too would echo/duplicate it for this client.
+  const previewStream = new MediaStream([track])
+
   return {
     id: screenProducer.id,
-    stream
+    stream: previewStream
   }
 }
 
@@ -607,12 +618,15 @@ export async function consumeProducer(producerId, kind, onStream, clientId, prod
 
   // play audio or stream via DOM element
   let cleanup = null
+  let audioEl = null
 
   if (kind === 'audio') {
-    const audioEl = document.createElement('audio')
+    audioEl = document.createElement('audio')
     audioEl.srcObject = stream
     audioEl.autoplay = true
-    audioEl.muted = soundMuted
+    // Screen-share audio starts muted until it's the focused stream;
+    // applyScreenAudioState() below sorts that out for ScreenShareAudio.
+    audioEl.muted = producedType === 'ScreenShareAudio' ? true : soundMuted
     document.body.appendChild(audioEl)
     audioEl.play().catch((err) => console.error('[Soup] Audio play failed:', err))
     remoteAudioElements.push(audioEl)
@@ -649,7 +663,11 @@ export async function consumeProducer(producerId, kind, onStream, clientId, prod
     onStream?.({ stream, kind, consumerId: consumer.id, clientId })
   }
 
-  remoteConsumers.set(producerId, { consumer, consumerId: consumer.id, kind, clientId, producedType, cleanup })
+  remoteConsumers.set(producerId, { consumer, consumerId: consumer.id, kind, clientId, producedType, cleanup, audioEl })
+
+  if (kind === 'audio' && producedType === 'ScreenShareAudio') {
+    applyScreenAudioState()
+  }
 
   console.log(`[Soup] Consuming ${kind} [id:${consumer.id}]`)
   return { stream, kind, consumerId: consumer.id }
@@ -675,6 +693,7 @@ export function resetMediaState() {
   remoteCleanups = []
   remoteAudioElements = []
   remoteConsumers.clear()
+  focusedClientId = null
   console.log('[Soup] Media state reset')
 }
 
@@ -696,6 +715,31 @@ export function setMicMuted(muted) {
 export function setSoundMuted(muted) {
   soundMuted = muted
   remoteAudioElements.forEach((el) => { el.muted = muted })
+  applyScreenAudioState()
+}
+
+// Only the focused stream's screen-share audio should be audible - mute every
+// other ScreenShareAudio consumer and apply the volume/mute settings to the
+// focused client's.
+function applyScreenAudioState() {
+  for (const entry of remoteConsumers.values()) {
+    if (entry.kind !== 'audio' || entry.producedType !== 'ScreenShareAudio' || !entry.audioEl) continue
+
+    if (entry.clientId === focusedClientId) {
+      entry.audioEl.volume = focusedVolume
+      entry.audioEl.muted = soundMuted || focusedMuted
+    } else {
+      entry.audioEl.muted = true
+    }
+  }
+}
+
+// Called by the UI when the focused stream or its volume/mute state changes.
+export function setFocusedScreenAudio(clientId, { volume, muted } = {}) {
+  focusedClientId = clientId
+  if (volume != null) focusedVolume = volume
+  if (muted != null) focusedMuted = muted
+  applyScreenAudioState()
 }
 
 // ─── Getters ─────────────────────────────────────────────────────
