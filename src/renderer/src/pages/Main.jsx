@@ -242,6 +242,7 @@ function Main() {
         ) : (
           <VideoGrid
             streams={allVideoStreams}
+            clients={clients}
             selectedStreamId={selectedStreamId}
             onSelect={setSelectedStreamId}
           />

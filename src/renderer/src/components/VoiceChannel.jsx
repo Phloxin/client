@@ -64,18 +64,19 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   }
 
   const handleVideoStream = ({ stream, kind, consumerId, clientId }) => {
-    const client = clients.find((c) => c.id === clientId)
-    const label = client?.name || `${channel.name} ${kind === 'video' ? 'Stream' : 'Feed'}`
-
+    // Don't bake in the client's name here - the clients list for this
+    // channel may not have caught up with this client's channel move yet.
+    // The label is resolved at render time from clientId instead.
     setVideoStreams((prev) => {
       const updated = [...prev, {
         stream,
         consumerId,
         kind,
         isSelf: false,
+        clientId,
         channelId: channel.id,
         channelName: channel.name,
-        label
+        fallbackLabel: `${channel.name} ${kind === 'video' ? 'Stream' : 'Feed'}`
       }]
       if (onStreamsUpdate) onStreamsUpdate(updated)
       return updated
@@ -246,8 +247,9 @@ const VoiceChannel = forwardRef(function VoiceChannel(
               consumerId: screen.id,
               kind: 'video',
               isSelf: true,
+              clientId: self.id,
               channelName: channel.name,
-              label: `${self.name || 'You'}`
+              fallbackLabel: self.name || 'You'
             }]
             if (onStreamsUpdate) onStreamsUpdate(updated)
             return updated
