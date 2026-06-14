@@ -1,7 +1,29 @@
+import { useState, useRef, useEffect } from 'react'
 import './VideoGrid.css'
-import { IconVideoMinus } from '@tabler/icons-react'
+import { IconVideoMinus, IconMaximize, IconMinimize, IconChevronDown, IconChevronUp } from '@tabler/icons-react'
 
 function VideoGrid({ streams, clients, selectedStreamId, onSelect }) {
+  const viewerRef = useRef(null)
+  const [isFullscreen, setIsFullscreen] = useState(false)
+  const [carouselCollapsed, setCarouselCollapsed] = useState(false)
+
+  // Track fullscreen state from the browser (covers Esc-to-exit too)
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(document.fullscreenElement === viewerRef.current)
+    }
+    document.addEventListener('fullscreenchange', handleFullscreenChange)
+    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange)
+  }, [])
+
+  const toggleFullscreen = () => {
+    if (document.fullscreenElement) {
+      document.exitFullscreen()
+    } else {
+      viewerRef.current?.requestFullscreen()
+    }
+  }
+
   if (!streams.length) return (
     <div className="video-grid empty">
       <div className="empty-message">
@@ -26,7 +48,7 @@ function VideoGrid({ streams, clients, selectedStreamId, onSelect }) {
   const selectedStream = sortedStreams.find((s) => s.consumerId === selectedStreamId) || sortedStreams[0]
 
   return (
-    <div className="video-viewer">
+    <div className={`video-viewer${isFullscreen ? ' fullscreen' : ''}`} ref={viewerRef}>
       <div className="video-focus">
         <video
           autoPlay
@@ -36,9 +58,27 @@ function VideoGrid({ streams, clients, selectedStreamId, onSelect }) {
         <div className="focus-label">
           <span>{resolveLabel(selectedStream)}</span>
         </div>
+        <div className="video-controls">
+          <button
+            type="button"
+            className="control-btn"
+            onClick={() => setCarouselCollapsed((prev) => !prev)}
+            title={carouselCollapsed ? 'Show stream list' : 'Hide stream list'}
+          >
+            {carouselCollapsed ? <IconChevronUp size={18} /> : <IconChevronDown size={18} />}
+          </button>
+          <button
+            type="button"
+            className="control-btn"
+            onClick={toggleFullscreen}
+            title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+          >
+            {isFullscreen ? <IconMinimize size={18} /> : <IconMaximize size={18} />}
+          </button>
+        </div>
       </div>
 
-      <div className="video-carousel">
+      <div className={`video-carousel${carouselCollapsed ? ' collapsed' : ''}`}>
         {sortedStreams.map((s) => (
           <button
             key={s.consumerId}

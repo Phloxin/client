@@ -88,10 +88,38 @@ app.whenReady().then(() => {
     optimizer.watchWindowShortcuts(window)
   })
 
-  // Enable screen capture via getDisplayMedia in renderer
+  // The source the renderer's picker selected for the next screen-share
+  // request. Read by the display-media handler below when getDisplayMedia runs.
+  let selectedScreenSourceId = null
+
+  // Return the list of capturable screens/windows (with thumbnails) so the
+  // renderer can show its own source picker.
+  ipcMain.handle('get-screen-sources', async () => {
+    const sources = await desktopCapturer.getSources({
+      types: ['screen', 'window'],
+      thumbnailSize: { width: 320, height: 180 },
+      fetchWindowIcons: true
+    })
+    return sources.map((source) => ({
+      id: source.id,
+      name: source.name,
+      isScreen: source.id.startsWith('screen:'),
+      thumbnail: source.thumbnail.toDataURL(),
+      appIcon: source.appIcon && !source.appIcon.isEmpty() ? source.appIcon.toDataURL() : null
+    }))
+  })
+
+  // Remember which source the user picked for the upcoming share.
+  ipcMain.on('set-screen-source', (_, sourceId) => {
+    selectedScreenSourceId = sourceId
+  })
+
+  // Enable screen capture via getDisplayMedia in renderer. Honors the source
+  // chosen via the picker, falling back to the first available source.
   session.defaultSession.setDisplayMediaRequestHandler((request, callback) => {
-    desktopCapturer.getSources({ types: ['screen'] }).then((sources) => {
-      callback({ video: sources[0], audio: 'loopback' })
+    desktopCapturer.getSources({ types: ['screen', 'window'] }).then((sources) => {
+      const chosen = sources.find((s) => s.id === selectedScreenSourceId) || sources[0]
+      callback({ video: chosen, audio: 'loopback' })
     })
   })
 

@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, forwardRef, useImperativeHandle } from 're
 import { connect, publish, republish, disconnect, shareScreen, stopScreenShare, rebindCallbacks, createSpeakingDetector } from '../lib/soup'
 import { useSettings } from '../context/SettingsContext'
 import ClientIndicator from './ClientIndicator'
+import ScreenSourcePicker from './ScreenSourcePicker'
 import './VoiceChannel.css'
 import { IconVolume } from '@tabler/icons-react'
 
@@ -13,6 +14,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   const [connecting, setConnecting] = useState(false)
   const [error, setError] = useState(null)
   const [sharing, setSharing] = useState(false)
+  const [showSourcePicker, setShowSourcePicker] = useState(false)
   const [videoStreams, setVideoStreams] = useState([])
   const [speakingClients, setSpeakingClients] = useState({})
   const { micSettings } = useSettings()
@@ -218,48 +220,58 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     }
   }
 
+  // Remove the local (self) screen-share tile after the share ends
+  const clearSelfStream = () => {
+    setVideoStreams((prev) => {
+      const remaining = prev.filter((item) => !item.isSelf)
+      if (onStreamsUpdate) onStreamsUpdate(remaining)
+      return remaining
+    })
+  }
+
+  // Capture and publish the chosen source after the user picks one
+  const startShareWithSource = async (sourceId) => {
+    setShowSourcePicker(false)
+    // Tell the main process which source the display-media handler should use
+    window.electron.ipcRenderer.send('set-screen-source', sourceId)
+    try {
+      const screen = await shareScreen()
+      if (screen?.stream) {
+        screen.stream.getVideoTracks()[0].onended = () => {
+          stopScreenShare()
+          setSharing(false)
+          clearSelfStream()
+        }
+
+        setVideoStreams((prev) => {
+          const updated = [...prev, {
+            stream: screen.stream,
+            consumerId: screen.id,
+            kind: 'video',
+            isSelf: true,
+            clientId: self.id,
+            channelName: channel.name,
+            fallbackLabel: self.name || 'You'
+          }]
+          if (onStreamsUpdate) onStreamsUpdate(updated)
+          return updated
+        })
+      }
+      setSharing(true)
+    } catch (err) {
+      console.error('[VoiceChannel] Screen share failed:', err)
+      setError(err.message)
+    }
+  }
+
   const handleScreenShare = async () => {
     if (sharing) {
       await stopScreenShare()
       setSharing(false)
-      setVideoStreams((prev) => {
-        const remaining = prev.filter((item) => !item.isSelf)
-        if (onStreamsUpdate) onStreamsUpdate(remaining)
-        return remaining
-      })
+      clearSelfStream()
     } else {
-      try {
-        const screen = await shareScreen()
-        if (screen?.stream) {
-          screen.stream.getVideoTracks()[0].onended = () => {
-            stopScreenShare()
-            setSharing(false)
-            setVideoStreams((prev) => {
-              const remaining = prev.filter((item) => !item.isSelf)
-              if (onStreamsUpdate) onStreamsUpdate(remaining)
-              return remaining
-            })
-          }
-
-          setVideoStreams((prev) => {
-            const updated = [...prev, {
-              stream: screen.stream,
-              consumerId: screen.id,
-              kind: 'video',
-              isSelf: true,
-              clientId: self.id,
-              channelName: channel.name,
-              fallbackLabel: self.name || 'You'
-            }]
-            if (onStreamsUpdate) onStreamsUpdate(updated)
-            return updated
-          })
-        }
-        setSharing(true)
-      } catch (err) {
-        console.error('[VoiceChannel] Screen share failed:', err)
-        setError(err.message)
-      }
+      // Let the user choose a screen/window before capturing
+      setShowSourcePicker(true)
     }
   }
 
@@ -286,6 +298,12 @@ const VoiceChannel = forwardRef(function VoiceChannel(
           deafened={c.id === self.id ? deafened : !!c.self_deaf}
         />
       ))}
+      {showSourcePicker && (
+        <ScreenSourcePicker
+          onSelect={startShareWithSource}
+          onCancel={() => setShowSourcePicker(false)}
+        />
+      )}
     </div>
   )
 })

@@ -28,11 +28,15 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 12px;
   padding: var(--spacing-lg);
   height: 100%;
   min-height: 0;       /* let flex children shrink below content size */
   box-sizing: border-box;
+}
+
+.video-viewer.fullscreen {
+  background: #000;
+  padding: var(--spacing-lg);
 }
 
 /* ── Focus (large) view ──────────────────────────────────────────────────── */
@@ -73,6 +77,42 @@
   pointer-events: none;
 }
 
+/* ── Hover controls (fullscreen / collapse carousel) ────────────────────── */
+
+.video-controls {
+  position: absolute;
+  bottom: 12px;
+  right: 12px;
+  display: flex;
+  gap: 8px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.video-focus:hover .video-controls,
+.video-focus:focus-within .video-controls {
+  opacity: 1;
+}
+
+.control-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.control-btn:hover {
+  background: rgba(0, 0, 0, 0.75);
+}
+
 /* ── Thumbnail carousel ──────────────────────────────────────────────────── */
 
 .video-carousel {
@@ -83,9 +123,20 @@
   overflow-x: auto;
   overflow-y: hidden;
   flex-shrink: 0;      /* never squish the carousel row */
+  margin-top: 12px;
+  max-height: 140px;   /* room for 200x112.5 thumbnails + scrollbar */
   padding-bottom: 4px; /* room for scrollbar without clipping thumbnails */
   scrollbar-width: thin;
   scrollbar-color: var(--color-border-light) transparent;
+  transition: max-height 0.2s ease, margin-top 0.2s ease, opacity 0.15s ease;
+}
+
+.video-carousel.collapsed {
+  max-height: 0;
+  margin-top: 0;
+  padding-bottom: 0;
+  opacity: 0;
+  overflow: hidden;
 }
 
 .video-carousel::-webkit-scrollbar {
