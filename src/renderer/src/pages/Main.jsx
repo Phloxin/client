@@ -9,6 +9,14 @@ import Settings from './Settings'
 import { DEV_MODE, MOCK_TOKEN, MOCK_CLIENT, MOCK_CHANNELS, MOCK_CLIENTS } from '../lib/mock'
 import { IconVideoFilled, IconMessage2Filled, IconMessage, IconVideo } from '@tabler/icons-react'
 
+const MAX_LOG_ENTRIES = 500
+
+// Append an entry to the log, dropping the oldest entries once the cap is hit.
+function appendLog(prev, entry) {
+  const next = [...prev, entry]
+  return next.length > MAX_LOG_ENTRIES ? next.slice(next.length - MAX_LOG_ENTRIES) : next
+}
+
 function Main() {
   const { token, setToken, client, setClient } = useAuth()
   const [channels, setChannels] = useState([])
@@ -81,11 +89,20 @@ function Main() {
     Promise.all([
       fetch('/api/server/channel', {
         headers: { Authorization: `Bearer ${token}` }
-      }).then((res) => res.json()),
+      }),
       fetch('/api/server/client', {
         headers: { Authorization: `Bearer ${token}` }
-      }).then((res) => res.json())
-    ]).then(([channelData, clientData]) => {
+      })
+    ]).then(async ([channelRes, clientRes]) => {
+      // A stored token may be stale/expired - drop it and return to the login screen
+      if (channelRes.status === 401 || clientRes.status === 401) {
+        setToken(null)
+        setClient(null)
+        window.electron.ipcRenderer.send('clear-auth')
+        return
+      }
+
+      const [channelData, clientData] = await Promise.all([channelRes.json(), clientRes.json()])
       setChannels(channelData)
       setClients(clientData)
       setLog(['Connected to server'])
@@ -109,7 +126,7 @@ function Main() {
 
       if (ev === 'NewUser') {
         setClients((prev) => [...prev, data])
-        setLog((prev) => [...prev, `${data.name} joined the server`])
+        setLog((prev) => appendLog(prev, `${data.name} joined the server`))
       } else if (ev === 'ClientModified') {
         const channelName = (id) => channelsRef.current.find((ch) => ch.id === id)?.name || 'Unknown Channel'
         const oldChannelId = clientsRef.current.find((c) => c.id === data.id)?.channel_id
@@ -123,10 +140,10 @@ function Main() {
           message = `${data.name} moved to ${channelName(data.channel_id)}`
         }
 
-        setLog((prev) => [...prev, message])
+        setLog((prev) => appendLog(prev, message))
         setClients((prev) => prev.map((c) => c.id === data.id ? { ...c, channel_id: data.channel_id } : c))
       } else {
-        setLog((prev) => [...prev, `Unknown event: ${ev}`])
+        setLog((prev) => appendLog(prev, `Unknown event: ${ev}`))
       }
     }
     ws.onclose = () => {
@@ -136,7 +153,7 @@ function Main() {
     ws.onerror = (err) => console.error('WebSocket error:', err)
 
     window.electron.ipcRenderer.on('log-message', (_, message) => {
-      setLog((prev) => [...prev, message])
+      setLog((prev) => appendLog(prev, message))
     })
 
     return () => {
