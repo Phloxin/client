@@ -7,6 +7,7 @@ import {
   IconFileText,
   IconPhotoVideo
 } from '@tabler/icons-react'
+import ImageViewer from './ImageViewer'
 import './ChatPanel.css'
 
 const EMOJIS = [
@@ -32,10 +33,13 @@ function ChatPanel({ feed, clients, onSend, disabled }) {
   const [text, setText] = useState('')
   const [attachments, setAttachments] = useState([])
   const [showEmoji, setShowEmoji] = useState(false)
+  const [dragging, setDragging] = useState(false)
+  const [viewerImage, setViewerImage] = useState(null)
   const fileInputRef = useRef(null)
   const emojiRef = useRef(null)
   const listRef = useRef(null)
   const inputRef = useRef(null)
+  const dragCounterRef = useRef(0)
 
   // Keep the message list pinned to the latest entry
   useEffect(() => {
@@ -85,6 +89,29 @@ function ChatPanel({ feed, clients, onSend, disabled }) {
     inputRef.current?.focus()
   }
 
+  const handlePaste = (e) => {
+    if (disabled) return
+    const items = Array.from(e.clipboardData?.items || [])
+    const imageItems = items.filter((item) => item.type.startsWith('image/'))
+    if (!imageItems.length) return
+    e.preventDefault()
+    const files = imageItems.map((item) => {
+      const blob = item.getAsFile()
+      const ext = blob.type.split('/')[1] || 'png'
+      return new File([blob], `pasted-image-${Date.now()}.${ext}`, { type: blob.type })
+    })
+    setAttachments((prev) => [
+      ...prev,
+      ...files.map((file) => ({
+        id: crypto.randomUUID(),
+        file,
+        name: file.name,
+        kind: 'image',
+        url: URL.createObjectURL(file)
+      }))
+    ])
+  }
+
   const handleSend = () => {
     if (disabled) return
     const trimmed = text.trim()
@@ -102,11 +129,58 @@ function ChatPanel({ feed, clients, onSend, disabled }) {
     }
   }
 
+  const handleDragEnter = (e) => {
+    e.preventDefault()
+    if (disabled) return
+    dragCounterRef.current++
+    if (e.dataTransfer.types.includes('Files')) setDragging(true)
+  }
+
+  const handleDragLeave = (e) => {
+    e.preventDefault()
+    dragCounterRef.current--
+    if (dragCounterRef.current === 0) setDragging(false)
+  }
+
+  const handleDragOver = (e) => {
+    e.preventDefault()
+  }
+
+  const handleDrop = (e) => {
+    e.preventDefault()
+    dragCounterRef.current = 0
+    setDragging(false)
+    if (disabled) return
+    const files = Array.from(e.dataTransfer.files)
+    if (!files.length) return
+    setAttachments((prev) => [
+      ...prev,
+      ...files.map((file) => ({
+        id: crypto.randomUUID(),
+        file,
+        name: file.name,
+        kind: attachmentKind(file),
+        url: URL.createObjectURL(file)
+      }))
+    ])
+  }
+
   const resolveName = (entry) =>
     clients?.find((c) => c.id === entry.authorId)?.name || entry.author || 'Unknown'
 
   return (
-    <div className="chat-panel">
+    <div
+      className="chat-panel"
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+    >
+      {dragging && (
+        <div className="chat-drop-overlay">
+          <div className="chat-drop-overlay-inner">Drop files to attach</div>
+        </div>
+      )}
       <div className="chat-messages" ref={listRef}>
         {feed.map((entry) =>
           entry.type === 'system' ? (
@@ -127,7 +201,12 @@ function ChatPanel({ feed, clients, onSend, disabled }) {
                     {entry.attachments.map((a) => (
                       <div key={a.id} className="chat-attachment">
                         {a.kind === 'image' ? (
-                          <img src={a.url} alt={a.name} />
+                          <img
+                            src={a.url}
+                            alt={a.name}
+                            className="chat-attachment-image"
+                            onClick={() => setViewerImage({ url: a.url, name: a.name })}
+                          />
                         ) : a.kind === 'video' ? (
                           <video src={a.url} controls />
                         ) : (
@@ -196,6 +275,7 @@ function ChatPanel({ feed, clients, onSend, disabled }) {
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
           disabled={disabled}
         />
         <div className="chat-emoji-wrapper" ref={emojiRef}>
@@ -233,6 +313,14 @@ function ChatPanel({ feed, clients, onSend, disabled }) {
           <IconSend2 size={20} />
         </button>
       </div>
+
+      {viewerImage && (
+        <ImageViewer
+          src={viewerImage.url}
+          name={viewerImage.name}
+          onClose={() => setViewerImage(null)}
+        />
+      )}
     </div>
   )
 }
