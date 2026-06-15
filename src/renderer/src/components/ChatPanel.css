@@ -1,0 +1,274 @@
+/* ============================================================================
+   CHAT PANEL
+   ============================================================================ */
+
+.chat-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* ── Message list ─────────────────────────────────────────────────────────── */
+
+.chat-messages {
+  flex: 1;
+  min-height: 0;
+  padding: var(--spacing-lg);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+}
+
+.chat-system-entry {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+  text-align: center;
+}
+
+.chat-message {
+  display: flex;
+  gap: var(--spacing-sm);
+  align-items: flex-start;
+}
+
+.chat-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--color-primary) 20%, transparent);
+  color: var(--color-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-bold);
+  flex-shrink: 0;
+}
+
+.chat-message-body {
+  min-width: 0;
+  flex: 1;
+}
+
+.chat-message-header {
+  display: flex;
+  align-items: baseline;
+  gap: var(--spacing-sm);
+}
+
+.chat-message-author {
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text);
+  font-size: var(--font-size-md);
+}
+
+.chat-message-time {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+
+.chat-message-text {
+  color: var(--color-text);
+  font-size: var(--font-size-md);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.chat-message-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-sm);
+  margin-top: var(--spacing-xs);
+}
+
+.chat-attachment img,
+.chat-attachment video {
+  max-width: 240px;
+  max-height: 180px;
+  border-radius: var(--border-radius-sm);
+  display: block;
+}
+
+.chat-attachment-file {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  padding: var(--spacing-sm) var(--spacing-md);
+  background: var(--color-background-mute);
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius-sm);
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+}
+
+/* ── Pending attachment previews ─────────────────────────────────────────── */
+
+.chat-attachment-previews {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-sm);
+  padding: 0 var(--spacing-lg);
+  margin-bottom: var(--spacing-sm);
+}
+
+.chat-attachment-preview {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  background: var(--color-background-mute);
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius-sm);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  max-width: 200px;
+}
+
+.chat-attachment-preview img {
+  width: 24px;
+  height: 24px;
+  object-fit: cover;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.chat-attachment-preview-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.chat-attachment-remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  padding: 2px;
+  border-radius: var(--border-radius-sm);
+}
+
+.chat-attachment-remove:hover {
+  background: var(--color-border);
+  color: var(--color-text);
+}
+
+/* ── Input bar ────────────────────────────────────────────────────────────── */
+
+.chat-input-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-md) var(--spacing-lg);
+}
+
+.chat-input-bar input[type='text'] {
+  flex: 1;
+  padding: 10px 14px;
+  background: var(--color-border);
+  border: 1px solid var(--color-border-light);
+  border-radius: var(--border-radius-md);
+  color: var(--color-text);
+  font-size: var(--font-size-md);
+  font-family: var(--font-family-primary);
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.chat-input-bar input[type='text']:focus {
+  border-color: var(--color-primary);
+}
+
+.chat-input-bar input[type='text']::placeholder {
+  color: var(--color-text-muted);
+}
+
+.chat-icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  flex-shrink: 0;
+  padding: 0;
+  border: none;
+  border-radius: var(--border-radius-md);
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.chat-icon-btn:hover {
+  background: var(--color-border);
+  color: var(--color-text);
+}
+
+.chat-send-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  flex-shrink: 0;
+  padding: 0;
+  border: none;
+  border-radius: var(--border-radius-md);
+  background: var(--color-primary);
+  color: var(--color-background);
+  cursor: pointer;
+  transition: background 0.15s ease, opacity 0.15s ease;
+}
+
+.chat-send-btn:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+}
+
+.chat-send-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ── Emoji picker ─────────────────────────────────────────────────────────── */
+
+.chat-emoji-wrapper {
+  position: relative;
+}
+
+.chat-emoji-picker {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 4px;
+  background: var(--color-background-mute);
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius-md);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  padding: var(--spacing-sm);
+  width: 220px;
+  z-index: 1000;
+}
+
+.chat-emoji-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  padding: 4px;
+  border: none;
+  border-radius: var(--border-radius-sm);
+  background: transparent;
+  cursor: pointer;
+  transition: background 0.1s ease;
+}
+
+.chat-emoji-btn:hover {
+  background: var(--color-border);
+}

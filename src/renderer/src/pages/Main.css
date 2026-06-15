@@ -66,48 +66,6 @@
   color: var(--color-background-soft);
 }
 
-.chat-log {
-  flex: 1;
-  padding: var(--spacing-lg);
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacing-md);
-}
-
-.log-entry {
-  font-size: var(--font-size-md);
-  color: var(--color-text);
-  padding: 2px 0;
-}
-
-
-
-.chat-input-bar {
-  padding: var(--spacing-md) var(--spacing-lg);
-}
-
-.chat-input-bar input {
-  width: 100%;
-  padding: 10px 14px;
-  background: var(--color-border);
-  border: 1px solid var(--color-border-light);
-  border-radius: var(--border-radius-md);
-  color: var(--color-text);
-  font-size: var(--font-size-md);
-  font-family: var(--font-family-primary);
-  outline: none;
-  transition: border-color 0.15s;
-}
-
-.chat-input-bar input:focus {
-  border-color: var(--color-primary);
-}
-
-.chat-input-bar input::placeholder {
-  color: var(--color-text-muted);
-}
-
 .loading {
   color: var(--color-text);
   display: flex;

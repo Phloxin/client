@@ -4,6 +4,7 @@ import '../App.css'
 import { useAuth } from '../context/AuthContext'
 import SideBar from '../components/SideBar'
 import VideoGrid from '../components/VideoGrid'
+import ChatPanel from '../components/ChatPanel'
 import LoginScreen from '../components/LoginScreen'
 import Settings from './Settings'
 import { DEV_MODE, MOCK_TOKEN, MOCK_CLIENT, MOCK_CHANNELS, MOCK_CLIENTS } from '../lib/mock'
@@ -11,17 +12,22 @@ import { IconVideoFilled, IconMessage2Filled, IconMessage, IconVideo } from '@ta
 
 const MAX_LOG_ENTRIES = 500
 
-// Append an entry to the log, dropping the oldest entries once the cap is hit.
-function appendLog(prev, entry) {
+// Append an entry to the feed, dropping the oldest entries once the cap is hit.
+function appendFeed(prev, entry) {
   const next = [...prev, entry]
   return next.length > MAX_LOG_ENTRIES ? next.slice(next.length - MAX_LOG_ENTRIES) : next
+}
+
+// Build a system (non-chat) feed entry, e.g. join/leave notices
+function systemEntry(text) {
+  return { id: crypto.randomUUID(), type: 'system', text, ts: Date.now() }
 }
 
 function Main() {
   const { token, setToken, client, setClient } = useAuth()
   const [channels, setChannels] = useState([])
   const [clients, setClients] = useState([])
-  const [log, setLog] = useState([])
+  const [feed, setFeed] = useState([])
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [loginError, setLoginError] = useState(null)
@@ -82,7 +88,7 @@ function Main() {
     if (DEV_MODE) {
       setChannels(MOCK_CHANNELS)
       setClients(MOCK_CLIENTS)
-      setLog(['Connected to server (dev mode)'])
+      setFeed([systemEntry('Connected to server (dev mode)')])
       return
     }
 
@@ -107,7 +113,7 @@ function Main() {
       // The REST payload uses `muted`/`deaf`, but voice-state updates (and the
       // rest of the UI) use `self_mute`/`self_deaf` - normalize on the way in.
       setClients(clientData.map((c) => ({ ...c, self_mute: c.muted, self_deaf: c.deaf })))
-      setLog(['Connected to server'])
+      setFeed([systemEntry('Connected to server')])
     }).catch((err) => console.error('Failed to fetch:', err))
 
     const ws = new WebSocket('ws://47.16.222.82:3000/ws')
@@ -128,7 +134,7 @@ function Main() {
 
       if (ev === 'NewUser') {
         setClients((prev) => [...prev, { ...data, self_mute: data.muted, self_deaf: data.deaf }])
-        setLog((prev) => appendLog(prev, `${data.name} joined the server`))
+        setFeed((prev) => appendFeed(prev, systemEntry(`${data.name} joined the server`)))
       } else if (ev === 'ClientModified') {
         const channelName = (id) => channelsRef.current.find((ch) => ch.id === id)?.name || 'Unknown Channel'
         const oldChannelId = clientsRef.current.find((c) => c.id === data.id)?.channel_id
@@ -142,10 +148,10 @@ function Main() {
           message = `${data.name} moved to ${channelName(data.channel_id)}`
         }
 
-        setLog((prev) => appendLog(prev, message))
+        setFeed((prev) => appendFeed(prev, systemEntry(message)))
         setClients((prev) => prev.map((c) => c.id === data.id ? { ...c, channel_id: data.channel_id } : c))
       } else {
-        setLog((prev) => appendLog(prev, `Unknown event: ${ev}`))
+        setFeed((prev) => appendFeed(prev, systemEntry(`Unknown event: ${ev}`)))
       }
     }
     ws.onclose = () => {
@@ -155,7 +161,7 @@ function Main() {
     ws.onerror = (err) => console.error('WebSocket error:', err)
 
     window.electron.ipcRenderer.on('log-message', (_, message) => {
-      setLog((prev) => appendLog(prev, message))
+      setFeed((prev) => appendFeed(prev, systemEntry(message)))
     })
 
     return () => {
@@ -164,6 +170,19 @@ function Main() {
       window.electron.ipcRenderer.removeAllListeners('log-message')
     }
   }, [token])
+
+  // Add a chat message locally (echo only - backend wiring comes later)
+  const handleSendMessage = (text, attachments) => {
+    setFeed((prev) => appendFeed(prev, {
+      id: crypto.randomUUID(),
+      type: 'message',
+      author: client?.name,
+      authorId: client?.id,
+      text,
+      attachments,
+      ts: Date.now()
+    }))
+  }
 
   // Broadcast our mic-mute / deafen status to other clients
   const sendStatus = (selfMute, selfDeaf) => {
@@ -217,7 +236,7 @@ function Main() {
               {viewMode === 'log' ? (
                 <>
                   <IconMessage size={18} stroke={2} />
-                  Chat Log
+                  Chat
                 </>
               ) : (
                 <>
@@ -236,11 +255,7 @@ function Main() {
         </div>
 
         {viewMode === 'log' ? (
-          <div className="chat-log">
-            {log.map((entry, i) => (
-              <div key={i} className="log-entry">{entry}</div>
-            ))}
-          </div>
+          <ChatPanel feed={feed} clients={clients} onSend={handleSendMessage} />
         ) : (
           <VideoGrid
             streams={allVideoStreams}
