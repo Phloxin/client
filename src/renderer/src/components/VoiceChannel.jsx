@@ -6,6 +6,8 @@ import ScreenSourcePicker from './ScreenSourcePicker'
 import './VoiceChannel.css'
 import { IconVolume } from '@tabler/icons-react'
 
+const API_BASE_URL = 'http://47.16.222.82:3000'
+
 const VoiceChannel = forwardRef(function VoiceChannel(
   { channel, clients, token, self, micMuted, deafened, onStreamsUpdate, onJoinedChange, onSharingChange, onRequestJoin },
   ref
@@ -99,7 +101,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     setConnecting(true)
     setError(null)
     try {
-      await fetch('/api/server/client', {
+      await fetch(`${API_BASE_URL}/server/client`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -171,7 +173,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     })
 
     try {
-      await fetch('/api/server/client', {
+      await fetch(`${API_BASE_URL}/server/client`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -207,7 +209,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     localSpeakingCleanupRef.current = null
     if (onStreamsUpdate) onStreamsUpdate([])
     try {
-      await fetch('/api/server/client', {
+      await fetch(`${API_BASE_URL}/server/client`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',

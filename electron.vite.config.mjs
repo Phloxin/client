@@ -14,11 +14,6 @@ export default defineConfig({
     plugins: [react()],
     server: {
       proxy: {
-        '/api': {
-          target: 'http://47.16.222.82:3000',
-          changeOrigin: true,
-          rewrite: (path) => path.replace(/^\/api/, '')
-        },
         '/voice': {
           target: 'ws://47.16.222.82:3000',
           changeOrigin: true,

@@ -2,6 +2,8 @@
 import { Device } from 'mediasoup-client'
 
 // ─── Config ─────────────────────────────────────────────────────
+const API_BASE_URL = 'http://47.16.222.82:3000'
+
 const ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
@@ -73,7 +75,7 @@ export async function connect(token, { onConnect, onDisconnect, onNewProducer, o
   activeCallbacks = { onConnect, onDisconnect, onNewProducer, onVideoStream, onTransportsDisconnected, onClientSpeaking, onConsumerClosed }
 
   // Step 1 — get ticket
-  const res = await fetch('/api/server/voice', {
+  const res = await fetch(`${API_BASE_URL}/server/voice`, {
     headers: { Authorization: `Bearer ${token}` }
   })
   const { ticket } = await res.json()

@@ -10,6 +10,7 @@ import Settings from './Settings'
 import { DEV_MODE, MOCK_TOKEN, MOCK_CLIENT, MOCK_CHANNELS, MOCK_CLIENTS } from '../lib/mock'
 import { IconVideoFilled, IconMessage2Filled, IconMessage, IconVideo } from '@tabler/icons-react'
 
+const API_BASE_URL = 'http://47.16.222.82:3000'
 const MAX_LOG_ENTRIES = 500
 
 // Append an entry to the feed, dropping the oldest entries once the cap is hit.
@@ -61,13 +62,11 @@ function Main() {
   const eventsWsRef = useRef(null)
   const channelsRef = useRef([])
   const clientsRef = useRef([])
-  const feedRef = useRef([])
 
-  // Keep refs to the latest channels/clients/feed so the events websocket handler
+  // Keep refs to the latest channels/clients so the events websocket handler
   // (created once in the effect below) can look them up without stale closures.
   useEffect(() => { channelsRef.current = channels }, [channels])
   useEffect(() => { clientsRef.current = clients }, [clients])
-  useEffect(() => { feedRef.current = feed }, [feed])
 
   // The channel the local client currently has joined (chat is scoped to it)
   const selfChannelId = clients.find((c) => c.id === client?.id)?.channel_id ?? null
@@ -92,7 +91,7 @@ function Main() {
       return
     }
 
-    fetch('/api/login', {
+    fetch(`${API_BASE_URL}/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password })
@@ -122,10 +121,10 @@ function Main() {
     }
 
     Promise.all([
-      fetch('/api/server/channel', {
+      fetch(`${API_BASE_URL}/server/channel`, {
         headers: { Authorization: `Bearer ${token}` }
       }),
-      fetch('/api/server/client', {
+      fetch(`${API_BASE_URL}/server/client`, {
         headers: { Authorization: `Bearer ${token}` }
       })
     ]).then(async ([channelRes, clientRes]) => {
@@ -180,8 +179,6 @@ function Main() {
         setFeed((prev) => appendFeed(prev, systemEntry(message)))
         setClients((prev) => prev.map((c) => c.id === data.id ? { ...c, channel_id: data.channel_id } : c))
       } else if (ev === 'MessageCreated') {
-        // Skip messages we already echoed locally from our own POST response
-        if (feedRef.current.some((e) => e.id === data.id)) return
         setFeed((prev) => appendFeed(prev, messageFromApi(data)))
       } else {
         setFeed((prev) => appendFeed(prev, systemEntry(`Unknown event: ${ev}`)))
@@ -233,14 +230,13 @@ function Main() {
     attachments.forEach((a) => URL.revokeObjectURL(a.url))
 
     try {
-      const res = await fetch(`/api/channels/${selfChannelId}/messages`, {
+      const res = await fetch(`${API_BASE_URL}/channels/${selfChannelId}/messages`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
         body: formData
       })
       if (!res.ok) throw new Error(`Server responded ${res.status}`)
-      const msg = await res.json()
-      setFeed((prev) => appendFeed(prev, messageFromApi(msg)))
+      // The server broadcasts MessageCreated back to us too, which appends it to the feed
     } catch (err) {
       setFeed((prev) => appendFeed(prev, systemEntry(`Failed to send message: ${err.message}`)))
     }

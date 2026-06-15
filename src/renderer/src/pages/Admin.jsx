@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react'
 import './Admin.css'
 import { useAuth } from '../context/AuthContext'
 
+const API_BASE_URL = 'http://47.16.222.82:3000'
+
 function Admin() {
   const { token, setToken } = useAuth()
   const [channels, setChannels] = useState([])
@@ -17,10 +19,10 @@ function Admin() {
     if (!token) return
 
     Promise.all([
-      fetch('/api/server/channel', {
+      fetch(`${API_BASE_URL}/server/channel`, {
         headers: { Authorization: `Bearer ${token}` }
       }).then((res) => res.json()),
-      fetch('/api/server/client', {
+      fetch(`${API_BASE_URL}/server/client`, {
         headers: { Authorization: `Bearer ${token}` }
       }).then((res) => res.json())
     ]).then(([channelData, clientData]) => {
@@ -32,7 +34,7 @@ function Admin() {
   }, [token])
 
   const moveClient = () => {
-    fetch('/api/server/client', {
+    fetch(`${API_BASE_URL}/server/client`, {
       method: 'PATCH',
       headers: {
         'Content-Type': 'application/json',
@@ -45,7 +47,7 @@ function Admin() {
   }
 
   const handleLogin = () => {
-    fetch('/api/login', {
+    fetch(`${API_BASE_URL}/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password })
@@ -59,10 +61,10 @@ function Admin() {
           window.electron.ipcRenderer.send('admin-log', `Admin logged in — token: ${data.token}`)
 
           Promise.all([
-            fetch('/api/server/channel', {
+            fetch(`${API_BASE_URL}/server/channel`, {
               headers: { Authorization: `Bearer ${data.token}` }
             }).then((res) => res.json()),
-            fetch('/api/server/client', {
+            fetch(`${API_BASE_URL}/server/client`, {
               headers: { Authorization: `Bearer ${data.token}` }
             }).then((res) => res.json())
           ]).then(([channelData, clientData]) => {
