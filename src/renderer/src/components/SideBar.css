@@ -116,23 +116,99 @@
   white-space: nowrap;
   text-overflow: ellipsis;
   min-width: 0;
+  position: relative;
+}
+
+/* ── Per-client right-click controls ─────────────────────────────────────── */
+
+.client-context-menu {
+  position: fixed;
+  z-index: 1000;
+  background: var(--color-background-mute);
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius-sm);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  padding: var(--spacing-sm);
+  min-width: 180px;
+}
+
+.client-context-menu-header {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text);
+  padding: 2px 4px 8px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--color-border);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.client-context-menu-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.client-volume-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  padding: 0;
+  border: none;
+  border-radius: var(--border-radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.client-volume-btn:hover {
+  background: var(--color-border);
+  color: var(--color-text);
+}
+
+.client-volume-slider {
+  flex: 1;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--color-border-light);
+  cursor: pointer;
+  outline: none;
+}
+
+.client-volume-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--color-primary);
+  cursor: pointer;
+}
+
+.client-volume-slider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border: none;
+  border-radius: 50%;
+  background: var(--color-primary);
+  cursor: pointer;
 }
 
 .mic-indicator {
   flex-shrink: 0;
+  color: var(--color-border-light);
+  transition: color 0.1s ease;
 }
 
-.mic-indicator:not(.muted):not(.deafened) {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--color-border-light);
-  transition: background-color 0.1s ease;
-}
-
-.mic-indicator.speaking:not(.muted):not(.deafened) {
-  background: var(--color-success);
+.mic-indicator.speaking {
+  color: var(--color-success);
 }
 
 .mic-indicator.muted,

@@ -9,6 +9,7 @@ import {
   IconVolume,
   IconVolume2,
   IconVolume3,
+  IconVolume4,
   IconVolumeOff
 } from '@tabler/icons-react'
 import { setFocusedScreenAudio } from '../lib/soup'
@@ -75,7 +76,7 @@ function VideoGrid({ streams, clients, selectedStreamId, onSelect }) {
     if (next === 0 && !muted) setMuted(true)
   }
 
-  const VolumeIcon = muted || volume === 0 ? IconVolumeOff : volume < 50 ? IconVolume : volume < 100 ? IconVolume2 : IconVolume3
+  const VolumeIcon = muted || volume === 0 ? IconVolumeOff : volume < 10 ? IconVolume4 : volume <= 50 ? IconVolume2 : IconVolume
 
   return (
     <div className={`video-viewer${isFullscreen ? ' fullscreen' : ''}`} ref={viewerRef}>
@@ -90,6 +91,14 @@ function VideoGrid({ streams, clients, selectedStreamId, onSelect }) {
         </div>
         <div className="video-controls">
           <div className="volume-control">
+            <button
+              type="button"
+              className="control-btn"
+              onClick={toggleMute}
+              title={muted ? 'Unmute' : 'Mute'}
+            >
+              <VolumeIcon size={18} />
+            </button>
             <input
               type="range"
               className="volume-slider"
@@ -99,14 +108,6 @@ function VideoGrid({ streams, clients, selectedStreamId, onSelect }) {
               onChange={handleVolumeChange}
               title="Volume"
             />
-            <button
-              type="button"
-              className="control-btn"
-              onClick={toggleMute}
-              title={muted ? 'Unmute' : 'Mute'}
-            >
-              <VolumeIcon size={18} />
-            </button>
           </div>
           <button
             type="button"

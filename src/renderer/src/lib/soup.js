@@ -41,6 +41,10 @@ let focusedClientId = null
 let focusedVolume = 1
 let focusedMuted = false
 
+// Per-client local volume/mute overrides for mic audio (right-click controls
+// in the sidebar) - keyed by clientId.
+let clientAudioOverrides = new Map()
+
 // ─── Pending response handlers ───────────────────────────────────
 const pendingHandlers = []
 
@@ -624,8 +628,8 @@ export async function consumeProducer(producerId, kind, onStream, clientId, prod
     audioEl = document.createElement('audio')
     audioEl.srcObject = stream
     audioEl.autoplay = true
-    // Screen-share audio starts muted until it's the focused stream;
-    // applyScreenAudioState() below sorts that out for ScreenShareAudio.
+    // Initial mute state - applyAllAudioState() below sorts out the real
+    // value for ScreenShareAudio (focus-driven) and mic audio (per-client overrides).
     audioEl.muted = producedType === 'ScreenShareAudio' ? true : soundMuted
     document.body.appendChild(audioEl)
     audioEl.play().catch((err) => console.error('[Soup] Audio play failed:', err))
@@ -665,8 +669,8 @@ export async function consumeProducer(producerId, kind, onStream, clientId, prod
 
   remoteConsumers.set(producerId, { consumer, consumerId: consumer.id, kind, clientId, producedType, cleanup, audioEl })
 
-  if (kind === 'audio' && producedType === 'ScreenShareAudio') {
-    applyScreenAudioState()
+  if (kind === 'audio') {
+    applyAllAudioState()
   }
 
   console.log(`[Soup] Consuming ${kind} [id:${consumer.id}]`)
@@ -715,21 +719,27 @@ export function setMicMuted(muted) {
 export function setSoundMuted(muted) {
   soundMuted = muted
   remoteAudioElements.forEach((el) => { el.muted = muted })
-  applyScreenAudioState()
+  applyAllAudioState()
 }
 
-// Only the focused stream's screen-share audio should be audible - mute every
-// other ScreenShareAudio consumer and apply the volume/mute settings to the
-// focused client's.
-function applyScreenAudioState() {
+// Applies the focus-driven ScreenShareAudio state and the per-client mic
+// volume/mute overrides to every remote audio element.
+function applyAllAudioState() {
   for (const entry of remoteConsumers.values()) {
-    if (entry.kind !== 'audio' || entry.producedType !== 'ScreenShareAudio' || !entry.audioEl) continue
+    if (entry.kind !== 'audio' || !entry.audioEl) continue
 
-    if (entry.clientId === focusedClientId) {
-      entry.audioEl.volume = focusedVolume
-      entry.audioEl.muted = soundMuted || focusedMuted
+    if (entry.producedType === 'ScreenShareAudio') {
+      // Only the focused stream's screen-share audio should be audible.
+      if (entry.clientId === focusedClientId) {
+        entry.audioEl.volume = focusedVolume
+        entry.audioEl.muted = soundMuted || focusedMuted
+      } else {
+        entry.audioEl.muted = true
+      }
     } else {
-      entry.audioEl.muted = true
+      const override = clientAudioOverrides.get(entry.clientId)
+      entry.audioEl.volume = override?.volume ?? 1
+      entry.audioEl.muted = soundMuted || !!override?.muted
     }
   }
 }
@@ -739,7 +749,22 @@ export function setFocusedScreenAudio(clientId, { volume, muted } = {}) {
   focusedClientId = clientId
   if (volume != null) focusedVolume = volume
   if (muted != null) focusedMuted = muted
-  applyScreenAudioState()
+  applyAllAudioState()
+}
+
+// Called by the sidebar's per-client right-click controls to locally
+// lower the volume of, or fully mute, a specific client's mic audio.
+export function setClientAudioState(clientId, { volume, muted } = {}) {
+  const current = clientAudioOverrides.get(clientId) || { volume: 1, muted: false }
+  clientAudioOverrides.set(clientId, {
+    volume: volume != null ? volume : current.volume,
+    muted: muted != null ? muted : current.muted,
+  })
+  applyAllAudioState()
+}
+
+export function getClientAudioState(clientId) {
+  return clientAudioOverrides.get(clientId) || { volume: 1, muted: false }
 }
 
 // ─── Getters ─────────────────────────────────────────────────────

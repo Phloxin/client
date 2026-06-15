@@ -104,7 +104,9 @@ function Main() {
 
       const [channelData, clientData] = await Promise.all([channelRes.json(), clientRes.json()])
       setChannels(channelData)
-      setClients(clientData)
+      // The REST payload uses `muted`/`deaf`, but voice-state updates (and the
+      // rest of the UI) use `self_mute`/`self_deaf` - normalize on the way in.
+      setClients(clientData.map((c) => ({ ...c, self_mute: c.muted, self_deaf: c.deaf })))
       setLog(['Connected to server'])
     }).catch((err) => console.error('Failed to fetch:', err))
 
@@ -125,7 +127,7 @@ function Main() {
       }
 
       if (ev === 'NewUser') {
-        setClients((prev) => [...prev, data])
+        setClients((prev) => [...prev, { ...data, self_mute: data.muted, self_deaf: data.deaf }])
         setLog((prev) => appendLog(prev, `${data.name} joined the server`))
       } else if (ev === 'ClientModified') {
         const channelName = (id) => channelsRef.current.find((ch) => ch.id === id)?.name || 'Unknown Channel'

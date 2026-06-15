@@ -296,6 +296,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
           speaking={!!speakingClients[c.id]}
           micMuted={c.id === self.id ? micMuted : !!c.self_mute}
           deafened={c.id === self.id ? deafened : !!c.self_deaf}
+          isSelf={c.id === self.id}
         />
       ))}
       {showSourcePicker && (
