@@ -188,6 +188,18 @@
   color: var(--color-text-muted);
 }
 
+.chat-input-bar input[type='text']:disabled,
+.chat-icon-btn:disabled,
+.chat-send-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.chat-icon-btn:disabled:hover {
+  background: transparent;
+  color: var(--color-text-secondary);
+}
+
 .chat-icon-btn {
   display: flex;
   align-items: center;

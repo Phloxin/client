@@ -23,6 +23,30 @@ function systemEntry(text) {
   return { id: crypto.randomUUID(), type: 'system', text, ts: Date.now() }
 }
 
+// Build a chat-feed entry from a MessageApiObject (POST response or MessageCreated event)
+function messageFromApi(msg) {
+  return {
+    id: msg.id,
+    type: 'message',
+    channelId: msg.channel_id,
+    authorId: msg.author,
+    text: msg.content,
+    attachments: (msg.attachments || []).map((a) => ({
+      id: a.id,
+      name: a.filename,
+      kind: kindFromContentType(a.content_type),
+      url: a.url
+    })),
+    ts: Date.now()
+  }
+}
+
+function kindFromContentType(type) {
+  if (type?.startsWith('image/')) return 'image'
+  if (type?.startsWith('video/')) return 'video'
+  return 'file'
+}
+
 function Main() {
   const { token, setToken, client, setClient } = useAuth()
   const [channels, setChannels] = useState([])
@@ -37,11 +61,16 @@ function Main() {
   const eventsWsRef = useRef(null)
   const channelsRef = useRef([])
   const clientsRef = useRef([])
+  const feedRef = useRef([])
 
-  // Keep refs to the latest channels/clients so the events websocket handler
+  // Keep refs to the latest channels/clients/feed so the events websocket handler
   // (created once in the effect below) can look them up without stale closures.
   useEffect(() => { channelsRef.current = channels }, [channels])
   useEffect(() => { clientsRef.current = clients }, [clients])
+  useEffect(() => { feedRef.current = feed }, [feed])
+
+  // The channel the local client currently has joined (chat is scoped to it)
+  const selfChannelId = clients.find((c) => c.id === client?.id)?.channel_id ?? null
 
   // Keep a focused stream selected when streams change
   useEffect(() => {
@@ -150,6 +179,10 @@ function Main() {
 
         setFeed((prev) => appendFeed(prev, systemEntry(message)))
         setClients((prev) => prev.map((c) => c.id === data.id ? { ...c, channel_id: data.channel_id } : c))
+      } else if (ev === 'MessageCreated') {
+        // Skip messages we already echoed locally from our own POST response
+        if (feedRef.current.some((e) => e.id === data.id)) return
+        setFeed((prev) => appendFeed(prev, messageFromApi(data)))
       } else {
         setFeed((prev) => appendFeed(prev, systemEntry(`Unknown event: ${ev}`)))
       }
@@ -171,17 +204,46 @@ function Main() {
     }
   }, [token])
 
-  // Add a chat message locally (echo only - backend wiring comes later)
-  const handleSendMessage = (text, attachments) => {
-    setFeed((prev) => appendFeed(prev, {
-      id: crypto.randomUUID(),
-      type: 'message',
-      author: client?.name,
-      authorId: client?.id,
-      text,
-      attachments,
-      ts: Date.now()
-    }))
+  // Send a chat message (with any attachments) to the channel we're currently in
+  const handleSendMessage = async (text, attachments) => {
+    if (DEV_MODE) {
+      setFeed((prev) => appendFeed(prev, {
+        id: crypto.randomUUID(),
+        type: 'message',
+        channelId: selfChannelId,
+        author: client?.name,
+        authorId: client?.id,
+        text,
+        attachments,
+        ts: Date.now()
+      }))
+      return
+    }
+
+    if (selfChannelId == null) return
+
+    const payload = {
+      content: text || undefined,
+      attachments: attachments.map((a, i) => ({ id: i, filename: a.file.name, description: null }))
+    }
+
+    const formData = new FormData()
+    formData.append('payload_json', new Blob([JSON.stringify(payload)], { type: 'application/json' }))
+    attachments.forEach((a, i) => formData.append(`files[${i}]`, a.file, a.file.name))
+    attachments.forEach((a) => URL.revokeObjectURL(a.url))
+
+    try {
+      const res = await fetch(`/api/channels/${selfChannelId}/messages`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: formData
+      })
+      if (!res.ok) throw new Error(`Server responded ${res.status}`)
+      const msg = await res.json()
+      setFeed((prev) => appendFeed(prev, messageFromApi(msg)))
+    } catch (err) {
+      setFeed((prev) => appendFeed(prev, systemEntry(`Failed to send message: ${err.message}`)))
+    }
   }
 
   // Broadcast our mic-mute / deafen status to other clients
@@ -255,7 +317,12 @@ function Main() {
         </div>
 
         {viewMode === 'log' ? (
-          <ChatPanel feed={feed} clients={clients} onSend={handleSendMessage} />
+          <ChatPanel
+            feed={feed.filter((e) => e.type === 'system' || e.channelId === selfChannelId)}
+            clients={clients}
+            onSend={handleSendMessage}
+            disabled={selfChannelId == null}
+          />
         ) : (
           <VideoGrid
             streams={allVideoStreams}

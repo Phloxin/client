@@ -28,7 +28,7 @@ function formatTime(ts) {
   return new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
 }
 
-function ChatPanel({ feed, clients, onSend }) {
+function ChatPanel({ feed, clients, onSend, disabled }) {
   const [text, setText] = useState('')
   const [attachments, setAttachments] = useState([])
   const [showEmoji, setShowEmoji] = useState(false)
@@ -86,6 +86,7 @@ function ChatPanel({ feed, clients, onSend }) {
   }
 
   const handleSend = () => {
+    if (disabled) return
     const trimmed = text.trim()
     if (!trimmed && !attachments.length) return
     onSend?.(trimmed, attachments)
@@ -177,22 +178,25 @@ function ChatPanel({ feed, clients, onSend }) {
           multiple
           style={{ display: 'none' }}
           onChange={handleFiles}
+          disabled={disabled}
         />
         <button
           type="button"
           className="chat-icon-btn"
           title="Attach files"
           onClick={() => fileInputRef.current?.click()}
+          disabled={disabled}
         >
           <IconPaperclip size={20} />
         </button>
         <input
           ref={inputRef}
           type="text"
-          placeholder="Message..."
+          placeholder={disabled ? 'Join a channel to chat' : 'Message...'}
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={handleKeyDown}
+          disabled={disabled}
         />
         <div className="chat-emoji-wrapper" ref={emojiRef}>
           <button
@@ -200,6 +204,7 @@ function ChatPanel({ feed, clients, onSend }) {
             className="chat-icon-btn"
             title="Emoji"
             onClick={() => setShowEmoji((prev) => !prev)}
+            disabled={disabled}
           >
             <IconMoodSmile size={20} />
           </button>
@@ -222,7 +227,7 @@ function ChatPanel({ feed, clients, onSend }) {
           type="button"
           className="chat-send-btn"
           title="Send"
-          disabled={!text.trim() && !attachments.length}
+          disabled={disabled || (!text.trim() && !attachments.length)}
           onClick={handleSend}
         >
           <IconSend2 size={20} />
