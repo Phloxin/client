@@ -232,12 +232,12 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   }
 
   // Capture and publish the chosen source after the user picks one
-  const startShareWithSource = async (sourceId) => {
+  const startShareWithSource = async (sourceId, quality) => {
     setShowSourcePicker(false)
     // Tell the main process which source the display-media handler should use
     window.electron.ipcRenderer.send('set-screen-source', sourceId)
     try {
-      const screen = await shareScreen()
+      const screen = await shareScreen(quality)
       if (screen?.stream) {
         screen.stream.getVideoTracks()[0].onended = () => {
           stopScreenShare()

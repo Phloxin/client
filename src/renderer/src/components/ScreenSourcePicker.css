@@ -160,10 +160,70 @@
 
 .source-picker-footer {
   display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 22px;
+  border-top: 1px solid var(--color-border);
+}
+
+.picker-quality {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+.picker-quality-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.picker-quality-label {
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.picker-segment {
+  display: flex;
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius-sm);
+  overflow: hidden;
+}
+
+.picker-segment-btn {
+  padding: 4px 10px;
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.picker-segment-btn + .picker-segment-btn {
+  border-left: 1px solid var(--color-border);
+}
+
+.picker-segment-btn:hover:not(.active) {
+  background: var(--color-background-secondary, #1e1f26);
+  color: var(--color-text);
+}
+
+.picker-segment-btn.active {
+  background: var(--color-primary);
+  color: #fff;
+}
+
+.picker-footer-actions {
+  display: flex;
   justify-content: flex-end;
   gap: 10px;
-  padding: 16px 22px;
-  border-top: 1px solid var(--color-border);
 }
 
 .picker-btn {

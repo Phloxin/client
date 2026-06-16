@@ -476,16 +476,16 @@ export async function republish(micSettings, onStream) {
 }
 
 // ─── Share screen ────────────────────────────────────────────────
-export async function shareScreen() {
+export async function shareScreen({ fps = 30, width = 1920, height = 1080, audio = true } = {}) {
   if (!producerTransport) throw new Error('Not connected to voice')
 
   const stream = await navigator.mediaDevices.getDisplayMedia({
     video: {
-      frameRate: 60,
-      width: { ideal: 1920 },
-      height: { ideal: 1080 }
+      frameRate: fps,
+      width: { ideal: width },
+      height: { ideal: height }
     },
-    audio: true
+    audio
   })
 
   const track = stream.getVideoTracks()[0]
