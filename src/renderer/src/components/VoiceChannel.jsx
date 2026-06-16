@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, forwardRef, useImperativeHandle } from 'react'
-import { connect, publish, republish, disconnect, shareScreen, stopScreenShare, rebindCallbacks, createSpeakingDetector } from '../lib/soup'
+import { connect, publish, republish, disconnect, shareScreen, shareCamera, stopScreenShare, rebindCallbacks, createSpeakingDetector } from '../lib/soup'
 import { useSettings } from '../context/SettingsContext'
 import ClientIndicator from './ClientIndicator'
 import ScreenSourcePicker from './ScreenSourcePicker'
@@ -232,12 +232,19 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   }
 
   // Capture and publish the chosen source after the user picks one
-  const startShareWithSource = async (sourceId, quality) => {
+  const startShareWithSource = async (sourceId, options = {}) => {
     setShowSourcePicker(false)
-    // Tell the main process which source the display-media handler should use
-    window.electron.ipcRenderer.send('set-screen-source', sourceId)
     try {
-      const screen = await shareScreen(quality)
+      let screen
+      if (options.isCamera) {
+        // Webcams capture directly via getUserMedia - no main-process source
+        // hand-off, and no audio/fps/resolution settings.
+        screen = await shareCamera(sourceId)
+      } else {
+        // Tell the main process which source the display-media handler should use
+        window.electron.ipcRenderer.send('set-screen-source', sourceId)
+        screen = await shareScreen(options)
+      }
       if (screen?.stream) {
         screen.stream.getVideoTracks()[0].onended = () => {
           stopScreenShare()

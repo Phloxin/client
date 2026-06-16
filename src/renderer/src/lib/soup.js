@@ -533,6 +533,46 @@ export async function shareScreen({ fps = 30, width = 1920, height = 1080, audio
   }
 }
 
+// ─── Share webcam ────────────────────────────────────────────────
+// Streams a camera device into the same producer slot as screen share, so the
+// existing stop/preview/remote-render paths all apply. Unlike screen share,
+// the webcam carries no audio and uses the device's own native quality - the
+// fps/resolution/audio picker settings don't apply here.
+export async function shareCamera(deviceId) {
+  if (!producerTransport) throw new Error('Not connected to voice')
+
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video: deviceId ? { deviceId: { exact: deviceId } } : true,
+    audio: false
+  })
+
+  const track = stream.getVideoTracks()[0]
+  track.contentHint = 'motion'
+
+  screenProducer = await producerTransport.produce({
+    track,
+    encodings: [{ maxBitrate: 15000000, scalabilityMode: 'L1T1' }],
+    codecOptions: {
+      videoGoogleStartBitrate: 8000
+    },
+    appData: { produced: 'ScreenShare' }
+  })
+
+  localProducerIds.add(screenProducer.id)
+  console.log(`[Soup] Camera sharing [id:${screenProducer.id}]`)
+
+  track.onended = () => {
+    stopScreenShare()
+  }
+
+  const previewStream = new MediaStream([track])
+
+  return {
+    id: screenProducer.id,
+    stream: previewStream
+  }
+}
+
 // ─── Stop screen share ───────────────────────────────────────────
 export async function stopScreenShare() {
   if (!screenProducer) return

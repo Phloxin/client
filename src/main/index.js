@@ -42,11 +42,40 @@ function persistAuth() {
   }
 }
 
+// Smallest the window may get before the sidebar starts being clipped. These
+// are content-area sizes (see `useContentSize` below), derived from the
+// renderer layout so the sidebar at its narrowest stays fully usable.
+//   .layout padding  = --spacing-sm (8px) on every edge
+//   sidebar MIN_WIDTH = 180px (SideBar.jsx, border-box so borders included)
+const LAYOUT_PADDING = 8
+const SIDEBAR_MIN_WIDTH = 180
+
+// Width: both side paddings + the sidebar, so it never clips horizontally.
+const MIN_CONTENT_WIDTH = SIDEBAR_MIN_WIDTH + LAYOUT_PADDING * 2 // 196
+
+// Height: top+bottom padding + the sidebar's fixed-height chrome - the server
+// header, the "Channels" label, and the bottom control-button wrapper - so the
+// control buttons stay visible even at the shortest allowed height. (The
+// channel list between them is the part that gives when space is tight.)
+const SIDEBAR_HEADER_HEIGHT = 49
+const SIDEBAR_SECTION_LABEL_HEIGHT = 42
+const SIDEBAR_CONTROLS_HEIGHT = 93
+const MIN_CONTENT_HEIGHT =
+  LAYOUT_PADDING * 2 +
+  SIDEBAR_HEADER_HEIGHT +
+  SIDEBAR_SECTION_LABEL_HEIGHT +
+  SIDEBAR_CONTROLS_HEIGHT // 200
+
 function createWindow() {
   // Create the browser window.
   const mainWindow = new BrowserWindow({
     width: 1100,
     height: 670,
+    // Treat width/height/min* as the web content area (excludes the OS title
+    // bar) so the minimums map directly onto the renderer layout below.
+    useContentSize: true,
+    minWidth: MIN_CONTENT_WIDTH,
+    minHeight: MIN_CONTENT_HEIGHT,
     show: false,
     autoHideMenuBar: true,
     ...(process.platform === 'linux' ? { icon } : {}),

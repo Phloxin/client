@@ -30,7 +30,6 @@
   display: flex;
   justify-content: center;
   padding: 12px 22px;
-  border-bottom: 1px solid var(--color-border);
 }
 
 .source-tabs-bar {
@@ -142,6 +141,10 @@
   object-fit: contain;
 }
 
+.source-thumb-device {
+  color: var(--color-text-secondary);
+}
+
 .source-name {
   display: flex;
   align-items: center;
@@ -167,10 +170,10 @@
 
 .source-picker-footer {
   display: flex;
-  flex-direction: column;
-  gap: 12px;
+  flex-direction: row;
+  align-items: center;
+  gap: 16px;
   padding: 14px 22px;
-  border-top: 1px solid var(--color-border);
 }
 
 .picker-quality {
@@ -178,6 +181,12 @@
   align-items: center;
   gap: 20px;
   flex-wrap: wrap;
+}
+
+.picker-device-note {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
 }
 
 .picker-quality-group {
@@ -228,6 +237,7 @@
   display: flex;
   justify-content: flex-end;
   gap: 10px;
+  margin-left: auto;
 }
 
 .picker-btn {
