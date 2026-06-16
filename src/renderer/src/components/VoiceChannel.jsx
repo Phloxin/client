@@ -4,7 +4,7 @@ import { useSettings } from '../context/SettingsContext'
 import ClientIndicator from './ClientIndicator'
 import ScreenSourcePicker from './ScreenSourcePicker'
 import './VoiceChannel.css'
-import { IconVolume } from '@tabler/icons-react'
+import { IconVolume, IconCircle, IconCircleFilled, IconLock, IconLockOpen } from '@tabler/icons-react'
 
 const API_BASE_URL = 'http://47.16.222.82:3000'
 
@@ -287,7 +287,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   return (
     <div className={`channel-item${joined ? ' active' : ''}`} onDoubleClick={handleDoubleClick}>
       <div className="channel-row">
-        <IconVolume size={20}/>
+        {joined ? <IconVolume size={20}/> : <IconCircle size={20}/>}
         <span className="channel-name">{channel.name}</span>
       </div>
       {error && <div style={{ color: '#ed4245', fontSize: 11, paddingLeft: 16 }}>{error}</div>}

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import './ScreenSourcePicker.css'
-import { IconDeviceDesktop, IconAppWindow, IconLoader2 } from '@tabler/icons-react'
+import { IconDeviceDesktop, IconAppWindow, IconLoader2, IconCamera } from '@tabler/icons-react'
 
 const RESOLUTIONS = [
   { label: '720p',  width: 1280, height: 720  },
@@ -42,7 +42,7 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
 
   const screens = sources?.filter((s) => s.isScreen) ?? []
   const windows = sources?.filter((s) => !s.isScreen) ?? []
-  const visibleSources = activeTab === 'screens' ? screens : windows
+  const visibleSources = activeTab === 'screens' ? screens : activeTab === 'windows' ? windows : []
 
   const confirm = () => {
     if (!selectedId) return
@@ -71,24 +71,31 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
   return (
     <div className="source-picker-overlay" onClick={onCancel}>
       <div className="source-picker-modal" onClick={(e) => e.stopPropagation()}>
-        {sources && (
-          <div className="source-picker-tabs">
+        <div className="source-picker-tabs">
+          <div className="source-tabs-bar">
             <button
               type="button"
               className={`source-tab${activeTab === 'screens' ? ' active' : ''}`}
               onClick={() => setActiveTab('screens')}
             >
-              <IconDeviceDesktop size={16} /> Screens
+              <IconDeviceDesktop size={15} /> Entire Screen
             </button>
             <button
               type="button"
               className={`source-tab${activeTab === 'windows' ? ' active' : ''}`}
               onClick={() => setActiveTab('windows')}
             >
-              <IconAppWindow size={16} /> Windows
+              <IconAppWindow size={15} /> Applications
+            </button>
+            <button
+              type="button"
+              className={`source-tab${activeTab === 'devices' ? ' active' : ''}`}
+              onClick={() => setActiveTab('devices')}
+            >
+              <IconCamera size={15} /> Devices
             </button>
           </div>
-        )}
+        </div>
 
         <div className="source-picker-body">
           {error && <div className="source-picker-error">{error}</div>}
@@ -111,18 +118,14 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
           <div className="picker-quality">
             <div className="picker-quality-group">
               <span className="picker-quality-label">Audio</span>
-              <div className="picker-segment">
-                {[true, false].map((val) => (
-                  <button
-                    key={String(val)}
-                    type="button"
-                    className={`picker-segment-btn${audio === val ? ' active' : ''}`}
-                    onClick={() => setAudio(val)}
-                  >
-                    {val ? 'On' : 'Off'}
-                  </button>
-                ))}
-              </div>
+              <label className="toggle-switch">
+                <input
+                  type="checkbox"
+                  checked={audio}
+                  onChange={(e) => setAudio(e.target.checked)}
+                />
+                <span className="toggle-slider" />
+              </label>
             </div>
 
             <div className="picker-quality-group">

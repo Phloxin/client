@@ -145,7 +145,7 @@ function Sidebar({ channels, clients, token, self, onStreamsUpdate, onOpenSettin
           </button>
           <button
             className={`control-btn${soundMuted ? ' active' : ''}`}
-            title={soundMuted ? 'Undeafen' : 'Mute Sound'}
+            title={soundMuted ? 'Unmute Sound' : 'Mute Sound'}
             onClick={() => setSoundMutedState((m) => !m)}
           >
             {soundMuted ? <IconHeadphonesOff size={20}/> : <IconHeadphones size={20}/>}
