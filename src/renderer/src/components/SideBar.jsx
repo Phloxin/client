@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import VoiceChannel from './VoiceChannel'
+import ServerMenu from './ServerMenu'
 import { setMicMuted, setSoundMuted } from '../lib/soup'
 import './SideBar.css'
 import {IconSettings, IconShield, IconDoorExit, IconHeadphones, IconHeadphonesOff, IconMicrophone, IconMicrophoneOff, IconScreenShare, IconScreenShareOff} from '@tabler/icons-react'
@@ -8,7 +9,21 @@ const MIN_WIDTH = 180
 const MAX_WIDTH = 550
 const DEFAULT_WIDTH = 240
 
-function Sidebar({ channels, clients, token, self, onStreamsUpdate, onOpenSettings, onStatusChange }) {
+function Sidebar({
+  channels,
+  clients,
+  token,
+  self,
+  onStreamsUpdate,
+  onOpenSettings,
+  onStatusChange,
+  servers,
+  connectedServer,
+  onConnect,
+  onDisconnect,
+  onAddServer,
+  onRemoveServer
+}) {
   const [width, setWidth] = useState(() => {
     const saved = localStorage.getItem('sidebar-width')
     return saved ? parseInt(saved) : DEFAULT_WIDTH
@@ -77,8 +92,14 @@ function Sidebar({ channels, clients, token, self, onStreamsUpdate, onOpenSettin
   return (
     <aside className="sidebar" ref={sidebarRef} style={{ width }}>
       <div className="server-header">
-        <span className="server-name">CNaps Buddies and Friends</span>
-        <span className="server-status" title="Connected" />
+        <ServerMenu
+          servers={servers}
+          connectedServer={connectedServer}
+          onConnect={onConnect}
+          onDisconnect={onDisconnect}
+          onAddServer={onAddServer}
+          onRemoveServer={onRemoveServer}
+        />
       </div>
 
       <div className="channel-section-label">Channels</div>

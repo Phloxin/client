@@ -1,18 +1,6 @@
 // ─── Imports ────────────────────────────────────────────────────
 import { Device } from 'mediasoup-client'
-
-// ─── Config ─────────────────────────────────────────────────────
-const API_BASE_URL = 'http://47.16.222.82:3000'
-
-const ICE_SERVERS = [
-  { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'stun:stun1.l.google.com:19302' },
-  {
-    urls: 'turn:47.16.222.82:3478',
-    username: 'test',
-    credential: 'password',
-  },
-]
+import { apiBase, wsBase, getIceServers } from './serverConfig'
 
 // ─── State ──────────────────────────────────────────────────────
 let device
@@ -75,14 +63,14 @@ export async function connect(token, { onConnect, onDisconnect, onNewProducer, o
   activeCallbacks = { onConnect, onDisconnect, onNewProducer, onVideoStream, onTransportsDisconnected, onClientSpeaking, onConsumerClosed }
 
   // Step 1 — get ticket
-  const res = await fetch(`${API_BASE_URL}/server/voice`, {
+  const res = await fetch(`${apiBase()}/server/voice`, {
     headers: { Authorization: `Bearer ${token}` }
   })
   const { ticket } = await res.json()
   console.log('[Soup] Got ticket:', ticket)
 
   // Step 2 — connect to voice WebSocket
-  ws = new WebSocket('ws://47.16.222.82:3000/voice')
+  ws = new WebSocket(`${wsBase()}/voice`)
   console.log('[Soup] WebSocket created, readyState:', ws.readyState)
 
   // ─── Assign ALL handlers before anything can fire ───────────────
@@ -287,7 +275,7 @@ export async function publish(micSettings, onStream) {
   const rawParams = await send('CreateProducerTransport')
   producerTransport = device.createSendTransport({
     ...mapTransportParams(rawParams),
-    iceServers: ICE_SERVERS
+    iceServers: getIceServers()
   })
 
   producerTransport.on('connectionstatechange', (state) => {
@@ -612,7 +600,7 @@ export async function subscribe() {
     const rawParams = await send('CreateConsumerTransport')
     consumerTransport = device.createRecvTransport({
       ...mapTransportParams(rawParams),
-      iceServers: ICE_SERVERS
+      iceServers: getIceServers()
     })
 
     consumerTransport.on('connectionstatechange', (state) => {

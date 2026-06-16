@@ -5,12 +5,12 @@ import { useAuth } from '../context/AuthContext'
 import SideBar from '../components/SideBar'
 import VideoGrid from '../components/VideoGrid'
 import ChatPanel from '../components/ChatPanel'
-import LoginScreen from '../components/LoginScreen'
 import Settings from './Settings'
+import { disconnect as disconnectVoice } from '../lib/soup'
+import { setServerHost, apiBase, wsBase } from '../lib/serverConfig'
 import { DEV_MODE, MOCK_TOKEN, MOCK_CLIENT, MOCK_CHANNELS, MOCK_CLIENTS } from '../lib/mock'
 import { IconVideoFilled, IconMessage2Filled, IconMessage, IconVideo } from '@tabler/icons-react'
 
-const API_BASE_URL = 'http://47.16.222.82:3000'
 const MAX_LOG_ENTRIES = 500
 
 // Append an entry to the feed, dropping the oldest entries once the cap is hit.
@@ -53,12 +53,11 @@ function Main() {
   const [channels, setChannels] = useState([])
   const [clients, setClients] = useState([])
   const [feed, setFeed] = useState([])
-  const [username, setUsername] = useState('')
-  const [password, setPassword] = useState('')
-  const [loginError, setLoginError] = useState(null)
   const [viewMode, setViewMode] = useState('log') // 'log' or 'video'
   const [allVideoStreams, setAllVideoStreams] = useState([])
   const [selectedStreamId, setSelectedStreamId] = useState(null)
+  const [servers, setServers] = useState([])
+  const [connectedServer, setConnectedServer] = useState(null)
   const eventsWsRef = useRef(null)
   const channelsRef = useRef([])
   const clientsRef = useRef([])
@@ -82,31 +81,68 @@ function Main() {
     }
   }, [allVideoStreams, selectedStreamId])
 
-  // Handle user login - sends credentials to API and stores auth token
-  const handleLogin = () => {
+  // Load the saved server list from the main process on mount
+  useEffect(() => {
+    window.electron.ipcRenderer.invoke('get-servers').then((list) => {
+      if (Array.isArray(list)) setServers(list)
+    })
+  }, [])
+
+  // Persist a server list change and keep local state in sync
+  const saveServers = (list) => {
+    setServers(list)
+    window.electron.ipcRenderer.send('store-servers', list)
+  }
+
+  const handleAddServer = (server) => saveServers([...servers, server])
+
+  const handleRemoveServer = (id) => saveServers(servers.filter((s) => s.id !== id))
+
+  // Connect to a saved server: point all endpoints at its host, then log in with
+  // its stored credentials. Setting the token triggers the data-loading effect.
+  const handleConnect = async (server) => {
     if (DEV_MODE) {
+      setServerHost(server.host)
       setToken(MOCK_TOKEN)
       setClient(MOCK_CLIENT)
-      setLoginError(null)
+      setConnectedServer(server)
       return
     }
 
-    fetch(`${API_BASE_URL}/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password })
-    })
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.token) {
-          setToken(data.token)
-          setClient(data.client)
-          setLoginError(null)
-        } else {
-          setLoginError(data.message || 'Login failed')
-        }
+    setServerHost(server.host)
+    try {
+      const res = await fetch(`${apiBase()}/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: server.username, password: server.password })
       })
-      .catch(() => setLoginError('Login failed'))
+      const data = await res.json()
+      if (data.token) {
+        setToken(data.token)
+        setClient(data.client)
+        setConnectedServer(server)
+      } else {
+        setServerHost(null)
+        setFeed([systemEntry(`Failed to connect to ${server.nickname}: ${data.message || 'login failed'}`)])
+      }
+    } catch {
+      setServerHost(null)
+      setFeed([systemEntry(`Failed to connect to ${server.nickname}: could not reach server`)])
+    }
+  }
+
+  // Disconnect from the current server and return to the disconnected state.
+  // Clearing the token tears down the events websocket via the effect cleanup.
+  const handleDisconnect = () => {
+    disconnectVoice()
+    setToken(null)
+    setClient(null)
+    setChannels([])
+    setClients([])
+    setFeed([])
+    setAllVideoStreams([])
+    setConnectedServer(null)
+    setServerHost(null)
   }
 
   // Fetch channels/clients and set up WebSocket + IPC listeners on mount
@@ -121,18 +157,19 @@ function Main() {
     }
 
     Promise.all([
-      fetch(`${API_BASE_URL}/server/channel`, {
+      fetch(`${apiBase()}/server/channel`, {
         headers: { Authorization: `Bearer ${token}` }
       }),
-      fetch(`${API_BASE_URL}/server/client`, {
+      fetch(`${apiBase()}/server/client`, {
         headers: { Authorization: `Bearer ${token}` }
       })
     ]).then(async ([channelRes, clientRes]) => {
-      // A stored token may be stale/expired - drop it and return to the login screen
+      // A token may be stale/expired - drop it and return to the disconnected state
       if (channelRes.status === 401 || clientRes.status === 401) {
         setToken(null)
         setClient(null)
-        window.electron.ipcRenderer.send('clear-auth')
+        setConnectedServer(null)
+        setServerHost(null)
         return
       }
 
@@ -144,7 +181,7 @@ function Main() {
       setFeed([systemEntry('Connected to server')])
     }).catch((err) => console.error('Failed to fetch:', err))
 
-    const ws = new WebSocket('ws://47.16.222.82:3000/ws')
+    const ws = new WebSocket(`${wsBase()}/ws`)
     eventsWsRef.current = ws
     ws.onopen = () => {
       console.log('WebSocket connected')
@@ -230,7 +267,7 @@ function Main() {
     attachments.forEach((a) => URL.revokeObjectURL(a.url))
 
     try {
-      const res = await fetch(`${API_BASE_URL}/channels/${selfChannelId}/messages`, {
+      const res = await fetch(`${apiBase()}/channels/${selfChannelId}/messages`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
         body: formData
@@ -259,20 +296,7 @@ function Main() {
 
   const [showSettings, setShowSettings] = useState(false)
 
-  if (!token) {
-    return (
-      <LoginScreen
-        username={username}
-        password={password}
-        onUsernameChange={setUsername}
-        onPasswordChange={setPassword}
-        onLogin={handleLogin}
-        loginError={loginError}
-      />
-    )
-  }
-
-  if (!channels.length) return <div className="loading">Hang tight....</div>
+  const connected = !!token
 
   return (
     <div className="layout">
@@ -285,6 +309,12 @@ function Main() {
         onStatusChange={sendStatus}
         // provide a renderer-level openSettings hook
         onOpenSettings={() => setShowSettings(true)}
+        servers={servers}
+        connectedServer={connectedServer}
+        onConnect={handleConnect}
+        onDisconnect={handleDisconnect}
+        onAddServer={handleAddServer}
+        onRemoveServer={handleRemoveServer}
       />
 
       <main className="chat-area">
@@ -303,16 +333,25 @@ function Main() {
                 </>
               )}
             </span>
-            <button
-              className="view-toggle-btn"
-              onClick={() => setViewMode(viewMode === 'log' ? 'video' : 'log')}
-            >
-              {viewMode === 'log' ? <IconVideoFilled size={18}/> : <IconMessage2Filled size={18}/>}
-            </button>
+            {connected && (
+              <button
+                className="view-toggle-btn"
+                onClick={() => setViewMode(viewMode === 'log' ? 'video' : 'log')}
+              >
+                {viewMode === 'log' ? <IconVideoFilled size={18}/> : <IconMessage2Filled size={18}/>}
+              </button>
+            )}
           </div>
         </div>
 
-        {viewMode === 'log' ? (
+        {!connected ? (
+          <div className="disconnected-placeholder">
+            <p className="disconnected-title">Not connected</p>
+            <p className="disconnected-subtitle">
+              Pick a server from the <strong>Connect</strong> menu to get started.
+            </p>
+          </div>
+        ) : viewMode === 'log' ? (
           <ChatPanel
             feed={feed.filter((e) => e.type === 'system' || e.channelId === selfChannelId)}
             clients={clients}

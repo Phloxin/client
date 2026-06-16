@@ -42,6 +42,38 @@ function persistAuth() {
   }
 }
 
+// ─── Saved servers persistence ────────────────────────────────────
+// The user's saved server list (nickname / host / username / password) lives in
+// memory and is persisted to disk encrypted via the OS keychain, since it holds
+// credentials. Falls back to in-memory-only when encryption isn't available.
+let servers = []
+
+function serversFilePath() {
+  return join(app.getPath('userData'), 'servers.json')
+}
+
+function readServersFile() {
+  if (!safeStorage.isEncryptionAvailable()) return []
+  try {
+    const raw = readFileSync(serversFilePath(), 'utf-8')
+    const { data } = JSON.parse(raw)
+    if (!data) return []
+    return JSON.parse(safeStorage.decryptString(Buffer.from(data, 'base64')))
+  } catch {
+    return []
+  }
+}
+
+function persistServers() {
+  if (!safeStorage.isEncryptionAvailable()) return
+  try {
+    const data = safeStorage.encryptString(JSON.stringify(servers)).toString('base64')
+    writeFileSync(serversFilePath(), JSON.stringify({ data }))
+  } catch (err) {
+    console.error('Failed to persist servers:', err)
+  }
+}
+
 // Smallest the window may get before the sidebar starts being clipped. These
 // are content-area sizes (see `useContentSize` below), derived from the
 // renderer layout so the sidebar at its narrowest stays fully usable.
@@ -159,6 +191,18 @@ app.whenReady().then(() => {
   const persisted = readAuthFile()
   authToken = persisted.token
   authClient = persisted.client
+
+  // Load the saved server list from disk
+  servers = readServersFile()
+
+  // Return the saved server list to any window that asks
+  ipcMain.handle('get-servers', () => servers)
+
+  // Replace the saved server list (add/remove happen in the renderer)
+  ipcMain.on('store-servers', (_, list) => {
+    servers = Array.isArray(list) ? list : []
+    persistServers()
+  })
 
   // Store token from any window
   ipcMain.on('store-token', (_, token) => {
