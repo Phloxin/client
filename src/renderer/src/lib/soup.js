@@ -1,16 +1,6 @@
 // ─── Imports ────────────────────────────────────────────────────
 import { Device } from 'mediasoup-client'
-
-// ─── Config ─────────────────────────────────────────────────────
-const ICE_SERVERS = [
-  { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'stun:stun1.l.google.com:19302' },
-  {
-    urls: 'turn:47.16.222.82:3478',
-    username: 'test',
-    credential: 'password',
-  },
-]
+import { apiBase, wsBase, getIceServers } from './serverConfig'
 
 // ─── State ──────────────────────────────────────────────────────
 let device
@@ -20,6 +10,7 @@ let consumerTransport
 let producers = []
 let localProducerIds = new Set()
 let screenProducer = null
+let screenAudioProducer = null
 let currentChannel = null
 let volumeGateProcessor = null
 let subscribePromise = null
@@ -32,6 +23,17 @@ let soundMuted = false
 // can be closed and removed when that producer goes away (either because
 // a new one replaces it, or the server tells us it closed).
 let remoteConsumers = new Map()
+
+// Only the focused stream's screen-share audio should be audible - the
+// client whose ScreenShareAudio should currently be unmuted, plus the
+// volume/mute settings to apply to it.
+let focusedClientId = null
+let focusedVolume = 1
+let focusedMuted = false
+
+// Per-client local volume/mute overrides for mic audio (right-click controls
+// in the sidebar) - keyed by clientId.
+let clientAudioOverrides = new Map()
 
 // ─── Pending response handlers ───────────────────────────────────
 const pendingHandlers = []
@@ -61,14 +63,14 @@ export async function connect(token, { onConnect, onDisconnect, onNewProducer, o
   activeCallbacks = { onConnect, onDisconnect, onNewProducer, onVideoStream, onTransportsDisconnected, onClientSpeaking, onConsumerClosed }
 
   // Step 1 — get ticket
-  const res = await fetch('/api/server/voice', {
+  const res = await fetch(`${apiBase()}/server/voice`, {
     headers: { Authorization: `Bearer ${token}` }
   })
   const { ticket } = await res.json()
   console.log('[Soup] Got ticket:', ticket)
 
   // Step 2 — connect to voice WebSocket
-  ws = new WebSocket('ws://47.16.222.82:3000/voice')
+  ws = new WebSocket(`${wsBase()}/voice`)
   console.log('[Soup] WebSocket created, readyState:', ws.readyState)
 
   // ─── Assign ALL handlers before anything can fire ───────────────
@@ -85,14 +87,14 @@ export async function connect(token, { onConnect, onDisconnect, onNewProducer, o
 
     // Handle server-initiated events BEFORE pending handlers
     if (message.type === 'NewProducer') {
-      const { id, kind, client_id } = message.data
+      const { id, kind, client_id, produced_type } = message.data
         if (localProducerIds.has(id)) {
           console.log('[Soup] Skipping own producer:', id)
           return
         }
-      console.log(`[Soup] New producer: ${id} (${kind})`)
+      console.log(`[Soup] New producer: ${id} (${kind}, ${produced_type})`)
       activeCallbacks.onNewProducer?.({ producerId: id, kind })
-      consumeProducer(id, kind, activeCallbacks.onVideoStream, client_id)
+      consumeProducer(id, kind, activeCallbacks.onVideoStream, client_id, produced_type)
       return
     }
 
@@ -104,6 +106,10 @@ export async function connect(token, { onConnect, onDisconnect, onNewProducer, o
       if (entry) {
         entry.consumer.close()
         remoteConsumers.delete(id)
+        if (entry.cleanup) {
+          entry.cleanup()
+          remoteCleanups = remoteCleanups.filter((fn) => fn !== entry.cleanup)
+        }
         if (entry.kind === 'video') {
           activeCallbacks.onConsumerClosed?.(entry.consumerId)
         }
@@ -269,7 +275,7 @@ export async function publish(micSettings, onStream) {
   const rawParams = await send('CreateProducerTransport')
   producerTransport = device.createSendTransport({
     ...mapTransportParams(rawParams),
-    iceServers: ICE_SERVERS
+    iceServers: getIceServers()
   })
 
   producerTransport.on('connectionstatechange', (state) => {
@@ -282,10 +288,13 @@ export async function publish(micSettings, onStream) {
       .catch((err) => errback(err))
   })
 
-  producerTransport.on('produce', ({ kind, rtpParameters }, callback, errback) => {
+  producerTransport.on('produce', ({ kind, rtpParameters, appData }, callback, errback) => {
     send('Produce', {
-      kind,
-      rtp_params: rtpParameters
+      produce_params: {
+        rtp_params: rtpParameters,
+        kind
+      },
+      produced_type: appData?.produced ?? 'Audio'
     })
       .then((res) => callback({ id: res.id }))
       .catch((err) => errback(err))
@@ -336,7 +345,8 @@ export async function publish(micSettings, onStream) {
         opusMaxPlaybackRate: micSettings.sampleRate,
         opusDtx: false,
         opusFec: true,
-      }
+      },
+      appData: { produced: 'Audio' }
     })
     producers.push(producer)
     localProducerIds.add(producer.id)
@@ -405,7 +415,8 @@ export async function republish(micSettings, onStream) {
           opusMaxPlaybackRate: micSettings.sampleRate,
           opusDtx: false,
           opusFec: true,
-        }
+        },
+        appData: { produced: 'Audio' }
       })
       producers.push(producer)
       localProducerIds.add(producer.id)
@@ -453,16 +464,16 @@ export async function republish(micSettings, onStream) {
 }
 
 // ─── Share screen ────────────────────────────────────────────────
-export async function shareScreen() {
+export async function shareScreen({ fps = 30, width = 1920, height = 1080, audio = true } = {}) {
   if (!producerTransport) throw new Error('Not connected to voice')
 
   const stream = await navigator.mediaDevices.getDisplayMedia({
     video: {
-      frameRate: 60,
-      width: { ideal: 1920 },
-      height: { ideal: 1080 }
+      frameRate: fps,
+      width: { ideal: width },
+      height: { ideal: height }
     },
-    audio: false
+    audio
   })
 
   const track = stream.getVideoTracks()[0]
@@ -474,19 +485,79 @@ export async function shareScreen() {
     codecOptions: {
       videoGoogleStartBitrate: 8000
     },
-    appData: { type: 'screen' }
+    appData: { produced: 'ScreenShare' }
   })
 
   localProducerIds.add(screenProducer.id)
   console.log(`[Soup] Screen sharing [id:${screenProducer.id}]`)
 
+  // System/tab audio is only available for some sources (e.g. full screens
+  // on Windows) - produce it alongside the video when the browser gives us one.
+  const audioTrack = stream.getAudioTracks()[0]
+  if (audioTrack) {
+    screenAudioProducer = await producerTransport.produce({
+      track: audioTrack,
+      codecOptions: {
+        opusDtx: false,
+        opusFec: true,
+      },
+      appData: { produced: 'ScreenShareAudio' }
+    })
+    localProducerIds.add(screenAudioProducer.id)
+    console.log(`[Soup] Screen audio sharing [id:${screenAudioProducer.id}]`)
+  }
+
   track.onended = () => {
     stopScreenShare()
   }
 
+  // Local preview is video-only - the audio track is already produced above,
+  // and playing it back locally too would echo/duplicate it for this client.
+  const previewStream = new MediaStream([track])
+
   return {
     id: screenProducer.id,
-    stream
+    stream: previewStream
+  }
+}
+
+// ─── Share webcam ────────────────────────────────────────────────
+// Streams a camera device into the same producer slot as screen share, so the
+// existing stop/preview/remote-render paths all apply. Unlike screen share,
+// the webcam carries no audio and uses the device's own native quality - the
+// fps/resolution/audio picker settings don't apply here.
+export async function shareCamera(deviceId) {
+  if (!producerTransport) throw new Error('Not connected to voice')
+
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video: deviceId ? { deviceId: { exact: deviceId } } : true,
+    audio: false
+  })
+
+  const track = stream.getVideoTracks()[0]
+  track.contentHint = 'motion'
+
+  screenProducer = await producerTransport.produce({
+    track,
+    encodings: [{ maxBitrate: 15000000, scalabilityMode: 'L1T1' }],
+    codecOptions: {
+      videoGoogleStartBitrate: 8000
+    },
+    appData: { produced: 'ScreenShare' }
+  })
+
+  localProducerIds.add(screenProducer.id)
+  console.log(`[Soup] Camera sharing [id:${screenProducer.id}]`)
+
+  track.onended = () => {
+    stopScreenShare()
+  }
+
+  const previewStream = new MediaStream([track])
+
+  return {
+    id: screenProducer.id,
+    stream: previewStream
   }
 }
 
@@ -499,8 +570,17 @@ export async function stopScreenShare() {
   // Tell the server we're done with this producer so it can close the
   // server-side mediasoup Producer and any consumers peers have for it.
   notify('CloseProducer', { id: producerId })
-  console.log('[Soup] Screen share stopped')
   screenProducer = null
+
+  if (screenAudioProducer) {
+    const audioProducerId = screenAudioProducer.id
+    screenAudioProducer.close()
+    localProducerIds.delete(audioProducerId)
+    notify('CloseProducer', { id: audioProducerId })
+    screenAudioProducer = null
+  }
+
+  console.log('[Soup] Screen share stopped')
 }
 
 // ─── Subscribe: receive remote audio ────────────────────────────
@@ -520,7 +600,7 @@ export async function subscribe() {
     const rawParams = await send('CreateConsumerTransport')
     consumerTransport = device.createRecvTransport({
       ...mapTransportParams(rawParams),
-      iceServers: ICE_SERVERS
+      iceServers: getIceServers()
     })
 
     consumerTransport.on('connectionstatechange', (state) => {
@@ -541,7 +621,7 @@ export async function subscribe() {
 }
 
 // ─── Consume a remote producer ───────────────────────────────────
-export async function consumeProducer(producerId, kind, onStream, clientId) {
+export async function consumeProducer(producerId, kind, onStream, clientId, producedType) {
   if (!consumerTransport) await subscribe()
 
   const consumerParams = await send('Consume', {
@@ -571,27 +651,37 @@ export async function consumeProducer(producerId, kind, onStream, clientId) {
   console.log(`[Soup] Consumer resumed [id:${consumer.id}]`)
 
   // play audio or stream via DOM element
+  let cleanup = null
+  let audioEl = null
+
   if (kind === 'audio') {
-    const audioEl = document.createElement('audio')
+    audioEl = document.createElement('audio')
     audioEl.srcObject = stream
     audioEl.autoplay = true
-    audioEl.muted = soundMuted
+    // Initial mute state - applyAllAudioState() below sorts out the real
+    // value for ScreenShareAudio (focus-driven) and mic audio (per-client overrides).
+    audioEl.muted = producedType === 'ScreenShareAudio' ? true : soundMuted
     document.body.appendChild(audioEl)
     audioEl.play().catch((err) => console.error('[Soup] Audio play failed:', err))
     remoteAudioElements.push(audioEl)
-    remoteCleanups.push(() => {
+
+    // Screen/tab audio isn't the client's voice - don't feed it into the
+    // speaking indicator.
+    let stopDetector = null
+    if (clientId != null && producedType !== 'ScreenShareAudio') {
+      stopDetector = createSpeakingDetector(stream, (isSpeaking) => {
+        activeCallbacks.onClientSpeaking?.(clientId, isSpeaking)
+      })
+    }
+
+    cleanup = () => {
       audioEl.pause()
       audioEl.srcObject = null
       audioEl.remove()
       remoteAudioElements = remoteAudioElements.filter((el) => el !== audioEl)
-    })
-
-    if (clientId != null) {
-      const stopDetector = createSpeakingDetector(stream, (isSpeaking) => {
-        activeCallbacks.onClientSpeaking?.(clientId, isSpeaking)
-      })
-      remoteCleanups.push(stopDetector)
+      stopDetector?.()
     }
+    remoteCleanups.push(cleanup)
   } else if (kind === 'video') {
     // If this client already had a video producer (e.g. restarted screen
     // share before a ProducerClosed notice arrived), close out the stale
@@ -607,7 +697,11 @@ export async function consumeProducer(producerId, kind, onStream, clientId) {
     onStream?.({ stream, kind, consumerId: consumer.id, clientId })
   }
 
-  remoteConsumers.set(producerId, { consumer, consumerId: consumer.id, kind, clientId })
+  remoteConsumers.set(producerId, { consumer, consumerId: consumer.id, kind, clientId, producedType, cleanup, audioEl })
+
+  if (kind === 'audio') {
+    applyAllAudioState()
+  }
 
   console.log(`[Soup] Consuming ${kind} [id:${consumer.id}]`)
   return { stream, kind, consumerId: consumer.id }
@@ -621,6 +715,8 @@ export function resetMediaState() {
   consumerTransport = null
   screenProducer?.close()
   screenProducer = null
+  screenAudioProducer?.close()
+  screenAudioProducer = null
   producers = []
   localProducerIds.clear()
   device = null
@@ -631,6 +727,7 @@ export function resetMediaState() {
   remoteCleanups = []
   remoteAudioElements = []
   remoteConsumers.clear()
+  focusedClientId = null
   console.log('[Soup] Media state reset')
 }
 
@@ -652,6 +749,52 @@ export function setMicMuted(muted) {
 export function setSoundMuted(muted) {
   soundMuted = muted
   remoteAudioElements.forEach((el) => { el.muted = muted })
+  applyAllAudioState()
+}
+
+// Applies the focus-driven ScreenShareAudio state and the per-client mic
+// volume/mute overrides to every remote audio element.
+function applyAllAudioState() {
+  for (const entry of remoteConsumers.values()) {
+    if (entry.kind !== 'audio' || !entry.audioEl) continue
+
+    if (entry.producedType === 'ScreenShareAudio') {
+      // Only the focused stream's screen-share audio should be audible.
+      if (entry.clientId === focusedClientId) {
+        entry.audioEl.volume = focusedVolume
+        entry.audioEl.muted = soundMuted || focusedMuted
+      } else {
+        entry.audioEl.muted = true
+      }
+    } else {
+      const override = clientAudioOverrides.get(entry.clientId)
+      entry.audioEl.volume = override?.volume ?? 1
+      entry.audioEl.muted = soundMuted || !!override?.muted
+    }
+  }
+}
+
+// Called by the UI when the focused stream or its volume/mute state changes.
+export function setFocusedScreenAudio(clientId, { volume, muted } = {}) {
+  focusedClientId = clientId
+  if (volume != null) focusedVolume = volume
+  if (muted != null) focusedMuted = muted
+  applyAllAudioState()
+}
+
+// Called by the sidebar's per-client right-click controls to locally
+// lower the volume of, or fully mute, a specific client's mic audio.
+export function setClientAudioState(clientId, { volume, muted } = {}) {
+  const current = clientAudioOverrides.get(clientId) || { volume: 1, muted: false }
+  clientAudioOverrides.set(clientId, {
+    volume: volume != null ? volume : current.volume,
+    muted: muted != null ? muted : current.muted,
+  })
+  applyAllAudioState()
+}
+
+export function getClientAudioState(clientId) {
+  return clientAudioOverrides.get(clientId) || { volume: 1, muted: false }
 }
 
 // ─── Getters ─────────────────────────────────────────────────────

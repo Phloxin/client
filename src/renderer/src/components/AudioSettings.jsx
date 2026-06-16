@@ -64,12 +64,15 @@ function AudioSettings({ micSettings, updateMicSettings }) {
               Silences your mic when ambient noise falls below a set level, cutting background sound between words.
             </p>
           </div>
-          <input
-            type="checkbox"
-            id="useVolumeGate"
-            checked={draftSettings.useVolumeGate}
-            onChange={(e) => updateDraft({ useVolumeGate: e.target.checked })}
-          />
+          <label className="toggle-switch">
+            <input
+              type="checkbox"
+              id="useVolumeGate"
+              checked={draftSettings.useVolumeGate}
+              onChange={(e) => updateDraft({ useVolumeGate: e.target.checked })}
+            />
+            <span className="toggle-slider" />
+          </label>
         </div>
 
         <div className="settings-section">
@@ -97,12 +100,15 @@ function AudioSettings({ micSettings, updateMicSettings }) {
               PLEASE NOTE: This feature interferes with the microphone test above, be sure to disable it.
             </p>
           </div>
-          <input
-            type="checkbox"
-            id="echoCancellation"
-            checked={draftSettings.echoCancellation}
-            onChange={(e) => updateDraft({ echoCancellation: e.target.checked })}
-          />
+          <label className="toggle-switch">
+            <input
+              type="checkbox"
+              id="echoCancellation"
+              checked={draftSettings.echoCancellation}
+              onChange={(e) => updateDraft({ echoCancellation: e.target.checked })}
+            />
+            <span className="toggle-slider" />
+          </label>
         </div>
 
         {/* 4. Noise Suppression */}
@@ -113,12 +119,15 @@ function AudioSettings({ micSettings, updateMicSettings }) {
               Filters out steady background noise such as fans, air conditioning, and keyboard clicks.
             </p>
           </div>
-          <input
-            type="checkbox"
-            id="noiseSuppression"
-            checked={draftSettings.noiseSuppression}
-            onChange={(e) => updateDraft({ noiseSuppression: e.target.checked })}
-          />
+          <label className="toggle-switch">
+            <input
+              type="checkbox"
+              id="noiseSuppression"
+              checked={draftSettings.noiseSuppression}
+              onChange={(e) => updateDraft({ noiseSuppression: e.target.checked })}
+            />
+            <span className="toggle-slider" />
+          </label>
         </div>
 
         {/* 5. Auto Gain Control */}
@@ -129,12 +138,15 @@ function AudioSettings({ micSettings, updateMicSettings }) {
               Automatically adjusts microphone volume to maintain a consistent input level.
             </p>
           </div>
-          <input
-            type="checkbox"
-            id="autoGainControl"
-            checked={draftSettings.autoGainControl}
-            onChange={(e) => updateDraft({ autoGainControl: e.target.checked })}
-          />
+          <label className="toggle-switch">
+            <input
+              type="checkbox"
+              id="autoGainControl"
+              checked={draftSettings.autoGainControl}
+              onChange={(e) => updateDraft({ autoGainControl: e.target.checked })}
+            />
+            <span className="toggle-slider" />
+          </label>
         </div>
 
       </div>

@@ -1,0 +1,332 @@
+/* ============================================================================
+   SERVER MENU — sidebar header connect dropdown + add-server modal
+   ============================================================================ */
+
+.server-menu {
+  position: relative;
+  width: 100%;
+}
+
+/* ── Trigger (header button) ─────────────────────────────────────────────── */
+
+.server-menu-trigger {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  width: 100%;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: var(--color-text);
+  cursor: pointer;
+  font-weight: var(--font-weight-semibold);
+  font-size: var(--font-size-md);
+}
+
+.server-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-danger);
+  flex-shrink: 0;
+  transition: background 0.2s ease;
+}
+
+.server-status-dot.connected {
+  background: var(--color-success);
+}
+
+.server-menu-label {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex: 1;
+  text-align: left;
+}
+
+.server-menu-chevron {
+  flex-shrink: 0;
+  color: var(--color-text-secondary);
+  transition: transform 0.2s ease;
+}
+
+.server-menu-chevron.open {
+  transform: rotate(180deg);
+}
+
+/* ── Dropdown ────────────────────────────────────────────────────────────── */
+
+.server-menu-dropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  right: 0;
+  z-index: 50;
+  background: var(--color-background-mute);
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius-md);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  padding: var(--spacing-xs);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.server-menu-section-label {
+  padding: 6px var(--spacing-sm) 4px;
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-bold);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-text-muted);
+}
+
+.server-menu-empty {
+  padding: 8px var(--spacing-sm);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+}
+
+.server-menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: 7px var(--spacing-sm);
+  border-radius: var(--border-radius-sm);
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.server-menu-item:hover {
+  background: var(--color-border);
+}
+
+.server-menu-item.active {
+  background: color-mix(in srgb, var(--color-primary) 15%, transparent);
+  cursor: default;
+}
+
+.server-menu-item-info {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
+}
+
+.server-menu-item-name {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.server-menu-item-host {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.server-menu-item-badge {
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-success);
+  flex-shrink: 0;
+}
+
+.server-menu-item-remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  padding: 0;
+  border: none;
+  border-radius: var(--border-radius-sm);
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.server-menu-item-remove:hover {
+  background: color-mix(in srgb, var(--color-danger) 18%, transparent);
+  color: var(--color-danger);
+}
+
+.server-menu-action {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: 8px var(--spacing-sm);
+  margin-top: 2px;
+  border: none;
+  border-radius: var(--border-radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.server-menu-action:hover {
+  background: var(--color-border);
+  color: var(--color-text);
+}
+
+.server-menu-action.disconnect {
+  border-top: 1px solid var(--color-border);
+  border-radius: 0;
+  margin-top: var(--spacing-xs);
+  padding-top: 10px;
+  color: var(--color-danger);
+}
+
+.server-menu-action.disconnect:hover {
+  background: color-mix(in srgb, var(--color-danger) 14%, transparent);
+  color: var(--color-danger);
+}
+
+/* ── Add-server modal ────────────────────────────────────────────────────── */
+
+.add-server-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1100;
+  padding: 24px;
+}
+
+.add-server-modal {
+  width: min(420px, 96%);
+  background: var(--color-background);
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius-md);
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.45);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.add-server-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.add-server-title {
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text);
+}
+
+.add-server-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: var(--border-radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.add-server-close:hover {
+  background: var(--color-background-mute);
+  color: var(--color-text);
+}
+
+.add-server-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+  padding: 18px;
+}
+
+.add-server-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.add-server-field span {
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-bold);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-tertiary);
+}
+
+.add-server-field input {
+  background: var(--color-background-mute);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius-sm);
+  padding: var(--spacing-sm);
+  font-size: var(--font-size-md);
+  font-family: var(--font-family-primary);
+  transition: border-color 0.15s;
+}
+
+.add-server-field input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+}
+
+.add-server-error {
+  font-size: var(--font-size-sm);
+  color: var(--color-danger);
+}
+
+.add-server-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 14px 18px;
+  border-top: 1px solid var(--color-border);
+}
+
+.add-server-btn {
+  padding: 7px 18px;
+  border: none;
+  border-radius: var(--border-radius-sm);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  font-family: var(--font-family-primary);
+  transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+
+.add-server-btn.secondary {
+  background: transparent;
+  color: var(--color-text-secondary);
+}
+
+.add-server-btn.secondary:hover {
+  color: var(--color-text);
+  background: var(--color-background-mute);
+}
+
+.add-server-btn.primary {
+  background: var(--color-primary);
+  color: var(--color-background);
+}
+
+.add-server-btn.primary:hover {
+  opacity: 0.85;
+}

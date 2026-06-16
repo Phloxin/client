@@ -1,5 +1,5 @@
-import { app, shell, BrowserWindow, ipcMain, session, desktopCapturer, safeStorage } from 'electron'
-import { join } from 'path'
+import { app, shell, BrowserWindow, ipcMain, session, desktopCapturer, safeStorage, dialog } from 'electron'
+import { basename, join } from 'path'
 import { readFileSync, writeFileSync, unlinkSync } from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
@@ -42,11 +42,72 @@ function persistAuth() {
   }
 }
 
+// ─── Saved servers persistence ────────────────────────────────────
+// The user's saved server list (nickname / host / username / password) lives in
+// memory and is persisted to disk encrypted via the OS keychain, since it holds
+// credentials. Falls back to in-memory-only when encryption isn't available.
+let servers = []
+
+function serversFilePath() {
+  return join(app.getPath('userData'), 'servers.json')
+}
+
+function readServersFile() {
+  if (!safeStorage.isEncryptionAvailable()) return []
+  try {
+    const raw = readFileSync(serversFilePath(), 'utf-8')
+    const { data } = JSON.parse(raw)
+    if (!data) return []
+    return JSON.parse(safeStorage.decryptString(Buffer.from(data, 'base64')))
+  } catch {
+    return []
+  }
+}
+
+function persistServers() {
+  if (!safeStorage.isEncryptionAvailable()) return
+  try {
+    const data = safeStorage.encryptString(JSON.stringify(servers)).toString('base64')
+    writeFileSync(serversFilePath(), JSON.stringify({ data }))
+  } catch (err) {
+    console.error('Failed to persist servers:', err)
+  }
+}
+
+// Smallest the window may get before the sidebar starts being clipped. These
+// are content-area sizes (see `useContentSize` below), derived from the
+// renderer layout so the sidebar at its narrowest stays fully usable.
+//   .layout padding  = --spacing-sm (8px) on every edge
+//   sidebar MIN_WIDTH = 180px (SideBar.jsx, border-box so borders included)
+const LAYOUT_PADDING = 8
+const SIDEBAR_MIN_WIDTH = 180
+
+// Width: both side paddings + the sidebar, so it never clips horizontally.
+const MIN_CONTENT_WIDTH = SIDEBAR_MIN_WIDTH + LAYOUT_PADDING * 2 // 196
+
+// Height: top+bottom padding + the sidebar's fixed-height chrome - the server
+// header, the "Channels" label, and the bottom control-button wrapper - so the
+// control buttons stay visible even at the shortest allowed height. (The
+// channel list between them is the part that gives when space is tight.)
+const SIDEBAR_HEADER_HEIGHT = 49
+const SIDEBAR_SECTION_LABEL_HEIGHT = 42
+const SIDEBAR_CONTROLS_HEIGHT = 93
+const MIN_CONTENT_HEIGHT =
+  LAYOUT_PADDING * 2 +
+  SIDEBAR_HEADER_HEIGHT +
+  SIDEBAR_SECTION_LABEL_HEIGHT +
+  SIDEBAR_CONTROLS_HEIGHT // 200
+
 function createWindow() {
   // Create the browser window.
   const mainWindow = new BrowserWindow({
     width: 1100,
     height: 670,
+    // Treat width/height/min* as the web content area (excludes the OS title
+    // bar) so the minimums map directly onto the renderer layout below.
+    useContentSize: true,
+    minWidth: MIN_CONTENT_WIDTH,
+    minHeight: MIN_CONTENT_HEIGHT,
     show: false,
     autoHideMenuBar: true,
     ...(process.platform === 'linux' ? { icon } : {}),
@@ -131,6 +192,18 @@ app.whenReady().then(() => {
   authToken = persisted.token
   authClient = persisted.client
 
+  // Load the saved server list from disk
+  servers = readServersFile()
+
+  // Return the saved server list to any window that asks
+  ipcMain.handle('get-servers', () => servers)
+
+  // Replace the saved server list (add/remove happen in the renderer)
+  ipcMain.on('store-servers', (_, list) => {
+    servers = Array.isArray(list) ? list : []
+    persistServers()
+  })
+
   // Store token from any window
   ipcMain.on('store-token', (_, token) => {
     authToken = token
@@ -158,6 +231,25 @@ app.whenReady().then(() => {
     try {
       unlinkSync(authFilePath())
     } catch {}
+  })
+
+  // Download a remote file (e.g. a chat image attachment) to a user-chosen
+  // location. Shows a native save dialog, then fetches the URL and writes it.
+  ipcMain.handle('download-file', async (event, { url, filename }) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    const { canceled, filePath } = await dialog.showSaveDialog(win, {
+      defaultPath: filename || basename(new URL(url).pathname) || 'download'
+    })
+    if (canceled || !filePath) return { ok: false, canceled: true }
+    try {
+      const res = await fetch(url)
+      if (!res.ok) throw new Error(`Server responded ${res.status}`)
+      const buffer = Buffer.from(await res.arrayBuffer())
+      writeFileSync(filePath, buffer)
+      return { ok: true, filePath }
+    } catch (err) {
+      return { ok: false, error: err.message }
+    }
   })
 
   // Login on Admin Window — forward log message to all windows

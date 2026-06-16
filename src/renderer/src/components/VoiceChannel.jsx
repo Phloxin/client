@@ -1,10 +1,12 @@
 import { useState, useEffect, useRef, forwardRef, useImperativeHandle } from 'react'
-import { connect, publish, republish, disconnect, shareScreen, stopScreenShare, rebindCallbacks, createSpeakingDetector } from '../lib/soup'
+import { connect, publish, republish, disconnect, shareScreen, shareCamera, stopScreenShare, rebindCallbacks, createSpeakingDetector } from '../lib/soup'
 import { useSettings } from '../context/SettingsContext'
 import ClientIndicator from './ClientIndicator'
 import ScreenSourcePicker from './ScreenSourcePicker'
 import './VoiceChannel.css'
-import { IconVolume } from '@tabler/icons-react'
+import { IconVolume, IconCircle, IconCircleFilled, IconLock, IconLockOpen } from '@tabler/icons-react'
+
+const API_BASE_URL = 'http://47.16.222.82:3000'
 
 const VoiceChannel = forwardRef(function VoiceChannel(
   { channel, clients, token, self, micMuted, deafened, onStreamsUpdate, onJoinedChange, onSharingChange, onRequestJoin },
@@ -99,7 +101,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     setConnecting(true)
     setError(null)
     try {
-      await fetch('/api/server/client', {
+      await fetch(`${API_BASE_URL}/server/client`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -171,7 +173,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     })
 
     try {
-      await fetch('/api/server/client', {
+      await fetch(`${API_BASE_URL}/server/client`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -207,7 +209,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     localSpeakingCleanupRef.current = null
     if (onStreamsUpdate) onStreamsUpdate([])
     try {
-      await fetch('/api/server/client', {
+      await fetch(`${API_BASE_URL}/server/client`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -230,12 +232,19 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   }
 
   // Capture and publish the chosen source after the user picks one
-  const startShareWithSource = async (sourceId) => {
+  const startShareWithSource = async (sourceId, options = {}) => {
     setShowSourcePicker(false)
-    // Tell the main process which source the display-media handler should use
-    window.electron.ipcRenderer.send('set-screen-source', sourceId)
     try {
-      const screen = await shareScreen()
+      let screen
+      if (options.isCamera) {
+        // Webcams capture directly via getUserMedia - no main-process source
+        // hand-off, and no audio/fps/resolution settings.
+        screen = await shareCamera(sourceId)
+      } else {
+        // Tell the main process which source the display-media handler should use
+        window.electron.ipcRenderer.send('set-screen-source', sourceId)
+        screen = await shareScreen(options)
+      }
       if (screen?.stream) {
         screen.stream.getVideoTracks()[0].onended = () => {
           stopScreenShare()
@@ -285,7 +294,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   return (
     <div className={`channel-item${joined ? ' active' : ''}`} onDoubleClick={handleDoubleClick}>
       <div className="channel-row">
-        <IconVolume size={20}/>
+        {joined ? <IconVolume size={20}/> : <IconCircle size={20}/>}
         <span className="channel-name">{channel.name}</span>
       </div>
       {error && <div style={{ color: '#ed4245', fontSize: 11, paddingLeft: 16 }}>{error}</div>}
@@ -296,6 +305,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
           speaking={!!speakingClients[c.id]}
           micMuted={c.id === self.id ? micMuted : !!c.self_mute}
           deafened={c.id === self.id ? deafened : !!c.self_deaf}
+          isSelf={c.id === self.id}
         />
       ))}
       {showSourcePicker && (
