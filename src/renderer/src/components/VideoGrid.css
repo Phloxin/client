@@ -147,16 +147,16 @@
   cursor: pointer;
   outline: none;
   opacity: 0;
-  margin-right: 0;
+  margin-left: 0;
   pointer-events: none;
-  transition: width 0.15s ease, opacity 0.15s ease, margin-right 0.15s ease;
+  transition: width 0.15s ease, opacity 0.15s ease, margin-left 0.15s ease;
 }
 
 .volume-control:hover .volume-slider,
 .volume-control:focus-within .volume-slider {
   width: 80px;
   opacity: 1;
-  margin-right: 10px;
+  margin-left: 10px;
   pointer-events: auto;
 }
 

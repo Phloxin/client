@@ -84,21 +84,13 @@ function VideoGrid({ streams, clients, selectedStreamId, onSelect }) {
         <video
           autoPlay
           playsInline
-          ref={(el) => { if (el) el.srcObject = selectedStream.stream }}
+          ref={(el) => { if (el && el.srcObject !== selectedStream.stream) el.srcObject = selectedStream.stream }}
         />
         <div className="focus-label">
           <span>{resolveLabel(selectedStream)}</span>
         </div>
         <div className="video-controls">
           <div className="volume-control">
-            <button
-              type="button"
-              className="control-btn"
-              onClick={toggleMute}
-              title={muted ? 'Unmute' : 'Mute'}
-            >
-              <VolumeIcon size={18} />
-            </button>
             <input
               type="range"
               className="volume-slider"
@@ -108,6 +100,14 @@ function VideoGrid({ streams, clients, selectedStreamId, onSelect }) {
               onChange={handleVolumeChange}
               title="Volume"
             />
+            <button
+              type="button"
+              className="control-btn"
+              onClick={toggleMute}
+              title={muted ? 'Unmute' : 'Mute'}
+            >
+              <VolumeIcon size={18} />
+            </button>
           </div>
           <button
             type="button"
@@ -140,7 +140,7 @@ function VideoGrid({ streams, clients, selectedStreamId, onSelect }) {
               autoPlay
               playsInline
               muted
-              ref={(el) => { if (el) el.srcObject = s.stream }}
+              ref={(el) => { if (el && el.srcObject !== s.stream) el.srcObject = s.stream }}
             />
             <div className="thumb-label">
               {resolveLabel(s)}

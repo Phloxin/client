@@ -8,7 +8,7 @@ import ChatPanel from '../components/ChatPanel'
 import Settings from './Settings'
 import { disconnect as disconnectVoice } from '../lib/soup'
 import { setServerHost, apiBase, wsBase } from '../lib/serverConfig'
-import { DEV_MODE, MOCK_TOKEN, MOCK_CLIENT, MOCK_CHANNELS, MOCK_CLIENTS } from '../lib/mock'
+import { DEV_MODE, MOCK_TOKEN, MOCK_CLIENT, MOCK_CHANNELS, MOCK_CLIENTS, createMockStreams } from '../lib/mock'
 import { IconVideoFilled, IconMessage2Filled, IconMessage, IconVideo } from '@tabler/icons-react'
 
 const MAX_LOG_ENTRIES = 500
@@ -190,7 +190,9 @@ function Main() {
       setChannels(MOCK_CHANNELS)
       setClients(MOCK_CLIENTS)
       setFeed([systemEntry('Connected to server (dev mode)')])
-      return
+      const mockStreams = createMockStreams()
+      setAllVideoStreams(mockStreams)
+      return () => mockStreams.forEach((s) => s._stopMock?.())
     }
 
     Promise.all([
