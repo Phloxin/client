@@ -1,5 +1,9 @@
 // ─── Imports ────────────────────────────────────────────────────
 import { Device } from 'mediasoup-client'
+import { loadRnnoise, RnnoiseWorkletNode } from '@sapphi-red/web-noise-suppressor'
+import rnnoiseWasmPath from '@sapphi-red/web-noise-suppressor/rnnoise.wasm?url'
+import rnnoiseSimdWasmPath from '@sapphi-red/web-noise-suppressor/rnnoise_simd.wasm?url'
+import rnnoiseWorkletPath from '@sapphi-red/web-noise-suppressor/rnnoiseWorklet.js?url'
 import { apiBase, wsBase, getIceServers } from './serverConfig'
 
 // ─── State ──────────────────────────────────────────────────────
@@ -12,13 +16,22 @@ let localProducerIds = new Set()
 let screenProducer = null
 let screenAudioProducer = null
 let currentChannel = null
-let volumeGateProcessor = null
+// Stop function for the active local audio processing chain (RNNoise / volume
+// gate). Tears down its AudioContext and analysis loop; null when no chain is active.
+let audioProcessorStop = null
+// The RNNoise WASM binary, fetched once and reused across AudioContexts.
+let rnnoiseBinaryPromise = null
 let subscribePromise = null
 let activeCallbacks = {}
 let remoteCleanups = []
 let remoteAudioElements = []
 let micMuted = false
 let soundMuted = false
+// Playback output device (sinkId) and master output volume (0..1) applied to
+// every remote audio element. Persisted in settings and pushed in via
+// setOutputDevice()/setMasterVolume(); new audio elements pick them up on creation.
+let outputDeviceId = 'default'
+let masterVolume = 1
 // Tracks remote consumers by the producer id they're consuming, so they
 // can be closed and removed when that producer goes away (either because
 // a new one replaces it, or the server tells us it closed).
@@ -169,38 +182,82 @@ async function loadDevice() {
   console.log('[Soup] Device loaded')
 }
 
-// ─── Apply Volume Gate to Audio Stream ───────────────────────────
-// Returns the gated stream and a stop() function that cancels the
-// level-check loop and closes the audio context.
-function applyVolumeGate(audioContext, stream, threshold) {
-  const source = audioContext.createMediaStreamSource(stream)
-  const analyser = audioContext.createAnalyser()
-  const gate = audioContext.createGain()
-  const destination = audioContext.createMediaStreamDestination()
+// Fetch (once) the RNNoise WASM binary. The SIMD build is used automatically
+// where the platform supports it. The binary is reused across AudioContexts.
+function getRnnoiseBinary() {
+  if (!rnnoiseBinaryPromise) {
+    rnnoiseBinaryPromise = loadRnnoise({
+      url: rnnoiseWasmPath,
+      simdUrl: rnnoiseSimdWasmPath,
+    }).catch((err) => {
+      // Don't cache a failed load - allow a later retry.
+      rnnoiseBinaryPromise = null
+      throw err
+    })
+  }
+  return rnnoiseBinaryPromise
+}
 
-  analyser.fftSize = 256
-  source.connect(analyser)
-  analyser.connect(gate)
-  gate.connect(destination)
-
-  const dataArray = new Uint8Array(analyser.frequencyBinCount)
-  let rafId
-
-  const checkLevel = () => {
-    analyser.getByteFrequencyData(dataArray)
-    const average = dataArray.reduce((a, b) => a + b) / dataArray.length
-    const normalized = (average / 255) * 100
-
-    // If audio is below threshold, mute; otherwise pass through
-    gate.gain.setValueAtTime(normalized >= threshold ? 1 : 0, audioContext.currentTime)
-
-    rafId = requestAnimationFrame(checkLevel)
+// ─── Build the local audio processing chain ──────────────────────
+// Wires the captured mic stream through optional RNNoise denoising (an
+// AudioWorklet that suppresses keyboard/typing and steady background noise
+// while preserving voice) and the optional volume gate, in that order.
+// Returns the processed stream plus a stop() that tears the chain down.
+async function buildAudioProcessor(stream, micSettings) {
+  const needsRnnoise = micSettings.useRnnoise
+  const needsGate = micSettings.useVolumeGate
+  if (!needsRnnoise && !needsGate) {
+    return { stream, stop: () => {} }
   }
 
-  checkLevel()
+  // RNNoise is trained on 48 kHz audio, so pin the context rate to match.
+  const audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 })
+  const source = audioContext.createMediaStreamSource(stream)
+  const destination = audioContext.createMediaStreamDestination()
+  let node = source
+  let rnnoiseNode = null
+  let rafId = null
+
+  if (needsRnnoise) {
+    try {
+      const binary = await getRnnoiseBinary()
+      await audioContext.audioWorklet.addModule(rnnoiseWorkletPath)
+      rnnoiseNode = new RnnoiseWorkletNode(audioContext, { maxChannels: 1, wasmBinary: binary })
+      node.connect(rnnoiseNode)
+      node = rnnoiseNode
+      console.log('[Soup] RNNoise denoiser applied')
+    } catch (err) {
+      // Fall through to whatever processing remains (or the raw stream).
+      console.error('[Soup] RNNoise init failed, skipping:', err)
+    }
+  }
+
+  if (needsGate) {
+    const analyser = audioContext.createAnalyser()
+    const gate = audioContext.createGain()
+    analyser.fftSize = 256
+    node.connect(analyser)
+    analyser.connect(gate)
+    node = gate
+
+    const dataArray = new Uint8Array(analyser.frequencyBinCount)
+    const checkLevel = () => {
+      analyser.getByteFrequencyData(dataArray)
+      const average = dataArray.reduce((a, b) => a + b) / dataArray.length
+      const normalized = (average / 255) * 100
+      // If audio is below threshold, mute; otherwise pass through
+      gate.gain.setValueAtTime(normalized >= micSettings.volumeGateThreshold ? 1 : 0, audioContext.currentTime)
+      rafId = requestAnimationFrame(checkLevel)
+    }
+    checkLevel()
+    console.log('[Soup] Volume gate applied, threshold:', micSettings.volumeGateThreshold)
+  }
+
+  node.connect(destination)
 
   const stop = () => {
-    cancelAnimationFrame(rafId)
+    if (rafId) cancelAnimationFrame(rafId)
+    try { rnnoiseNode?.destroy() } catch {}
     try { source.disconnect() } catch {}
     try { audioContext.close() } catch {}
   }
@@ -208,11 +265,11 @@ function applyVolumeGate(audioContext, stream, threshold) {
   return { stream: destination.stream, stop }
 }
 
-// Stop the currently active volume gate processor (if any), releasing its
-// AudioContext and level-check loop.
-function stopVolumeGate() {
-  volumeGateProcessor?.()
-  volumeGateProcessor = null
+// Stop the currently active audio processing chain (if any), releasing its
+// AudioContext, worklet, and level-check loop.
+function stopAudioProcessor() {
+  audioProcessorStop?.()
+  audioProcessorStop = null
 }
 
 // ─── Detect speaking activity on an audio stream ──────────────────
@@ -306,7 +363,9 @@ export async function publish(micSettings, onStream) {
       audio: {
         deviceId: micSettings.deviceId && micSettings.deviceId !== 'default' ? { exact: micSettings.deviceId } : undefined,
         echoCancellation: micSettings.echoCancellation,
-        noiseSuppression: micSettings.noiseSuppression,
+        // RNNoise replaces the browser suppressor - never run both (they're
+        // mutually exclusive in the UI; this guards against any stale state).
+        noiseSuppression: micSettings.useRnnoise ? false : micSettings.noiseSuppression,
         autoGainControl: micSettings.autoGainControl,
         sampleRate: micSettings.sampleRate,
         channelCount: micSettings.channelCount,
@@ -317,21 +376,17 @@ export async function publish(micSettings, onStream) {
     throw new Error(`Failed to get audio device: ${err.message}`)
   }
 
-  // Apply volume gate if enabled (stop any previous gate first so its
-  // AudioContext and level-check loop don't leak)
-  stopVolumeGate()
+  // Apply the local processing chain (RNNoise / volume gate). Stop any
+  // previous chain first so its AudioContext and worklet don't leak.
+  stopAudioProcessor()
   let processedStream = stream
-  if (micSettings.useVolumeGate) {
-    try {
-      const audioContext = new (window.AudioContext || window.webkitAudioContext)()
-      const gated = applyVolumeGate(audioContext, stream, micSettings.volumeGateThreshold)
-      processedStream = gated.stream
-      volumeGateProcessor = gated.stop
-      console.log('[Soup] Volume gate applied, threshold:', micSettings.volumeGateThreshold)
-    } catch (err) {
-      console.error('[Soup] Failed to apply volume gate:', err)
-      // Fall back to unprocessed stream
-    }
+  try {
+    const processed = await buildAudioProcessor(stream, micSettings)
+    processedStream = processed.stream
+    audioProcessorStop = processed.stop
+  } catch (err) {
+    console.error('[Soup] Failed to build audio processor:', err)
+    // Fall back to unprocessed stream
   }
 
   onStream?.(processedStream)
@@ -373,7 +428,9 @@ export async function republish(micSettings, onStream) {
       audio: {
         deviceId: micSettings.deviceId && micSettings.deviceId !== 'default' ? { exact: micSettings.deviceId } : undefined,
         echoCancellation: micSettings.echoCancellation,
-        noiseSuppression: micSettings.noiseSuppression,
+        // RNNoise replaces the browser suppressor - never run both (they're
+        // mutually exclusive in the UI; this guards against any stale state).
+        noiseSuppression: micSettings.useRnnoise ? false : micSettings.noiseSuppression,
         autoGainControl: micSettings.autoGainControl,
         sampleRate: micSettings.sampleRate,
         channelCount: micSettings.channelCount,
@@ -384,19 +441,16 @@ export async function republish(micSettings, onStream) {
     throw new Error(`Failed to get audio device: ${err.message}`)
   }
 
-  // Re-apply volume gate if enabled (stop any previous gate first so its
-  // AudioContext and level-check loop don't leak)
-  stopVolumeGate()
+  // Re-apply the local processing chain (RNNoise / volume gate). Stop any
+  // previous chain first so its AudioContext and worklet don't leak.
+  stopAudioProcessor()
   let processedStream = stream
-  if (micSettings.useVolumeGate) {
-    try {
-      const audioContext = new (window.AudioContext || window.webkitAudioContext)()
-      const gated = applyVolumeGate(audioContext, stream, micSettings.volumeGateThreshold)
-      processedStream = gated.stream
-      volumeGateProcessor = gated.stop
-    } catch (err) {
-      console.error('[Soup] republish volume gate failed:', err)
-    }
+  try {
+    const processed = await buildAudioProcessor(stream, micSettings)
+    processedStream = processed.stream
+    audioProcessorStop = processed.stop
+  } catch (err) {
+    console.error('[Soup] republish audio processor failed:', err)
   }
 
   onStream?.(processedStream)
@@ -661,6 +715,12 @@ export async function consumeProducer(producerId, kind, onStream, clientId, prod
     // Initial mute state - applyAllAudioState() below sorts out the real
     // value for ScreenShareAudio (focus-driven) and mic audio (per-client overrides).
     audioEl.muted = producedType === 'ScreenShareAudio' ? true : soundMuted
+    // Route playback to the user's chosen output device, if the platform supports it.
+    if (typeof audioEl.setSinkId === 'function') {
+      audioEl
+        .setSinkId(outputDeviceId)
+        .catch((err) => console.error('[Soup] setSinkId failed:', err))
+    }
     document.body.appendChild(audioEl)
     audioEl.play().catch((err) => console.error('[Soup] Audio play failed:', err))
     remoteAudioElements.push(audioEl)
@@ -721,7 +781,7 @@ export function resetMediaState() {
   localProducerIds.clear()
   device = null
   currentChannel = null
-  stopVolumeGate()
+  stopAudioProcessor()
   subscribePromise = null
   remoteCleanups.forEach((fn) => fn())
   remoteCleanups = []
@@ -745,6 +805,24 @@ export function setMicMuted(muted) {
     .forEach((p) => (muted ? p.pause() : p.resume()))
 }
 
+// Routes playback to the chosen output device for every current and future
+// remote audio element. Pass 'default' (or empty) for the system default.
+export function setOutputDevice(deviceId) {
+  outputDeviceId = deviceId || 'default'
+  for (const el of remoteAudioElements) {
+    if (typeof el.setSinkId === 'function') {
+      el.setSinkId(outputDeviceId).catch((err) => console.error('[Soup] setSinkId failed:', err))
+    }
+  }
+}
+
+// Sets the master output volume (0..1) applied on top of per-client/focus
+// volumes for every remote audio element.
+export function setMasterVolume(volume) {
+  masterVolume = Math.max(0, Math.min(1, volume))
+  applyAllAudioState()
+}
+
 // Mutes/unmutes playback of all remote audio elements (deafen).
 export function setSoundMuted(muted) {
   soundMuted = muted
@@ -761,14 +839,14 @@ function applyAllAudioState() {
     if (entry.producedType === 'ScreenShareAudio') {
       // Only the focused stream's screen-share audio should be audible.
       if (entry.clientId === focusedClientId) {
-        entry.audioEl.volume = focusedVolume
+        entry.audioEl.volume = focusedVolume * masterVolume
         entry.audioEl.muted = soundMuted || focusedMuted
       } else {
         entry.audioEl.muted = true
       }
     } else {
       const override = clientAudioOverrides.get(entry.clientId)
-      entry.audioEl.volume = override?.volume ?? 1
+      entry.audioEl.volume = (override?.volume ?? 1) * masterVolume
       entry.audioEl.muted = soundMuted || !!override?.muted
     }
   }
