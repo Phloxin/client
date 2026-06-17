@@ -10,7 +10,7 @@ import Settings from './Settings'
 import { disconnect as disconnectVoice, setFocusedScreenAudio } from '../lib/soup'
 import { setServerHost, apiBase, wsBase } from '../lib/serverConfig'
 import { DEV_MODE, MOCK_TOKEN, MOCK_CLIENT, MOCK_CHANNELS, MOCK_CLIENTS, createMockStreams } from '../lib/mock'
-import { IconVideo, IconMessage2, IconMessage, IconHeadphones } from '@tabler/icons-react'
+import { IconVideo, IconMessage2, IconMessage, IconUsersGroup } from '@tabler/icons-react'
 
 const MAX_LOG_ENTRIES = 500
 const HISTORY_LIMIT = 50
@@ -425,7 +425,7 @@ function Main() {
 
   return (
     <div className="app-shell">
-      <TitleBar title={titleText} icon={IconHeadphones} />
+      <TitleBar title={titleText} icon={IconUsersGroup} />
       <div className="layout">
       <SideBar
         channels={channels}
