@@ -61,9 +61,14 @@
   width: 50px;
 }
 
-.view-toggle-btn:hover {
+.view-toggle-btn:hover:not(:disabled) {
   background: var(--color-text);
   color: var(--color-background-soft);
+}
+
+.view-toggle-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .loading {

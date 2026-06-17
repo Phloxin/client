@@ -6,10 +6,10 @@ import SideBar from '../components/SideBar'
 import VideoGrid from '../components/VideoGrid'
 import ChatPanel from '../components/ChatPanel'
 import Settings from './Settings'
-import { disconnect as disconnectVoice } from '../lib/soup'
+import { disconnect as disconnectVoice, setFocusedScreenAudio } from '../lib/soup'
 import { setServerHost, apiBase, wsBase } from '../lib/serverConfig'
 import { DEV_MODE, MOCK_TOKEN, MOCK_CLIENT, MOCK_CHANNELS, MOCK_CLIENTS, createMockStreams } from '../lib/mock'
-import { IconVideoFilled, IconMessage2Filled, IconMessage, IconVideo } from '@tabler/icons-react'
+import { IconVideo, IconMessage2, IconMessage } from '@tabler/icons-react'
 
 const MAX_LOG_ENTRIES = 500
 const HISTORY_LIMIT = 50
@@ -59,14 +59,90 @@ function Main() {
   const [selectedStreamId, setSelectedStreamId] = useState(null)
   const [servers, setServers] = useState([])
   const [connectedServer, setConnectedServer] = useState(null)
+  const [poppedOut, setPoppedOut] = useState(false)
+  // Stream playback volume (0..100) and mute, owned here so they're shared
+  // between the in-app grid and the popout window (popping out must not reset
+  // a volume the user already lowered).
+  const [streamVolume, setStreamVolume] = useState(100)
+  const [streamMuted, setStreamMuted] = useState(false)
   const eventsWsRef = useRef(null)
   const channelsRef = useRef([])
   const clientsRef = useRef([])
+  const popoutWindowRef = useRef(null)
+  const popoutListenersRef = useRef(new Set())
+  const allVideoStreamsRef = useRef([])
+  const selectedStreamIdRef = useRef(null)
+  const streamVolumeRef = useRef(100)
+  const streamMutedRef = useRef(false)
 
   // Keep refs to the latest channels/clients so the events websocket handler
   // (created once in the effect below) can look them up without stale closures.
   useEffect(() => { channelsRef.current = channels }, [channels])
   useEffect(() => { clientsRef.current = clients }, [clients])
+
+  // Keep refs to the latest streams/selection/volume so the popout bridge (set
+  // up once below) always reads current values without stale closures.
+  useEffect(() => { allVideoStreamsRef.current = allVideoStreams }, [allVideoStreams])
+  useEffect(() => { selectedStreamIdRef.current = selectedStreamId }, [selectedStreamId])
+  useEffect(() => { streamVolumeRef.current = streamVolume }, [streamVolume])
+  useEffect(() => { streamMutedRef.current = streamMuted }, [streamMuted])
+
+  // Notify the popout window whenever the data it mirrors changes.
+  useEffect(() => {
+    popoutListenersRef.current.forEach((cb) => cb())
+  }, [allVideoStreams, clients, selectedStreamId, streamVolume, streamMuted])
+
+  // Expose a bridge the popout window reads via window.opener. Live MediaStream
+  // objects are shared by reference (same origin/process), never serialized.
+  useEffect(() => {
+    window.__videoPopout = {
+      getData: () => ({
+        streams: allVideoStreamsRef.current,
+        clients: clientsRef.current,
+        selectedStreamId: selectedStreamIdRef.current,
+        volume: streamVolumeRef.current,
+        muted: streamMutedRef.current
+      }),
+      select: (id) => setSelectedStreamId(id),
+      setVolume: (v) => setStreamVolume(v),
+      setMuted: (m) => setStreamMuted(m),
+      setFocusedAudio: (clientId, opts) => setFocusedScreenAudio(clientId, opts),
+      subscribe: (cb) => {
+        popoutListenersRef.current.add(cb)
+        return () => popoutListenersRef.current.delete(cb)
+      }
+    }
+    return () => { delete window.__videoPopout }
+  }, [])
+
+  // Pop the video grid out into its own window: switch the main window back to
+  // chat (the toggle stays disabled while popped out) and open the popout.
+  const handlePopout = () => {
+    if (popoutWindowRef.current && !popoutWindowRef.current.closed) {
+      popoutWindowRef.current.focus()
+      return
+    }
+    const url = `${window.location.href.split('#')[0]}#/popout`
+    const win = window.open(url, 'video-popout', 'width=960,height=600')
+    if (!win) return
+    popoutWindowRef.current = win
+    setPoppedOut(true)
+    setViewMode('log')
+  }
+
+  // While popped out, watch for the popout window closing (via its controls or
+  // app shutdown) and restore the in-app stream view + re-enable the toggle.
+  useEffect(() => {
+    if (!poppedOut) return
+    const id = setInterval(() => {
+      if (!popoutWindowRef.current || popoutWindowRef.current.closed) {
+        popoutWindowRef.current = null
+        setPoppedOut(false)
+        setViewMode('video')
+      }
+    }, 500)
+    return () => clearInterval(id)
+  }, [poppedOut])
 
   // The channel the local client currently has joined (chat is scoped to it)
   const selfChannelId = clients.find((c) => c.id === client?.id)?.channel_id ?? null
@@ -171,6 +247,11 @@ function Main() {
   // Disconnect from the current server and return to the disconnected state.
   // Clearing the token tears down the events websocket via the effect cleanup.
   const handleDisconnect = () => {
+    if (popoutWindowRef.current && !popoutWindowRef.current.closed) {
+      popoutWindowRef.current.close()
+    }
+    popoutWindowRef.current = null
+    setPoppedOut(false)
     disconnectVoice()
     setToken(null)
     setClient(null)
@@ -376,8 +457,10 @@ function Main() {
               <button
                 className="view-toggle-btn"
                 onClick={() => setViewMode(viewMode === 'log' ? 'video' : 'log')}
+                disabled={poppedOut}
+                title={poppedOut ? 'Video is open in a separate window' : undefined}
               >
-                {viewMode === 'log' ? <IconVideoFilled size={18}/> : <IconMessage2Filled size={18}/>}
+                {viewMode === 'log' ? <IconVideo size={18}/> : <IconMessage2 size={18}/>}
               </button>
             )}
           </div>
@@ -403,6 +486,11 @@ function Main() {
             clients={clients}
             selectedStreamId={selectedStreamId}
             onSelect={setSelectedStreamId}
+            onPopout={handlePopout}
+            volume={streamVolume}
+            muted={streamMuted}
+            onVolumeChange={setStreamVolume}
+            onMutedChange={setStreamMuted}
           />
         )}
       </main>

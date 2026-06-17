@@ -124,6 +124,28 @@ function createWindow() {
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
+    // The video-grid popout is opened with window.open(url, 'video-popout', ...)
+    // so it stays same-origin/same-process as its opener and can read the live
+    // MediaStream objects off window.opener. Allow it as a real child window;
+    // everything else is treated as an external link.
+    if (details.frameName === 'video-popout') {
+      return {
+        action: 'allow',
+        overrideBrowserWindowOptions: {
+          width: 960,
+          height: 600,
+          minWidth: 360,
+          minHeight: 240,
+          title: 'Video Streams',
+          autoHideMenuBar: true,
+          backgroundColor: '#1e1e1e',
+          webPreferences: {
+            preload: join(__dirname, '../preload/index.js'),
+            sandbox: false
+          }
+        }
+      }
+    }
     shell.openExternal(details.url)
     return { action: 'deny' }
   })

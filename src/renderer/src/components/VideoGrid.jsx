@@ -10,16 +10,15 @@ import {
   IconVolume2,
   IconVolume3,
   IconVolume4,
-  IconVolumeOff
+  IconVolumeOff,
+  IconExternalLink
 } from '@tabler/icons-react'
 import { setFocusedScreenAudio } from '../lib/soup'
 
-function VideoGrid({ streams, clients, selectedStreamId, onSelect }) {
+function VideoGrid({ streams, clients, selectedStreamId, onSelect, onPopout, onFocusAudio, volume, muted, onVolumeChange, onMutedChange }) {
   const viewerRef = useRef(null)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [carouselCollapsed, setCarouselCollapsed] = useState(false)
-  const [volume, setVolume] = useState(100)
-  const [muted, setMuted] = useState(false)
 
   // Track fullscreen state from the browser (covers Esc-to-exit too)
   useEffect(() => {
@@ -54,8 +53,11 @@ function VideoGrid({ streams, clients, selectedStreamId, onSelect }) {
 
   // Only the focused stream's screen-share audio should be audible -
   // re-apply whenever the focus changes or the volume/mute state changes.
+  // When popped out, onFocusAudio routes this to the opener window's soup
+  // instance (which owns the actual audio playback); otherwise apply locally.
   useEffect(() => {
-    setFocusedScreenAudio(selectedStream?.clientId ?? null, { volume: volume / 100, muted })
+    const applyFocusAudio = onFocusAudio || setFocusedScreenAudio
+    applyFocusAudio(selectedStream?.clientId ?? null, { volume: volume / 100, muted })
   }, [selectedStream?.clientId, volume, muted])
 
   if (!streams.length) return (
@@ -67,13 +69,13 @@ function VideoGrid({ streams, clients, selectedStreamId, onSelect }) {
     </div>
   )
 
-  const toggleMute = () => setMuted((prev) => !prev)
+  const toggleMute = () => onMutedChange(!muted)
 
   const handleVolumeChange = (e) => {
     const next = Number(e.target.value)
-    setVolume(next)
-    if (next > 0 && muted) setMuted(false)
-    if (next === 0 && !muted) setMuted(true)
+    onVolumeChange(next)
+    if (next > 0 && muted) onMutedChange(false)
+    if (next === 0 && !muted) onMutedChange(true)
   }
 
   const VolumeIcon = muted || volume === 0 ? IconVolumeOff : volume < 10 ? IconVolume4 : volume <= 50 ? IconVolume2 : IconVolume
@@ -102,30 +104,40 @@ function VideoGrid({ streams, clients, selectedStreamId, onSelect }) {
             />
             <button
               type="button"
-              className="control-btn"
+              className="vid-btn"
               onClick={toggleMute}
               title={muted ? 'Unmute' : 'Mute'}
             >
               <VolumeIcon size={18} />
             </button>
           </div>
+          {onPopout && (
+            <button
+              type="button"
+              className="vid-btn"
+              onClick={onPopout}
+              title="Pop out to window"
+            >
+              <IconExternalLink size={18} />
+            </button>
+          )}
           <button
             type="button"
-            className="control-btn"
-            onClick={() => setCarouselCollapsed((prev) => !prev)}
-            title={carouselCollapsed ? 'Show stream list' : 'Hide stream list'}
-          >
-            {carouselCollapsed ? <IconChevronUp size={18} /> : <IconChevronDown size={18} />}
-          </button>
-          <button
-            type="button"
-            className="control-btn"
+            className="vid-btn"
             onClick={toggleFullscreen}
             title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
           >
             {isFullscreen ? <IconMinimize size={18} /> : <IconMaximize size={18} />}
           </button>
         </div>
+        <button
+          type="button"
+          className="carousel-toggle"
+          onClick={() => setCarouselCollapsed((prev) => !prev)}
+          title={carouselCollapsed ? 'Show stream list' : 'Hide stream list'}
+        >
+          {carouselCollapsed ? <IconChevronUp size={18} /> : <IconChevronDown size={18} />}
+        </button>
       </div>
 
       <div className={`video-carousel${carouselCollapsed ? ' collapsed' : ''}`}>

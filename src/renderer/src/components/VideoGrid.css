@@ -94,7 +94,7 @@
   opacity: 1;
 }
 
-.control-btn {
+.vid-btn {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -109,8 +109,39 @@
   transition: background 0.15s ease;
 }
 
-.control-btn:hover {
-  background: rgba(0, 0, 0, 0.75);
+.vid-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* ── Carousel show/hide toggle (centered along the bottom edge) ──────────── */
+
+.carousel-toggle {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  cursor: pointer;
+  opacity: 0;
+  transition: background 0.15s ease, opacity 0.15s ease;
+}
+
+.carousel-toggle:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.video-focus:hover .carousel-toggle,
+.video-focus:focus-within .carousel-toggle {
+  opacity: 1;
 }
 
 /* ── Volume control ──────────────────────────────────────────────────────── */
@@ -128,13 +159,13 @@
   background: rgba(0, 0, 0, 0.75);
 }
 
-.volume-control .control-btn {
+.volume-control .vid-btn {
   background: transparent;
   flex-shrink: 0;
 }
 
-.volume-control .control-btn:hover {
-  background: transparent;
+.volume-control .vid-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
 }
 
 .volume-slider {
