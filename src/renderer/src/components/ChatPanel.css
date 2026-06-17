@@ -287,16 +287,98 @@
   position: absolute;
   bottom: calc(100% + 8px);
   right: 0;
-  display: grid;
-  grid-template-columns: repeat(6, 1fr);
-  gap: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
   background: var(--color-background-mute);
   border: 1px solid var(--color-border);
   border-radius: var(--border-radius-md);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
   padding: var(--spacing-sm);
-  width: 220px;
+  width: 320px;
   z-index: 1000;
+}
+
+.chat-emoji-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: var(--color-background);
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius-sm);
+  color: var(--color-text-secondary);
+}
+
+.chat-emoji-search input {
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+  outline: none;
+}
+
+.chat-emoji-tabs {
+  display: flex;
+  gap: 2px;
+  border-bottom: 1px solid var(--color-border);
+  padding-bottom: var(--spacing-sm);
+}
+
+.chat-emoji-tab {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  padding: 4px 0;
+  border: none;
+  border-radius: var(--border-radius-sm);
+  background: transparent;
+  cursor: pointer;
+  opacity: 0.6;
+  transition: background 0.1s ease, opacity 0.1s ease;
+}
+
+.chat-emoji-tab:hover {
+  background: var(--color-border);
+  opacity: 1;
+}
+
+.chat-emoji-tab.active {
+  background: var(--color-border);
+  opacity: 1;
+}
+
+.chat-emoji-grid {
+  height: 220px;
+  overflow-y: auto;
+}
+
+.chat-emoji-group-label {
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-bold);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-tertiary);
+  padding: 2px 2px 6px;
+  position: sticky;
+  top: 0;
+  background: var(--color-background-mute);
+}
+
+.chat-emoji-grid-items {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+}
+
+.chat-emoji-empty {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+  text-align: center;
+  padding: var(--spacing-md);
 }
 
 .chat-emoji-btn {

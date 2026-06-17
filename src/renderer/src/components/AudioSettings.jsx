@@ -96,14 +96,47 @@ function AudioSettings({ micSettings, updateMicSettings }) {
           </div>
         </div>
 
-        {/* 4. AI Noise Suppression (RNNoise) - mutually exclusive with browser Noise Suppression */}
+        {/* 4. Volume Gate toggle + meter */}
         <div className="settings-section settings-toggle-row">
           <div className="settings-toggle-copy">
-            <label htmlFor="useRnnoise">AI Noise Suppression</label>
+            <label htmlFor="useVolumeGate">Use Voice Gate</label>
+            <p className="settings-section-desc">
+              Silences your mic when ambient noise falls below a set level, cutting background sound between words.
+            </p>
+          </div>
+          <label className="toggle-switch">
+            <input
+              type="checkbox"
+              id="useVolumeGate"
+              checked={draftSettings.useVolumeGate}
+              onChange={(e) => updateDraft({ useVolumeGate: e.target.checked })}
+            />
+            <span className="toggle-slider" />
+          </label>
+        </div>
+
+        <div className="settings-section">
+          <label>Voice Gate Threshold</label>
+          <p className="settings-section-desc">
+            Click the bar to set the cut-off level. Audio below the marker is filtered out.
+            {!draftSettings.useVolumeGate && ' Enable the volume gate above to apply this during calls.'}
+          </p>
+          <VolumeGateMeter
+            gateEnabled={draftSettings.useVolumeGate}
+            threshold={draftSettings.volumeGateThreshold}
+            onThresholdChange={(value) => updateDraft({ volumeGateThreshold: value })}
+            micSettings={draftSettings}
+          />
+        </div>
+
+        {/* 5. AI Noise Suppression (RNNoise) - mutually exclusive with browser Noise Suppression */}
+        <div className="settings-section settings-toggle-row">
+          <div className="settings-toggle-copy">
+            <label htmlFor="useRnnoise">AI Noise Suppression (Recommended)</label>
             <p className="settings-section-desc">
               Uses a voice-trained model to strip keyboard/typing sounds and steady background
               noise while letting your voice through. More effective than basic noise suppression
-              for typing. Enabling this turns off basic Noise Suppression.
+              for typing. Enabling this turns off basic Noise Suppression. Pair with a low Voice Gate for the best experience.
             </p>
           </div>
           <label className="toggle-switch">
@@ -123,10 +156,10 @@ function AudioSettings({ micSettings, updateMicSettings }) {
           </label>
         </div>
 
-        {/* 5. Noise Suppression (browser) - mutually exclusive with AI Noise Suppression */}
+        {/* 6. Noise Suppression (browser) - mutually exclusive with AI Noise Suppression */}
         <div className="settings-section settings-toggle-row">
           <div className="settings-toggle-copy">
-            <label htmlFor="noiseSuppression">Noise Suppression</label>
+            <label htmlFor="noiseSuppression">Standard Noise Suppression</label>
             <p className="settings-section-desc">
               Basic filtering of steady background noise such as fans, air conditioning, and
               keyboard clicks. Enabling this turns off AI Noise Suppression.
@@ -149,39 +182,6 @@ function AudioSettings({ micSettings, updateMicSettings }) {
           </label>
         </div>
 
-        {/* 6. Volume Gate toggle + meter */}
-        <div className="settings-section settings-toggle-row">
-          <div className="settings-toggle-copy">
-            <label htmlFor="useVolumeGate">Use Volume Gate</label>
-            <p className="settings-section-desc">
-              Silences your mic when ambient noise falls below a set level, cutting background sound between words.
-            </p>
-          </div>
-          <label className="toggle-switch">
-            <input
-              type="checkbox"
-              id="useVolumeGate"
-              checked={draftSettings.useVolumeGate}
-              onChange={(e) => updateDraft({ useVolumeGate: e.target.checked })}
-            />
-            <span className="toggle-slider" />
-          </label>
-        </div>
-
-        <div className="settings-section">
-          <label>Volume Gate Threshold</label>
-          <p className="settings-section-desc">
-            Click the bar to set the cut-off level. Audio below the marker is filtered out.
-            {!draftSettings.useVolumeGate && ' Enable the volume gate above to apply this during calls.'}
-          </p>
-          <VolumeGateMeter
-            gateEnabled={draftSettings.useVolumeGate}
-            threshold={draftSettings.volumeGateThreshold}
-            onThresholdChange={(value) => updateDraft({ volumeGateThreshold: value })}
-            micSettings={draftSettings}
-          />
-        </div>
-
         {/* 7. Echo Cancellation */}
         <div className="settings-section settings-toggle-row">
           <div className="settings-toggle-copy">
@@ -190,7 +190,7 @@ function AudioSettings({ micSettings, updateMicSettings }) {
               Removes echoes caused by your speakers being picked up by your microphone.
             </p>
             <p className="settings-section-desc">
-              PLEASE NOTE: This feature interferes with the microphone test above, be sure to disable it.
+              PLEASE NOTE: This feature can interfere with the microphone test above.
             </p>
           </div>
           <label className="toggle-switch">

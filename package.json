@@ -28,7 +28,8 @@
     "@tabler/icons-react": "^3.44.0",
     "@tabler/icons-webfont": "^3.44.0",
     "mediasoup-client": "^3.20.0",
-    "react-router-dom": "^7.16.0"
+    "react-router-dom": "^7.16.0",
+    "unicode-emoji-json": "^0.9.0"
   },
   "devDependencies": {
     "@electron-toolkit/eslint-config": "^2.1.0",
