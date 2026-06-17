@@ -5,14 +5,18 @@ import { useAuth } from '../context/AuthContext'
 import SideBar from '../components/SideBar'
 import VideoGrid from '../components/VideoGrid'
 import ChatPanel from '../components/ChatPanel'
+import TitleBar from '../components/TitleBar'
 import Settings from './Settings'
 import { disconnect as disconnectVoice, setFocusedScreenAudio } from '../lib/soup'
 import { setServerHost, apiBase, wsBase } from '../lib/serverConfig'
 import { DEV_MODE, MOCK_TOKEN, MOCK_CLIENT, MOCK_CHANNELS, MOCK_CLIENTS, createMockStreams } from '../lib/mock'
-import { IconVideo, IconMessage2, IconMessage } from '@tabler/icons-react'
+import { IconVideo, IconMessage2, IconMessage, IconHeadphones } from '@tabler/icons-react'
 
 const MAX_LOG_ENTRIES = 500
 const HISTORY_LIMIT = 50
+
+// Shown in the custom title bar; change this to rebrand the window chrome.
+const APP_TITLE = 'Teamspeak 26'
 
 // Append an entry to the feed, dropping the oldest entries once the cap is hit.
 function appendFeed(prev, entry) {
@@ -417,9 +421,12 @@ function Main() {
   const [showSettings, setShowSettings] = useState(false)
 
   const connected = !!token
+  const titleText = connectedServer ? `${APP_TITLE} — ${connectedServer.nickname}` : APP_TITLE
 
   return (
-    <div className="layout">
+    <div className="app-shell">
+      <TitleBar title={titleText} icon={IconHeadphones} />
+      <div className="layout">
       <SideBar
         channels={channels}
         clients={clients}
@@ -504,6 +511,7 @@ function Main() {
           </div>
         </div>
       )}
+      </div>
     </div>
   )
 }

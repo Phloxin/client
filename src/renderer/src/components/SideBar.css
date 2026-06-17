@@ -8,20 +8,20 @@
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
-  border: 1px solid var(--color-border);
   border-radius: 10px;
   position: relative;
   user-select: none; 
 }
 
 .server-header {
+  height: 45px;
   padding: 14px var(--spacing-lg) 12px;
-  border-bottom: 1px solid var(--color-border);
+  border-bottom: 2px solid var(--color-border);
   display: flex;
   align-items: center;
   justify-content: space-between;
   background: var(--color-background-mute);
-  border-radius: 10px 10px 0 0;
+  border-radius: 10px ;
 }
 
 .server-name {
@@ -279,10 +279,12 @@
 .control-rows {
   margin-top: auto;
   padding: var(--spacing-sm);
-  border-top: 1px solid var(--color-border);
+  border-radius: 10px;
+  border-top: 2px solid var(--color-border);
   display: flex;
   flex-direction: column;
-  gap: var(--spacing-xs);
+  gap: var(--spacing-sm);
+  background: var(--color-background-mute);
 }
 
 .control-row {
@@ -295,9 +297,8 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: transparent;
+  background: var(--color-background-soft);
   color: var(--color-text-secondary);
-  border: 1px solid var(--color-border);
   border-radius: var(--border-radius-sm);
   padding: 7px;
   cursor: pointer;
@@ -326,42 +327,6 @@
   color: var(--color-danger);
 }
 
-.btn-wrap {
-  padding: var(--spacing-sm);
-  border-top: 1px solid var(--color-border);
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacing-xs);
-  border-radius: 0 0 10px 10px;
-}
-
-.settings-btn {
-  width: 100%;
-  background: transparent;
-  color: var(--color-text-secondary);
-  border: 1px solid var(--color-border);
-  border-radius: var(--border-radius-sm);
-  padding: 7px var(--spacing-md);
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-medium);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-sm);
-  transition: background 0.3s, color 0.3s, border-color 0.3s;
-  text-align: left;
-}
-
-.settings-btn:hover {
-  background: var(--color-border);
-  color: var(--color-text);
-  border-color: var(--color-border-light);
-}
-
-.settings-btn i {
-  font-size: 15px;
-}
-
 /* ============================================================================
    RESIZE HANDLE
    ============================================================================ */
@@ -369,7 +334,10 @@
 .sidebar-resize-handle {
   position: absolute;
   top: 0;
-  right: -5px;
+  /* Center the handle within the layout gap between the sidebar and the chat
+     area (gap = --spacing-sm), rather than on the sidebar's edge. Offset is
+     -(width + gap) / 2 so the indicator line lands in the middle of the gap. */
+  right: calc(-1 * (10px + var(--spacing-sm)) / 2);
   width: 10px;
   height: 100%;
   cursor: col-resize;
