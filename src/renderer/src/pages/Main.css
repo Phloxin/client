@@ -43,7 +43,6 @@
   align-items: center;
   background: var(--color-background-mute);
   border-radius: 10px;
-  border-bottom: 2px solid var(--color-border);
 }
 
 .header-content {

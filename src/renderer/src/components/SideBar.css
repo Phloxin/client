@@ -16,7 +16,6 @@
 .server-header {
   height: 45px;
   padding: 14px var(--spacing-lg) 12px;
-  border-bottom: 2px solid var(--color-border);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -66,7 +65,6 @@
   margin-top: auto;
   padding: var(--spacing-sm);
   border-radius: 10px;
-  border-top: 2px solid var(--color-border);
   display: flex;
   flex-direction: column;
   gap: var(--spacing-sm);
