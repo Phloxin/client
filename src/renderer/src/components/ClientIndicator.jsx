@@ -52,6 +52,12 @@ function ClientIndicator({ client, speaking, micMuted, deafened, isSelf }) {
     if (next === 0 && !localMuted) setLocalMuted(true)
   }
 
+  // Snap back to the 100% baseline (the center marker)
+  const resetVolume = () => {
+    setVolume(100)
+    setLocalMuted(false)
+  }
+
   let statusIcon
   if (deafened) {
     statusIcon = <IconHeadphonesOff size={14} className="mic-indicator deafened" aria-label="Deafened" />
@@ -65,7 +71,7 @@ function ClientIndicator({ client, speaking, micMuted, deafened, isSelf }) {
 
   const VolumeIcon = localMuted || volume === 0
     ? IconVolumeOff
-    : volume < 10 ? IconVolume4 : volume <= 50 ? IconVolume2 : IconVolume
+    : volume < 50 ? IconVolume4 : volume <= 99 ? IconVolume2 : IconVolume
 
   return (
     <div className="client-indicator" onContextMenu={handleContextMenu}>
@@ -89,15 +95,20 @@ function ClientIndicator({ client, speaking, micMuted, deafened, isSelf }) {
             >
               <VolumeIcon size={16} />
             </button>
-            <input
-              type="range"
-              className="client-volume-slider"
-              min={0}
-              max={100}
-              value={localMuted ? 0 : volume}
-              onChange={handleVolumeChange}
-              title="Volume"
-            />
+            <div className="client-volume-slider-wrap">
+              <span className="client-volume-center-tick" aria-hidden="true" />
+              <input
+                type="range"
+                className="client-volume-slider"
+                min={0}
+                max={200}
+                value={localMuted ? 0 : volume}
+                onChange={handleVolumeChange}
+                onDoubleClick={resetVolume}
+                title="Volume — 100% is normal, drag right to boost (double-click to reset)"
+              />
+            </div>
+            <span className="client-volume-value">{localMuted ? 0 : volume}%</span>
           </div>
         </div>
       )}

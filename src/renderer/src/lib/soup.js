@@ -27,11 +27,14 @@ let remoteCleanups = []
 let remoteAudioElements = []
 let micMuted = false
 let soundMuted = false
-// Playback output device (sinkId) and master output volume (0..1) applied to
-// every remote audio element. Persisted in settings and pushed in via
-// setOutputDevice()/setMasterVolume(); new audio elements pick them up on creation.
+// Playback output device (sinkId) and master output volume (0..1). Persisted in
+// settings and pushed in via setOutputDevice()/setMasterVolume().
 let outputDeviceId = 'default'
 let masterVolume = 1
+// Shared AudioContext for remote playback. Each remote mic/screen audio stream
+// runs through its own GainNode into this context, so a client's volume can be
+// boosted above 100% (an HTMLAudioElement's volume is capped at 1.0).
+let playbackContext = null
 // Tracks remote consumers by the producer id they're consuming, so they
 // can be closed and removed when that producer goes away (either because
 // a new one replaces it, or the server tells us it closed).
@@ -707,23 +710,27 @@ export async function consumeProducer(producerId, kind, onStream, clientId, prod
   // play audio or stream via DOM element
   let cleanup = null
   let audioEl = null
+  let gainNode = null
 
   if (kind === 'audio') {
+    // A muted <audio> element keeps the remote WebRTC track pulled; the audible
+    // playback goes through Web Audio so per-client volume can exceed 100%.
     audioEl = document.createElement('audio')
     audioEl.srcObject = stream
     audioEl.autoplay = true
-    // Initial mute state - applyAllAudioState() below sorts out the real
-    // value for ScreenShareAudio (focus-driven) and mic audio (per-client overrides).
-    audioEl.muted = producedType === 'ScreenShareAudio' ? true : soundMuted
-    // Route playback to the user's chosen output device, if the platform supports it.
-    if (typeof audioEl.setSinkId === 'function') {
-      audioEl
-        .setSinkId(outputDeviceId)
-        .catch((err) => console.error('[Soup] setSinkId failed:', err))
-    }
+    audioEl.muted = true
     document.body.appendChild(audioEl)
-    audioEl.play().catch((err) => console.error('[Soup] Audio play failed:', err))
+    audioEl.play().catch((err) => console.error('[Soup] Audio pump play failed:', err))
     remoteAudioElements.push(audioEl)
+
+    // source -> gain -> output. applyAllAudioState() below sets the gain value
+    // (deafen/focus/per-client overrides); gain may be >1 to boost a client.
+    const ctx = getPlaybackContext()
+    const srcNode = ctx.createMediaStreamSource(stream)
+    gainNode = ctx.createGain()
+    gainNode.gain.value = 0 // start silent; applyAllAudioState() sets the real value
+    srcNode.connect(gainNode)
+    gainNode.connect(ctx.destination)
 
     // Screen/tab audio isn't the client's voice - don't feed it into the
     // speaking indicator.
@@ -735,6 +742,8 @@ export async function consumeProducer(producerId, kind, onStream, clientId, prod
     }
 
     cleanup = () => {
+      try { srcNode.disconnect() } catch {}
+      try { gainNode.disconnect() } catch {}
       audioEl.pause()
       audioEl.srcObject = null
       audioEl.remove()
@@ -757,7 +766,7 @@ export async function consumeProducer(producerId, kind, onStream, clientId, prod
     onStream?.({ stream, kind, consumerId: consumer.id, clientId })
   }
 
-  remoteConsumers.set(producerId, { consumer, consumerId: consumer.id, kind, clientId, producedType, cleanup, audioEl })
+  remoteConsumers.set(producerId, { consumer, consumerId: consumer.id, kind, clientId, producedType, cleanup, audioEl, gain: gainNode })
 
   if (kind === 'audio') {
     applyAllAudioState()
@@ -805,50 +814,67 @@ export function setMicMuted(muted) {
     .forEach((p) => (muted ? p.pause() : p.resume()))
 }
 
-// Routes playback to the chosen output device for every current and future
-// remote audio element. Pass 'default' (or empty) for the system default.
-export function setOutputDevice(deviceId) {
-  outputDeviceId = deviceId || 'default'
-  for (const el of remoteAudioElements) {
-    if (typeof el.setSinkId === 'function') {
-      el.setSinkId(outputDeviceId).catch((err) => console.error('[Soup] setSinkId failed:', err))
-    }
+// Lazily create (and resume) the shared playback AudioContext. Created on the
+// first remote audio stream, which happens after the user has clicked to join -
+// so the autoplay policy lets it run.
+function getPlaybackContext() {
+  if (!playbackContext) {
+    playbackContext = new (window.AudioContext || window.webkitAudioContext)()
+    applyOutputDeviceToContext()
+  }
+  if (playbackContext.state === 'suspended') {
+    playbackContext.resume().catch(() => {})
+  }
+  return playbackContext
+}
+
+// Route the whole playback context to the chosen output device. AudioContext
+// uses '' for the system default (unlike HTMLMediaElement which takes 'default').
+function applyOutputDeviceToContext() {
+  if (playbackContext && typeof playbackContext.setSinkId === 'function') {
+    const sinkId = outputDeviceId === 'default' ? '' : outputDeviceId
+    playbackContext.setSinkId(sinkId).catch((err) => console.error('[Soup] context setSinkId failed:', err))
   }
 }
 
+// Routes playback to the chosen output device. Pass 'default' (or empty) for
+// the system default.
+export function setOutputDevice(deviceId) {
+  outputDeviceId = deviceId || 'default'
+  applyOutputDeviceToContext()
+}
+
 // Sets the master output volume (0..1) applied on top of per-client/focus
-// volumes for every remote audio element.
+// volumes for every remote stream.
 export function setMasterVolume(volume) {
   masterVolume = Math.max(0, Math.min(1, volume))
   applyAllAudioState()
 }
 
-// Mutes/unmutes playback of all remote audio elements (deafen).
+// Mutes/unmutes playback of all remote audio (deafen).
 export function setSoundMuted(muted) {
   soundMuted = muted
-  remoteAudioElements.forEach((el) => { el.muted = muted })
   applyAllAudioState()
 }
 
 // Applies the focus-driven ScreenShareAudio state and the per-client mic
-// volume/mute overrides to every remote audio element.
+// volume/mute overrides to every remote stream's gain node. A per-client
+// override volume above 1 boosts that client louder than their natural level.
 function applyAllAudioState() {
   for (const entry of remoteConsumers.values()) {
-    if (entry.kind !== 'audio' || !entry.audioEl) continue
+    if (entry.kind !== 'audio' || !entry.gain) continue
 
+    let gain
     if (entry.producedType === 'ScreenShareAudio') {
       // Only the focused stream's screen-share audio should be audible.
-      if (entry.clientId === focusedClientId) {
-        entry.audioEl.volume = focusedVolume * masterVolume
-        entry.audioEl.muted = soundMuted || focusedMuted
-      } else {
-        entry.audioEl.muted = true
-      }
+      const audible = entry.clientId === focusedClientId && !(soundMuted || focusedMuted)
+      gain = audible ? focusedVolume * masterVolume : 0
     } else {
       const override = clientAudioOverrides.get(entry.clientId)
-      entry.audioEl.volume = (override?.volume ?? 1) * masterVolume
-      entry.audioEl.muted = soundMuted || !!override?.muted
+      const muted = soundMuted || !!override?.muted
+      gain = muted ? 0 : (override?.volume ?? 1) * masterVolume
     }
+    entry.gain.gain.value = gain
   }
 }
 

@@ -12,6 +12,7 @@ import { DEV_MODE, MOCK_TOKEN, MOCK_CLIENT, MOCK_CHANNELS, MOCK_CLIENTS } from '
 import { IconVideoFilled, IconMessage2Filled, IconMessage, IconVideo } from '@tabler/icons-react'
 
 const MAX_LOG_ENTRIES = 500
+const HISTORY_LIMIT = 50
 
 // Append an entry to the feed, dropping the oldest entries once the cap is hit.
 function appendFeed(prev, entry) {
@@ -80,6 +81,42 @@ function Main() {
       setSelectedStreamId(allVideoStreams[0].consumerId)
     }
   }, [allVideoStreams, selectedStreamId])
+
+  // Load recent message history whenever the local client enters a channel, so
+  // opening a channel shows what was said before we got here. The request goes
+  // through the main process because the endpoint is a GET with a JSON body.
+  useEffect(() => {
+    if (DEV_MODE || !token || selfChannelId == null) return
+    let cancelled = false
+    const channelId = selfChannelId
+
+    window.electron.ipcRenderer
+      .invoke('get-channel-messages', {
+        url: `${apiBase()}/channels/${channelId}/messages`,
+        token,
+        limit: HISTORY_LIMIT
+      })
+      .then((res) => {
+        if (cancelled) return
+        if (!res?.ok) {
+          if (res?.error) console.error('Failed to load chat history:', res.error)
+          return
+        }
+        const history = (res.messages || []).map(messageFromApi).sort((a, b) => a.id - b.id)
+        if (!history.length) return
+        setFeed((prev) => {
+          // Replace this channel's messages with the authoritative fetched set
+          // (deduped) and show them above the current session's entries.
+          const rest = prev.filter((e) => !(e.type === 'message' && e.channelId === channelId))
+          return [...history, ...rest]
+        })
+      })
+      .catch((err) => console.error('Failed to load chat history:', err))
+
+    return () => {
+      cancelled = true
+    }
+  }, [token, selfChannelId])
 
   // Load the saved server list from the main process on mount
   useEffect(() => {
