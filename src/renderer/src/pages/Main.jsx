@@ -7,7 +7,7 @@ import VideoGrid from '../components/VideoGrid'
 import ChatPanel from '../components/ChatPanel'
 import TitleBar from '../components/TitleBar'
 import Settings from './Settings'
-import { disconnect as disconnectVoice, setFocusedScreenAudio } from '../lib/soup'
+import { disconnect as disconnectVoice, setFocusedScreenAudio, setVideoStreamRoles } from '../lib/soup'
 import { setServerHost, apiBase, wsBase } from '../lib/serverConfig'
 import { DEV_MODE, MOCK_TOKEN, MOCK_CLIENT, MOCK_CHANNELS, MOCK_CLIENTS, createMockStreams } from '../lib/mock'
 import { IconVideo, IconMessage2, IconMessage, IconUsersGroup } from '@tabler/icons-react'
@@ -111,6 +111,7 @@ function Main() {
       setVolume: (v) => setStreamVolume(v),
       setMuted: (m) => setStreamMuted(m),
       setFocusedAudio: (clientId, opts) => setFocusedScreenAudio(clientId, opts),
+      setStreamRoles: (payload) => setVideoStreamRoles(payload),
       subscribe: (cb) => {
         popoutListenersRef.current.add(cb)
         return () => popoutListenersRef.current.delete(cb)

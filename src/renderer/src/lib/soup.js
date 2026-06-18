@@ -538,7 +538,11 @@ export async function shareScreen({ fps = 30, width = 1920, height = 1080, audio
 
   screenProducer = await producerTransport.produce({
     track,
-    encodings: [{ maxBitrate: 15000000, scalabilityMode: 'L1T1' }],
+    // AV1 SVC: one efficient upload carrying 3 spatial × 3 temporal layers, so
+    // the server can forward a cheap layer to thumbnails / a full layer to the
+    // focused viewer (see setVideoStreamRoles). '_KEY' shares the keyframe across
+    // spatial layers for cleaner layer switching.
+    encodings: [{ maxBitrate: 15000000, scalabilityMode: 'L3T3_KEY' }],
     codecOptions: {
       videoGoogleStartBitrate: 8000
     },
@@ -596,7 +600,8 @@ export async function shareCamera(deviceId) {
 
   screenProducer = await producerTransport.produce({
     track,
-    encodings: [{ maxBitrate: 15000000, scalabilityMode: 'L1T1' }],
+    // AV1 SVC layers — see the note in shareScreen().
+    encodings: [{ maxBitrate: 15000000, scalabilityMode: 'L3T3_KEY' }],
     codecOptions: {
       videoGoogleStartBitrate: 8000
     },
@@ -774,6 +779,84 @@ export async function consumeProducer(producerId, kind, onStream, clientId, prod
 
   console.log(`[Soup] Consuming ${kind} [id:${consumer.id}]`)
   return { stream, kind, consumerId: consumer.id }
+}
+
+// ─── Bandwidth rationing: per-stream view roles ──────────────────
+// Drives server-side layer selection + pausing from the UI's current view so
+// we don't pull every screen share at full 4K at once. With AV1 L3T3_KEY each
+// producer exposes 3 spatial (0 = ~quarter res, 2 = full) and 3 temporal (fps)
+// layers; the server forwards only the layer a given consumer asks for.
+//
+// REQUIRES matching server handlers (same style as Consume / ResumeConsumer):
+//   SetConsumerPreferredLayers { id, spatial_layer, temporal_layer }
+//       → serverConsumer.setPreferredLayers({ spatialLayer, temporalLayer })
+//   PauseConsumer  { id } → serverConsumer.pause()
+//   ResumeConsumer { id } → serverConsumer.resume()   (already implemented)
+// All three must send a response, since send() awaits one (an unanswered
+// message desyncs the response queue — see notify()).
+const VIEW_LAYERS = {
+  focused: { spatialLayer: 2, temporalLayer: 2 },
+  thumbnail: { spatialLayer: 0, temporalLayer: 1 },
+}
+
+// Ask the server to forward only the given SVC layers for this consumer.
+// No-ops if the preference is unchanged.
+function setConsumerPreferredLayers(entry, { spatialLayer, temporalLayer }) {
+  if (entry.preferredSpatial === spatialLayer && entry.preferredTemporal === temporalLayer) return
+  entry.preferredSpatial = spatialLayer
+  entry.preferredTemporal = temporalLayer
+  send('SetConsumerPreferredLayers', {
+    id: entry.consumerId,
+    spatial_layer: spatialLayer,
+    temporal_layer: temporalLayer,
+  }).catch((err) => console.warn('[Soup] SetConsumerPreferredLayers failed:', err))
+}
+
+// Pause/resume RTP forwarding on the server side (real bandwidth, unlike a
+// client-side consumer.pause() which only stops rendering). Idempotent.
+function pauseVideoConsumer(entry) {
+  if (entry.serverPaused === true) return
+  entry.serverPaused = true
+  send('PauseConsumer', { id: entry.consumerId })
+    .catch((err) => console.warn('[Soup] PauseConsumer failed:', err))
+}
+
+function resumeVideoConsumer(entry) {
+  // Consumers start resumed at creation (see consumeProducer), so only signal
+  // a resume if we previously paused it.
+  if (entry.serverPaused !== true) return
+  entry.serverPaused = false
+  send('ResumeConsumer', { id: entry.consumerId })
+    .catch((err) => console.warn('[Soup] ResumeConsumer failed:', err))
+}
+
+// Apply the UI's current view to every remote video consumer:
+//   - focusedConsumerId  → full layers
+//   - visibleConsumerIds → cheap thumbnail layer
+//   - everything else    → paused (0 bytes)
+// Only diffs are signaled, so it's safe to call on every focus/visibility
+// change. focusedConsumerId always wins even if it's also in visibleConsumerIds.
+export function setVideoStreamRoles({ focusedConsumerId = null, visibleConsumerIds = [] } = {}) {
+  const visible = new Set(visibleConsumerIds)
+  for (const entry of remoteConsumers.values()) {
+    if (entry.kind !== 'video') continue
+
+    const role = entry.consumerId === focusedConsumerId
+      ? 'focused'
+      : visible.has(entry.consumerId)
+        ? 'thumbnail'
+        : 'hidden'
+
+    if (entry.viewRole === role) continue
+    entry.viewRole = role
+
+    if (role === 'hidden') {
+      pauseVideoConsumer(entry)
+    } else {
+      resumeVideoConsumer(entry) // no-op unless server-paused
+      setConsumerPreferredLayers(entry, VIEW_LAYERS[role])
+    }
+  }
 }
 
 // ─── Reset all media state ───────────────────────────────────────

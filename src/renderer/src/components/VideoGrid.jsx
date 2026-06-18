@@ -13,9 +13,9 @@ import {
   IconVolumeOff,
   IconExternalLink
 } from '@tabler/icons-react'
-import { setFocusedScreenAudio } from '../lib/soup'
+import { setFocusedScreenAudio, setVideoStreamRoles } from '../lib/soup'
 
-function VideoGrid({ streams, clients, selectedStreamId, onSelect, onPopout, onFocusAudio, volume, muted, onVolumeChange, onMutedChange }) {
+function VideoGrid({ streams, clients, selectedStreamId, onSelect, onPopout, onFocusAudio, onSetStreamRoles, volume, muted, onVolumeChange, onMutedChange }) {
   const viewerRef = useRef(null)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [carouselCollapsed, setCarouselCollapsed] = useState(false)
@@ -59,6 +59,28 @@ function VideoGrid({ streams, clients, selectedStreamId, onSelect, onPopout, onF
     const applyFocusAudio = onFocusAudio || setFocusedScreenAudio
     applyFocusAudio(selectedStream?.clientId ?? null, { volume: volume / 100, muted })
   }, [selectedStream?.clientId, volume, muted])
+
+  // Ration video bandwidth: the focused stream gets full quality, visible
+  // thumbnails get the cheap low layer, and a collapsed carousel pauses them
+  // entirely. When popped out, onSetStreamRoles routes this to the opener
+  // window's soup instance (which owns the consumers); otherwise apply locally.
+  const visibleStreamKey = carouselCollapsed ? '' : sortedStreams.map((s) => s.consumerId).join(',')
+  useEffect(() => {
+    const applyRoles = onSetStreamRoles || setVideoStreamRoles
+    applyRoles({
+      focusedConsumerId: selectedStream?.consumerId ?? null,
+      visibleConsumerIds: carouselCollapsed ? [] : sortedStreams.map((s) => s.consumerId),
+    })
+  }, [selectedStream?.consumerId, carouselCollapsed, visibleStreamKey])
+
+  // When the grid goes away entirely (switch to chat view, or the popout
+  // closes) nobody is watching any stream, so pause every video consumer. The
+  // role effect above re-applies focus/thumbnail layers when the grid remounts.
+  // Separate from that effect so it only fires on unmount, not on every change.
+  useEffect(() => {
+    const applyRoles = onSetStreamRoles || setVideoStreamRoles
+    return () => applyRoles({ focusedConsumerId: null, visibleConsumerIds: [] })
+  }, [])
 
   if (!streams.length) return (
     <div className="video-grid empty">
