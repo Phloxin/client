@@ -796,6 +796,10 @@ export async function consumeProducer(producerId, kind, onStream, clientId, prod
 // message desyncs the response queue — see notify()).
 const VIEW_LAYERS = {
   focused: { spatialLayer: 2, temporalLayer: 2 },
+  // The unfocused grid fills the whole area with medium tiles, so it gets a
+  // mid spatial layer at full fps — better than a carousel thumbnail, cheaper
+  // than the focused stream.
+  grid: { spatialLayer: 1, temporalLayer: 2 },
   thumbnail: { spatialLayer: 0, temporalLayer: 1 },
 }
 
@@ -841,10 +845,12 @@ export function setVideoStreamRoles({ focusedConsumerId = null, visibleConsumerI
   for (const entry of remoteConsumers.values()) {
     if (entry.kind !== 'video') continue
 
+    // Visible streams are 'grid' tiles when nothing is focused (they fill the
+    // area), or small carousel 'thumbnail's when a stream is focused.
     const role = entry.consumerId === focusedConsumerId
       ? 'focused'
       : visible.has(entry.consumerId)
-        ? 'thumbnail'
+        ? (focusedConsumerId == null ? 'grid' : 'thumbnail')
         : 'hidden'
 
     if (entry.viewRole === role) continue

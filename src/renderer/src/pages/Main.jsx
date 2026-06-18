@@ -152,14 +152,11 @@ function Main() {
   // The channel the local client currently has joined (chat is scoped to it)
   const selfChannelId = clients.find((c) => c.id === client?.id)?.channel_id ?? null
 
-  // Keep a focused stream selected when streams change
+  // No stream is focused by default (the grid view shows them all). Only clear
+  // the focus if the currently focused stream goes away.
   useEffect(() => {
-    if (!allVideoStreams.length) {
+    if (selectedStreamId && !allVideoStreams.some((s) => s.consumerId === selectedStreamId)) {
       setSelectedStreamId(null)
-      return
-    }
-    if (!selectedStreamId || !allVideoStreams.some((s) => s.consumerId === selectedStreamId)) {
-      setSelectedStreamId(allVideoStreams[0].consumerId)
     }
   }, [allVideoStreams, selectedStreamId])
 
