@@ -213,6 +213,9 @@ function Main() {
 
   const handleAddServer = (server) => saveServers([...servers, server])
 
+  const handleEditServer = (server) =>
+    saveServers(servers.map((s) => (s.id === server.id ? { ...s, ...server } : s)))
+
   const handleRemoveServer = (id) => saveServers(servers.filter((s) => s.id !== id))
 
   // Connect to a saved server: point all endpoints at its host, then log in with
@@ -441,6 +444,7 @@ function Main() {
         onConnect={handleConnect}
         onDisconnect={handleDisconnect}
         onAddServer={handleAddServer}
+        onEditServer={handleEditServer}
         onRemoveServer={handleRemoveServer}
       />
 

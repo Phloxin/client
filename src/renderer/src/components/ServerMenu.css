@@ -139,6 +139,14 @@
   flex-shrink: 0;
 }
 
+.server-menu-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.server-menu-item-edit,
 .server-menu-item-remove {
   display: flex;
   align-items: center;
@@ -153,6 +161,11 @@
   color: var(--color-text-muted);
   cursor: pointer;
   transition: background 0.15s ease, color 0.15s ease;
+}
+
+.server-menu-item-edit:hover {
+  background: color-mix(in srgb, var(--color-primary) 18%, transparent);
+  color: var(--color-primary);
 }
 
 .server-menu-item-remove:hover {
