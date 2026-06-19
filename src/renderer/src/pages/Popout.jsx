@@ -43,6 +43,8 @@ function Popout() {
         onMutedChange={(m) => bridge.setMuted(m)}
         onFocusAudio={(clientId, opts) => bridge.setFocusedAudio(clientId, opts)}
         onSetStreamRoles={(payload) => bridge.setStreamRoles(payload)}
+        watchedStreamIds={data.watchedStreamIds}
+        onSetStreamWatched={(id, watched) => bridge.setStreamWatched(id, watched)}
       />
     </div>
   )

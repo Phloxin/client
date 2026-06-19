@@ -55,7 +55,7 @@
 
 .video-grid-controls {
   position: absolute;
-  top: 12px;
+  bottom: 12px;
   right: 12px;
   z-index: 2;
   display: flex;
@@ -107,6 +107,66 @@
   overflow: hidden;
   text-overflow: ellipsis;
   pointer-events: none;
+}
+
+/* ── Per-stream watch / close toggle + stopped placeholder ──────────────── */
+
+/* Top-right toggle on each thumbnail / grid tile. Hidden until hover, but
+   always shown while stopped so the stream can be resumed. */
+.stream-toggle-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, background 0.15s ease;
+}
+
+.video-thumbnail:hover .stream-toggle-btn,
+.video-grid-tile:hover .stream-toggle-btn,
+.video-thumbnail.stopped .stream-toggle-btn,
+.video-grid-tile.stopped .stream-toggle-btn {
+  opacity: 1;
+}
+
+/* Same hover treatment as the fullscreen / popout buttons (.vid-btn). */
+.stream-toggle-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* Stop = danger (matches the muted mic/sound indicators); play = success. */
+.stream-toggle-btn.stop {
+  color: var(--color-danger);
+}
+
+.stream-toggle-btn.play {
+  color: var(--color-success);
+}
+
+/* Placeholder shown in place of the video when a stream is closed. */
+.stream-stopped {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-muted);
+  background: #06070d;
+}
+
+.video-thumbnail.stopped,
+.video-grid-tile.stopped {
+  border-color: transparent;
 }
 
 /* ── Focus (large) view ──────────────────────────────────────────────────── */

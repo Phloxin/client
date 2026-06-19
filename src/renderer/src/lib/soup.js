@@ -800,7 +800,7 @@ const VIEW_LAYERS = {
   // mid spatial layer at full fps — better than a carousel thumbnail, cheaper
   // than the focused stream.
   grid: { spatialLayer: 1, temporalLayer: 2 },
-  thumbnail: { spatialLayer: 0, temporalLayer: 1 },
+  thumbnail: { spatialLayer: 1, temporalLayer: 0 },
 }
 
 // Ask the server to forward only the given SVC layers for this consumer.
@@ -1001,4 +1001,51 @@ export function isMicMuted() {
 
 export function isSoundMuted() {
   return soundMuted
+}
+
+// ─── TEMP DIAGNOSTIC: live inbound kbps per remote video consumer ─────────
+// Verifies that PauseConsumer actually stops RTP (kbps → ~0) vs. the stream
+// quietly playing in the background. Dev-only; remove once confirmed.
+//   In the renderer console:  __videoStats.start()   …   __videoStats.stop()
+let videoStatsTimer = null
+const videoStatsLast = new Map() // consumerId -> { bytes, ts }
+
+async function logVideoStatsOnce() {
+  for (const entry of remoteConsumers.values()) {
+    if (entry.kind !== 'video') continue
+    let report
+    try {
+      report = await entry.consumer.getStats()
+    } catch {
+      continue
+    }
+    for (const s of report.values()) {
+      if (s.type !== 'inbound-rtp' || s.bytesReceived == null) continue
+      const prev = videoStatsLast.get(entry.consumerId) || { bytes: s.bytesReceived, ts: s.timestamp }
+      const dt = s.timestamp - prev.ts // ms
+      // (bytes * 8) bits over dt ms = kbits/s = kbps
+      const kbps = dt > 0 ? (8 * (s.bytesReceived - prev.bytes)) / dt : 0
+      videoStatsLast.set(entry.consumerId, { bytes: s.bytesReceived, ts: s.timestamp })
+      console.log(
+        `[Stats] video ${entry.consumerId} role=${entry.viewRole ?? '?'} paused=${!!entry.serverPaused} → ${kbps.toFixed(0)} kbps`
+      )
+    }
+  }
+}
+
+function startVideoStatsLog(intervalMs = 2000) {
+  stopVideoStatsLog()
+  videoStatsLast.clear()
+  videoStatsTimer = setInterval(logVideoStatsOnce, intervalMs)
+  console.log('[Stats] video stats logging started')
+}
+
+function stopVideoStatsLog() {
+  if (videoStatsTimer) clearInterval(videoStatsTimer)
+  videoStatsTimer = null
+  console.log('[Stats] video stats logging stopped')
+}
+
+if (import.meta.env.DEV && typeof window !== 'undefined') {
+  window.__videoStats = { start: startVideoStatsLog, stop: stopVideoStatsLog }
 }

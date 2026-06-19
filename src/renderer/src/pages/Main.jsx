@@ -69,6 +69,11 @@ function Main() {
   // a volume the user already lowered).
   const [streamVolume, setStreamVolume] = useState(100)
   const [streamMuted, setStreamMuted] = useState(false)
+  // Which streams the user is actively watching. Streams default to stopped, so
+  // a stream is only consumed once its id is in here. Owned at this level (not in
+  // VideoGrid) so the choice survives chat/popout view switches that unmount the
+  // grid, and is shared with the popout window via the bridge below.
+  const [watchedStreamIds, setWatchedStreamIds] = useState(() => new Set())
   const eventsWsRef = useRef(null)
   const channelsRef = useRef([])
   const clientsRef = useRef([])
@@ -78,6 +83,7 @@ function Main() {
   const selectedStreamIdRef = useRef(null)
   const streamVolumeRef = useRef(100)
   const streamMutedRef = useRef(false)
+  const watchedStreamIdsRef = useRef(new Set())
 
   // Keep refs to the latest channels/clients so the events websocket handler
   // (created once in the effect below) can look them up without stale closures.
@@ -90,11 +96,34 @@ function Main() {
   useEffect(() => { selectedStreamIdRef.current = selectedStreamId }, [selectedStreamId])
   useEffect(() => { streamVolumeRef.current = streamVolume }, [streamVolume])
   useEffect(() => { streamMutedRef.current = streamMuted }, [streamMuted])
+  useEffect(() => { watchedStreamIdsRef.current = watchedStreamIds }, [watchedStreamIds])
 
   // Notify the popout window whenever the data it mirrors changes.
   useEffect(() => {
     popoutListenersRef.current.forEach((cb) => cb())
-  }, [allVideoStreams, clients, selectedStreamId, streamVolume, streamMuted])
+  }, [allVideoStreams, clients, selectedStreamId, streamVolume, streamMuted, watchedStreamIds])
+
+  // Toggle whether a stream is being watched (consumed). Shared by the in-app
+  // grid and, via the bridge, the popout. Functional update so it's stable.
+  const handleSetStreamWatched = (consumerId, watched) =>
+    setWatchedStreamIds((prev) => {
+      if (watched === prev.has(consumerId)) return prev
+      const next = new Set(prev)
+      if (watched) next.add(consumerId)
+      else next.delete(consumerId)
+      return next
+    })
+
+  // Drop watched ids for streams that have gone away, so a later stream can't
+  // inherit a stale "watching" state (and the set doesn't grow unbounded).
+  useEffect(() => {
+    setWatchedStreamIds((prev) => {
+      if (prev.size === 0) return prev
+      const live = new Set(allVideoStreams.map((s) => s.consumerId))
+      if ([...prev].every((id) => live.has(id))) return prev
+      return new Set([...prev].filter((id) => live.has(id)))
+    })
+  }, [allVideoStreams])
 
   // Expose a bridge the popout window reads via window.opener. Live MediaStream
   // objects are shared by reference (same origin/process), never serialized.
@@ -105,11 +134,13 @@ function Main() {
         clients: clientsRef.current,
         selectedStreamId: selectedStreamIdRef.current,
         volume: streamVolumeRef.current,
-        muted: streamMutedRef.current
+        muted: streamMutedRef.current,
+        watchedStreamIds: watchedStreamIdsRef.current
       }),
       select: (id) => setSelectedStreamId(id),
       setVolume: (v) => setStreamVolume(v),
       setMuted: (m) => setStreamMuted(m),
+      setStreamWatched: (id, watched) => handleSetStreamWatched(id, watched),
       setFocusedAudio: (clientId, opts) => setFocusedScreenAudio(clientId, opts),
       setStreamRoles: (payload) => setVideoStreamRoles(payload),
       subscribe: (cb) => {
@@ -496,6 +527,8 @@ function Main() {
             selectedStreamId={selectedStreamId}
             onSelect={setSelectedStreamId}
             onPopout={handlePopout}
+            watchedStreamIds={watchedStreamIds}
+            onSetStreamWatched={handleSetStreamWatched}
             volume={streamVolume}
             muted={streamMuted}
             onVolumeChange={setStreamVolume}

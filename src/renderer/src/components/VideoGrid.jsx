@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import './VideoGrid.css'
 import {
   IconVideoMinus,
+  IconVideoOff,
   IconMaximize,
   IconMinimize,
   IconChevronDown,
@@ -11,11 +12,17 @@ import {
   IconVolume3,
   IconVolume4,
   IconVolumeOff,
-  IconExternalLink
+  IconExternalLink,
+  IconPlayerPlay,
+  IconPlayerStop
 } from '@tabler/icons-react'
 import { setFocusedScreenAudio, setVideoStreamRoles } from '../lib/soup'
 
-function VideoGrid({ streams, clients, selectedStreamId, onSelect, onPopout, onFocusAudio, onSetStreamRoles, volume, muted, onVolumeChange, onMutedChange }) {
+// Stable empty default so the role effect doesn't churn when no watched set is
+// passed (e.g. the popout's first render before the bridge data arrives).
+const EMPTY_WATCHED = new Set()
+
+function VideoGrid({ streams, clients, selectedStreamId, onSelect, onPopout, onFocusAudio, onSetStreamRoles, watchedStreamIds = EMPTY_WATCHED, onSetStreamWatched, volume, muted, onVolumeChange, onMutedChange }) {
   const viewerRef = useRef(null)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [carouselCollapsed, setCarouselCollapsed] = useState(false)
@@ -67,15 +74,21 @@ function VideoGrid({ streams, clients, selectedStreamId, onSelect, onPopout, onF
   // carousel pauses them entirely. Grid tiles are always visible regardless of
   // the (focus-only) carousel-collapsed state. When popped out, onSetStreamRoles
   // routes this to the opener window's soup instance; otherwise apply locally.
+  // Only streams the user has chosen to watch are visible (consumed); everything
+  // else stays paused. The carousel-collapsed state additionally hides the
+  // non-focused streams in focus view.
   const allVisible = !selectedStream || !carouselCollapsed
-  const visibleStreamKey = allVisible ? sortedStreams.map((s) => s.consumerId).join(',') : ''
+  const visibleIds = allVisible
+    ? sortedStreams.filter((s) => watchedStreamIds.has(s.consumerId)).map((s) => s.consumerId)
+    : []
+  const visibleStreamKey = visibleIds.join(',')
   useEffect(() => {
     const applyRoles = onSetStreamRoles || setVideoStreamRoles
     applyRoles({
       focusedConsumerId: selectedStream?.consumerId ?? null,
-      visibleConsumerIds: allVisible ? sortedStreams.map((s) => s.consumerId) : [],
+      visibleConsumerIds: visibleIds,
     })
-  }, [selectedStream?.consumerId, allVisible, visibleStreamKey])
+  }, [selectedStream?.consumerId, visibleStreamKey])
 
   // When the grid goes away entirely (switch to chat view, or the popout
   // closes) nobody is watching any stream, so pause every video consumer. The
@@ -106,6 +119,63 @@ function VideoGrid({ streams, clients, selectedStreamId, onSelect, onPopout, onF
 
   const VolumeIcon = muted || volume === 0 ? IconVolumeOff : volume < 10 ? IconVolume4 : volume <= 50 ? IconVolume2 : IconVolume
 
+  const isStopped = (s) => !watchedStreamIds.has(s.consumerId)
+
+  // The top-right watch/close button: stop consuming a stream, or resume it.
+  const toggleStopped = (s, e) => {
+    e.stopPropagation()
+    const watch = isStopped(s) // currently stopped → play it; currently playing → stop it
+    onSetStreamWatched?.(s.consumerId, watch)
+    // Can't watch a stream big once it's stopped — drop focus if it was focused.
+    if (!watch && selectedStream?.consumerId === s.consumerId) onSelect?.(null)
+  }
+
+  // Clicking a tile body focuses it (resuming it first if it was closed).
+  const focusStream = (s) => {
+    if (isStopped(s)) onSetStreamWatched?.(s.consumerId, true)
+    onSelect?.(s.consumerId)
+  }
+
+  // A carousel thumbnail or grid tile. Shows live video (or a "stopped"
+  // placeholder), the watch/close toggle, and the label.
+  const renderTile = (s, variant) => {
+    const stopped = isStopped(s)
+    const selected = variant === 'thumbnail' && selectedStream?.consumerId === s.consumerId
+    const tileClass = variant === 'thumbnail' ? 'video-thumbnail' : 'video-grid-tile'
+    const labelClass = variant === 'thumbnail' ? 'thumb-label' : 'tile-label'
+    return (
+      <div
+        key={s.consumerId}
+        className={`${tileClass}${selected ? ' selected' : ''}${stopped ? ' stopped' : ''}`}
+        role="button"
+        tabIndex={0}
+        onClick={() => focusStream(s)}
+      >
+        {stopped ? (
+          <div className="stream-stopped">
+            <IconVideoOff size={variant === 'thumbnail' ? 22 : 32} />
+          </div>
+        ) : (
+          <video
+            autoPlay
+            playsInline
+            muted
+            ref={(el) => { if (el && el.srcObject !== s.stream) el.srcObject = s.stream }}
+          />
+        )}
+        <button
+          type="button"
+          className={`stream-toggle-btn ${stopped ? 'play' : 'stop'}`}
+          title={stopped ? 'Watch stream' : 'Close stream'}
+          onClick={(e) => toggleStopped(s, e)}
+        >
+          {stopped ? <IconPlayerPlay size={15} /> : <IconPlayerStop size={15} />}
+        </button>
+        <div className={labelClass}>{resolveLabel(s)}</div>
+      </div>
+    )
+  }
+
   return (
     <div className={`video-viewer${isFullscreen ? ' fullscreen' : ''}`} ref={viewerRef}>
       {selectedStream ? (
@@ -114,7 +184,6 @@ function VideoGrid({ streams, clients, selectedStreamId, onSelect, onPopout, onF
           <div
             className="video-focus focusable"
             onClick={() => onSelect?.(null)}
-            title="Click to unfocus"
           >
             <video
               autoPlay
@@ -174,24 +243,7 @@ function VideoGrid({ streams, clients, selectedStreamId, onSelect, onPopout, onF
           </div>
 
           <div className={`video-carousel${carouselCollapsed ? ' collapsed' : ''}`}>
-            {sortedStreams.map((s) => (
-              <button
-                key={s.consumerId}
-                type="button"
-                className={`video-thumbnail ${selectedStream.consumerId === s.consumerId ? 'selected' : ''}`}
-                onClick={() => onSelect?.(s.consumerId)}
-              >
-                <video
-                  autoPlay
-                  playsInline
-                  muted
-                  ref={(el) => { if (el && el.srcObject !== s.stream) el.srcObject = s.stream }}
-                />
-                <div className="thumb-label">
-                  {resolveLabel(s)}
-                </div>
-              </button>
-            ))}
+            {sortedStreams.map((s) => renderTile(s, 'thumbnail'))}
           </div>
         </>
       ) : (
@@ -218,24 +270,7 @@ function VideoGrid({ streams, clients, selectedStreamId, onSelect, onPopout, onF
               {isFullscreen ? <IconMinimize size={18} /> : <IconMaximize size={18} />}
             </button>
           </div>
-          {sortedStreams.map((s) => (
-            <button
-              key={s.consumerId}
-              type="button"
-              className="video-grid-tile"
-              onClick={() => onSelect?.(s.consumerId)}
-            >
-              <video
-                autoPlay
-                playsInline
-                muted
-                ref={(el) => { if (el && el.srcObject !== s.stream) el.srcObject = s.stream }}
-              />
-              <div className="tile-label">
-                {resolveLabel(s)}
-              </div>
-            </button>
-          ))}
+          {sortedStreams.map((s) => renderTile(s, 'grid'))}
         </div>
       )}
     </div>
