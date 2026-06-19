@@ -26,6 +26,8 @@ function VideoGrid({ streams, clients, selectedStreamId, onSelect, onPopout, onF
   const viewerRef = useRef(null)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [carouselCollapsed, setCarouselCollapsed] = useState(false)
+  const [volume, setVolume] = useState(100)
+  const [muted, setMuted] = useState(false)
 
   // Track fullscreen state from the browser (covers Esc-to-exit too)
   useEffect(() => {
