@@ -195,15 +195,17 @@
   background: var(--color-background-mute);
   border-radius: 10px;
   display: flex;
-  align-items: center;
+  /* Anchor the buttons to the top so they ride up with the first line as the
+     message box grows downward across multiple lines. */
+  align-items: flex-start;
   gap: var(--spacing-sm);
   padding: var(--spacing-md) var(--spacing-lg);
   margin: var(--spacing-sm);
-  
 }
 
-.chat-input-bar input[type='text'] {
+.chat-input-bar textarea {
   flex: 1;
+  min-width: 0;
   padding: 10px 14px;
   background: var(--color-background-soft);
   border: 1px solid var(--color-border);
@@ -211,19 +213,27 @@
   color: var(--color-text);
   font-size: var(--font-size-md);
   font-family: var(--font-family-primary);
+  line-height: 1.4;
   outline: none;
+  box-sizing: border-box;
+  /* Height is managed in JS (auto-grow up to MAX_INPUT_LINES); the user can't
+     drag-resize, and a single row is the starting point. */
+  resize: none;
+  display: block;
   transition: border-color 0.15s;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border-light) transparent;
 }
 
-.chat-input-bar input[type='text']:focus {
+.chat-input-bar textarea:focus {
   border-color: var(--color-primary);
 }
 
-.chat-input-bar input[type='text']::placeholder {
+.chat-input-bar textarea::placeholder {
   color: var(--color-text-muted);
 }
 
-.chat-input-bar input[type='text']:disabled,
+.chat-input-bar textarea:disabled,
 .chat-icon-btn:disabled,
 .chat-send-btn:disabled {
   opacity: 0.4;
@@ -248,12 +258,17 @@
   background: transparent;
   color: var(--color-text-secondary);
   cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition: background 0.15s ease, color 0.15s ease, transform 0.12s ease;
 }
 
 .chat-icon-btn:hover {
   background: var(--color-border);
   color: var(--color-text);
+}
+
+/* Tactile press feedback (no hover lift). */
+.chat-icon-btn:active:not(:disabled) {
+  transform: scale(0.92);
 }
 
 .chat-send-btn {
@@ -269,11 +284,23 @@
   background: var(--color-primary);
   color: var(--color-background);
   cursor: pointer;
-  transition: background 0.15s ease, opacity 0.15s ease;
+  transition: background 0.15s ease, opacity 0.15s ease, transform 0.12s ease;
 }
 
 .chat-send-btn:hover:not(:disabled) {
   background: var(--color-primary-hover);
+}
+
+/* Tactile press feedback (no hover lift). */
+.chat-send-btn:active:not(:disabled) {
+  transform: scale(0.92);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-icon-btn:active:not(:disabled),
+  .chat-send-btn:active:not(:disabled) {
+    transform: none;
+  }
 }
 
 .chat-send-btn:disabled {

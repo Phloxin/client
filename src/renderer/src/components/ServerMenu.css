@@ -71,6 +71,39 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
+  /* Closed state: faded, nudged up toward the trigger, and fully inert. The
+     dropdown stays mounted so it can animate both open and closed; the delayed
+     visibility transition keeps it interactive through the fade-out. */
+  transform-origin: top;
+  opacity: 0;
+  transform: translateY(-6px) scaleY(0.97);
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity 0.16s ease,
+    transform 0.16s ease,
+    visibility 0s linear 0.16s;
+}
+
+.server-menu-dropdown.open {
+  opacity: 1;
+  transform: translateY(0) scaleY(1);
+  visibility: visible;
+  pointer-events: auto;
+  transition:
+    opacity 0.16s ease,
+    transform 0.16s ease,
+    visibility 0s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .server-menu-dropdown {
+    transition: visibility 0s linear 0s;
+    transform: none;
+  }
+  .server-menu-dropdown.open {
+    transform: none;
+  }
 }
 
 .server-menu-section-label {

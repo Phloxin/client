@@ -230,11 +230,10 @@
   flex-shrink: 0;
 }
 
-.client-status {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--color-success);
+/* Shown only while the client is streaming. Pinned to the far right and left
+   uncolored so it inherits currentColor — i.e. the same color as the client's
+   name (including the hover shift). */
+.client-streaming-icon {
   margin-left: auto;
   flex-shrink: 0;
 }

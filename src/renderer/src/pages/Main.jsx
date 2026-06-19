@@ -9,11 +9,17 @@ import TitleBar from '../components/TitleBar'
 import Settings from './Settings'
 import { disconnect as disconnectVoice, setFocusedScreenAudio, setVideoStreamRoles } from '../lib/soup'
 import { setServerHost, apiBase, wsBase } from '../lib/serverConfig'
+import { usePillIndicator } from '../lib/usePillIndicator'
 import { DEV_MODE, MOCK_TOKEN, MOCK_CLIENT, MOCK_CHANNELS, MOCK_CLIENTS, createMockStreams } from '../lib/mock'
 import { IconVideo, IconMessage, IconUsersGroup } from '@tabler/icons-react'
 
 const MAX_LOG_ENTRIES = 500
 const HISTORY_LIMIT = 50
+
+// How often we send an events-socket heartbeat (op 2). Must stay under the
+// backend's eviction timeout so an ungraceful exit (e.g. Ctrl+C / power loss)
+// is detected and the user is removed from their channel for everyone else.
+const HEARTBEAT_INTERVAL_MS = 10000
 
 // Shown in the custom title bar; change this to rebrand the window chrome.
 const APP_TITLE = 'Teamspeak 26'
@@ -91,6 +97,9 @@ function Main() {
   // we join (no burst of "started a stream" on connect).
   const seenStreamIdsRef = useRef(new Set())
   const notifyArmedRef = useRef(false)
+  // Last server event sequence we've processed, reported back in each heartbeat
+  // (op 2). Null until the backend starts tagging events with a sequence.
+  const lastEventSeqRef = useRef(null)
 
   // Keep refs to the latest channels/clients so the events websocket handler
   // (created once in the effect below) can look them up without stale closures.
@@ -373,12 +382,47 @@ function Main() {
 
     const ws = new WebSocket(`${wsBase()}/ws`)
     eventsWsRef.current = ws
+    // Fresh connection → fresh sequence; cleared so a stale seq from a previous
+    // session isn't reported.
+    lastEventSeqRef.current = null
+    let heartbeatTimer = null
+    // True between sending a heartbeat (op 2) and receiving its ack (op 4). If a
+    // beat is still unacknowledged when the next is due, the connection is dead.
+    let awaitingAck = false
     ws.onopen = () => {
       console.log('WebSocket connected')
       ws.send(JSON.stringify({ op: 0, data: { token } }))
+      // Heartbeat: prove we're still alive every interval, reporting the last
+      // event sequence we've processed (null until the backend tags events).
+      // If these stop arriving the server evicts us, so clients that crash or
+      // are force-killed (Ctrl+C) stop appearing in the channel.
+      heartbeatTimer = setInterval(() => {
+        if (ws.readyState !== WebSocket.OPEN) return
+        if (awaitingAck) {
+          // Previous heartbeat was never acknowledged — treat as a zombie
+          // connection and close it (fires onclose; clears the timer).
+          console.warn('[Events] Heartbeat not acknowledged; closing dead connection')
+          ws.close()
+          return
+        }
+        awaitingAck = true
+        ws.send(JSON.stringify({ op: 2, data: lastEventSeqRef.current }))
+      }, HEARTBEAT_INTERVAL_MS)
     }
     ws.onmessage = (event) => {
-      const { ev, data } = JSON.parse(event.data)
+      const msg = JSON.parse(event.data)
+
+      // Heartbeat acknowledgement — clears the outstanding beat; no event body.
+      if (msg.op === 4) {
+        awaitingAck = false
+        return
+      }
+
+      // Events will be wrapped as { op: 3, data: <event>, seq }; today they
+      // arrive bare as { ev, data }. Support both, and remember the latest
+      // sequence so the heartbeat can report our position.
+      if (typeof msg.seq === 'number') lastEventSeqRef.current = msg.seq
+      const { ev, data } = msg.op === 3 ? msg.data : msg
 
       // Audio status update (mic mute / deafen) broadcast from another client
       if (ev === 'VoiceStateUpdate') {
@@ -413,6 +457,8 @@ function Main() {
     }
     ws.onclose = () => {
       console.log('WebSocket disconnected')
+      if (heartbeatTimer) clearInterval(heartbeatTimer)
+      heartbeatTimer = null
       eventsWsRef.current = null
     }
     ws.onerror = (err) => console.error('WebSocket error:', err)
@@ -422,6 +468,7 @@ function Main() {
     })
 
     return () => {
+      if (heartbeatTimer) clearInterval(heartbeatTimer)
       ws.close()
       eventsWsRef.current = null
       window.electron.ipcRenderer.removeAllListeners('log-message')
@@ -489,6 +536,9 @@ function Main() {
   const connected = !!token
   const titleText = connectedServer ? `${APP_TITLE} — ${connectedServer.nickname}` : APP_TITLE
 
+  // Sliding pill for the Chat / Video Streams tabs.
+  const viewPill = usePillIndicator(viewMode)
+
   return (
     <div className="app-shell">
       <TitleBar
@@ -520,10 +570,12 @@ function Main() {
         <div className="chat-header">
           <div className="header-content">
             {connected ? (
-              <div className="view-tabs-bar">
+              <div className="view-tabs-bar" ref={viewPill.barRef}>
+                <span className="pill-indicator" style={viewPill.indicatorStyle} aria-hidden="true" />
                 <button
                   type="button"
                   className={`view-tab${viewMode === 'log' ? ' active' : ''}`}
+                  data-active={viewMode === 'log'}
                   onClick={() => setViewMode('log')}
                 >
                   <IconMessage size={15} stroke={2} /> Chat
@@ -531,6 +583,7 @@ function Main() {
                 <button
                   type="button"
                   className={`view-tab${viewMode === 'video' ? ' active' : ''}`}
+                  data-active={viewMode === 'video'}
                   onClick={() => setViewMode('video')}
                   disabled={poppedOut}
                   title={poppedOut ? 'Video is open in a separate window' : undefined}

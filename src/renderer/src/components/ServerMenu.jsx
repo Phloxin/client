@@ -89,8 +89,7 @@ function ServerMenu({ servers, connectedServer, onConnect, onDisconnect, onAddSe
         <IconChevronDown size={16} className={`server-menu-chevron${open ? ' open' : ''}`} />
       </button>
 
-      {open && (
-        <div className="server-menu-dropdown">
+      <div className={`server-menu-dropdown${open ? ' open' : ''}`} aria-hidden={!open}>
           <div className="server-menu-section-label">Servers</div>
 
           {servers.length === 0 && (
@@ -148,7 +147,6 @@ function ServerMenu({ servers, connectedServer, onConnect, onDisconnect, onAddSe
             </button>
           )}
         </div>
-      )}
 
       {showAddModal && (
         <div className="add-server-overlay" onClick={() => setShowAddModal(false)}>

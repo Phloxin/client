@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useLayoutEffect } from 'react'
 import {
   IconPaperclip,
   IconMoodSmile,
@@ -10,6 +10,9 @@ import {
 import ImageViewer from './ImageViewer'
 import EmojiPicker from './EmojiPicker'
 import './ChatPanel.css'
+
+// The message box grows with its content up to this many lines, then scrolls.
+const MAX_INPUT_LINES = 10
 
 function attachmentKind(file) {
   if (file.type.startsWith('image/')) return 'image'
@@ -40,6 +43,23 @@ function ChatPanel({ feed, clients, onSend, disabled }) {
       listRef.current.scrollTop = listRef.current.scrollHeight
     }
   }, [feed])
+
+  // Grow the message box to fit its content, up to MAX_INPUT_LINES, then let it
+  // scroll. Runs on every text change (typing, emoji insert, send-clear).
+  useLayoutEffect(() => {
+    const el = inputRef.current
+    if (!el) return
+    el.style.height = 'auto' // shrink first so scrollHeight reflects the content
+    const cs = getComputedStyle(el)
+    const lineHeight = parseFloat(cs.lineHeight) || 20
+    const verticalPadding = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom)
+    const verticalBorder = parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth)
+    const maxHeight = lineHeight * MAX_INPUT_LINES + verticalPadding + verticalBorder
+    // scrollHeight excludes the border under border-box, so add it back.
+    const fullHeight = el.scrollHeight + verticalBorder
+    el.style.height = `${Math.min(fullHeight, maxHeight)}px`
+    el.style.overflowY = fullHeight > maxHeight ? 'auto' : 'hidden'
+  }, [text])
 
   // Close the emoji picker on outside click
   useEffect(() => {
@@ -261,9 +281,9 @@ function ChatPanel({ feed, clients, onSend, disabled }) {
         >
           <IconPaperclip size={20} />
         </button>
-        <input
+        <textarea
           ref={inputRef}
-          type="text"
+          rows={1}
           placeholder={disabled ? 'Join a channel to chat' : 'Message...'}
           value={text}
           onChange={(e) => setText(e.target.value)}

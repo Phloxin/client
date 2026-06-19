@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import './ScreenSourcePicker.css'
 import { IconDeviceDesktop, IconAppWindow, IconLoader2, IconCamera } from '@tabler/icons-react'
+import { usePillIndicator } from '../lib/usePillIndicator'
 
 const RESOLUTIONS = [
   { label: '720p',  width: 1280, height: 720  },
@@ -22,6 +23,8 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
   const [fps, setFps] = useState(30)
   const [resolution, setResolution] = useState('1080p')
   const [audio, setAudio] = useState(true)
+  // Sliding pill for the Screens / Windows / Devices tabs.
+  const tabPill = usePillIndicator(activeTab)
 
   useEffect(() => {
     let cancelled = false
@@ -118,10 +121,12 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
     <div className="source-picker-overlay" onClick={onCancel}>
       <div className="source-picker-modal" onClick={(e) => e.stopPropagation()}>
         <div className="source-picker-tabs">
-          <div className="source-tabs-bar">
+          <div className="source-tabs-bar" ref={tabPill.barRef}>
+            <span className="pill-indicator" style={tabPill.indicatorStyle} aria-hidden="true" />
             <button
               type="button"
               className={`source-tab${activeTab === 'screens' ? ' active' : ''}`}
+              data-active={activeTab === 'screens'}
               onClick={() => switchTab('screens')}
             >
               <IconDeviceDesktop size={15} /> Screens
@@ -129,6 +134,7 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
             <button
               type="button"
               className={`source-tab${activeTab === 'windows' ? ' active' : ''}`}
+              data-active={activeTab === 'windows'}
               onClick={() => switchTab('windows')}
             >
               <IconAppWindow size={15} /> Windows
@@ -136,6 +142,7 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
             <button
               type="button"
               className={`source-tab${activeTab === 'devices' ? ' active' : ''}`}
+              data-active={activeTab === 'devices'}
               onClick={() => switchTab('devices')}
             >
               <IconCamera size={15} /> Devices

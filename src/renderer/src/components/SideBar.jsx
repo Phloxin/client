@@ -147,7 +147,7 @@ function Sidebar({
             disabled={!joinedChannelId}
             onClick={() => channelRefs.current[joinedChannelId]?.toggleShare()}
           >
-            {sharing ? <IconScreenShareOff size={20}/> : <IconScreenShare size={20}/>}
+            {sharing ? <IconScreenShareOff className="control-icon" size={20}/> : <IconScreenShare className="control-icon" size={20}/>}
           </button>
           <button
             className="control-btn"
@@ -164,14 +164,14 @@ function Sidebar({
             title={micMuted ? 'Unmute Microphone' : 'Mute Microphone'}
             onClick={() => setMicMutedState((m) => !m)}
           >
-            {micMuted ? <IconMicrophoneOff size={20}/> : <IconMicrophone size={20}/>}
+            {micMuted ? <IconMicrophoneOff className="control-icon" size={20}/> : <IconMicrophone className="control-icon" size={20}/>}
           </button>
           <button
             className={`control-btn${soundMuted ? ' active' : ''}`}
             title={soundMuted ? 'Unmute Sound' : 'Mute Sound'}
             onClick={() => setSoundMutedState((m) => !m)}
           >
-            {soundMuted ? <IconHeadphonesOff size={20}/> : <IconHeadphones size={20}/>}
+            {soundMuted ? <IconHeadphonesOff className="control-icon" size={20}/> : <IconHeadphones className="control-icon" size={20}/>}
           </button>
           <button
             className="control-btn"

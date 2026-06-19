@@ -291,6 +291,11 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     deactivate
   }))
 
+  // Clients with an active video stream (their tile is present in videoStreams).
+  const streamingClientIds = new Set(
+    videoStreams.filter((s) => s.kind === 'video').map((s) => s.clientId)
+  )
+
   return (
     <div className={`channel-item${joined ? ' active' : ''}`} onDoubleClick={handleDoubleClick}>
       <div className="channel-row">
@@ -306,6 +311,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
           micMuted={c.id === self.id ? micMuted : !!c.self_mute}
           deafened={c.id === self.id ? deafened : !!c.self_deaf}
           isSelf={c.id === self.id}
+          streaming={streamingClientIds.has(c.id)}
         />
       ))}
       {showSourcePicker && (

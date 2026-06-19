@@ -13,8 +13,8 @@ import {
   IconVolume4,
   IconVolumeOff,
   IconExternalLink,
-  IconPlayerPlay,
-  IconPlayerStop
+  IconPlayerPlayFilled,
+  IconPlayerStopFilled
 } from '@tabler/icons-react'
 import { setFocusedScreenAudio, setVideoStreamRoles } from '../lib/soup'
 
@@ -22,10 +22,37 @@ import { setFocusedScreenAudio, setVideoStreamRoles } from '../lib/soup'
 // passed (e.g. the popout's first render before the bridge data arrives).
 const EMPTY_WATCHED = new Set()
 
+// Gap (px) between grid tiles — must match the `gap` in .video-grid-layout.
+const GRID_GAP = 12
+const TILE_AR = 16 / 9
+
+// Largest uniform 16:9 tile width that fits `n` tiles inside a W×H area without
+// scrolling. Tries every column count and, for each, takes the tile size capped
+// by both the available width (per column) and height (per row), then keeps the
+// biggest. This is the CSS-impossible part of a Discord-style grid: all tiles
+// stay equal AND scale down together so the whole set is always on screen.
+function bestUniformTileWidth(W, H, n, gap = GRID_GAP) {
+  if (!W || !H || !n) return 0
+  let best = 0
+  for (let cols = 1; cols <= n; cols++) {
+    const rows = Math.ceil(n / cols)
+    const wByWidth = (W - (cols - 1) * gap) / cols
+    const hByRow = (H - (rows - 1) * gap) / rows
+    const wByHeight = hByRow * TILE_AR
+    const w = Math.min(wByWidth, wByHeight)
+    if (w > best) best = w
+  }
+  return Math.floor(best)
+}
+
 function VideoGrid({ streams, clients, selectedStreamId, onSelect, onPopout, onFocusAudio, onSetStreamRoles, watchedStreamIds = EMPTY_WATCHED, onSetStreamWatched, volume, muted, onVolumeChange, onMutedChange }) {
   const viewerRef = useRef(null)
+  const gridRef = useRef(null)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [carouselCollapsed, setCarouselCollapsed] = useState(false)
+  // Computed uniform tile width (px) for the unfocused grid, so every tile is
+  // the same size and the whole set fits without scrolling. Null until measured.
+  const [gridTileWidth, setGridTileWidth] = useState(null)
 
   // Track fullscreen state from the browser (covers Esc-to-exit too)
   useEffect(() => {
@@ -99,6 +126,22 @@ function VideoGrid({ streams, clients, selectedStreamId, onSelect, onPopout, onF
     return () => applyRoles({ focusedConsumerId: null, visibleConsumerIds: [] })
   }, [])
 
+  // Recompute the uniform grid tile size whenever the grid is shown, its tile
+  // count changes, or the area resizes (window/sidebar/fullscreen). A
+  // ResizeObserver on the grid container keeps it in sync without polling.
+  const gridShown = !selectedStream
+  const gridTileCount = sortedStreams.length
+  useEffect(() => {
+    const el = gridRef.current
+    if (!gridShown || !el) return
+    const recompute = () =>
+      setGridTileWidth(bestUniformTileWidth(el.clientWidth, el.clientHeight, gridTileCount))
+    recompute()
+    const ro = new ResizeObserver(recompute)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [gridShown, gridTileCount])
+
   if (!streams.length) return (
     <div className="video-grid empty">
       <div className="empty-message">
@@ -169,7 +212,7 @@ function VideoGrid({ streams, clients, selectedStreamId, onSelect, onPopout, onF
           title={stopped ? 'Watch stream' : 'Close stream'}
           onClick={(e) => toggleStopped(s, e)}
         >
-          {stopped ? <IconPlayerPlay size={15} /> : <IconPlayerStop size={15} />}
+          {stopped ? <IconPlayerPlayFilled size={15} /> : <IconPlayerStopFilled size={15} />}
         </button>
         <div className={labelClass}>{resolveLabel(s)}</div>
       </div>
@@ -249,7 +292,11 @@ function VideoGrid({ streams, clients, selectedStreamId, onSelect, onPopout, onF
       ) : (
         /* No stream focused: spread every stream across the whole grid area.
            Click a tile to focus it. */
-        <div className="video-grid-layout">
+        <div
+          className="video-grid-layout"
+          ref={gridRef}
+          style={gridTileWidth ? { '--grid-tile-width': `${gridTileWidth}px` } : undefined}
+        >
           <div className="video-grid-controls">
             {onPopout && (
               <button
