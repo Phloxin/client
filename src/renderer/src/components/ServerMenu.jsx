@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import './ServerMenu.css'
-import { IconChevronDown, IconPlus, IconX, IconPlugConnected, IconTrash } from '@tabler/icons-react'
+import { IconChevronDown, IconPlus, IconX, IconPlugConnected, IconTrash, IconPencil } from '@tabler/icons-react'
 
 // Initial state for the add-server form
 const EMPTY_FORM = { nickname: '', host: '', username: '', password: '' }
@@ -8,9 +8,11 @@ const EMPTY_FORM = { nickname: '', host: '', username: '', password: '' }
 // Sidebar header control: shows the connection status + the active/"Connect"
 // label, and opens a dropdown of saved servers with add / connect / remove /
 // disconnect actions.
-function ServerMenu({ servers, connectedServer, onConnect, onDisconnect, onAddServer, onRemoveServer }) {
+function ServerMenu({ servers, connectedServer, onConnect, onDisconnect, onAddServer, onEditServer, onRemoveServer }) {
   const [open, setOpen] = useState(false)
   const [showAddModal, setShowAddModal] = useState(false)
+  // Holds the id of the server being edited, or null when adding a new one
+  const [editingId, setEditingId] = useState(null)
   const [form, setForm] = useState(EMPTY_FORM)
   const [formError, setFormError] = useState(null)
   const menuRef = useRef(null)
@@ -38,7 +40,20 @@ function ServerMenu({ servers, connectedServer, onConnect, onDisconnect, onAddSe
   }
 
   const openAddModal = () => {
+    setEditingId(null)
     setForm(EMPTY_FORM)
+    setFormError(null)
+    setShowAddModal(true)
+  }
+
+  const openEditModal = (server) => {
+    setEditingId(server.id)
+    setForm({
+      nickname: server.nickname,
+      host: server.host,
+      username: server.username,
+      password: server.password ?? ''
+    })
     setFormError(null)
     setShowAddModal(true)
   }
@@ -53,7 +68,11 @@ function ServerMenu({ servers, connectedServer, onConnect, onDisconnect, onAddSe
       setFormError('Nickname, address, and username are required.')
       return
     }
-    onAddServer({ id: crypto.randomUUID(), nickname, host, username, password: form.password })
+    if (editingId) {
+      onEditServer({ id: editingId, nickname, host, username, password: form.password })
+    } else {
+      onAddServer({ id: crypto.randomUUID(), nickname, host, username, password: form.password })
+    }
     setShowAddModal(false)
     setOpen(true)
   }
@@ -90,20 +109,31 @@ function ServerMenu({ servers, connectedServer, onConnect, onDisconnect, onAddSe
                   <span className="server-menu-item-name">{server.nickname}</span>
                   <span className="server-menu-item-host">{server.host}</span>
                 </div>
-                {isActive ? (
-                  <span className="server-menu-item-badge">Connected</span>
-                ) : (
+                <div className="server-menu-item-actions">
+                  {isActive && <span className="server-menu-item-badge">Connected</span>}
                   <button
-                    className="server-menu-item-remove"
-                    title="Remove server"
+                    className="server-menu-item-edit"
+                    title="Edit server"
                     onClick={(e) => {
                       e.stopPropagation()
-                      onRemoveServer(server.id)
+                      openEditModal(server)
                     }}
                   >
-                    <IconTrash size={15} />
+                    <IconPencil size={15} />
                   </button>
-                )}
+                  {!isActive && (
+                    <button
+                      className="server-menu-item-remove"
+                      title="Remove server"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onRemoveServer(server.id)
+                      }}
+                    >
+                      <IconTrash size={15} />
+                    </button>
+                  )}
+                </div>
               </div>
             )
           })}
@@ -124,7 +154,7 @@ function ServerMenu({ servers, connectedServer, onConnect, onDisconnect, onAddSe
         <div className="add-server-overlay" onClick={() => setShowAddModal(false)}>
           <div className="add-server-modal" onClick={(e) => e.stopPropagation()}>
             <div className="add-server-header">
-              <span className="add-server-title">Add Server</span>
+              <span className="add-server-title">{editingId ? 'Edit Server' : 'Add Server'}</span>
               <button className="add-server-close" onClick={() => setShowAddModal(false)}>
                 <IconX size={18} />
               </button>
@@ -177,7 +207,7 @@ function ServerMenu({ servers, connectedServer, onConnect, onDisconnect, onAddSe
                 Cancel
               </button>
               <button className="add-server-btn primary" onClick={handleSave}>
-                Save
+                {editingId ? 'Save Changes' : 'Save'}
               </button>
             </div>
           </div>

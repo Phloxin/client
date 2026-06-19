@@ -18,53 +18,223 @@
   min-width: 0;
 }
 
-.join-btn {
-  background: var(--color-success);
-  color: var(--color-background);
+.channel-item {
+  margin: 1px var(--spacing-sm);
+  border-radius: var(--border-radius-sm);
+  cursor: pointer;
+}
+
+.channel-row {
+  margin-top: 3px;
+  margin-bottom: 3px;
+  padding: 6px var(--spacing-sm);
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-md);
+  border-radius: var(--border-radius-sm);
+  transition: background 0.12s, color 0.12s;
+}
+
+.channel-row:hover {
+  background: var(--color-border);
+  color: var(--color-text);
+}
+
+.channel-item.active .channel-row {
+  background: color-mix(in srgb, var(--color-primary) 15%, transparent);
+  color: var(--color-text);
+}
+
+.channel-icon {
+  font-size: 15px;
+  width: 18px;
+  text-align: center;
+  flex-shrink: 0;
+  color: inherit;
+}
+
+.channel-name {
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.client-indicator {
+  margin-top: 3px;
+  margin-bottom: 3px;
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  font-size: var(--font-size-sm);
+  /* Tighten the text line box so the name sits on the same optical center as
+     the icons/avatar (the global 1.6 line-height pushes it visually low). */
+  line-height: 1;
+  color: var(--color-text-muted);
+  padding: 5px var(--spacing-xs) 5px 18px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  min-width: 0;
+  position: relative;
+  border-radius: var(--border-radius-sm);
+  transition: background 0.12s, color 0.12s;
+}
+
+.client-indicator:hover {
+  background: var(--color-border);
+  color: var(--color-text);
+}
+
+/* ── Per-client right-click controls ─────────────────────────────────────── */
+
+.client-context-menu {
+  position: fixed;
+  z-index: 1000;
+  background: var(--color-background-mute);
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius-sm);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  padding: var(--spacing-sm);
+  min-width: 220px;
+}
+
+.client-context-menu-header {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text);
+  padding: 2px 4px 8px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--color-border);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.client-context-menu-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.client-volume-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  padding: 0;
   border: none;
   border-radius: var(--border-radius-sm);
-  padding: 2px var(--spacing-sm);
-  font-size: var(--font-size-xs);
-  font-weight: var(--font-weight-semibold);
+  background: transparent;
+  color: var(--color-text-secondary);
   cursor: pointer;
-  transition: background-color 0.15s;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.client-volume-btn:hover {
+  background: var(--color-border);
+  color: var(--color-text);
+}
+
+.client-volume-slider-wrap {
+  position: relative;
+  flex: 1;
+  display: flex;
+  align-items: center;
+}
+
+/* Marks the 100% baseline at the center of the track */
+.client-volume-center-tick {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 2px;
+  height: 10px;
+  transform: translate(-50%, -50%);
+  background: var(--color-text-tertiary);
+  border-radius: 1px;
+  pointer-events: none;
+}
+
+.client-volume-value {
+  flex-shrink: 0;
+  width: 38px;
+  text-align: right;
+  font-size: var(--font-size-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-secondary);
+}
+
+.client-volume-slider {
+  flex: 1;
+  width: 100%;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--color-border-light);
+  cursor: pointer;
+  outline: none;
+}
+
+.client-volume-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--color-primary);
+  cursor: pointer;
+}
+
+.client-volume-slider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border: none;
+  border-radius: 50%;
+  background: var(--color-primary);
+  cursor: pointer;
+}
+
+.mic-indicator {
+  flex-shrink: 0;
+  color: var(--color-border-light);
+  transition: color 0.1s ease;
+}
+
+.mic-indicator.speaking {
+  color: var(--color-success);
+}
+
+.mic-indicator.muted,
+.mic-indicator.deafened {
+  color: var(--color-danger);
+}
+
+.client-avatar {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--color-primary) 20%, transparent);
+  color: var(--color-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: var(--font-weight-bold);
   flex-shrink: 0;
 }
 
-.join-btn:hover {
-  background: var(--color-success-hover);
-}
-
-.leave-btn {
+.client-status {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
   background: var(--color-success);
-  color: var(--color-background);
-  border: none;
-  border-radius: var(--border-radius-sm);
-  padding: 2px var(--spacing-sm);
-  font-size: var(--font-size-xs);
-  font-weight: var(--font-weight-semibold);
-  cursor: pointer;
-  transition: background-color 0.15s;
+  margin-left: auto;
   flex-shrink: 0;
-}
-
-.leave-btn:hover {
-  background: var(--color-success-hover);
-}
-
-.share-btn {
-  background: var(--color-success);
-  color: var(--color-background);
-  border: none;
-  border-radius: var(--border-radius-sm);
-  padding: 2px var(--spacing-sm);
-  font-size: var(--font-size-xs);
-  font-weight: var(--font-weight-semibold);
-  cursor: pointer;
-  transition: background-color 0.15s;
-  flex-shrink: 0;
-}
-
-.share-btn:hover {
-  background: var(--color-success-hover);
 }

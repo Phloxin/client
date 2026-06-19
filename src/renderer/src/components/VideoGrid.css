@@ -39,6 +39,136 @@
   padding: var(--spacing-lg);
 }
 
+/* ── Unfocused grid view (spreads all streams across the area) ───────────── */
+
+.video-grid-layout {
+  position: relative;       /* anchor for the floating controls */
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+  grid-auto-rows: minmax(140px, 1fr);
+  align-content: stretch;
+  overflow: auto;
+}
+
+.video-grid-controls {
+  position: absolute;
+  bottom: 12px;
+  right: 12px;
+  z-index: 2;
+  display: flex;
+  gap: 8px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.video-grid-layout:hover .video-grid-controls,
+.video-grid-layout:focus-within .video-grid-controls {
+  opacity: 1;
+}
+
+.video-grid-tile {
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+  border-radius: 12px;
+  border: 2px solid transparent;
+  background: #000;
+  cursor: pointer;
+  padding: 0;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.video-grid-tile:hover {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-primary) 30%, transparent);
+}
+
+.video-grid-tile video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+  display: block;
+}
+
+.tile-label {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 8px 12px;
+  color: #fff;
+  background: linear-gradient(to top, rgba(0,0,0,0.65) 0%, transparent 100%);
+  font-size: 0.85rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+/* ── Per-stream watch / close toggle + stopped placeholder ──────────────── */
+
+/* Top-right toggle on each thumbnail / grid tile. Hidden until hover, but
+   always shown while stopped so the stream can be resumed. */
+.stream-toggle-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, background 0.15s ease;
+}
+
+.video-thumbnail:hover .stream-toggle-btn,
+.video-grid-tile:hover .stream-toggle-btn,
+.video-thumbnail.stopped .stream-toggle-btn,
+.video-grid-tile.stopped .stream-toggle-btn {
+  opacity: 1;
+}
+
+/* Same hover treatment as the fullscreen / popout buttons (.vid-btn). */
+.stream-toggle-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* Stop = danger (matches the muted mic/sound indicators); play = success. */
+.stream-toggle-btn.stop {
+  color: var(--color-danger);
+}
+
+.stream-toggle-btn.play {
+  color: var(--color-success);
+}
+
+/* Placeholder shown in place of the video when a stream is closed. */
+.stream-stopped {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-muted);
+  background: #06070d;
+}
+
+.video-thumbnail.stopped,
+.video-grid-tile.stopped {
+  border-color: transparent;
+}
+
 /* ── Focus (large) view ──────────────────────────────────────────────────── */
 
 .video-focus {
@@ -52,6 +182,10 @@
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+.video-focus.focusable {
+  cursor: pointer;
 }
 
 .video-focus video {
@@ -94,7 +228,7 @@
   opacity: 1;
 }
 
-.control-btn {
+.vid-btn {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -109,8 +243,39 @@
   transition: background 0.15s ease;
 }
 
-.control-btn:hover {
-  background: rgba(0, 0, 0, 0.75);
+.vid-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* ── Carousel show/hide toggle (centered along the bottom edge) ──────────── */
+
+.carousel-toggle {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  cursor: pointer;
+  opacity: 0;
+  transition: background 0.15s ease, opacity 0.15s ease;
+}
+
+.carousel-toggle:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.video-focus:hover .carousel-toggle,
+.video-focus:focus-within .carousel-toggle {
+  opacity: 1;
 }
 
 /* ── Volume control ──────────────────────────────────────────────────────── */
@@ -128,13 +293,13 @@
   background: rgba(0, 0, 0, 0.75);
 }
 
-.volume-control .control-btn {
+.volume-control .vid-btn {
   background: transparent;
   flex-shrink: 0;
 }
 
-.volume-control .control-btn:hover {
-  background: transparent;
+.volume-control .vid-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
 }
 
 .volume-slider {
@@ -147,16 +312,16 @@
   cursor: pointer;
   outline: none;
   opacity: 0;
-  margin-right: 0;
+  margin-left: 0;
   pointer-events: none;
-  transition: width 0.15s ease, opacity 0.15s ease, margin-right 0.15s ease;
+  transition: width 0.15s ease, opacity 0.15s ease, margin-left 0.15s ease;
 }
 
 .volume-control:hover .volume-slider,
 .volume-control:focus-within .volume-slider {
   width: 80px;
   opacity: 1;
-  margin-right: 10px;
+  margin-left: 10px;
   pointer-events: auto;
 }
 

@@ -22,6 +22,7 @@ function Sidebar({
   onConnect,
   onDisconnect,
   onAddServer,
+  onEditServer,
   onRemoveServer
 }) {
   const [width, setWidth] = useState(() => {
@@ -98,6 +99,7 @@ function Sidebar({
           onConnect={onConnect}
           onDisconnect={onDisconnect}
           onAddServer={onAddServer}
+          onEditServer={onEditServer}
           onRemoveServer={onRemoveServer}
         />
       </div>

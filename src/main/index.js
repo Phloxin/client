@@ -1,6 +1,8 @@
 import { app, shell, BrowserWindow, ipcMain, session, desktopCapturer, safeStorage, dialog } from 'electron'
 import { basename, join } from 'path'
 import { readFileSync, writeFileSync, unlinkSync } from 'fs'
+import http from 'http'
+import https from 'https'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 
@@ -92,11 +94,16 @@ const MIN_CONTENT_WIDTH = SIDEBAR_MIN_WIDTH + LAYOUT_PADDING * 2 // 196
 const SIDEBAR_HEADER_HEIGHT = 49
 const SIDEBAR_SECTION_LABEL_HEIGHT = 42
 const SIDEBAR_CONTROLS_HEIGHT = 93
+// The custom title bar sits inside the content area now that the window is
+// frameless, so its height counts against the usable layout space. Keep in
+// sync with --title-bar-height in TitleBar.css.
+const TITLE_BAR_HEIGHT = 32
 const MIN_CONTENT_HEIGHT =
   LAYOUT_PADDING * 2 +
+  TITLE_BAR_HEIGHT +
   SIDEBAR_HEADER_HEIGHT +
   SIDEBAR_SECTION_LABEL_HEIGHT +
-  SIDEBAR_CONTROLS_HEIGHT // 200
+  SIDEBAR_CONTROLS_HEIGHT // 232
 
 function createWindow() {
   // Create the browser window.
@@ -109,7 +116,10 @@ function createWindow() {
     minWidth: MIN_CONTENT_WIDTH,
     minHeight: MIN_CONTENT_HEIGHT,
     show: false,
-    autoHideMenuBar: true,
+    // Frameless: the renderer draws its own Discord-style title bar (see
+    // TitleBar.jsx). Window controls are driven via the window-* IPC below.
+    frame: false,
+    backgroundColor: '#1e1e1e',
     ...(process.platform === 'linux' ? { icon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -121,7 +131,36 @@ function createWindow() {
     mainWindow.show()
   })
 
+  // Let the custom title bar swap its maximize/restore icon when the window's
+  // maximized state changes by any means (button, double-click, OS snap).
+  const sendMaxState = () =>
+    mainWindow.webContents.send('window-maximized-change', mainWindow.isMaximized())
+  mainWindow.on('maximize', sendMaxState)
+  mainWindow.on('unmaximize', sendMaxState)
+
   mainWindow.webContents.setWindowOpenHandler((details) => {
+    // The video-grid popout is opened with window.open(url, 'video-popout', ...)
+    // so it stays same-origin/same-process as its opener and can read the live
+    // MediaStream objects off window.opener. Allow it as a real child window;
+    // everything else is treated as an external link.
+    if (details.frameName === 'video-popout') {
+      return {
+        action: 'allow',
+        overrideBrowserWindowOptions: {
+          width: 960,
+          height: 600,
+          minWidth: 360,
+          minHeight: 240,
+          title: 'Video Streams',
+          autoHideMenuBar: true,
+          backgroundColor: '#1e1e1e',
+          webPreferences: {
+            preload: join(__dirname, '../preload/index.js'),
+            sandbox: false
+          }
+        }
+      }
+    }
     shell.openExternal(details.url)
     return { action: 'deny' }
   })
@@ -187,6 +226,21 @@ app.whenReady().then(() => {
   // IPC test
   ipcMain.on('ping', () => console.log('pong'))
 
+  // ─── Custom title bar window controls ─────────────────────────────
+  // Resolved from the calling window's sender, so the same handlers work for
+  // any frameless window that renders the custom title bar.
+  ipcMain.on('window-minimize', (e) => BrowserWindow.fromWebContents(e.sender)?.minimize())
+  ipcMain.on('window-maximize-toggle', (e) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    if (!win) return
+    if (win.isMaximized()) win.unmaximize()
+    else win.maximize()
+  })
+  ipcMain.on('window-close', (e) => BrowserWindow.fromWebContents(e.sender)?.close())
+  ipcMain.handle('window-is-maximized', (e) =>
+    BrowserWindow.fromWebContents(e.sender)?.isMaximized() ?? false
+  )
+
   // Load any previously persisted auth from disk
   const persisted = readAuthFile()
   authToken = persisted.token
@@ -250,6 +304,57 @@ app.whenReady().then(() => {
     } catch (err) {
       return { ok: false, error: err.message }
     }
+  })
+
+  // Fetch a channel's recent messages. The endpoint is GET but expects a JSON
+  // body ({ limit }), which the renderer's fetch can't send (the Fetch spec
+  // forbids a body on GET). Node's http.request has no such restriction, so we
+  // make the request here and hand the parsed messages back to the renderer.
+  ipcMain.handle('get-channel-messages', async (_, { url, token, limit }) => {
+    return new Promise((resolve) => {
+      let target
+      try {
+        target = new URL(url)
+      } catch {
+        resolve({ ok: false, error: 'Invalid URL' })
+        return
+      }
+      const lib = target.protocol === 'https:' ? https : http
+      const body = JSON.stringify({ limit })
+      const req = lib.request(
+        {
+          hostname: target.hostname,
+          port: target.port,
+          path: target.pathname + target.search,
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json',
+            'Content-Length': Buffer.byteLength(body),
+            Authorization: `Bearer ${token}`
+          }
+        },
+        (res) => {
+          let data = ''
+          res.on('data', (chunk) => {
+            data += chunk
+          })
+          res.on('end', () => {
+            if (res.statusCode >= 200 && res.statusCode < 300) {
+              try {
+                resolve({ ok: true, messages: JSON.parse(data) })
+              } catch {
+                resolve({ ok: false, error: 'Invalid response JSON' })
+              }
+            } else {
+              resolve({ ok: false, status: res.statusCode, error: data })
+            }
+          })
+        }
+      )
+      req.on('error', (err) => resolve({ ok: false, error: err.message }))
+      req.write(body)
+      req.end()
+    })
   })
 
   // Login on Admin Window — forward log message to all windows
