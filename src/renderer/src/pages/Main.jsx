@@ -290,6 +290,56 @@ function Main() {
 
   const handleRemoveServer = (id) => saveServers(servers.filter((s) => s.id !== id))
 
+  // Create a channel on the server. Position is computed to append after the
+  // current last channel. The server also broadcasts ChannelCreated, so the add
+  // here is deduped by id in case that broadcast echoes back to us.
+  const handleCreateChannel = async ({ name, user_limit }) => {
+    const trimmed = name.trim()
+    if (!trimmed) return
+    const position = channels.reduce((max, ch) => Math.max(max, ch.position ?? 0), -1) + 1
+
+    if (DEV_MODE) {
+      const id = Math.max(0, ...channels.map((c) => c.id)) + 1
+      setChannels((prev) => [...prev, { id, name: trimmed, user_limit, position, clients: [] }])
+      return
+    }
+
+    try {
+      const res = await fetch(`${apiBase()}/server/channel`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ name: trimmed, user_limit, position })
+      })
+      if (!res.ok) throw new Error(`Server responded ${res.status}`)
+      const created = await res.json().catch(() => null)
+      if (created && created.id != null) {
+        setChannels((prev) => (prev.some((ch) => ch.id === created.id) ? prev : [...prev, created]))
+      }
+    } catch (err) {
+      setFeed((prev) => appendFeed(prev, systemEntry(`Failed to create channel: ${err.message}`)))
+    }
+  }
+
+  // Delete a channel. Removed locally on success; the server may also broadcast
+  // a deletion to other clients.
+  const handleDeleteChannel = async (id) => {
+    if (DEV_MODE) {
+      setChannels((prev) => prev.filter((ch) => ch.id !== id))
+      return
+    }
+
+    try {
+      const res = await fetch(`${apiBase()}/channels/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` }
+      })
+      if (!res.ok) throw new Error(`Server responded ${res.status}`)
+      setChannels((prev) => prev.filter((ch) => ch.id !== id))
+    } catch (err) {
+      setFeed((prev) => appendFeed(prev, systemEntry(`Failed to delete channel: ${err.message}`)))
+    }
+  }
+
   // Connect to a saved server: point all endpoints at its host, then log in with
   // its stored credentials. Setting the token triggers the data-loading effect.
   const handleConnect = async (server) => {
@@ -451,6 +501,12 @@ function Main() {
         setClients((prev) => prev.map((c) => c.id === data.id ? { ...c, channel_id: data.channel_id } : c))
       } else if (ev === 'MessageCreated') {
         setFeed((prev) => appendFeed(prev, messageFromApi(data)))
+      } else if (ev === 'ChannelCreated') {
+        setChannels((prev) => (prev.some((ch) => ch.id === data.id) ? prev : [...prev, data]))
+      } else if (ev === 'ChannelDeleted') {
+        // Tolerate either a full channel object or a bare id.
+        const removedId = data !== null && typeof data === 'object' ? data.id : data
+        setChannels((prev) => prev.filter((ch) => ch.id !== removedId))
       } else {
         setFeed((prev) => appendFeed(prev, systemEntry(`Unknown event: ${ev}`)))
       }
@@ -564,6 +620,8 @@ function Main() {
         onAddServer={handleAddServer}
         onEditServer={handleEditServer}
         onRemoveServer={handleRemoveServer}
+        onCreateChannel={handleCreateChannel}
+        onDeleteChannel={handleDeleteChannel}
       />
 
       <main className="chat-area">

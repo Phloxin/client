@@ -4,12 +4,12 @@ import { useSettings } from '../context/SettingsContext'
 import ClientIndicator from './ClientIndicator'
 import ScreenSourcePicker from './ScreenSourcePicker'
 import './VoiceChannel.css'
-import { IconVolume, IconCircle, IconCircleFilled, IconLock, IconLockOpen } from '@tabler/icons-react'
+import { IconVolume, IconCircle, IconCircleFilled, IconLock, IconLockOpen, IconPlus, IconTrash } from '@tabler/icons-react'
 
 const API_BASE_URL = 'http://47.16.222.82:3000'
 
 const VoiceChannel = forwardRef(function VoiceChannel(
-  { channel, clients, token, self, micMuted, deafened, onStreamsUpdate, onJoinedChange, onSharingChange, onRequestJoin },
+  { channel, clients, token, self, micMuted, deafened, onStreamsUpdate, onJoinedChange, onSharingChange, onRequestJoin, onDeleteChannel, onRequestCreateChannel },
   ref
 ) {
   const [joined, setJoined] = useState(false)
@@ -19,10 +19,13 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   const [showSourcePicker, setShowSourcePicker] = useState(false)
   const [videoStreams, setVideoStreams] = useState([])
   const [speakingClients, setSpeakingClients] = useState({})
+  // Right-click context menu position ({x, y}) or null when closed.
+  const [menuPos, setMenuPos] = useState(null)
   const { micSettings } = useSettings()
 
   const joinedRef = useRef(false)
   const localSpeakingCleanupRef = useRef(null)
+  const menuRef = useRef(null)
 
   // Keep joinedRef in sync with joined state
   useEffect(() => { joinedRef.current = joined }, [joined])
@@ -30,6 +33,21 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   // Let the sidebar know when this channel becomes the joined/sharing one
   useEffect(() => { onJoinedChange?.(channel.id, joined) }, [joined])
   useEffect(() => { onSharingChange?.(channel.id, sharing) }, [sharing])
+
+  // Close the right-click menu on an outside click.
+  useEffect(() => {
+    if (!menuPos) return
+    const close = (e) => {
+      if (menuRef.current && !menuRef.current.contains(e.target)) setMenuPos(null)
+    }
+    document.addEventListener('mousedown', close)
+    return () => document.removeEventListener('mousedown', close)
+  }, [menuPos])
+
+  const handleContextMenu = (e) => {
+    e.preventDefault()
+    setMenuPos({ x: e.clientX, y: e.clientY })
+  }
 
   const handleClientSpeaking = (clientId, isSpeaking) => {
     setSpeakingClients((prev) => {
@@ -298,7 +316,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
 
   return (
     <div className={`channel-item${joined ? ' active' : ''}`} onDoubleClick={handleDoubleClick}>
-      <div className="channel-row">
+      <div className="channel-row" onContextMenu={handleContextMenu}>
         {joined ? <IconVolume size={20}/> : <IconCircle size={20}/>}
         <span className="channel-name">{channel.name}</span>
       </div>
@@ -319,6 +337,29 @@ const VoiceChannel = forwardRef(function VoiceChannel(
           onSelect={startShareWithSource}
           onCancel={() => setShowSourcePicker(false)}
         />
+      )}
+
+      {menuPos && (
+        <div
+          className="channel-context-menu"
+          ref={menuRef}
+          style={{ top: menuPos.y, left: menuPos.x }}
+        >
+          <button
+            type="button"
+            className="channel-context-item"
+            onClick={() => { setMenuPos(null); onRequestCreateChannel?.() }}
+          >
+            <IconPlus size={16} /> Add Channel
+          </button>
+          <button
+            type="button"
+            className="channel-context-item danger"
+            onClick={() => { setMenuPos(null); onDeleteChannel?.(channel.id) }}
+          >
+            <IconTrash size={16} /> Delete Channel
+          </button>
+        </div>
       )}
     </div>
   )

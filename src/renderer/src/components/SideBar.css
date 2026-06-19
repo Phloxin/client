@@ -54,11 +54,36 @@
   gap: var(--spacing-sm);
 }
 
-.channel-section-label::after {
-  content: '';
+/* Divider line filling the space between the "Channels" label and the + button. */
+.channel-section-divider {
   flex: 1;
   height: 1px;
   background: var(--color-border);
+}
+
+.channel-add-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  padding: 0;
+  border: none;
+  border-radius: var(--border-radius-sm);
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, transform 0.12s ease;
+}
+
+.channel-add-btn:hover {
+  background: var(--color-border);
+  color: var(--color-text);
+}
+
+.channel-add-btn:active {
+  transform: scale(0.9);
 }
 
 .control-rows {
