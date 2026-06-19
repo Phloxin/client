@@ -74,6 +74,8 @@ function Main() {
   // VideoGrid) so the choice survives chat/popout view switches that unmount the
   // grid, and is shared with the popout window via the bridge below.
   const [watchedStreamIds, setWatchedStreamIds] = useState(() => new Set())
+  // Server notifications shown in the title-bar bell (newest first).
+  const [notifications, setNotifications] = useState([])
   const eventsWsRef = useRef(null)
   const channelsRef = useRef([])
   const clientsRef = useRef([])
@@ -84,6 +86,11 @@ function Main() {
   const streamVolumeRef = useRef(100)
   const streamMutedRef = useRef(false)
   const watchedStreamIdsRef = useRef(new Set())
+  // Video stream consumerIds we've already accounted for, so we only notify on
+  // genuinely new streams. notifyArmed gates out the streams already live when
+  // we join (no burst of "started a stream" on connect).
+  const seenStreamIdsRef = useRef(new Set())
+  const notifyArmedRef = useRef(false)
 
   // Keep refs to the latest channels/clients so the events websocket handler
   // (created once in the effect below) can look them up without stale closures.
@@ -123,6 +130,33 @@ function Main() {
       if ([...prev].every((id) => live.has(id))) return prev
       return new Set([...prev].filter((id) => live.has(id)))
     })
+  }, [allVideoStreams])
+
+  // (Re)baseline notifications on connect/disconnect: clear history, then arm
+  // after a short delay so the streams already live when we join don't each fire
+  // a "started a stream" notification.
+  useEffect(() => {
+    notifyArmedRef.current = false
+    seenStreamIdsRef.current = new Set()
+    setNotifications([])
+    if (!token) return
+    const t = setTimeout(() => { notifyArmedRef.current = true }, 1500)
+    return () => clearTimeout(t)
+  }, [token])
+
+  // Emit a notification when a new remote stream appears (someone started
+  // sharing). Self streams are ignored; clientsRef gives the freshest name.
+  useEffect(() => {
+    const seen = seenStreamIdsRef.current
+    const fresh = allVideoStreams.filter((s) => !s.isSelf && !seen.has(s.consumerId))
+    seenStreamIdsRef.current = new Set(allVideoStreams.map((s) => s.consumerId))
+    if (!notifyArmedRef.current || fresh.length === 0) return
+    const now = Date.now()
+    const entries = fresh.map((s) => {
+      const name = clientsRef.current.find((c) => c.id === s.clientId)?.name || s.fallbackLabel || 'Someone'
+      return { id: `${s.consumerId}-${now}`, message: `${name} has started a stream.`, timestamp: now }
+    })
+    setNotifications((prev) => [...entries, ...prev].slice(0, 50))
   }, [allVideoStreams])
 
   // Expose a bridge the popout window reads via window.opener. Live MediaStream
@@ -457,7 +491,12 @@ function Main() {
 
   return (
     <div className="app-shell">
-      <TitleBar title={titleText} icon={IconUsersGroup} />
+      <TitleBar
+        title={titleText}
+        icon={IconUsersGroup}
+        notifications={notifications}
+        onClearNotifications={() => setNotifications([])}
+      />
       <div className="layout">
       <SideBar
         channels={channels}
