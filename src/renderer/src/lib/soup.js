@@ -401,7 +401,7 @@ export async function publish(micSettings, onStream) {
       codecOptions: {
         opusStereo: micSettings.channelCount === 2,
         opusMaxPlaybackRate: micSettings.sampleRate,
-        opusDtx: false,
+        opusDtx: true,
         opusFec: true,
       },
       appData: { produced: 'Audio' }
@@ -470,7 +470,7 @@ export async function republish(micSettings, onStream) {
         codecOptions: {
           opusStereo: micSettings.channelCount === 2,
           opusMaxPlaybackRate: micSettings.sampleRate,
-          opusDtx: false,
+          opusDtx: true,
           opusFec: true,
         },
         appData: { produced: 'Audio' }
@@ -559,7 +559,7 @@ export async function shareScreen({ fps = 30, width = 1920, height = 1080, audio
     screenAudioProducer = await producerTransport.produce({
       track: audioTrack,
       codecOptions: {
-        opusDtx: false,
+        opusDtx: true,
         opusFec: true,
       },
       appData: { produced: 'ScreenShareAudio' }
@@ -708,9 +708,18 @@ export async function consumeProducer(producerId, kind, onStream, clientId, prod
   // log track state
   console.log('[Soup] Consumer track state:', consumer.track.readyState, 'muted:', consumer.track.muted)
 
-  // Resume the consumer on the server
-  await send('ResumeConsumer', { id: consumer.id })
-  console.log(`[Soup] Consumer resumed [id:${consumer.id}]`)
+  // Audio must play immediately, so resume it on the server right away. Video
+  // instead starts *paused*: streams default to stopped, and the grid opts in
+  // per stream via setVideoStreamRoles(). Resuming video here would pull full
+  // bitrate for every already-live stream the instant we join a channel, before
+  // any view role has been applied.
+  if (kind === 'audio') {
+    await send('ResumeConsumer', { id: consumer.id })
+    console.log(`[Soup] Consumer resumed [id:${consumer.id}]`)
+  } else {
+    await send('PauseConsumer', { id: consumer.id })
+    console.log(`[Soup] Video consumer created paused [id:${consumer.id}]`)
+  }
 
   // play audio or stream via DOM element
   let cleanup = null
@@ -771,7 +780,12 @@ export async function consumeProducer(producerId, kind, onStream, clientId, prod
     onStream?.({ stream, kind, consumerId: consumer.id, clientId })
   }
 
-  remoteConsumers.set(producerId, { consumer, consumerId: consumer.id, kind, clientId, producedType, cleanup, audioEl, gain: gainNode })
+  remoteConsumers.set(producerId, {
+    consumer, consumerId: consumer.id, kind, clientId, producedType, cleanup, audioEl, gain: gainNode,
+    // Video is consumed paused above, so seed its bookkeeping as hidden/paused
+    // — setVideoStreamRoles() will resume it only when a view role asks for it.
+    ...(kind === 'video' ? { serverPaused: true, viewRole: 'hidden' } : {})
+  })
 
   if (kind === 'audio') {
     applyAllAudioState()
@@ -826,8 +840,8 @@ function pauseVideoConsumer(entry) {
 }
 
 function resumeVideoConsumer(entry) {
-  // Consumers start resumed at creation (see consumeProducer), so only signal
-  // a resume if we previously paused it.
+  // Video consumers are created paused (see consumeProducer), so a resume is
+  // only ever needed to undo a pause — i.e. when serverPaused is true.
   if (entry.serverPaused !== true) return
   entry.serverPaused = false
   send('ResumeConsumer', { id: entry.consumerId })

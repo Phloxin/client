@@ -10,7 +10,7 @@ import Settings from './Settings'
 import { disconnect as disconnectVoice, setFocusedScreenAudio, setVideoStreamRoles } from '../lib/soup'
 import { setServerHost, apiBase, wsBase } from '../lib/serverConfig'
 import { DEV_MODE, MOCK_TOKEN, MOCK_CLIENT, MOCK_CHANNELS, MOCK_CLIENTS, createMockStreams } from '../lib/mock'
-import { IconVideo, IconMessage2, IconMessage, IconUsersGroup } from '@tabler/icons-react'
+import { IconVideo, IconMessage, IconUsersGroup } from '@tabler/icons-react'
 
 const MAX_LOG_ENTRIES = 500
 const HISTORY_LIMIT = 50
@@ -519,28 +519,30 @@ function Main() {
       <main className="chat-area">
         <div className="chat-header">
           <div className="header-content">
-            <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              {viewMode === 'log' ? (
-                <>
-                  <IconMessage size={18} stroke={2} />
-                  Chat
-                </>
-              ) : (
-                <>
-                  <IconVideo size={18} stroke={2} />
-                  Video Streams
-                </>
-              )}
-            </span>
-            {connected && (
-              <button
-                className="view-toggle-btn"
-                onClick={() => setViewMode(viewMode === 'log' ? 'video' : 'log')}
-                disabled={poppedOut}
-                title={poppedOut ? 'Video is open in a separate window' : undefined}
-              >
-                {viewMode === 'log' ? <IconVideo size={18}/> : <IconMessage2 size={18}/>}
-              </button>
+            {connected ? (
+              <div className="view-tabs-bar">
+                <button
+                  type="button"
+                  className={`view-tab${viewMode === 'log' ? ' active' : ''}`}
+                  onClick={() => setViewMode('log')}
+                >
+                  <IconMessage size={15} stroke={2} /> Chat
+                </button>
+                <button
+                  type="button"
+                  className={`view-tab${viewMode === 'video' ? ' active' : ''}`}
+                  onClick={() => setViewMode('video')}
+                  disabled={poppedOut}
+                  title={poppedOut ? 'Video is open in a separate window' : undefined}
+                >
+                  <IconVideo size={15} stroke={2} /> Video Streams
+                </button>
+              </div>
+            ) : (
+              <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <IconMessage size={18} stroke={2} />
+                Chat
+              </span>
             )}
           </div>
         </div>
