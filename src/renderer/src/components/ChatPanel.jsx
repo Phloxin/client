@@ -5,7 +5,8 @@ import {
   IconSend,
   IconX,
   IconFileText,
-  IconPhotoVideo
+  IconPhotoVideo,
+  IconPlayerPlayFilled
 } from '@tabler/icons-react'
 import ImageViewer from './ImageViewer'
 import EmojiPicker from './EmojiPicker'
@@ -54,6 +55,82 @@ function linkify(text) {
   }
   if (last < text.length) out.push(text.slice(last))
   return out
+}
+
+// Extract a YouTube video id from a watch / youtu.be / embed / shorts URL.
+function youtubeId(url) {
+  if (!url) return null
+  try {
+    const u = new URL(url)
+    const host = u.hostname.replace(/^www\./, '')
+    if (host === 'youtu.be') return u.pathname.slice(1) || null
+    if (host.endsWith('youtube.com')) {
+      if (u.pathname === '/watch') return u.searchParams.get('v')
+      const parts = u.pathname.split('/')
+      if (parts[1] === 'embed' || parts[1] === 'shorts') return parts[2] || null
+    }
+  } catch {
+    /* not a URL */
+  }
+  return null
+}
+
+// Only treat a video embed as a <video> when it's a real media file; provider
+// "video" URLs (e.g. YouTube) are iframe players, not files.
+const isDirectVideo = (url) => /\.(mp4|webm|mov|m4v)(\?|$)/i.test(url || '')
+
+// A single embed card: link preview, image/video, or — for YouTube — a click-to-
+// play facade that swaps in the (cookieless) iframe player only when clicked.
+function MessageEmbed({ embed, onImageClick }) {
+  const [playing, setPlaying] = useState(false)
+  const ytId = youtubeId(embed.url)
+  const media = embed.image || embed.thumbnail
+  const poster = media?.url || (ytId ? `https://i.ytimg.com/vi/${ytId}/hqdefault.jpg` : null)
+
+  return (
+    <div className="chat-embed">
+      {embed.title &&
+        (embed.url ? (
+          <a href={embed.url} target="_blank" rel="noreferrer noopener" className="chat-embed-title">
+            {embed.title}
+          </a>
+        ) : (
+          <div className="chat-embed-title">{embed.title}</div>
+        ))}
+      {embed.description && <div className="chat-embed-description">{embed.description}</div>}
+
+      {ytId ? (
+        playing ? (
+          <div className="chat-embed-player">
+            <iframe
+              src={`https://www.youtube-nocookie.com/embed/${ytId}?autoplay=1`}
+              title={embed.title || 'YouTube video'}
+              allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
+              allowFullScreen
+            />
+          </div>
+        ) : (
+          <button type="button" className="chat-embed-play" onClick={() => setPlaying(true)} title="Play">
+            {poster && <img src={poster} alt={embed.title || ''} className="chat-embed-media" />}
+            <span className="chat-embed-play-icon" aria-hidden="true">
+              <span className="chat-embed-play-badge">
+                <IconPlayerPlayFilled size={22} />
+              </span>
+            </span>
+          </button>
+        )
+      ) : embed.video?.url && isDirectVideo(embed.video.url) ? (
+        <video className="chat-embed-media" src={embed.video.url} controls />
+      ) : media?.url ? (
+        <img
+          className="chat-embed-media chat-embed-image"
+          src={media.url}
+          alt={embed.title || ''}
+          onClick={() => onImageClick({ url: media.url, name: embed.title || 'image' })}
+        />
+      ) : null}
+    </div>
+  )
 }
 
 // "Alice is typing", "Alice and Bob are typing", etc.
@@ -296,39 +373,9 @@ function ChatPanel({ feed, clients, onSend, onTyping, typingUsers = [], disabled
                     ))}
                   </div>
                 )}
-                {(entry.embeds || []).map((embed, idx) => {
-                  const media = embed.image || embed.thumbnail
-                  return (
-                    <div className="chat-embed" key={idx}>
-                      {embed.title &&
-                        (embed.url ? (
-                          <a
-                            href={embed.url}
-                            target="_blank"
-                            rel="noreferrer noopener"
-                            className="chat-embed-title"
-                          >
-                            {embed.title}
-                          </a>
-                        ) : (
-                          <div className="chat-embed-title">{embed.title}</div>
-                        ))}
-                      {embed.description && (
-                        <div className="chat-embed-description">{embed.description}</div>
-                      )}
-                      {embed.video?.url ? (
-                        <video className="chat-embed-media" src={embed.video.url} controls />
-                      ) : media?.url ? (
-                        <img
-                          className="chat-embed-media chat-embed-image"
-                          src={media.url}
-                          alt={embed.title || ''}
-                          onClick={() => setViewerImage({ url: media.url, name: embed.title || 'image' })}
-                        />
-                      ) : null}
-                    </div>
-                  )
-                })}
+                {(entry.embeds || []).map((embed, idx) => (
+                  <MessageEmbed key={idx} embed={embed} onImageClick={setViewerImage} />
+                ))}
               </div>
             </div>
           )

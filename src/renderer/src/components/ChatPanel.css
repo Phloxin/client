@@ -189,6 +189,74 @@ a.chat-embed-title:hover {
   opacity: 0.85;
 }
 
+/* YouTube facade: thumbnail + play badge, swapped for the iframe on click. */
+.chat-embed-play {
+  position: relative;
+  display: block;
+  width: 100%;
+  padding: 0;
+  margin-top: 4px;
+  border: none;
+  border-radius: var(--border-radius-sm);
+  background: #000;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.chat-embed-play .chat-embed-media {
+  margin-top: 0;
+  width: 100%;
+  max-height: 280px;
+}
+
+.chat-embed-play-icon {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.12);
+  transition: background 0.15s ease;
+}
+
+.chat-embed-play:hover .chat-embed-play-icon {
+  background: rgba(0, 0, 0, 0.28);
+}
+
+.chat-embed-play-badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 40px;
+  border-radius: 10px;
+  background: rgba(255, 0, 0, 0.88);
+  color: #fff;
+  transition: transform 0.15s ease;
+}
+
+.chat-embed-play:hover .chat-embed-play-badge {
+  transform: scale(1.06);
+}
+
+.chat-embed-player {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  margin-top: 4px;
+  border-radius: var(--border-radius-sm);
+  overflow: hidden;
+  background: #000;
+}
+
+.chat-embed-player iframe {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
 .chat-attachment img,
 .chat-attachment video {
   max-width: 240px;
