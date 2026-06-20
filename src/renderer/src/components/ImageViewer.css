@@ -14,8 +14,12 @@
 }
 
 .image-viewer-stage {
-  max-width: 100%;
-  max-height: 100%;
+  /* Fill the padded overlay rather than shrink-wrapping the image. transform:
+     scale() is paint-only and doesn't grow the layout box, so a tightly-wrapped
+     stage would clip a zoomed-in small image to its original (tiny) footprint.
+     Filling the viewport gives the scaled image room and clips at the edges. */
+  width: 100%;
+  height: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
