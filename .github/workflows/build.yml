@@ -1,9 +1,8 @@
 name: Build Client
 
 on:
-  push:
-    branches: [main]
   pull_request:
+    branches: [main]   # only PRs targeting main
 
 jobs:
   build:
