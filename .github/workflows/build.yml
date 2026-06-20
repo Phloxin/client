@@ -30,20 +30,14 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
-      - name: Rebuild Electron modules
-        run: npx electron-rebuild
-
-      - name: Build + Package Electron app (TEST RELEASE)
+      - name: Build + Package
         run: npm run ${{ matrix.script }} -- --publish=never
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload packaged files (for testing)
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: release-${{ matrix.script }}-${{ runner.os }}
-          path: |
-            dist/**
+          name: build-${{ matrix.os }}
+          path: dist/**
           if-no-files-found: error
