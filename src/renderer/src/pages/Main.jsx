@@ -470,13 +470,29 @@ function Main() {
     }
 
     setServerHost(server.host)
-    try {
-      const res = await fetch(`${apiBase()}/login`, {
+
+    const credentials = JSON.stringify({ username: server.username, password: server.password })
+    const login = () =>
+      fetch(`${apiBase()}/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: server.username, password: server.password })
-      })
-      const data = await res.json()
+        body: credentials
+      }).then((res) => res.json())
+
+    try {
+      let data = await login()
+      // No token usually means the account doesn't exist yet (we're moving to
+      // DB-backed users). Self-register with the saved credentials, then retry
+      // the login once.
+      if (!data.token) {
+        await fetch(`${apiBase()}/register`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: credentials
+        })
+        data = await login()
+      }
+
       if (data.token) {
         setToken(data.token)
         setClient(data.client)
