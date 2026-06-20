@@ -29,6 +29,33 @@ function formatTime(ts) {
   return new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
 }
 
+// Split text into plain strings + clickable links. Clicking an <a target=_blank>
+// is handled by the main process's window-open handler (opens in the system
+// browser). Trailing sentence punctuation is kept out of the link.
+const URL_RE = /(https?:\/\/[^\s<]+)/g
+function linkify(text) {
+  const out = []
+  let last = 0
+  let m
+  URL_RE.lastIndex = 0
+  while ((m = URL_RE.exec(text)) !== null) {
+    if (m.index > last) out.push(text.slice(last, m.index))
+    let url = m[0]
+    const trail = url.match(/[.,!?;:'")\]}]+$/)
+    const trailing = trail ? trail[0] : ''
+    if (trailing) url = url.slice(0, -trailing.length)
+    out.push(
+      <a key={m.index} href={url} target="_blank" rel="noreferrer noopener" className="chat-link">
+        {url}
+      </a>
+    )
+    if (trailing) out.push(trailing)
+    last = m.index + m[0].length
+  }
+  if (last < text.length) out.push(text.slice(last))
+  return out
+}
+
 // "Alice is typing", "Alice and Bob are typing", etc.
 function formatTyping(names) {
   if (names.length === 1) return `${names[0]} is typing`
@@ -220,6 +247,15 @@ function ChatPanel({ feed, clients, onSend, onTyping, typingUsers = [], disabled
             prev.type === 'message' &&
             prev.authorId === entry.authorId &&
             entry.ts - prev.ts < GROUP_WINDOW_MS
+          // An uploaded file referenced by an embed resolves to the same URL, so
+          // it's shown through the embed card — drop it from standalone attachments.
+          const embedUrls = new Set()
+          for (const em of entry.embeds || []) {
+            for (const med of [em.image, em.thumbnail, em.video]) {
+              if (med?.url) embedUrls.add(med.url)
+            }
+          }
+          const visibleAttachments = (entry.attachments || []).filter((a) => !embedUrls.has(a.url))
           return (
             <div key={entry.id} className={`chat-message${grouped ? ' grouped' : ''}`}>
               {grouped ? (
@@ -236,10 +272,10 @@ function ChatPanel({ feed, clients, onSend, onTyping, typingUsers = [], disabled
                     <span className="chat-message-time">{formatTime(entry.ts)}</span>
                   </div>
                 )}
-                {entry.text && <div className="chat-message-text">{entry.text}</div>}
-                {!!entry.attachments?.length && (
+                {entry.text && <div className="chat-message-text">{linkify(entry.text)}</div>}
+                {visibleAttachments.length > 0 && (
                   <div className="chat-message-attachments">
-                    {entry.attachments.map((a) => (
+                    {visibleAttachments.map((a) => (
                       <div key={a.id} className="chat-attachment">
                         {a.kind === 'image' ? (
                           <img
@@ -260,6 +296,39 @@ function ChatPanel({ feed, clients, onSend, onTyping, typingUsers = [], disabled
                     ))}
                   </div>
                 )}
+                {(entry.embeds || []).map((embed, idx) => {
+                  const media = embed.image || embed.thumbnail
+                  return (
+                    <div className="chat-embed" key={idx}>
+                      {embed.title &&
+                        (embed.url ? (
+                          <a
+                            href={embed.url}
+                            target="_blank"
+                            rel="noreferrer noopener"
+                            className="chat-embed-title"
+                          >
+                            {embed.title}
+                          </a>
+                        ) : (
+                          <div className="chat-embed-title">{embed.title}</div>
+                        ))}
+                      {embed.description && (
+                        <div className="chat-embed-description">{embed.description}</div>
+                      )}
+                      {embed.video?.url ? (
+                        <video className="chat-embed-media" src={embed.video.url} controls />
+                      ) : media?.url ? (
+                        <img
+                          className="chat-embed-media chat-embed-image"
+                          src={media.url}
+                          alt={embed.title || ''}
+                          onClick={() => setViewerImage({ url: media.url, name: embed.title || 'image' })}
+                        />
+                      ) : null}
+                    </div>
+                  )
+                })}
               </div>
             </div>
           )

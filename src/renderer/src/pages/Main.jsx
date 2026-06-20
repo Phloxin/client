@@ -54,6 +54,9 @@ function messageFromApi(msg) {
       kind: kindFromContentType(a.content_type),
       url: a.url
     })),
+    // Link-preview / rich cards. URLs (incl. attachment://) are resolved
+    // server-side, so they're render-ready. May arrive later via MessageUpdated.
+    embeds: msg.embeds || [],
     // Server timestamp is seconds since the UNIX epoch; JS Date wants ms.
     ts: msg.timestamp
   }
@@ -538,6 +541,16 @@ function Main() {
         // Sending a message ends that author's typing indicator immediately,
         // leaving anyone else still typing untouched.
         setTypingEntries((prev) => prev.filter((t) => t.clientId !== data.author))
+      } else if (ev === 'MessageUpdated') {
+        // Pushed after async work (e.g. link-unfurl embeds). Carries either the
+        // full updated message, or a partial { message_id, embeds }. Patch the
+        // matching feed entry in place by id.
+        const isFull = data.content !== undefined && data.author !== undefined
+        const targetId = data.id ?? data.message_id
+        setFeed((prev) => prev.map((e) => {
+          if (e.type !== 'message' || e.id !== targetId) return e
+          return isFull ? messageFromApi(data) : { ...e, embeds: data.embeds || [] }
+        }))
       } else if (ev === 'ChannelCreated') {
         setChannels((prev) => (prev.some((ch) => ch.id === data.id) ? prev : [...prev, data]))
       } else if (ev === 'ChannelDeleted') {

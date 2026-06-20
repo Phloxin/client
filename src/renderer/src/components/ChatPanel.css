@@ -124,6 +124,71 @@
   margin-top: var(--spacing-xs);
 }
 
+/* ── Links in message text ───────────────────────────────────────────────── */
+
+.chat-link {
+  color: var(--color-primary);
+  text-decoration: none;
+  word-break: break-all;
+}
+
+.chat-link:hover {
+  text-decoration: underline;
+}
+
+/* ── Link-preview / rich embed cards ─────────────────────────────────────── */
+
+.chat-embed {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 440px;
+  margin-top: var(--spacing-xs);
+  padding: 10px 12px;
+  background: var(--color-background-mute);
+  border-left: 3px solid var(--color-primary);
+  border-radius: var(--border-radius-sm);
+}
+
+.chat-embed-title {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text);
+  text-decoration: none;
+}
+
+a.chat-embed-title {
+  color: var(--color-primary);
+}
+
+a.chat-embed-title:hover {
+  text-decoration: underline;
+}
+
+.chat-embed-description {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.chat-embed-media {
+  max-width: 100%;
+  max-height: 280px;
+  margin-top: 4px;
+  border-radius: var(--border-radius-sm);
+  display: block;
+}
+
+.chat-embed-image {
+  cursor: zoom-in;
+  transition: opacity 0.15s ease;
+}
+
+.chat-embed-image:hover {
+  opacity: 0.85;
+}
+
 .chat-attachment img,
 .chat-attachment video {
   max-width: 240px;
