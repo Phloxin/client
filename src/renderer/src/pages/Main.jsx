@@ -8,6 +8,7 @@ import ChatPanel from '../components/ChatPanel'
 import TitleBar from '../components/TitleBar'
 import Settings from './Settings'
 import { disconnect as disconnectVoice, setFocusedScreenAudio, setVideoStreamRoles } from '../lib/soup'
+import { playUiSound } from '../lib/sounds'
 import { setServerHost, apiBase, wsBase } from '../lib/serverConfig'
 import { usePillIndicator } from '../lib/usePillIndicator'
 import { DEV_MODE, MOCK_TOKEN, MOCK_CLIENT, MOCK_CHANNELS, MOCK_CLIENTS, createMockStreams } from '../lib/mock'
@@ -122,6 +123,17 @@ function Main() {
   // Last server event sequence we've processed, reported back in each heartbeat
   // (op 2). Null until the backend starts tagging events with a sequence.
   const lastEventSeqRef = useRef(null)
+  // Self id, our joined channel, and the channel whose chat we're viewing — kept
+  // as refs so the once-built events-socket handler reads live values (not stale
+  // closures) when deciding which UI sounds to play.
+  const selfIdRef = useRef(null)
+  const selfChannelIdRef = useRef(null)
+  const activeChatChannelIdRef = useRef(null)
+  // Stream-sound detection: ids present last time we diffed, and a gate that
+  // suppresses chimes until shortly after a (re)connect or channel change so the
+  // streams already live in a channel we just joined don't each fire a start.
+  const prevStreamIdsRef = useRef(new Set())
+  const streamSoundsArmedRef = useRef(false)
 
   // Keep refs to the latest channels/clients so the events websocket handler
   // (created once in the effect below) can look them up without stale closures.
@@ -255,6 +267,42 @@ function Main() {
   // Chat (messages / typing / history) follows the previewed channel when
   // peeking, otherwise the joined channel.
   const activeChatChannelId = previewChannelId ?? selfChannelId
+
+  // Mirror self id / channel / active chat channel into refs for the events
+  // handler (built once) to read without stale closures.
+  useEffect(() => { selfIdRef.current = client?.id ?? null }, [client])
+  useEffect(() => { selfChannelIdRef.current = selfChannelId }, [selfChannelId])
+  useEffect(() => { activeChatChannelIdRef.current = activeChatChannelId }, [activeChatChannelId])
+
+  // (Re)baseline stream-sound detection on connect and whenever we change
+  // channels: snapshot the streams currently in view without sounding, then arm
+  // after a short delay. This declaration sits before the diff effect below so
+  // that on a channel switch it runs first in the same commit — disarming before
+  // the diff sees the incoming channel's streams, so we don't chime for each.
+  useEffect(() => {
+    streamSoundsArmedRef.current = false
+    prevStreamIdsRef.current = new Set(allVideoStreamsRef.current.map((s) => s.consumerId))
+    if (!token) return
+    const t = setTimeout(() => { streamSoundsArmedRef.current = true }, 1500)
+    return () => clearTimeout(t)
+  }, [token, selfChannelId])
+
+  // Play start/stop chimes as streams appear/vanish in our channel. Includes our
+  // own streams (isSelf) so we hear feedback when we start/stop sharing, and
+  // fires regardless of chat vs video view.
+  useEffect(() => {
+    const prev = prevStreamIdsRef.current
+    const curIds = new Set(allVideoStreams.map((s) => s.consumerId))
+    if (streamSoundsArmedRef.current) {
+      let started = false
+      let stopped = false
+      for (const id of curIds) if (!prev.has(id)) started = true
+      for (const id of prev) if (!curIds.has(id)) stopped = true
+      if (started) playUiSound('stream-start')
+      if (stopped) playUiSound('stream-stop')
+    }
+    prevStreamIdsRef.current = curIds
+  }, [allVideoStreams])
 
   // Drop the preview once we've actually joined that channel, or it's deleted.
   useEffect(() => {
@@ -544,11 +592,30 @@ function Main() {
 
         setFeed((prev) => appendFeed(prev, systemEntry(message)))
         setClients((prev) => prev.map((c) => c.id === data.id ? { ...c, channel_id: data.channel_id } : c))
+
+        // Join/leave chimes. For ourselves: any move into a channel is a "join",
+        // dropping out (channel_id null) is a "leave". For others: only sound
+        // when they enter or leave the channel we're currently in.
+        const myChannel = selfChannelIdRef.current
+        if (data.id === selfIdRef.current) {
+          playUiSound(data.channel_id == null ? 'channel-leave' : 'channel-join')
+        } else if (myChannel != null) {
+          if (data.channel_id === myChannel && oldChannelId !== myChannel) {
+            playUiSound('channel-join')
+          } else if (oldChannelId === myChannel && data.channel_id !== myChannel) {
+            playUiSound('channel-leave')
+          }
+        }
       } else if (ev === 'MessageCreated') {
         setFeed((prev) => appendFeed(prev, messageFromApi(data)))
         // Sending a message ends that author's typing indicator immediately,
         // leaving anyone else still typing untouched.
         setTypingEntries((prev) => prev.filter((t) => t.clientId !== data.author))
+        // Chime for messages arriving in the channel we're viewing, from anyone
+        // but ourselves — regardless of whether we're on the chat or video tab.
+        if (data.author !== selfIdRef.current && data.channel_id === activeChatChannelIdRef.current) {
+          playUiSound('new-message')
+        }
       } else if (ev === 'MessageUpdated') {
         // Pushed after async work (e.g. link-unfurl embeds). Carries either the
         // full updated message, or a partial { message_id, embeds }. Patch the

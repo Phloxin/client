@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import VoiceChannel from './VoiceChannel'
 import ServerMenu from './ServerMenu'
 import { setMicMuted, setSoundMuted } from '../lib/soup'
+import { playUiSound } from '../lib/sounds'
 import './SideBar.css'
 import {IconSettings, IconShield, IconDoorExit, IconHeadphones, IconHeadphonesOff, IconMicrophone, IconMicrophoneOff, IconScreenShare, IconScreenShareOff, IconPlus, IconX} from '@tabler/icons-react'
 
@@ -203,14 +204,22 @@ function Sidebar({
           <button
             className={`control-btn${micMuted ? ' active' : ''}`}
             title={micMuted ? 'Unmute Microphone' : 'Mute Microphone'}
-            onClick={() => setMicMutedState((m) => !m)}
+            onClick={() => {
+              const next = !micMuted
+              setMicMutedState(next)
+              playUiSound(next ? 'mute' : 'unmute')
+            }}
           >
             {micMuted ? <IconMicrophoneOff className="control-icon" size={20}/> : <IconMicrophone className="control-icon" size={20}/>}
           </button>
           <button
             className={`control-btn${soundMuted ? ' active' : ''}`}
             title={soundMuted ? 'Unmute Sound' : 'Mute Sound'}
-            onClick={() => setSoundMutedState((m) => !m)}
+            onClick={() => {
+              const next = !soundMuted
+              setSoundMutedState(next)
+              playUiSound(next ? 'mute' : 'unmute')
+            }}
           >
             {soundMuted ? <IconHeadphonesOff className="control-icon" size={20}/> : <IconHeadphones className="control-icon" size={20}/>}
           </button>
