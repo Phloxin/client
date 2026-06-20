@@ -1,0 +1,153 @@
+/* ============================================================================
+   NOTIFICATION CENTER — bell + unread badge + dropdown + bounce-out toast
+   ============================================================================ */
+
+.notif-center {
+  position: relative;
+  display: flex;
+  flex-shrink: 0;
+  -webkit-app-region: no-drag;
+}
+
+/* The bell reuses .title-bar-btn for sizing/hover; this just hosts the badge. */
+.notif-bell {
+  position: relative;
+}
+
+.notif-badge {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 7px;
+  background: var(--color-danger);
+  color: #fff;
+  font-size: 9px;
+  font-weight: var(--font-weight-bold);
+  line-height: 1;
+}
+
+/* ── Bounce-out toast (anchored just right of the bell) ───────────────────── */
+
+.notif-toast {
+  position: absolute;
+  left: 42px;
+  /* Center on the title bar's own height (inherited var) rather than 50% of
+     the parent, so it's centered regardless of .notif-center's box height. */
+  top: calc(var(--title-bar-height) / 2);
+  z-index: 20;
+  max-width: 320px;
+  padding: 5px 12px;
+  border-radius: 8px;
+  background: var(--color-background-mute);
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 2px;
+  margin-left: 5px;
+  pointer-events: none;
+  transform: translateY(-50%);
+  animation: notif-toast-life 4s ease forwards;
+}
+
+@keyframes notif-toast-life {
+  0%   { opacity: 0; transform: translateY(-50%) translateX(-12px) scale(0.85); }
+  8%   { opacity: 1; transform: translateY(-50%) translateX(6px) scale(1.03); }
+  13%  { transform: translateY(-50%) translateX(0) scale(1); }
+  88%  { opacity: 1; transform: translateY(-50%) translateX(0) scale(1); }
+  100% { opacity: 0; transform: translateY(-50%) translateX(0) scale(1); }
+}
+
+/* ── Dropdown notification center ─────────────────────────────────────────── */
+
+.notif-panel {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 6px;
+  z-index: 20;
+  width: 300px;
+  max-height: 360px;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+}
+
+.notif-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.notif-clear-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.notif-clear-btn:hover {
+  background: color-mix(in srgb, var(--color-danger) 18%, transparent);
+  color: var(--color-danger);
+}
+
+.notif-empty {
+  padding: 18px 12px;
+  text-align: center;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.notif-list {
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border-light) transparent;
+}
+
+.notif-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.notif-item:last-child {
+  border-bottom: none;
+}
+
+.notif-item-msg {
+  font-size: var(--font-size-sm);
+  color: var(--color-text);
+}
+
+.notif-item-time {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}

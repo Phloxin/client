@@ -1,0 +1,97 @@
+/* ============================================================================
+   CUSTOM TITLE BAR (frameless window chrome) — themed via CSS variables
+   ============================================================================ */
+
+.title-bar {
+  --title-bar-height: 32px;
+  /* Width of the three window controls (3 × 46px). The left spacer mirrors
+     this so the center title column stays window-centered. */
+  --title-bar-controls-width: 138px;
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  height: var(--title-bar-height);
+  flex-shrink: 0;
+  background: var(--color-background);
+  color: var(--color-text-secondary);
+  user-select: none;
+}
+
+/* Left region balancing the right controls so the title sits at true center.
+   It holds the pinned notification bell plus a draggable fill, and may shrink
+   (the fill collapsing toward 0) when space is tight, while the right controls
+   never do — so the window buttons stay pinned right and never get pushed out. */
+.title-bar-controls-left {
+  flex: 0 1 var(--title-bar-controls-width);
+  display: flex;
+  min-width: 0;
+  -webkit-app-region: no-drag;
+}
+
+/* Draggable fill between the bell and the centered title. */
+.title-bar-left-fill {
+  flex: 1 1 auto;
+  -webkit-app-region: drag;
+}
+
+/* Center title column. Flexes to fill between the equal side columns and
+   clips its contents, so the icon/title give way (rather than slipping under
+   the controls) when the window is too narrow to fit them. */
+.title-bar-drag {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-sm);
+  padding: 0 var(--spacing-sm);
+  min-width: 0;
+  overflow: hidden;
+  -webkit-app-region: drag;
+}
+
+.title-bar-icon {
+  display: block;
+  color: var(--color-primary);
+  flex-shrink: 0;
+}
+
+.title-bar-text {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.title-bar-controls {
+  flex: 0 0 auto;
+  display: flex;
+  -webkit-app-region: no-drag;
+}
+
+.title-bar-btn {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  height: 100%;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.title-bar-btn:hover {
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.title-bar-close:hover {
+  background: var(--color-danger);
+  color: #fff;
+}

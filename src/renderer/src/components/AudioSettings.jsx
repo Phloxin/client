@@ -3,14 +3,15 @@ import VolumeGateMeter from './VolumeGateMeter'
 
 function AudioSettings({ micSettings, updateMicSettings }) {
   const [audioDevices, setAudioDevices] = useState([])
+  const [outputDevices, setOutputDevices] = useState([])
   const [draftSettings, setDraftSettings] = useState(micSettings)
 
   useEffect(() => {
     const getDevices = async () => {
       try {
         const devices = await navigator.mediaDevices.enumerateDevices()
-        const audioInputs = devices.filter((device) => device.kind === 'audioinput')
-        setAudioDevices(audioInputs)
+        setAudioDevices(devices.filter((device) => device.kind === 'audioinput'))
+        setOutputDevices(devices.filter((device) => device.kind === 'audiooutput'))
       } catch (err) {
         console.error('[AudioSettings] Failed to enumerate devices:', err)
       }
@@ -34,7 +35,7 @@ function AudioSettings({ micSettings, updateMicSettings }) {
       <div className="settings-panel-header">
         <div>
           <h2>Audio</h2>
-          <p>Adjust microphone capture quality and audio processing.</p>
+          <p>Adjust microphone capture, playback output, and audio processing.</p>
         </div>
       </div>
 
@@ -56,10 +57,49 @@ function AudioSettings({ micSettings, updateMicSettings }) {
           </select>
         </div>
 
-        {/* 2. Volume Gate toggle + meter */}
+        {/* 2. Output Device */}
+        <div className="settings-section">
+          <label>Output Device</label>
+          <p className="settings-section-desc">
+            Choose which speakers or headphones other people&apos;s audio plays through.
+          </p>
+          <select
+            value={draftSettings.outputDeviceId || 'default'}
+            onChange={(e) => updateDraft({ outputDeviceId: e.target.value })}
+          >
+            <option value="default">Default Device</option>
+            {outputDevices.map((device) => (
+              <option key={device.deviceId} value={device.deviceId}>
+                {device.label || `Audio Output ${device.deviceId.slice(0, 8)}`}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {/* 3. Output Volume */}
+        <div className="settings-section">
+          <label>Output Volume</label>
+          <p className="settings-section-desc">
+            Master playback level applied to everyone you hear.
+          </p>
+          <div className="settings-volume-row">
+            <input
+              type="range"
+              min="0"
+              max="100"
+              step="1"
+              value={draftSettings.outputVolume ?? 100}
+              onChange={(e) => updateDraft({ outputVolume: Number(e.target.value) })}
+              className="settings-volume-slider"
+            />
+            <span className="settings-volume-value">{draftSettings.outputVolume ?? 100}%</span>
+          </div>
+        </div>
+
+        {/* 4. Volume Gate toggle + meter */}
         <div className="settings-section settings-toggle-row">
           <div className="settings-toggle-copy">
-            <label htmlFor="useVolumeGate">Use Volume Gate</label>
+            <label htmlFor="useVolumeGate">Use Voice Gate</label>
             <p className="settings-section-desc">
               Silences your mic when ambient noise falls below a set level, cutting background sound between words.
             </p>
@@ -76,7 +116,7 @@ function AudioSettings({ micSettings, updateMicSettings }) {
         </div>
 
         <div className="settings-section">
-          <label>Volume Gate Threshold</label>
+          <label>Voice Gate Threshold</label>
           <p className="settings-section-desc">
             Click the bar to set the cut-off level. Audio below the marker is filtered out.
             {!draftSettings.useVolumeGate && ' Enable the volume gate above to apply this during calls.'}
@@ -89,7 +129,60 @@ function AudioSettings({ micSettings, updateMicSettings }) {
           />
         </div>
 
-        {/* 3. Echo Cancellation */}
+        {/* 5. AI Noise Suppression (RNNoise) - mutually exclusive with browser Noise Suppression */}
+        <div className="settings-section settings-toggle-row">
+          <div className="settings-toggle-copy">
+            <label htmlFor="useRnnoise">AI Noise Suppression (Recommended)</label>
+            <p className="settings-section-desc">
+              Uses a voice-trained model to strip keyboard/typing sounds and steady background
+              noise while letting your voice through. More effective than basic noise suppression
+              for typing. Enabling this turns off basic Noise Suppression. Pair with a low Voice Gate for the best experience.
+            </p>
+          </div>
+          <label className="toggle-switch">
+            <input
+              type="checkbox"
+              id="useRnnoise"
+              checked={draftSettings.useRnnoise}
+              onChange={(e) =>
+                updateDraft(
+                  e.target.checked
+                    ? { useRnnoise: true, noiseSuppression: false }
+                    : { useRnnoise: false }
+                )
+              }
+            />
+            <span className="toggle-slider" />
+          </label>
+        </div>
+
+        {/* 6. Noise Suppression (browser) - mutually exclusive with AI Noise Suppression */}
+        <div className="settings-section settings-toggle-row">
+          <div className="settings-toggle-copy">
+            <label htmlFor="noiseSuppression">Standard Noise Suppression</label>
+            <p className="settings-section-desc">
+              Basic filtering of steady background noise such as fans, air conditioning, and
+              keyboard clicks. Enabling this turns off AI Noise Suppression.
+            </p>
+          </div>
+          <label className="toggle-switch">
+            <input
+              type="checkbox"
+              id="noiseSuppression"
+              checked={draftSettings.noiseSuppression}
+              onChange={(e) =>
+                updateDraft(
+                  e.target.checked
+                    ? { noiseSuppression: true, useRnnoise: false }
+                    : { noiseSuppression: false }
+                )
+              }
+            />
+            <span className="toggle-slider" />
+          </label>
+        </div>
+
+        {/* 7. Echo Cancellation */}
         <div className="settings-section settings-toggle-row">
           <div className="settings-toggle-copy">
             <label htmlFor="echoCancellation">Echo Cancellation</label>
@@ -97,7 +190,7 @@ function AudioSettings({ micSettings, updateMicSettings }) {
               Removes echoes caused by your speakers being picked up by your microphone.
             </p>
             <p className="settings-section-desc">
-              PLEASE NOTE: This feature interferes with the microphone test above, be sure to disable it.
+              PLEASE NOTE: This feature can interfere with the microphone test above.
             </p>
           </div>
           <label className="toggle-switch">
@@ -111,26 +204,7 @@ function AudioSettings({ micSettings, updateMicSettings }) {
           </label>
         </div>
 
-        {/* 4. Noise Suppression */}
-        <div className="settings-section settings-toggle-row">
-          <div className="settings-toggle-copy">
-            <label htmlFor="noiseSuppression">Noise Suppression</label>
-            <p className="settings-section-desc">
-              Filters out steady background noise such as fans, air conditioning, and keyboard clicks.
-            </p>
-          </div>
-          <label className="toggle-switch">
-            <input
-              type="checkbox"
-              id="noiseSuppression"
-              checked={draftSettings.noiseSuppression}
-              onChange={(e) => updateDraft({ noiseSuppression: e.target.checked })}
-            />
-            <span className="toggle-slider" />
-          </label>
-        </div>
-
-        {/* 5. Auto Gain Control */}
+        {/* 8. Auto Gain Control */}
         <div className="settings-section settings-toggle-row">
           <div className="settings-toggle-copy">
             <label htmlFor="autoGainControl">Auto Gain Control</label>

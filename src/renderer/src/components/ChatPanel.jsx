@@ -2,21 +2,14 @@ import { useState, useRef, useEffect } from 'react'
 import {
   IconPaperclip,
   IconMoodSmile,
-  IconSend2,
+  IconSend,
   IconX,
   IconFileText,
   IconPhotoVideo
 } from '@tabler/icons-react'
 import ImageViewer from './ImageViewer'
+import EmojiPicker from './EmojiPicker'
 import './ChatPanel.css'
-
-const EMOJIS = [
-  '😀', '😁', '😂', '🤣', '😊', '😍',
-  '😎', '🤔', '😴', '😭', '😢', '😡',
-  '🥳', '😱', '🤝', '👍', '👎', '👏',
-  '🙌', '🙏', '💯', '🔥', '🎉', '❤️',
-  '💀', '⭐', '💡', '👀', '🚀', '✅'
-]
 
 function attachmentKind(file) {
   if (file.type.startsWith('image/')) return 'image'
@@ -288,20 +281,7 @@ function ChatPanel({ feed, clients, onSend, disabled }) {
           >
             <IconMoodSmile size={20} />
           </button>
-          {showEmoji && (
-            <div className="chat-emoji-picker">
-              {EMOJIS.map((emoji) => (
-                <button
-                  key={emoji}
-                  type="button"
-                  className="chat-emoji-btn"
-                  onClick={() => insertEmoji(emoji)}
-                >
-                  {emoji}
-                </button>
-              ))}
-            </div>
-          )}
+          {showEmoji && <EmojiPicker onSelect={insertEmoji} />}
         </div>
         <button
           type="button"
@@ -310,7 +290,7 @@ function ChatPanel({ feed, clients, onSend, disabled }) {
           disabled={disabled || (!text.trim() && !attachments.length)}
           onClick={handleSend}
         >
-          <IconSend2 size={20} />
+          <IconSend size={20} stroke={2.5}/>
         </button>
       </div>
 

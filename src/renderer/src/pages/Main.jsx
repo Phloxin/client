@@ -5,13 +5,18 @@ import { useAuth } from '../context/AuthContext'
 import SideBar from '../components/SideBar'
 import VideoGrid from '../components/VideoGrid'
 import ChatPanel from '../components/ChatPanel'
+import TitleBar from '../components/TitleBar'
 import Settings from './Settings'
-import { disconnect as disconnectVoice } from '../lib/soup'
+import { disconnect as disconnectVoice, setFocusedScreenAudio, setVideoStreamRoles } from '../lib/soup'
 import { setServerHost, apiBase, wsBase } from '../lib/serverConfig'
-import { DEV_MODE, MOCK_TOKEN, MOCK_CLIENT, MOCK_CHANNELS, MOCK_CLIENTS } from '../lib/mock'
-import { IconVideoFilled, IconMessage2Filled, IconMessage, IconVideo } from '@tabler/icons-react'
+import { DEV_MODE, MOCK_TOKEN, MOCK_CLIENT, MOCK_CHANNELS, MOCK_CLIENTS, createMockStreams } from '../lib/mock'
+import { IconVideo, IconMessage, IconUsersGroup } from '@tabler/icons-react'
 
 const MAX_LOG_ENTRIES = 500
+const HISTORY_LIMIT = 50
+
+// Shown in the custom title bar; change this to rebrand the window chrome.
+const APP_TITLE = 'Teamspeak 26'
 
 // Append an entry to the feed, dropping the oldest entries once the cap is hit.
 function appendFeed(prev, entry) {
@@ -58,28 +63,203 @@ function Main() {
   const [selectedStreamId, setSelectedStreamId] = useState(null)
   const [servers, setServers] = useState([])
   const [connectedServer, setConnectedServer] = useState(null)
+  const [poppedOut, setPoppedOut] = useState(false)
+  // Stream playback volume (0..100) and mute, owned here so they're shared
+  // between the in-app grid and the popout window (popping out must not reset
+  // a volume the user already lowered).
+  const [streamVolume, setStreamVolume] = useState(100)
+  const [streamMuted, setStreamMuted] = useState(false)
+  // Which streams the user is actively watching. Streams default to stopped, so
+  // a stream is only consumed once its id is in here. Owned at this level (not in
+  // VideoGrid) so the choice survives chat/popout view switches that unmount the
+  // grid, and is shared with the popout window via the bridge below.
+  const [watchedStreamIds, setWatchedStreamIds] = useState(() => new Set())
+  // Server notifications shown in the title-bar bell (newest first).
+  const [notifications, setNotifications] = useState([])
   const eventsWsRef = useRef(null)
   const channelsRef = useRef([])
   const clientsRef = useRef([])
+  const popoutWindowRef = useRef(null)
+  const popoutListenersRef = useRef(new Set())
+  const allVideoStreamsRef = useRef([])
+  const selectedStreamIdRef = useRef(null)
+  const streamVolumeRef = useRef(100)
+  const streamMutedRef = useRef(false)
+  const watchedStreamIdsRef = useRef(new Set())
+  // Video stream consumerIds we've already accounted for, so we only notify on
+  // genuinely new streams. notifyArmed gates out the streams already live when
+  // we join (no burst of "started a stream" on connect).
+  const seenStreamIdsRef = useRef(new Set())
+  const notifyArmedRef = useRef(false)
 
   // Keep refs to the latest channels/clients so the events websocket handler
   // (created once in the effect below) can look them up without stale closures.
   useEffect(() => { channelsRef.current = channels }, [channels])
   useEffect(() => { clientsRef.current = clients }, [clients])
 
+  // Keep refs to the latest streams/selection/volume so the popout bridge (set
+  // up once below) always reads current values without stale closures.
+  useEffect(() => { allVideoStreamsRef.current = allVideoStreams }, [allVideoStreams])
+  useEffect(() => { selectedStreamIdRef.current = selectedStreamId }, [selectedStreamId])
+  useEffect(() => { streamVolumeRef.current = streamVolume }, [streamVolume])
+  useEffect(() => { streamMutedRef.current = streamMuted }, [streamMuted])
+  useEffect(() => { watchedStreamIdsRef.current = watchedStreamIds }, [watchedStreamIds])
+
+  // Notify the popout window whenever the data it mirrors changes.
+  useEffect(() => {
+    popoutListenersRef.current.forEach((cb) => cb())
+  }, [allVideoStreams, clients, selectedStreamId, streamVolume, streamMuted, watchedStreamIds])
+
+  // Toggle whether a stream is being watched (consumed). Shared by the in-app
+  // grid and, via the bridge, the popout. Functional update so it's stable.
+  const handleSetStreamWatched = (consumerId, watched) =>
+    setWatchedStreamIds((prev) => {
+      if (watched === prev.has(consumerId)) return prev
+      const next = new Set(prev)
+      if (watched) next.add(consumerId)
+      else next.delete(consumerId)
+      return next
+    })
+
+  // Drop watched ids for streams that have gone away, so a later stream can't
+  // inherit a stale "watching" state (and the set doesn't grow unbounded).
+  useEffect(() => {
+    setWatchedStreamIds((prev) => {
+      if (prev.size === 0) return prev
+      const live = new Set(allVideoStreams.map((s) => s.consumerId))
+      if ([...prev].every((id) => live.has(id))) return prev
+      return new Set([...prev].filter((id) => live.has(id)))
+    })
+  }, [allVideoStreams])
+
+  // (Re)baseline notifications on connect/disconnect: clear history, then arm
+  // after a short delay so the streams already live when we join don't each fire
+  // a "started a stream" notification.
+  useEffect(() => {
+    notifyArmedRef.current = false
+    seenStreamIdsRef.current = new Set()
+    setNotifications([])
+    if (!token) return
+    const t = setTimeout(() => { notifyArmedRef.current = true }, 1500)
+    return () => clearTimeout(t)
+  }, [token])
+
+  // Emit a notification when a new remote stream appears (someone started
+  // sharing). Self streams are ignored; clientsRef gives the freshest name.
+  useEffect(() => {
+    const seen = seenStreamIdsRef.current
+    const fresh = allVideoStreams.filter((s) => !s.isSelf && !seen.has(s.consumerId))
+    seenStreamIdsRef.current = new Set(allVideoStreams.map((s) => s.consumerId))
+    if (!notifyArmedRef.current || fresh.length === 0) return
+    const now = Date.now()
+    const entries = fresh.map((s) => {
+      const name = clientsRef.current.find((c) => c.id === s.clientId)?.name || s.fallbackLabel || 'Someone'
+      return { id: `${s.consumerId}-${now}`, message: `${name} has started a stream.`, timestamp: now }
+    })
+    setNotifications((prev) => [...entries, ...prev].slice(0, 50))
+  }, [allVideoStreams])
+
+  // Expose a bridge the popout window reads via window.opener. Live MediaStream
+  // objects are shared by reference (same origin/process), never serialized.
+  useEffect(() => {
+    window.__videoPopout = {
+      getData: () => ({
+        streams: allVideoStreamsRef.current,
+        clients: clientsRef.current,
+        selectedStreamId: selectedStreamIdRef.current,
+        volume: streamVolumeRef.current,
+        muted: streamMutedRef.current,
+        watchedStreamIds: watchedStreamIdsRef.current
+      }),
+      select: (id) => setSelectedStreamId(id),
+      setVolume: (v) => setStreamVolume(v),
+      setMuted: (m) => setStreamMuted(m),
+      setStreamWatched: (id, watched) => handleSetStreamWatched(id, watched),
+      setFocusedAudio: (clientId, opts) => setFocusedScreenAudio(clientId, opts),
+      setStreamRoles: (payload) => setVideoStreamRoles(payload),
+      subscribe: (cb) => {
+        popoutListenersRef.current.add(cb)
+        return () => popoutListenersRef.current.delete(cb)
+      }
+    }
+    return () => { delete window.__videoPopout }
+  }, [])
+
+  // Pop the video grid out into its own window: switch the main window back to
+  // chat (the toggle stays disabled while popped out) and open the popout.
+  const handlePopout = () => {
+    if (popoutWindowRef.current && !popoutWindowRef.current.closed) {
+      popoutWindowRef.current.focus()
+      return
+    }
+    const url = `${window.location.href.split('#')[0]}#/popout`
+    const win = window.open(url, 'video-popout', 'width=960,height=600')
+    if (!win) return
+    popoutWindowRef.current = win
+    setPoppedOut(true)
+    setViewMode('log')
+  }
+
+  // While popped out, watch for the popout window closing (via its controls or
+  // app shutdown) and restore the in-app stream view + re-enable the toggle.
+  useEffect(() => {
+    if (!poppedOut) return
+    const id = setInterval(() => {
+      if (!popoutWindowRef.current || popoutWindowRef.current.closed) {
+        popoutWindowRef.current = null
+        setPoppedOut(false)
+        setViewMode('video')
+      }
+    }, 500)
+    return () => clearInterval(id)
+  }, [poppedOut])
+
   // The channel the local client currently has joined (chat is scoped to it)
   const selfChannelId = clients.find((c) => c.id === client?.id)?.channel_id ?? null
 
-  // Keep a focused stream selected when streams change
+  // No stream is focused by default (the grid view shows them all). Only clear
+  // the focus if the currently focused stream goes away.
   useEffect(() => {
-    if (!allVideoStreams.length) {
+    if (selectedStreamId && !allVideoStreams.some((s) => s.consumerId === selectedStreamId)) {
       setSelectedStreamId(null)
-      return
-    }
-    if (!selectedStreamId || !allVideoStreams.some((s) => s.consumerId === selectedStreamId)) {
-      setSelectedStreamId(allVideoStreams[0].consumerId)
     }
   }, [allVideoStreams, selectedStreamId])
+
+  // Load recent message history whenever the local client enters a channel, so
+  // opening a channel shows what was said before we got here. The request goes
+  // through the main process because the endpoint is a GET with a JSON body.
+  useEffect(() => {
+    if (DEV_MODE || !token || selfChannelId == null) return
+    let cancelled = false
+    const channelId = selfChannelId
+
+    window.electron.ipcRenderer
+      .invoke('get-channel-messages', {
+        url: `${apiBase()}/channels/${channelId}/messages`,
+        token,
+        limit: HISTORY_LIMIT
+      })
+      .then((res) => {
+        if (cancelled) return
+        if (!res?.ok) {
+          if (res?.error) console.error('Failed to load chat history:', res.error)
+          return
+        }
+        const history = (res.messages || []).map(messageFromApi).sort((a, b) => a.id - b.id)
+        if (!history.length) return
+        setFeed((prev) => {
+          // Replace this channel's messages with the authoritative fetched set
+          // (deduped) and show them above the current session's entries.
+          const rest = prev.filter((e) => !(e.type === 'message' && e.channelId === channelId))
+          return [...history, ...rest]
+        })
+      })
+      .catch((err) => console.error('Failed to load chat history:', err))
+
+    return () => {
+      cancelled = true
+    }
+  }, [token, selfChannelId])
 
   // Load the saved server list from the main process on mount
   useEffect(() => {
@@ -95,6 +275,9 @@ function Main() {
   }
 
   const handleAddServer = (server) => saveServers([...servers, server])
+
+  const handleEditServer = (server) =>
+    saveServers(servers.map((s) => (s.id === server.id ? { ...s, ...server } : s)))
 
   const handleRemoveServer = (id) => saveServers(servers.filter((s) => s.id !== id))
 
@@ -134,6 +317,11 @@ function Main() {
   // Disconnect from the current server and return to the disconnected state.
   // Clearing the token tears down the events websocket via the effect cleanup.
   const handleDisconnect = () => {
+    if (popoutWindowRef.current && !popoutWindowRef.current.closed) {
+      popoutWindowRef.current.close()
+    }
+    popoutWindowRef.current = null
+    setPoppedOut(false)
     disconnectVoice()
     setToken(null)
     setClient(null)
@@ -153,7 +341,9 @@ function Main() {
       setChannels(MOCK_CHANNELS)
       setClients(MOCK_CLIENTS)
       setFeed([systemEntry('Connected to server (dev mode)')])
-      return
+      const mockStreams = createMockStreams()
+      setAllVideoStreams(mockStreams)
+      return () => mockStreams.forEach((s) => s._stopMock?.())
     }
 
     Promise.all([
@@ -297,9 +487,17 @@ function Main() {
   const [showSettings, setShowSettings] = useState(false)
 
   const connected = !!token
+  const titleText = connectedServer ? `${APP_TITLE} — ${connectedServer.nickname}` : APP_TITLE
 
   return (
-    <div className="layout">
+    <div className="app-shell">
+      <TitleBar
+        title={titleText}
+        icon={IconUsersGroup}
+        notifications={notifications}
+        onClearNotifications={() => setNotifications([])}
+      />
+      <div className="layout">
       <SideBar
         channels={channels}
         clients={clients}
@@ -314,32 +512,37 @@ function Main() {
         onConnect={handleConnect}
         onDisconnect={handleDisconnect}
         onAddServer={handleAddServer}
+        onEditServer={handleEditServer}
         onRemoveServer={handleRemoveServer}
       />
 
       <main className="chat-area">
         <div className="chat-header">
           <div className="header-content">
-            <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              {viewMode === 'log' ? (
-                <>
-                  <IconMessage size={18} stroke={2} />
-                  Chat
-                </>
-              ) : (
-                <>
-                  <IconVideo size={18} stroke={2} />
-                  Video Streams
-                </>
-              )}
-            </span>
-            {connected && (
-              <button
-                className="view-toggle-btn"
-                onClick={() => setViewMode(viewMode === 'log' ? 'video' : 'log')}
-              >
-                {viewMode === 'log' ? <IconVideoFilled size={18}/> : <IconMessage2Filled size={18}/>}
-              </button>
+            {connected ? (
+              <div className="view-tabs-bar">
+                <button
+                  type="button"
+                  className={`view-tab${viewMode === 'log' ? ' active' : ''}`}
+                  onClick={() => setViewMode('log')}
+                >
+                  <IconMessage size={15} stroke={2} /> Chat
+                </button>
+                <button
+                  type="button"
+                  className={`view-tab${viewMode === 'video' ? ' active' : ''}`}
+                  onClick={() => setViewMode('video')}
+                  disabled={poppedOut}
+                  title={poppedOut ? 'Video is open in a separate window' : undefined}
+                >
+                  <IconVideo size={15} stroke={2} /> Video Streams
+                </button>
+              </div>
+            ) : (
+              <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <IconMessage size={18} stroke={2} />
+                Chat
+              </span>
             )}
           </div>
         </div>
@@ -364,6 +567,13 @@ function Main() {
             clients={clients}
             selectedStreamId={selectedStreamId}
             onSelect={setSelectedStreamId}
+            onPopout={handlePopout}
+            watchedStreamIds={watchedStreamIds}
+            onSetStreamWatched={handleSetStreamWatched}
+            volume={streamVolume}
+            muted={streamMuted}
+            onVolumeChange={setStreamVolume}
+            onMutedChange={setStreamMuted}
           />
         )}
       </main>
@@ -377,6 +587,7 @@ function Main() {
           </div>
         </div>
       )}
+      </div>
     </div>
   )
 }
