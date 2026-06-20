@@ -71,6 +71,13 @@
   min-width: 0;
 }
 
+/* Unread-messages dot, pinned to the right of the channel name (the name's
+   flex:1 pushes it to the row's trailing edge). */
+.channel-unread-dot {
+  flex-shrink: 0;
+  color: var(--color-primary);
+}
+
 .client-indicator {
   margin-top: 3px;
   margin-bottom: 3px;

@@ -4,12 +4,12 @@ import { useSettings } from '../context/SettingsContext'
 import ClientIndicator from './ClientIndicator'
 import ScreenSourcePicker from './ScreenSourcePicker'
 import './VoiceChannel.css'
-import { IconVolume, IconCircle, IconCircleFilled, IconLock, IconLockOpen, IconPlus, IconTrash } from '@tabler/icons-react'
+import { IconVolume, IconCircle, IconCircleFilled, IconLock, IconLockOpen, IconPlus, IconTrash, IconPointFilled } from '@tabler/icons-react'
 
 const API_BASE_URL = 'http://47.16.222.82:3000'
 
 const VoiceChannel = forwardRef(function VoiceChannel(
-  { channel, clients, token, self, micMuted, deafened, onStreamsUpdate, onJoinedChange, onSharingChange, onRequestJoin, onDeleteChannel, onRequestCreateChannel, onPreviewChannel, previewing },
+  { channel, clients, token, self, micMuted, deafened, onStreamsUpdate, onJoinedChange, onSharingChange, onRequestJoin, onDeleteChannel, onRequestCreateChannel, onPreviewChannel, previewing, unread },
   ref
 ) {
   const [joined, setJoined] = useState(false)
@@ -335,6 +335,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
       >
         {joined ? <IconVolume size={20}/> : <IconCircle size={20}/>}
         <span className="channel-name">{channel.name}</span>
+        {unread && <IconPointFilled className="channel-unread-dot" size={12} aria-label="Unread messages" />}
       </div>
       {error && <div style={{ color: '#ed4245', fontSize: 11, paddingLeft: 16 }}>{error}</div>}
       {clients.map((c) => (

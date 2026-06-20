@@ -100,6 +100,9 @@ function Main() {
   const [watchedStreamIds, setWatchedStreamIds] = useState(() => new Set())
   // Server notifications shown in the title-bar bell (newest first).
   const [notifications, setNotifications] = useState([])
+  // Channel ids with messages we haven't seen yet (arrived while their chat
+  // wasn't the active view). Drives the unread dot in the sidebar.
+  const [unreadChannelIds, setUnreadChannelIds] = useState(() => new Set())
   // Other clients currently typing: { clientId, name, channelId, expiresAt }.
   // Pruned as entries expire; filtered to the active channel at render.
   const [typingEntries, setTypingEntries] = useState([])
@@ -129,6 +132,10 @@ function Main() {
   const selfIdRef = useRef(null)
   const selfChannelIdRef = useRef(null)
   const activeChatChannelIdRef = useRef(null)
+  // Whether the chat panel (not the video tab) is currently on screen. The
+  // active channel only counts as "read" while its chat is actually visible, so
+  // a message arriving while we're in stream view still marks it unread.
+  const chatVisibleRef = useRef(true)
   // Stream-sound detection: ids present last time we diffed, and a gate that
   // suppresses chimes until shortly after a (re)connect or channel change so the
   // streams already live in a channel we just joined don't each fire a start.
@@ -182,6 +189,7 @@ function Main() {
     notifyArmedRef.current = false
     seenStreamIdsRef.current = new Set()
     setNotifications([])
+    setUnreadChannelIds(new Set())
     if (!token) return
     const t = setTimeout(() => { notifyArmedRef.current = true }, 1500)
     return () => clearTimeout(t)
@@ -270,9 +278,27 @@ function Main() {
 
   // Mirror self id / channel / active chat channel into refs for the events
   // handler (built once) to read without stale closures.
+  // Chat is on screen when peeking a channel or when the joined channel's Chat
+  // tab is selected (mirrors the render condition below).
+  const chatVisible = previewChannelId != null || viewMode === 'log'
+
   useEffect(() => { selfIdRef.current = client?.id ?? null }, [client])
   useEffect(() => { selfChannelIdRef.current = selfChannelId }, [selfChannelId])
   useEffect(() => { activeChatChannelIdRef.current = activeChatChannelId }, [activeChatChannelId])
+  useEffect(() => { chatVisibleRef.current = chatVisible }, [chatVisible])
+
+  // Actually viewing a channel's chat marks it read — drop it from the unread
+  // set. Gated on chatVisible so switching to the Chat tab (not just being in the
+  // channel) is what clears the dot.
+  useEffect(() => {
+    if (activeChatChannelId == null || !chatVisible) return
+    setUnreadChannelIds((prev) => {
+      if (!prev.has(activeChatChannelId)) return prev
+      const next = new Set(prev)
+      next.delete(activeChatChannelId)
+      return next
+    })
+  }, [activeChatChannelId, chatVisible])
 
   // (Re)baseline stream-sound detection on connect and whenever we change
   // channels: snapshot the streams currently in view without sounding, then arm
@@ -616,6 +642,18 @@ function Main() {
         if (data.author !== selfIdRef.current && data.channel_id === activeChatChannelIdRef.current) {
           playUiSound('new-message')
         }
+        // Mark unread when a message from someone else lands anywhere we aren't
+        // actively reading — either a different channel, or the active channel
+        // while we're on the video tab (chat not visible).
+        const readingHere = data.channel_id === activeChatChannelIdRef.current && chatVisibleRef.current
+        if (data.author !== selfIdRef.current && !readingHere) {
+          setUnreadChannelIds((prev) => {
+            if (prev.has(data.channel_id)) return prev
+            const next = new Set(prev)
+            next.add(data.channel_id)
+            return next
+          })
+        }
       } else if (ev === 'MessageUpdated') {
         // Pushed after async work (e.g. link-unfurl embeds). Carries either the
         // full updated message, or a partial { message_id, embeds }. Patch the
@@ -806,6 +844,7 @@ function Main() {
         onDeleteChannel={handleDeleteChannel}
         onPreviewChannel={handlePreviewChannel}
         previewChannelId={previewChannelId}
+        unreadChannelIds={unreadChannelIds}
       />
 
       <main className="chat-area">

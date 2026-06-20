@@ -28,7 +28,8 @@ function Sidebar({
   onCreateChannel,
   onDeleteChannel,
   onPreviewChannel,
-  previewChannelId
+  previewChannelId,
+  unreadChannelIds
 }) {
   const [width, setWidth] = useState(() => {
     const saved = localStorage.getItem('sidebar-width')
@@ -158,6 +159,7 @@ function Sidebar({
           onRequestCreateChannel={openCreateChannel}
           onPreviewChannel={onPreviewChannel}
           previewing={previewChannelId === ch.id}
+          unread={!!unreadChannelIds?.has(ch.id)}
           onStreamsUpdate={(streams) => {
             onStreamsUpdate(ch.id, streams)
           }}
