@@ -72,8 +72,20 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     })
   }, [micSettings])
 
-  // Clean up local speaking detector on unmount
-  useEffect(() => () => { localSpeakingCleanupRef.current?.() }, [])
+  // Unmount cleanup. Always stop the local speaking detector. Additionally, if
+  // this channel is being deleted out from under us *while we're joined to it*,
+  // tear down the shared (singleton) voice session and clear the sidebar's
+  // joined bookkeeping. Otherwise the soup connection is left orphaned — its
+  // callbacks point at this dead component and `joinedChannelId` still names the
+  // gone channel — so the next channel the user joins takes the "switch" path on
+  // a broken session and can't transmit audio or leave.
+  useEffect(() => () => {
+    localSpeakingCleanupRef.current?.()
+    if (joinedRef.current) {
+      disconnect()
+      onJoinedChange?.(channel.id, false)
+    }
+  }, [])
 
   // Remove a remote video tile whose consumer was closed (e.g. the
   // remote client restarted screen share, replacing its old producer)
