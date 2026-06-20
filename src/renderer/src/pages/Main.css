@@ -52,10 +52,48 @@
   width: 100%;
 }
 
+/* Header when peeking into another channel's chat: name on the left, close on
+   the right (the .header-content row is justified space-between). */
+.view-preview-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.view-preview-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  padding: 0;
+  border: none;
+  border-radius: var(--border-radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, transform 0.12s ease;
+}
+
+.view-preview-close:hover {
+  background: var(--color-background-soft);
+  color: var(--color-text);
+}
+
+.view-preview-close:active {
+  transform: scale(0.9);
+}
+
 /* View switcher styled as a pill segmented control, mirroring the source tabs
    in ScreenSourcePicker. The bar sits a shade darker than the mute header so
    the enclosing pill reads clearly; the active tab raises to the soft tone. */
 .view-tabs-bar {
+  position: relative;       /* positioning context for the sliding pill */
   display: flex;
   background: var(--color-background);
   border-radius: 999px;
@@ -64,6 +102,8 @@
 }
 
 .view-tab {
+  position: relative;       /* sit above the sliding pill */
+  z-index: 1;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -75,21 +115,34 @@
   font-size: var(--font-size-sm);
   font-weight: 600;
   cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition: color 0.15s ease;
 }
 
 .view-tab:hover:not(.active):not(:disabled) {
   color: var(--color-text);
 }
 
+/* The pill background is provided by .pill-indicator; the active tab only
+   changes its text color. */
 .view-tab.active {
-  background: var(--color-background-soft);
   color: var(--color-text);
 }
 
 .view-tab:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+/* Sliding pill shared by the view tabs (positioned/sized inline by
+   usePillIndicator). */
+.view-tabs-bar .pill-indicator {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 0;
+  border-radius: 999px;
+  background: var(--color-background-soft);
+  pointer-events: none;
 }
 
 .loading {

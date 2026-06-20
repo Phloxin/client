@@ -45,12 +45,18 @@
   position: relative;       /* anchor for the floating controls */
   flex: 1;
   min-height: 0;
-  display: grid;
+  display: flex;
+  flex-wrap: wrap;
   gap: 12px;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
-  grid-auto-rows: minmax(140px, 1fr);
-  align-content: stretch;
-  overflow: auto;
+  /* Center the cluster on both axes so tiles sit in the middle of the area and
+     a partial last row centers under the others (Discord-style), rather than
+     stretching to fill the height. */
+  justify-content: center;
+  align-content: center;
+  align-items: center;
+  /* The tile size is computed (JS) so the whole set fits, so the area itself
+     never needs to scroll. */
+  overflow: hidden;
 }
 
 .video-grid-controls {
@@ -71,7 +77,12 @@
 
 .video-grid-tile {
   position: relative;
-  min-height: 0;
+  /* Uniform 16:9 tiles sized in JS (see bestUniformTileWidth) so every tile is
+     identical and the whole set fits the area without scrolling. flex grow/
+     shrink are 0 so the computed width is honored exactly. */
+  flex: 0 0 auto;
+  width: var(--grid-tile-width, 360px);
+  aspect-ratio: 16 / 9;
   overflow: hidden;
   border-radius: 12px;
   border: 2px solid transparent;

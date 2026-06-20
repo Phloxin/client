@@ -8,12 +8,24 @@ import ChatPanel from '../components/ChatPanel'
 import TitleBar from '../components/TitleBar'
 import Settings from './Settings'
 import { disconnect as disconnectVoice, setFocusedScreenAudio, setVideoStreamRoles } from '../lib/soup'
+import { playUiSound } from '../lib/sounds'
 import { setServerHost, apiBase, wsBase } from '../lib/serverConfig'
+import { usePillIndicator } from '../lib/usePillIndicator'
 import { DEV_MODE, MOCK_TOKEN, MOCK_CLIENT, MOCK_CHANNELS, MOCK_CLIENTS, createMockStreams } from '../lib/mock'
-import { IconVideo, IconMessage, IconUsersGroup } from '@tabler/icons-react'
+import { IconVideo, IconMessage, IconUsersGroup, IconX } from '@tabler/icons-react'
 
 const MAX_LOG_ENTRIES = 500
 const HISTORY_LIMIT = 50
+
+// How often we send an events-socket heartbeat (op 2). Must stay under the
+// backend's eviction timeout so an ungraceful exit (e.g. Ctrl+C / power loss)
+// is detected and the user is removed from their channel for everyone else.
+const HEARTBEAT_INTERVAL_MS = 10000
+
+// A typing notification lasts this long for everyone else, and is also the
+// minimum gap between our own typing pings — so we never spam the endpoint on
+// every keystroke, but can re-announce once the previous one would have lapsed.
+const TYPING_DURATION_MS = 10000
 
 // Shown in the custom title bar; change this to rebrand the window chrome.
 const APP_TITLE = 'Teamspeak 26'
@@ -43,7 +55,11 @@ function messageFromApi(msg) {
       kind: kindFromContentType(a.content_type),
       url: a.url
     })),
-    ts: Date.now()
+    // Link-preview / rich cards. URLs (incl. attachment://) are resolved
+    // server-side, so they're render-ready. May arrive later via MessageUpdated.
+    embeds: msg.embeds || [],
+    // Server timestamp is seconds since the UNIX epoch; JS Date wants ms.
+    ts: msg.timestamp
   }
 }
 
@@ -51,6 +67,14 @@ function kindFromContentType(type) {
   if (type?.startsWith('image/')) return 'image'
   if (type?.startsWith('video/')) return 'video'
   return 'file'
+}
+
+// Order messages chronologically. The server timestamp is the source of truth
+// for creation order; id is only a tiebreaker (it isn't assumed monotonic, and a
+// large id can lose precision once parsed into a JS number).
+function byChronology(a, b) {
+  if (a.ts !== b.ts) return a.ts - b.ts
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
 }
 
 function Main() {
@@ -76,6 +100,9 @@ function Main() {
   const [watchedStreamIds, setWatchedStreamIds] = useState(() => new Set())
   // Server notifications shown in the title-bar bell (newest first).
   const [notifications, setNotifications] = useState([])
+  // Other clients currently typing: { clientId, name, channelId, expiresAt }.
+  // Pruned as entries expire; filtered to the active channel at render.
+  const [typingEntries, setTypingEntries] = useState([])
   const eventsWsRef = useRef(null)
   const channelsRef = useRef([])
   const clientsRef = useRef([])
@@ -91,6 +118,22 @@ function Main() {
   // we join (no burst of "started a stream" on connect).
   const seenStreamIdsRef = useRef(new Set())
   const notifyArmedRef = useRef(false)
+  // Timestamp of our last typing ping, so we throttle to one per TYPING_DURATION.
+  const lastTypingSentRef = useRef(0)
+  // Last server event sequence we've processed, reported back in each heartbeat
+  // (op 2). Null until the backend starts tagging events with a sequence.
+  const lastEventSeqRef = useRef(null)
+  // Self id, our joined channel, and the channel whose chat we're viewing — kept
+  // as refs so the once-built events-socket handler reads live values (not stale
+  // closures) when deciding which UI sounds to play.
+  const selfIdRef = useRef(null)
+  const selfChannelIdRef = useRef(null)
+  const activeChatChannelIdRef = useRef(null)
+  // Stream-sound detection: ids present last time we diffed, and a gate that
+  // suppresses chimes until shortly after a (re)connect or channel change so the
+  // streams already live in a channel we just joined don't each fire a start.
+  const prevStreamIdsRef = useRef(new Set())
+  const streamSoundsArmedRef = useRef(false)
 
   // Keep refs to the latest channels/clients so the events websocket handler
   // (created once in the effect below) can look them up without stale closures.
@@ -214,8 +257,66 @@ function Main() {
     return () => clearInterval(id)
   }, [poppedOut])
 
+  // A channel we're "peeking" into: viewing/posting in its chat without joining
+  // its voice (no streams, no view tabs). Null in the normal joined-channel view.
+  const [previewChannelId, setPreviewChannelId] = useState(null)
+
   // The channel the local client currently has joined (chat is scoped to it)
   const selfChannelId = clients.find((c) => c.id === client?.id)?.channel_id ?? null
+
+  // Chat (messages / typing / history) follows the previewed channel when
+  // peeking, otherwise the joined channel.
+  const activeChatChannelId = previewChannelId ?? selfChannelId
+
+  // Mirror self id / channel / active chat channel into refs for the events
+  // handler (built once) to read without stale closures.
+  useEffect(() => { selfIdRef.current = client?.id ?? null }, [client])
+  useEffect(() => { selfChannelIdRef.current = selfChannelId }, [selfChannelId])
+  useEffect(() => { activeChatChannelIdRef.current = activeChatChannelId }, [activeChatChannelId])
+
+  // (Re)baseline stream-sound detection on connect and whenever we change
+  // channels: snapshot the streams currently in view without sounding, then arm
+  // after a short delay. This declaration sits before the diff effect below so
+  // that on a channel switch it runs first in the same commit — disarming before
+  // the diff sees the incoming channel's streams, so we don't chime for each.
+  useEffect(() => {
+    streamSoundsArmedRef.current = false
+    prevStreamIdsRef.current = new Set(allVideoStreamsRef.current.map((s) => s.consumerId))
+    if (!token) return
+    const t = setTimeout(() => { streamSoundsArmedRef.current = true }, 1500)
+    return () => clearTimeout(t)
+  }, [token, selfChannelId])
+
+  // Play start/stop chimes as streams appear/vanish in our channel. Includes our
+  // own streams (isSelf) so we hear feedback when we start/stop sharing, and
+  // fires regardless of chat vs video view.
+  useEffect(() => {
+    const prev = prevStreamIdsRef.current
+    const curIds = new Set(allVideoStreams.map((s) => s.consumerId))
+    if (streamSoundsArmedRef.current) {
+      let started = false
+      let stopped = false
+      for (const id of curIds) if (!prev.has(id)) started = true
+      for (const id of prev) if (!curIds.has(id)) stopped = true
+      if (started) playUiSound('stream-start')
+      if (stopped) playUiSound('stream-stop')
+    }
+    prevStreamIdsRef.current = curIds
+  }, [allVideoStreams])
+
+  // Drop the preview once we've actually joined that channel, or it's deleted.
+  useEffect(() => {
+    if (previewChannelId == null) return
+    if (previewChannelId === selfChannelId || !channels.some((c) => c.id === previewChannelId)) {
+      setPreviewChannelId(null)
+    }
+  }, [previewChannelId, selfChannelId, channels])
+
+  // Single-click a channel: peek into its chat. Clicking the one we're already
+  // in just returns to the normal view.
+  const handlePreviewChannel = (channelId) => {
+    setPreviewChannelId(channelId === selfChannelId ? null : channelId)
+  }
 
   // No stream is focused by default (the grid view shows them all). Only clear
   // the focus if the currently focused stream goes away.
@@ -229,9 +330,9 @@ function Main() {
   // opening a channel shows what was said before we got here. The request goes
   // through the main process because the endpoint is a GET with a JSON body.
   useEffect(() => {
-    if (DEV_MODE || !token || selfChannelId == null) return
+    if (DEV_MODE || !token || activeChatChannelId == null) return
     let cancelled = false
-    const channelId = selfChannelId
+    const channelId = activeChatChannelId
 
     window.electron.ipcRenderer
       .invoke('get-channel-messages', {
@@ -245,7 +346,7 @@ function Main() {
           if (res?.error) console.error('Failed to load chat history:', res.error)
           return
         }
-        const history = (res.messages || []).map(messageFromApi).sort((a, b) => a.id - b.id)
+        const history = (res.messages || []).map(messageFromApi).sort(byChronology)
         if (!history.length) return
         setFeed((prev) => {
           // Replace this channel's messages with the authoritative fetched set
@@ -259,7 +360,7 @@ function Main() {
     return () => {
       cancelled = true
     }
-  }, [token, selfChannelId])
+  }, [token, activeChatChannelId])
 
   // Load the saved server list from the main process on mount
   useEffect(() => {
@@ -280,6 +381,56 @@ function Main() {
     saveServers(servers.map((s) => (s.id === server.id ? { ...s, ...server } : s)))
 
   const handleRemoveServer = (id) => saveServers(servers.filter((s) => s.id !== id))
+
+  // Create a channel on the server. Position is computed to append after the
+  // current last channel. The server also broadcasts ChannelCreated, so the add
+  // here is deduped by id in case that broadcast echoes back to us.
+  const handleCreateChannel = async ({ name, user_limit }) => {
+    const trimmed = name.trim()
+    if (!trimmed) return
+    const position = channels.reduce((max, ch) => Math.max(max, ch.position ?? 0), -1) + 1
+
+    if (DEV_MODE) {
+      const id = Math.max(0, ...channels.map((c) => c.id)) + 1
+      setChannels((prev) => [...prev, { id, name: trimmed, user_limit, position, clients: [] }])
+      return
+    }
+
+    try {
+      const res = await fetch(`${apiBase()}/server/channel`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ name: trimmed, user_limit, position })
+      })
+      if (!res.ok) throw new Error(`Server responded ${res.status}`)
+      const created = await res.json().catch(() => null)
+      if (created && created.id != null) {
+        setChannels((prev) => (prev.some((ch) => ch.id === created.id) ? prev : [...prev, created]))
+      }
+    } catch (err) {
+      setFeed((prev) => appendFeed(prev, systemEntry(`Failed to create channel: ${err.message}`)))
+    }
+  }
+
+  // Delete a channel. Removed locally on success; the server may also broadcast
+  // a deletion to other clients.
+  const handleDeleteChannel = async (id) => {
+    if (DEV_MODE) {
+      setChannels((prev) => prev.filter((ch) => ch.id !== id))
+      return
+    }
+
+    try {
+      const res = await fetch(`${apiBase()}/channels/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` }
+      })
+      if (!res.ok) throw new Error(`Server responded ${res.status}`)
+      setChannels((prev) => prev.filter((ch) => ch.id !== id))
+    } catch (err) {
+      setFeed((prev) => appendFeed(prev, systemEntry(`Failed to delete channel: ${err.message}`)))
+    }
+  }
 
   // Connect to a saved server: point all endpoints at its host, then log in with
   // its stored credentials. Setting the token triggers the data-loading effect.
@@ -331,6 +482,7 @@ function Main() {
     setAllVideoStreams([])
     setConnectedServer(null)
     setServerHost(null)
+    setPreviewChannelId(null)
   }
 
   // Fetch channels/clients and set up WebSocket + IPC listeners on mount
@@ -373,12 +525,47 @@ function Main() {
 
     const ws = new WebSocket(`${wsBase()}/ws`)
     eventsWsRef.current = ws
+    // Fresh connection → fresh sequence; cleared so a stale seq from a previous
+    // session isn't reported.
+    lastEventSeqRef.current = null
+    let heartbeatTimer = null
+    // True between sending a heartbeat (op 2) and receiving its ack (op 4). If a
+    // beat is still unacknowledged when the next is due, the connection is dead.
+    let awaitingAck = false
     ws.onopen = () => {
       console.log('WebSocket connected')
       ws.send(JSON.stringify({ op: 0, data: { token } }))
+      // Heartbeat: prove we're still alive every interval, reporting the last
+      // event sequence we've processed (null until the backend tags events).
+      // If these stop arriving the server evicts us, so clients that crash or
+      // are force-killed (Ctrl+C) stop appearing in the channel.
+      heartbeatTimer = setInterval(() => {
+        if (ws.readyState !== WebSocket.OPEN) return
+        if (awaitingAck) {
+          // Previous heartbeat was never acknowledged — treat as a zombie
+          // connection and close it (fires onclose; clears the timer).
+          console.warn('[Events] Heartbeat not acknowledged; closing dead connection')
+          ws.close()
+          return
+        }
+        awaitingAck = true
+        ws.send(JSON.stringify({ op: 2, data: lastEventSeqRef.current }))
+      }, HEARTBEAT_INTERVAL_MS)
     }
     ws.onmessage = (event) => {
-      const { ev, data } = JSON.parse(event.data)
+      const msg = JSON.parse(event.data)
+
+      // Heartbeat acknowledgement — clears the outstanding beat; no event body.
+      if (msg.op === 4) {
+        awaitingAck = false
+        return
+      }
+
+      // Events will be wrapped as { op: 3, data: <event>, seq }; today they
+      // arrive bare as { ev, data }. Support both, and remember the latest
+      // sequence so the heartbeat can report our position.
+      if (typeof msg.seq === 'number') lastEventSeqRef.current = msg.seq
+      const { ev, data } = msg.op === 3 ? msg.data : msg
 
       // Audio status update (mic mute / deafen) broadcast from another client
       if (ev === 'VoiceStateUpdate') {
@@ -405,14 +592,63 @@ function Main() {
 
         setFeed((prev) => appendFeed(prev, systemEntry(message)))
         setClients((prev) => prev.map((c) => c.id === data.id ? { ...c, channel_id: data.channel_id } : c))
+
+        // Join/leave chimes. For ourselves: any move into a channel is a "join",
+        // dropping out (channel_id null) is a "leave". For others: only sound
+        // when they enter or leave the channel we're currently in.
+        const myChannel = selfChannelIdRef.current
+        if (data.id === selfIdRef.current) {
+          playUiSound(data.channel_id == null ? 'channel-leave' : 'channel-join')
+        } else if (myChannel != null) {
+          if (data.channel_id === myChannel && oldChannelId !== myChannel) {
+            playUiSound('channel-join')
+          } else if (oldChannelId === myChannel && data.channel_id !== myChannel) {
+            playUiSound('channel-leave')
+          }
+        }
       } else if (ev === 'MessageCreated') {
         setFeed((prev) => appendFeed(prev, messageFromApi(data)))
+        // Sending a message ends that author's typing indicator immediately,
+        // leaving anyone else still typing untouched.
+        setTypingEntries((prev) => prev.filter((t) => t.clientId !== data.author))
+        // Chime for messages arriving in the channel we're viewing, from anyone
+        // but ourselves — regardless of whether we're on the chat or video tab.
+        if (data.author !== selfIdRef.current && data.channel_id === activeChatChannelIdRef.current) {
+          playUiSound('new-message')
+        }
+      } else if (ev === 'MessageUpdated') {
+        // Pushed after async work (e.g. link-unfurl embeds). Carries either the
+        // full updated message, or a partial { message_id, embeds }. Patch the
+        // matching feed entry in place by id.
+        const isFull = data.content !== undefined && data.author !== undefined
+        const targetId = data.id ?? data.message_id
+        setFeed((prev) => prev.map((e) => {
+          if (e.type !== 'message' || e.id !== targetId) return e
+          return isFull ? messageFromApi(data) : { ...e, embeds: data.embeds || [] }
+        }))
+      } else if (ev === 'ChannelCreated') {
+        setChannels((prev) => (prev.some((ch) => ch.id === data.id) ? prev : [...prev, data]))
+      } else if (ev === 'ChannelDeleted') {
+        // Tolerate either a full channel object or a bare id.
+        const removedId = data !== null && typeof data === 'object' ? data.id : data
+        setChannels((prev) => prev.filter((ch) => ch.id !== removedId))
+      } else if (ev === 'TypingStarted') {
+        // { channel_id, timestamp, client } — refresh this client's typing entry
+        // with a fresh 10s expiry (replacing any existing one). Self is filtered
+        // out at render time using the current client id.
+        const { channel_id, client: typingClient } = data
+        setTypingEntries((prev) => [
+          ...prev.filter((t) => t.clientId !== typingClient.id),
+          { clientId: typingClient.id, name: typingClient.name, channelId: channel_id, expiresAt: Date.now() + TYPING_DURATION_MS }
+        ])
       } else {
         setFeed((prev) => appendFeed(prev, systemEntry(`Unknown event: ${ev}`)))
       }
     }
     ws.onclose = () => {
       console.log('WebSocket disconnected')
+      if (heartbeatTimer) clearInterval(heartbeatTimer)
+      heartbeatTimer = null
       eventsWsRef.current = null
     }
     ws.onerror = (err) => console.error('WebSocket error:', err)
@@ -422,11 +658,37 @@ function Main() {
     })
 
     return () => {
+      if (heartbeatTimer) clearInterval(heartbeatTimer)
       ws.close()
       eventsWsRef.current = null
       window.electron.ipcRenderer.removeAllListeners('log-message')
     }
   }, [token])
+
+  // Drop typing entries as they expire. Re-scheduled to the soonest expiry each
+  // time the set changes (no always-on interval); a fresh TypingStarted bumps an
+  // entry's expiry and re-runs this.
+  useEffect(() => {
+    if (typingEntries.length === 0) return
+    const soonest = Math.min(...typingEntries.map((t) => t.expiresAt))
+    const id = setTimeout(() => {
+      setTypingEntries((prev) => prev.filter((t) => t.expiresAt > Date.now()))
+    }, Math.max(0, soonest - Date.now()))
+    return () => clearTimeout(id)
+  }, [typingEntries])
+
+  // Announce to the server that we're typing, throttled to one ping per
+  // TYPING_DURATION so we don't hit the endpoint on every keystroke.
+  const handleTyping = () => {
+    if (DEV_MODE || activeChatChannelId == null) return
+    const now = Date.now()
+    if (now - lastTypingSentRef.current < TYPING_DURATION_MS) return
+    lastTypingSentRef.current = now
+    fetch(`${apiBase()}/channels/${activeChatChannelId}/typing`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` }
+    }).catch((err) => console.error('Failed to send typing:', err))
+  }
 
   // Send a chat message (with any attachments) to the channel we're currently in
   const handleSendMessage = async (text, attachments) => {
@@ -434,7 +696,7 @@ function Main() {
       setFeed((prev) => appendFeed(prev, {
         id: crypto.randomUUID(),
         type: 'message',
-        channelId: selfChannelId,
+        channelId: activeChatChannelId,
         author: client?.name,
         authorId: client?.id,
         text,
@@ -444,7 +706,7 @@ function Main() {
       return
     }
 
-    if (selfChannelId == null) return
+    if (activeChatChannelId == null) return
 
     const payload = {
       content: text || undefined,
@@ -457,7 +719,7 @@ function Main() {
     attachments.forEach((a) => URL.revokeObjectURL(a.url))
 
     try {
-      const res = await fetch(`${apiBase()}/channels/${selfChannelId}/messages`, {
+      const res = await fetch(`${apiBase()}/channels/${activeChatChannelId}/messages`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
         body: formData
@@ -485,9 +747,35 @@ function Main() {
   }
 
   const [showSettings, setShowSettings] = useState(false)
+  // Keeps the settings modal mounted through its close animation before it
+  // actually unmounts (must match the CSS animation duration).
+  const [settingsClosing, setSettingsClosing] = useState(false)
+
+  const openSettings = () => {
+    setSettingsClosing(false)
+    setShowSettings(true)
+  }
+  const closeSettings = () => {
+    setSettingsClosing(true)
+    setTimeout(() => {
+      setShowSettings(false)
+      setSettingsClosing(false)
+    }, 180)
+  }
 
   const connected = !!token
   const titleText = connectedServer ? `${APP_TITLE} — ${connectedServer.nickname}` : APP_TITLE
+
+  // Sliding pill for the Chat / Video Streams tabs.
+  const viewPill = usePillIndicator(viewMode)
+
+  // Names of other clients typing in the channel we're viewing (self excluded).
+  const typingUsers = typingEntries
+    .filter((t) => t.channelId === activeChatChannelId && t.clientId !== client?.id)
+    .map((t) => t.name)
+
+  // Name of the channel being peeked into (for the preview header).
+  const previewChannelName = channels.find((c) => c.id === previewChannelId)?.name ?? 'Channel'
 
   return (
     <div className="app-shell">
@@ -506,7 +794,7 @@ function Main() {
         onStreamsUpdate={handleStreamsUpdate}
         onStatusChange={sendStatus}
         // provide a renderer-level openSettings hook
-        onOpenSettings={() => setShowSettings(true)}
+        onOpenSettings={openSettings}
         servers={servers}
         connectedServer={connectedServer}
         onConnect={handleConnect}
@@ -514,16 +802,39 @@ function Main() {
         onAddServer={handleAddServer}
         onEditServer={handleEditServer}
         onRemoveServer={handleRemoveServer}
+        onCreateChannel={handleCreateChannel}
+        onDeleteChannel={handleDeleteChannel}
+        onPreviewChannel={handlePreviewChannel}
+        previewChannelId={previewChannelId}
       />
 
       <main className="chat-area">
         <div className="chat-header">
           <div className="header-content">
-            {connected ? (
-              <div className="view-tabs-bar">
+            {previewChannelId != null ? (
+              // Peeking into another channel's chat: no view tabs (no streams),
+              // just the channel name and a close button to return to our view.
+              <>
+                <span className="view-preview-title">
+                  <IconMessage size={18} stroke={2} />
+                  {previewChannelName}
+                </span>
+                <button
+                  type="button"
+                  className="view-preview-close"
+                  onClick={() => setPreviewChannelId(null)}
+                  title="Close chat"
+                >
+                  <IconX size={18} />
+                </button>
+              </>
+            ) : connected ? (
+              <div className="view-tabs-bar" ref={viewPill.barRef}>
+                <span className="pill-indicator" style={viewPill.indicatorStyle} aria-hidden="true" />
                 <button
                   type="button"
                   className={`view-tab${viewMode === 'log' ? ' active' : ''}`}
+                  data-active={viewMode === 'log'}
                   onClick={() => setViewMode('log')}
                 >
                   <IconMessage size={15} stroke={2} /> Chat
@@ -531,6 +842,7 @@ function Main() {
                 <button
                   type="button"
                   className={`view-tab${viewMode === 'video' ? ' active' : ''}`}
+                  data-active={viewMode === 'video'}
                   onClick={() => setViewMode('video')}
                   disabled={poppedOut}
                   title={poppedOut ? 'Video is open in a separate window' : undefined}
@@ -554,12 +866,14 @@ function Main() {
               Pick a server from the <strong>Connect</strong> menu to get started.
             </p>
           </div>
-        ) : viewMode === 'log' ? (
+        ) : previewChannelId != null || viewMode === 'log' ? (
           <ChatPanel
-            feed={feed.filter((e) => e.type === 'system' || e.channelId === selfChannelId)}
+            feed={feed.filter((e) => e.type === 'system' || e.channelId === activeChatChannelId)}
             clients={clients}
             onSend={handleSendMessage}
-            disabled={selfChannelId == null}
+            onTyping={handleTyping}
+            typingUsers={typingUsers}
+            disabled={activeChatChannelId == null}
           />
         ) : (
           <VideoGrid
@@ -578,9 +892,12 @@ function Main() {
         )}
       </main>
       {showSettings && (
-        <div className="settings-overlay" onClick={() => setShowSettings(false)}>
+        <div
+          className={`settings-overlay${settingsClosing ? ' closing' : ''}`}
+          onClick={closeSettings}
+        >
           <div className="settings-modal" onClick={(e) => e.stopPropagation()}>
-            <button className="settings-close-btn" onClick={() => setShowSettings(false)}>
+            <button className="settings-close-btn" onClick={closeSettings}>
               ×
             </button>
             <Settings />

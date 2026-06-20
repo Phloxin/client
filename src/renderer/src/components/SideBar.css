@@ -54,11 +54,36 @@
   gap: var(--spacing-sm);
 }
 
-.channel-section-label::after {
-  content: '';
+/* Divider line filling the space between the "Channels" label and the + button. */
+.channel-section-divider {
   flex: 1;
   height: 1px;
   background: var(--color-border);
+}
+
+.channel-add-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  padding: 0;
+  border: none;
+  border-radius: var(--border-radius-sm);
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, transform 0.12s ease;
+}
+
+.channel-add-btn:hover {
+  background: var(--color-border);
+  color: var(--color-text);
+}
+
+.channel-add-btn:active {
+  transform: scale(0.9);
 }
 
 .control-rows {
@@ -86,18 +111,47 @@
   border-radius: var(--border-radius-sm);
   padding: 7px;
   cursor: pointer;
-  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  transition: background 0.15s, color 0.15s, border-color 0.15s, transform 0.12s ease;
 }
 
 .control-btn:hover:not(:disabled) {
   background: var(--color-border);
   color: var(--color-text);
   border-color: var(--color-border-light);
+  transform: translateY(-1px);
+}
+
+/* Tactile press feedback. */
+.control-btn:active:not(:disabled) {
+  transform: scale(0.92);
 }
 
 .control-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+/* Icon on a toggle button (mic/sound/stream): pops in each time the state
+   flips, because the swapped icon element mounts fresh and replays this. */
+.control-icon {
+  display: inline-flex;
+  animation: control-icon-pop 0.18s ease;
+}
+
+@keyframes control-icon-pop {
+  0%   { transform: scale(0.6); opacity: 0.4; }
+  60%  { transform: scale(1.12); }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .control-btn:hover:not(:disabled),
+  .control-btn:active:not(:disabled) {
+    transform: none;
+  }
+  .control-icon {
+    animation: none;
+  }
 }
 
 .control-btn.active {

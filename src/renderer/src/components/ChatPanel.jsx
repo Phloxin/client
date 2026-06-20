@@ -1,15 +1,24 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useLayoutEffect, memo } from 'react'
 import {
   IconPaperclip,
   IconMoodSmile,
   IconSend,
   IconX,
   IconFileText,
-  IconPhotoVideo
+  IconPhotoVideo,
+  IconPlayerPlayFilled
 } from '@tabler/icons-react'
 import ImageViewer from './ImageViewer'
 import EmojiPicker from './EmojiPicker'
+import { renderMarkdown } from '../lib/markdown'
 import './ChatPanel.css'
+
+// The message box grows with its content up to this many lines, then scrolls.
+const MAX_INPUT_LINES = 10
+
+// Consecutive messages from the same author within this window are grouped under
+// one header (avatar + name + time), like Discord.
+const GROUP_WINDOW_MS = 7 * 60 * 1000
 
 function attachmentKind(file) {
   if (file.type.startsWith('image/')) return 'image'
@@ -22,7 +31,98 @@ function formatTime(ts) {
   return new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
 }
 
-function ChatPanel({ feed, clients, onSend, disabled }) {
+// Renders a message body as Discord-style markdown (links, bold/italic, inline
+// and fenced code, etc.). Memoized so the parse only re-runs when the text
+// changes, not on every feed re-render.
+const MessageText = memo(function MessageText({ text }) {
+  return <div className="chat-message-text">{renderMarkdown(text)}</div>
+})
+
+// Extract a YouTube video id from a watch / youtu.be / embed / shorts URL.
+function youtubeId(url) {
+  if (!url) return null
+  try {
+    const u = new URL(url)
+    const host = u.hostname.replace(/^www\./, '')
+    if (host === 'youtu.be') return u.pathname.slice(1) || null
+    if (host.endsWith('youtube.com')) {
+      if (u.pathname === '/watch') return u.searchParams.get('v')
+      const parts = u.pathname.split('/')
+      if (parts[1] === 'embed' || parts[1] === 'shorts') return parts[2] || null
+    }
+  } catch {
+    /* not a URL */
+  }
+  return null
+}
+
+// Only treat a video embed as a <video> when it's a real media file; provider
+// "video" URLs (e.g. YouTube) are iframe players, not files.
+const isDirectVideo = (url) => /\.(mp4|webm|mov|m4v)(\?|$)/i.test(url || '')
+
+// A single embed card: link preview, image/video, or — for YouTube — a click-to-
+// play facade that swaps in the (cookieless) iframe player only when clicked.
+function MessageEmbed({ embed, onImageClick }) {
+  const [playing, setPlaying] = useState(false)
+  const ytId = youtubeId(embed.url)
+  const media = embed.image || embed.thumbnail
+  const poster = media?.url || (ytId ? `https://i.ytimg.com/vi/${ytId}/hqdefault.jpg` : null)
+
+  return (
+    <div className="chat-embed">
+      {embed.title &&
+        (embed.url ? (
+          <a href={embed.url} target="_blank" rel="noreferrer noopener" className="chat-embed-title">
+            {embed.title}
+          </a>
+        ) : (
+          <div className="chat-embed-title">{embed.title}</div>
+        ))}
+      {embed.description && <div className="chat-embed-description">{embed.description}</div>}
+
+      {ytId ? (
+        playing ? (
+          <div className="chat-embed-player">
+            <iframe
+              src={`https://www.youtube-nocookie.com/embed/${ytId}?autoplay=1`}
+              title={embed.title || 'YouTube video'}
+              allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
+              allowFullScreen
+            />
+          </div>
+        ) : (
+          <button type="button" className="chat-embed-play" onClick={() => setPlaying(true)} title="Play">
+            {poster && <img src={poster} alt={embed.title || ''} className="chat-embed-media" />}
+            <span className="chat-embed-play-icon" aria-hidden="true">
+              <span className="chat-embed-play-badge">
+                <IconPlayerPlayFilled size={22} />
+              </span>
+            </span>
+          </button>
+        )
+      ) : embed.video?.url && isDirectVideo(embed.video.url) ? (
+        <video className="chat-embed-media" src={embed.video.url} controls />
+      ) : media?.url ? (
+        <img
+          className="chat-embed-media chat-embed-image"
+          src={media.url}
+          alt={embed.title || ''}
+          onClick={() => onImageClick({ url: media.url, name: embed.title || 'image' })}
+        />
+      ) : null}
+    </div>
+  )
+}
+
+// "Alice is typing", "Alice and Bob are typing", etc.
+function formatTyping(names) {
+  if (names.length === 1) return `${names[0]} is typing`
+  if (names.length === 2) return `${names[0]} and ${names[1]} are typing`
+  if (names.length === 3) return `${names[0]}, ${names[1]} and ${names[2]} are typing`
+  return 'Several people are typing'
+}
+
+function ChatPanel({ feed, clients, onSend, onTyping, typingUsers = [], disabled }) {
   const [text, setText] = useState('')
   const [attachments, setAttachments] = useState([])
   const [showEmoji, setShowEmoji] = useState(false)
@@ -40,6 +140,23 @@ function ChatPanel({ feed, clients, onSend, disabled }) {
       listRef.current.scrollTop = listRef.current.scrollHeight
     }
   }, [feed])
+
+  // Grow the message box to fit its content, up to MAX_INPUT_LINES, then let it
+  // scroll. Runs on every text change (typing, emoji insert, send-clear).
+  useLayoutEffect(() => {
+    const el = inputRef.current
+    if (!el) return
+    el.style.height = 'auto' // shrink first so scrollHeight reflects the content
+    const cs = getComputedStyle(el)
+    const lineHeight = parseFloat(cs.lineHeight) || 20
+    const verticalPadding = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom)
+    const verticalBorder = parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth)
+    const maxHeight = lineHeight * MAX_INPUT_LINES + verticalPadding + verticalBorder
+    // scrollHeight excludes the border under border-box, so add it back.
+    const fullHeight = el.scrollHeight + verticalBorder
+    el.style.height = `${Math.min(fullHeight, maxHeight)}px`
+    el.style.overflowY = fullHeight > maxHeight ? 'auto' : 'hidden'
+  }, [text])
 
   // Close the emoji picker on outside click
   useEffect(() => {
@@ -175,23 +292,48 @@ function ChatPanel({ feed, clients, onSend, disabled }) {
         </div>
       )}
       <div className="chat-messages" ref={listRef}>
-        {feed.map((entry) =>
-          entry.type === 'system' ? (
-            <div key={entry.id} className="chat-system-entry">{entry.text}</div>
-          ) : (
-            <div key={entry.id} className="chat-message">
-              <span className="chat-avatar" aria-hidden="true">
-                {resolveName(entry).charAt(0).toUpperCase()}
-              </span>
+        {feed.map((entry, i) => {
+          if (entry.type === 'system') {
+            return <div key={entry.id} className="chat-system-entry">{entry.text}</div>
+          }
+          // Group consecutive messages from the same author (within a short
+          // window, and not split by a system notice): only the first shows the
+          // avatar + author + time; the rest are bare lines aligned beneath it.
+          const prev = feed[i - 1]
+          const grouped =
+            prev &&
+            prev.type === 'message' &&
+            prev.authorId === entry.authorId &&
+            entry.ts - prev.ts < GROUP_WINDOW_MS
+          // An uploaded file referenced by an embed resolves to the same URL, so
+          // it's shown through the embed card — drop it from standalone attachments.
+          const embedUrls = new Set()
+          for (const em of entry.embeds || []) {
+            for (const med of [em.image, em.thumbnail, em.video]) {
+              if (med?.url) embedUrls.add(med.url)
+            }
+          }
+          const visibleAttachments = (entry.attachments || []).filter((a) => !embedUrls.has(a.url))
+          return (
+            <div key={entry.id} className={`chat-message${grouped ? ' grouped' : ''}`}>
+              {grouped ? (
+                <span className="chat-avatar-spacer" aria-hidden="true" />
+              ) : (
+                <span className="chat-avatar" aria-hidden="true">
+                  {resolveName(entry).charAt(0).toUpperCase()}
+                </span>
+              )}
               <div className="chat-message-body">
-                <div className="chat-message-header">
-                  <span className="chat-message-author">{resolveName(entry)}</span>
-                  <span className="chat-message-time">{formatTime(entry.ts)}</span>
-                </div>
-                {entry.text && <div className="chat-message-text">{entry.text}</div>}
-                {!!entry.attachments?.length && (
+                {!grouped && (
+                  <div className="chat-message-header">
+                    <span className="chat-message-author">{resolveName(entry)}</span>
+                    <span className="chat-message-time">{formatTime(entry.ts)}</span>
+                  </div>
+                )}
+                {entry.text && <MessageText text={entry.text} />}
+                {visibleAttachments.length > 0 && (
                   <div className="chat-message-attachments">
-                    {entry.attachments.map((a) => (
+                    {visibleAttachments.map((a) => (
                       <div key={a.id} className="chat-attachment">
                         {a.kind === 'image' ? (
                           <img
@@ -212,10 +354,13 @@ function ChatPanel({ feed, clients, onSend, disabled }) {
                     ))}
                   </div>
                 )}
+                {(entry.embeds || []).map((embed, idx) => (
+                  <MessageEmbed key={idx} embed={embed} onImageClick={setViewerImage} />
+                ))}
               </div>
             </div>
           )
-        )}
+        })}
       </div>
 
       {!!attachments.length && (
@@ -243,6 +388,17 @@ function ChatPanel({ feed, clients, onSend, disabled }) {
         </div>
       )}
 
+      {typingUsers.length > 0 && (
+        <div className="chat-typing-indicator">
+          <span className="chat-typing-dots" aria-hidden="true">
+            <span />
+            <span />
+            <span />
+          </span>
+          <span className="chat-typing-text">{formatTyping(typingUsers)}</span>
+        </div>
+      )}
+
       <div className="chat-input-bar">
         <input
           ref={fileInputRef}
@@ -261,12 +417,15 @@ function ChatPanel({ feed, clients, onSend, disabled }) {
         >
           <IconPaperclip size={20} />
         </button>
-        <input
+        <textarea
           ref={inputRef}
-          type="text"
+          rows={1}
           placeholder={disabled ? 'Join a channel to chat' : 'Message...'}
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => {
+            setText(e.target.value)
+            if (e.target.value) onTyping?.()
+          }}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
           disabled={disabled}

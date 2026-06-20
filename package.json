@@ -27,8 +27,10 @@
     "@sapphi-red/web-noise-suppressor": "^0.3.5",
     "@tabler/icons-react": "^3.44.0",
     "@tabler/icons-webfont": "^3.44.0",
+    "highlight.js": "^11.11.1",
     "mediasoup-client": "^3.20.0",
     "react-router-dom": "^7.16.0",
+    "simple-markdown": "^0.7.3",
     "unicode-emoji-json": "^0.9.0"
   },
   "devDependencies": {

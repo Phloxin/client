@@ -8,11 +8,12 @@ import {
   IconVolume2,
   IconVolume3,
   IconVolume4,
-  IconVolumeOff
+  IconVolumeOff,
+  IconVideoFilled
 } from '@tabler/icons-react'
 import { setClientAudioState, getClientAudioState } from '../lib/soup'
 
-function ClientIndicator({ client, speaking, micMuted, deafened, isSelf }) {
+function ClientIndicator({ client, speaking, micMuted, deafened, isSelf, streaming }) {
   const initial = client.name?.charAt(0).toUpperCase() ?? '?'
   const [menuPos, setMenuPos] = useState(null)
   const menuRef = useRef(null)
@@ -78,7 +79,9 @@ function ClientIndicator({ client, speaking, micMuted, deafened, isSelf }) {
       {statusIcon}
       <span className="client-avatar" aria-hidden="true">{initial}</span>
       {client.name}
-      <span className="client-status" title="Online" />
+      {streaming && (
+        <IconVideoFilled size={15} className="client-streaming-icon" aria-label="Streaming" />
+      )}
       {menuPos && (
         <div
           className="client-context-menu"

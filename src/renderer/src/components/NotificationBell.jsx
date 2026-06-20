@@ -16,6 +16,9 @@ function NotificationBell({ notifications = [], onClear }) {
   const [open, setOpen] = useState(false)
   const [toast, setToast] = useState(null)
   const [unread, setUnread] = useState(0)
+  // Bumped on each click to remount (and so replay) the bell-jingle animation;
+  // starts at 0 so the bell doesn't jingle on first mount.
+  const [jingle, setJingle] = useState(0)
   const ref = useRef(null)
   // Id of the newest notification we've already reacted to, so we only toast
   // (and bump the unread count) on genuinely new ones.
@@ -32,6 +35,7 @@ function NotificationBell({ notifications = [], onClear }) {
     if (!newest) return
 
     setToast(newest)
+    setJingle((c) => c + 1) // ring the bell when a new notification arrives
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
     toastTimerRef.current = setTimeout(() => setToast(null), TOAST_MS)
     if (!open) setUnread((n) => n + 1)
@@ -51,6 +55,7 @@ function NotificationBell({ notifications = [], onClear }) {
 
   const toggle = () => {
     setToast(null)
+    setJingle((c) => c + 1)
     setOpen((o) => {
       if (!o) setUnread(0) // opening clears the unread badge
       return !o
@@ -60,7 +65,11 @@ function NotificationBell({ notifications = [], onClear }) {
   return (
     <div className="notif-center" ref={ref}>
       <button type="button" className="title-bar-btn notif-bell" onClick={toggle} title="Notifications">
-        <IconBell size={16} />
+        <IconBell
+          size={16}
+          key={jingle}
+          className={jingle > 0 ? 'notif-bell-icon jingle' : 'notif-bell-icon'}
+        />
         {unread > 0 && <span className="notif-badge">{unread > 9 ? '9+' : unread}</span>}
       </button>
 
@@ -70,8 +79,7 @@ function NotificationBell({ notifications = [], onClear }) {
         </div>
       )}
 
-      {open && (
-        <div className="notif-panel">
+      <div className={`notif-panel${open ? ' open' : ''}`} aria-hidden={!open}>
           <div className="notif-panel-header">
             <span>Notifications</span>
             {notifications.length > 0 && (
@@ -94,7 +102,6 @@ function NotificationBell({ notifications = [], onClear }) {
             </div>
           )}
         </div>
-      )}
     </div>
   )
 }

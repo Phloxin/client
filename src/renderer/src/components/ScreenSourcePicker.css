@@ -33,6 +33,7 @@
 }
 
 .source-tabs-bar {
+  position: relative;       /* positioning context for the sliding pill */
   display: flex;
   background: var(--color-background-mute);
   border-radius: 999px;
@@ -41,6 +42,8 @@
 }
 
 .source-tab {
+  position: relative;       /* sit above the sliding pill */
+  z-index: 1;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -52,16 +55,28 @@
   font-size: var(--font-size-sm);
   font-weight: 600;
   cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition: color 0.15s ease;
 }
 
 .source-tab:hover {
   color: var(--color-text);
 }
 
+/* The pill background is provided by .pill-indicator; the active tab only
+   changes its text color. */
 .source-tab.active {
-  background: var(--color-background-soft);
   color: var(--color-text);
+}
+
+/* Sliding pill (positioned/sized inline by usePillIndicator). */
+.source-tabs-bar .pill-indicator {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 0;
+  border-radius: 999px;
+  background: var(--color-background-soft);
+  pointer-events: none;
 }
 
 /* ── Body ────────────────────────────────────────────────────────────────── */

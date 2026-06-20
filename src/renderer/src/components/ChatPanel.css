@@ -43,6 +43,12 @@
   gap: var(--spacing-md);
 }
 
+/* Blend the scrollbar track into the panel (the global track is the darker
+   --color-background, which otherwise reads as a stripe over the chat area). */
+.chat-messages::-webkit-scrollbar-track {
+  background: var(--color-background-soft);
+}
+
 .chat-system-entry {
   font-size: var(--font-size-sm);
   color: var(--color-text-muted);
@@ -53,6 +59,19 @@
   display: flex;
   gap: var(--spacing-sm);
   align-items: flex-start;
+}
+
+/* Continuation of a run from the same author: no avatar/header, pulled up tight
+   under the previous line (offsetting the container's gap to ~2px). */
+.chat-message.grouped {
+  margin-top: calc(2px - var(--spacing-md));
+}
+
+/* Invisible stand-in for the avatar so a grouped message's text stays aligned
+   with the text above it. Matches .chat-avatar's width. */
+.chat-avatar-spacer {
+  width: 32px;
+  flex-shrink: 0;
 }
 
 .chat-avatar {
@@ -98,11 +117,231 @@
   word-break: break-word;
 }
 
+/* ── Markdown rendering inside a message ─────────────────────────────────── */
+
+/* simple-markdown wraps each block in a .paragraph div; space consecutive ones. */
+.chat-message-text .paragraph + .paragraph {
+  margin-top: 6px;
+}
+
+/* Headings — three Discord-style sizes. */
+.chat-md-heading {
+  font-weight: var(--font-weight-bold);
+  color: var(--color-text);
+  line-height: 1.3;
+  margin: 6px 0 2px;
+}
+
+.chat-md-h1 {
+  font-size: 1.4em;
+}
+
+.chat-md-h2 {
+  font-size: 1.2em;
+}
+
+.chat-md-h3 {
+  font-size: 1.05em;
+}
+
+.chat-inline-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.88em;
+  background: var(--color-background-mute);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+.chat-message-text pre {
+  margin: 4px 0;
+  padding: 8px 10px;
+  background: var(--color-background-mute);
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius-sm);
+  overflow-x: auto;
+  max-width: 100%;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border-light) transparent;
+}
+
+/* Neutralize the highlight.js theme's own padding/background so our <pre>
+   container provides them; the theme still supplies the syntax token colors. */
+.chat-message-text pre code.hljs {
+  display: block;
+  padding: 0;
+  background: transparent;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: var(--font-size-sm);
+  line-height: 1.45;
+  white-space: pre;
+}
+
+.chat-message-text blockquote {
+  margin: 2px 0;
+  padding: 0 0 0 10px;
+  border-left: 3px solid var(--color-border-light);
+  color: var(--color-text-secondary);
+}
+
+.chat-md-table {
+  border-collapse: collapse;
+  margin: 4px 0;
+  max-width: 100%;
+  font-size: var(--font-size-sm);
+}
+
+.chat-md-table th,
+.chat-md-table td {
+  border: 1px solid var(--color-border);
+  padding: 4px 10px;
+  text-align: left;
+}
+
+.chat-md-table th {
+  background: var(--color-background-mute);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text);
+}
+
 .chat-message-attachments {
   display: flex;
   flex-wrap: wrap;
   gap: var(--spacing-sm);
   margin-top: var(--spacing-xs);
+}
+
+/* ── Links in message text ───────────────────────────────────────────────── */
+
+.chat-link {
+  color: var(--color-primary);
+  text-decoration: none;
+  word-break: break-all;
+}
+
+.chat-link:hover {
+  text-decoration: underline;
+}
+
+/* ── Link-preview / rich embed cards ─────────────────────────────────────── */
+
+.chat-embed {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 440px;
+  margin-top: var(--spacing-xs);
+  padding: 10px 12px;
+  background: var(--color-background-mute);
+  border-left: 3px solid var(--color-primary);
+  border-radius: var(--border-radius-sm);
+}
+
+.chat-embed-title {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text);
+  text-decoration: none;
+}
+
+a.chat-embed-title {
+  color: var(--color-primary);
+}
+
+a.chat-embed-title:hover {
+  text-decoration: underline;
+}
+
+.chat-embed-description {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.chat-embed-media {
+  max-width: 100%;
+  max-height: 280px;
+  margin-top: 4px;
+  border-radius: var(--border-radius-sm);
+  display: block;
+}
+
+.chat-embed-image {
+  cursor: zoom-in;
+  transition: opacity 0.15s ease;
+}
+
+.chat-embed-image:hover {
+  opacity: 0.85;
+}
+
+/* YouTube facade: thumbnail + play badge, swapped for the iframe on click. */
+.chat-embed-play {
+  position: relative;
+  display: block;
+  width: 100%;
+  padding: 0;
+  margin-top: 4px;
+  border: none;
+  border-radius: var(--border-radius-sm);
+  background: #000;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.chat-embed-play .chat-embed-media {
+  margin-top: 0;
+  width: 100%;
+  max-height: 280px;
+}
+
+.chat-embed-play-icon {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.12);
+  transition: background 0.15s ease;
+}
+
+.chat-embed-play:hover .chat-embed-play-icon {
+  background: rgba(0, 0, 0, 0.28);
+}
+
+.chat-embed-play-badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 40px;
+  border-radius: 10px;
+  background: rgba(255, 0, 0, 0.88);
+  color: #fff;
+  transition: transform 0.15s ease;
+}
+
+.chat-embed-play:hover .chat-embed-play-badge {
+  transform: scale(1.06);
+}
+
+.chat-embed-player {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  margin-top: 4px;
+  border-radius: var(--border-radius-sm);
+  overflow: hidden;
+  background: #000;
+}
+
+.chat-embed-player iframe {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
 }
 
 .chat-attachment img,
@@ -189,21 +428,76 @@
   color: var(--color-text);
 }
 
+/* ── Typing indicator ─────────────────────────────────────────────────────── */
+
+.chat-typing-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 18px;
+  padding: 0 var(--spacing-lg);
+  margin: 0 var(--spacing-sm) 2px;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+}
+
+.chat-typing-text {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.chat-typing-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+}
+
+.chat-typing-dots span {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--color-text-muted);
+  animation: chat-typing-bounce 1.2s infinite ease-in-out;
+}
+
+.chat-typing-dots span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.chat-typing-dots span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes chat-typing-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.5; }
+  30% { transform: translateY(-3px); opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-typing-dots span {
+    animation: none;
+  }
+}
+
 /* ── Input bar ────────────────────────────────────────────────────────────── */
 
 .chat-input-bar {
   background: var(--color-background-mute);
   border-radius: 10px;
   display: flex;
-  align-items: center;
+  /* Anchor the buttons to the top so they ride up with the first line as the
+     message box grows downward across multiple lines. */
+  align-items: flex-start;
   gap: var(--spacing-sm);
   padding: var(--spacing-md) var(--spacing-lg);
   margin: var(--spacing-sm);
-  
 }
 
-.chat-input-bar input[type='text'] {
+.chat-input-bar textarea {
   flex: 1;
+  min-width: 0;
   padding: 10px 14px;
   background: var(--color-background-soft);
   border: 1px solid var(--color-border);
@@ -211,19 +505,27 @@
   color: var(--color-text);
   font-size: var(--font-size-md);
   font-family: var(--font-family-primary);
+  line-height: 1.4;
   outline: none;
+  box-sizing: border-box;
+  /* Height is managed in JS (auto-grow up to MAX_INPUT_LINES); the user can't
+     drag-resize, and a single row is the starting point. */
+  resize: none;
+  display: block;
   transition: border-color 0.15s;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border-light) transparent;
 }
 
-.chat-input-bar input[type='text']:focus {
+.chat-input-bar textarea:focus {
   border-color: var(--color-primary);
 }
 
-.chat-input-bar input[type='text']::placeholder {
+.chat-input-bar textarea::placeholder {
   color: var(--color-text-muted);
 }
 
-.chat-input-bar input[type='text']:disabled,
+.chat-input-bar textarea:disabled,
 .chat-icon-btn:disabled,
 .chat-send-btn:disabled {
   opacity: 0.4;
@@ -248,12 +550,17 @@
   background: transparent;
   color: var(--color-text-secondary);
   cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition: background 0.15s ease, color 0.15s ease, transform 0.12s ease;
 }
 
 .chat-icon-btn:hover {
   background: var(--color-border);
   color: var(--color-text);
+}
+
+/* Tactile press feedback (no hover lift). */
+.chat-icon-btn:active:not(:disabled) {
+  transform: scale(0.92);
 }
 
 .chat-send-btn {
@@ -269,11 +576,23 @@
   background: var(--color-primary);
   color: var(--color-background);
   cursor: pointer;
-  transition: background 0.15s ease, opacity 0.15s ease;
+  transition: background 0.15s ease, opacity 0.15s ease, transform 0.12s ease;
 }
 
 .chat-send-btn:hover:not(:disabled) {
   background: var(--color-primary-hover);
+}
+
+/* Tactile press feedback (no hover lift). */
+.chat-send-btn:active:not(:disabled) {
+  transform: scale(0.92);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-icon-btn:active:not(:disabled),
+  .chat-send-btn:active:not(:disabled) {
+    transform: none;
+  }
 }
 
 .chat-send-btn:disabled {

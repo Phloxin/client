@@ -2,8 +2,9 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import VoiceChannel from './VoiceChannel'
 import ServerMenu from './ServerMenu'
 import { setMicMuted, setSoundMuted } from '../lib/soup'
+import { playUiSound } from '../lib/sounds'
 import './SideBar.css'
-import {IconSettings, IconShield, IconDoorExit, IconHeadphones, IconHeadphonesOff, IconMicrophone, IconMicrophoneOff, IconScreenShare, IconScreenShareOff} from '@tabler/icons-react'
+import {IconSettings, IconShield, IconDoorExit, IconHeadphones, IconHeadphonesOff, IconMicrophone, IconMicrophoneOff, IconScreenShare, IconScreenShareOff, IconPlus, IconX} from '@tabler/icons-react'
 
 const MIN_WIDTH = 180
 const MAX_WIDTH = 550
@@ -23,7 +24,11 @@ function Sidebar({
   onDisconnect,
   onAddServer,
   onEditServer,
-  onRemoveServer
+  onRemoveServer,
+  onCreateChannel,
+  onDeleteChannel,
+  onPreviewChannel,
+  previewChannelId
 }) {
   const [width, setWidth] = useState(() => {
     const saved = localStorage.getItem('sidebar-width')
@@ -35,6 +40,33 @@ function Sidebar({
   const [micMuted, setMicMutedState] = useState(false)
   const [soundMuted, setSoundMutedState] = useState(false)
   const channelRefs = useRef({})
+
+  // Create-channel modal (opened from the section "+" or a channel's right-click
+  // "Add Channel"). user_limit of 0 means unlimited.
+  const [showCreateChannel, setShowCreateChannel] = useState(false)
+  const [channelName, setChannelName] = useState('')
+  const [channelLimit, setChannelLimit] = useState(0)
+  const [channelError, setChannelError] = useState(null)
+
+  const openCreateChannel = () => {
+    setChannelName('')
+    setChannelLimit(0)
+    setChannelError(null)
+    setShowCreateChannel(true)
+  }
+
+  const submitCreateChannel = () => {
+    const name = channelName.trim()
+    if (!name) {
+      setChannelError('Channel name is required.')
+      return
+    }
+    onCreateChannel?.({ name, user_limit: Math.max(0, Number(channelLimit) || 0) })
+    setShowCreateChannel(false)
+  }
+
+  // Channels render in server-defined order.
+  const sortedChannels = [...channels].sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
 
   // Apply mute state to soup whenever it changes. Deafening (soundMuted)
   // also silences the mic, regardless of the independent mic-mute toggle.
@@ -104,9 +136,15 @@ function Sidebar({
         />
       </div>
 
-      <div className="channel-section-label">Channels</div>
+      <div className="channel-section-label">
+        <span>Channels</span>
+        <span className="channel-section-divider" aria-hidden="true" />
+        <button className="channel-add-btn" title="Add channel" onClick={openCreateChannel}>
+          <IconPlus size={15} />
+        </button>
+      </div>
 
-      {channels.map((ch) => (
+      {sortedChannels.map((ch) => (
         <VoiceChannel
           key={ch.id}
           ref={(el) => { channelRefs.current[ch.id] = el }}
@@ -116,6 +154,10 @@ function Sidebar({
           self={self}
           micMuted={micMuted}
           deafened={soundMuted}
+          onDeleteChannel={onDeleteChannel}
+          onRequestCreateChannel={openCreateChannel}
+          onPreviewChannel={onPreviewChannel}
+          previewing={previewChannelId === ch.id}
           onStreamsUpdate={(streams) => {
             onStreamsUpdate(ch.id, streams)
           }}
@@ -147,7 +189,7 @@ function Sidebar({
             disabled={!joinedChannelId}
             onClick={() => channelRefs.current[joinedChannelId]?.toggleShare()}
           >
-            {sharing ? <IconScreenShareOff size={20}/> : <IconScreenShare size={20}/>}
+            {sharing ? <IconScreenShareOff className="control-icon" size={20}/> : <IconScreenShare className="control-icon" size={20}/>}
           </button>
           <button
             className="control-btn"
@@ -162,16 +204,24 @@ function Sidebar({
           <button
             className={`control-btn${micMuted ? ' active' : ''}`}
             title={micMuted ? 'Unmute Microphone' : 'Mute Microphone'}
-            onClick={() => setMicMutedState((m) => !m)}
+            onClick={() => {
+              const next = !micMuted
+              setMicMutedState(next)
+              playUiSound(next ? 'mute' : 'unmute')
+            }}
           >
-            {micMuted ? <IconMicrophoneOff size={20}/> : <IconMicrophone size={20}/>}
+            {micMuted ? <IconMicrophoneOff className="control-icon" size={20}/> : <IconMicrophone className="control-icon" size={20}/>}
           </button>
           <button
             className={`control-btn${soundMuted ? ' active' : ''}`}
             title={soundMuted ? 'Unmute Sound' : 'Mute Sound'}
-            onClick={() => setSoundMutedState((m) => !m)}
+            onClick={() => {
+              const next = !soundMuted
+              setSoundMutedState(next)
+              playUiSound(next ? 'mute' : 'unmute')
+            }}
           >
-            {soundMuted ? <IconHeadphonesOff size={20}/> : <IconHeadphones size={20}/>}
+            {soundMuted ? <IconHeadphonesOff className="control-icon" size={20}/> : <IconHeadphones className="control-icon" size={20}/>}
           </button>
           <button
             className="control-btn"
@@ -192,6 +242,53 @@ function Sidebar({
         </div>
       </div>
       <div className="sidebar-resize-handle" onMouseDown={onMouseDown} />
+
+      {showCreateChannel && (
+        <div className="add-server-overlay" onClick={() => setShowCreateChannel(false)}>
+          <div className="add-server-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="add-server-header">
+              <span className="add-server-title">Add Channel</span>
+              <button className="add-server-close" onClick={() => setShowCreateChannel(false)}>
+                <IconX size={18} />
+              </button>
+            </div>
+
+            <div className="add-server-body">
+              <label className="add-server-field">
+                <span>Name</span>
+                <input
+                  type="text"
+                  value={channelName}
+                  placeholder="New Channel"
+                  onChange={(e) => setChannelName(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && submitCreateChannel()}
+                  autoFocus
+                />
+              </label>
+              <label className="add-server-field">
+                <span>User limit (0 = unlimited)</span>
+                <input
+                  type="number"
+                  min={0}
+                  value={channelLimit}
+                  onChange={(e) => setChannelLimit(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && submitCreateChannel()}
+                />
+              </label>
+              {channelError && <div className="add-server-error">{channelError}</div>}
+            </div>
+
+            <div className="add-server-footer">
+              <button className="add-server-btn secondary" onClick={() => setShowCreateChannel(false)}>
+                Cancel
+              </button>
+              <button className="add-server-btn primary" onClick={submitCreateChannel}>
+                Create
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </aside>
   )
 }
