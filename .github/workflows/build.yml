@@ -7,8 +7,15 @@ on:
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            script: build:linux
+          - os: windows-latest
+            script: build:win
+          - os: macos-latest
+            script: build:mac
 
     runs-on: ${{ matrix.os }}
 
@@ -25,30 +32,18 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Rebuild native modules
+      - name: Rebuild Electron modules
         run: npx electron-rebuild
 
-      - name: Build app
-        run: npm run build
-
-      # Test release packaging
-      - name: Create release packages
-        run: npm run dist
+      - name: Build + Package Electron app (TEST RELEASE)
+        run: npm run ${{ matrix.script }} -- --publish=never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # Upload packages so they can be downloaded from the PR build
-      - name: Upload release artifacts
+      - name: Upload packaged files (for testing)
         uses: actions/upload-artifact@v4
         with:
-          name: release-${{ runner.os }}
+          name: release-${{ matrix.script }}-${{ runner.os }}
           path: |
-            dist/**/*.exe
-            dist/**/*.msi
-            dist/**/*.dmg
-            dist/**/*.zip
-            dist/**/*.AppImage
-            dist/**/*.deb
-            dist/**/*.rpm
-            dist/**/*.tar.gz
+            dist/**
           if-no-files-found: error
