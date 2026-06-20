@@ -2,6 +2,11 @@ name: Release
 
 on:
   workflow_dispatch:
+    inputs:
+      description:
+        description: "Release description (optional)"
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -83,7 +88,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.version.outputs.version }}
-          name: Release v${{ steps.version.outputs.version }}
+          name: v${{ steps.version.outputs.version }}
+          body: ${{ inputs.description }}
           generate_release_notes: true
           files: |
             release-assets/**/*.exe
