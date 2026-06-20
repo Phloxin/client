@@ -680,6 +680,21 @@ function Main() {
   }
 
   const [showSettings, setShowSettings] = useState(false)
+  // Keeps the settings modal mounted through its close animation before it
+  // actually unmounts (must match the CSS animation duration).
+  const [settingsClosing, setSettingsClosing] = useState(false)
+
+  const openSettings = () => {
+    setSettingsClosing(false)
+    setShowSettings(true)
+  }
+  const closeSettings = () => {
+    setSettingsClosing(true)
+    setTimeout(() => {
+      setShowSettings(false)
+      setSettingsClosing(false)
+    }, 180)
+  }
 
   const connected = !!token
   const titleText = connectedServer ? `${APP_TITLE} — ${connectedServer.nickname}` : APP_TITLE
@@ -712,7 +727,7 @@ function Main() {
         onStreamsUpdate={handleStreamsUpdate}
         onStatusChange={sendStatus}
         // provide a renderer-level openSettings hook
-        onOpenSettings={() => setShowSettings(true)}
+        onOpenSettings={openSettings}
         servers={servers}
         connectedServer={connectedServer}
         onConnect={handleConnect}
@@ -810,9 +825,12 @@ function Main() {
         )}
       </main>
       {showSettings && (
-        <div className="settings-overlay" onClick={() => setShowSettings(false)}>
+        <div
+          className={`settings-overlay${settingsClosing ? ' closing' : ''}`}
+          onClick={closeSettings}
+        >
           <div className="settings-modal" onClick={(e) => e.stopPropagation()}>
-            <button className="settings-close-btn" onClick={() => setShowSettings(false)}>
+            <button className="settings-close-btn" onClick={closeSettings}>
               ×
             </button>
             <Settings />
