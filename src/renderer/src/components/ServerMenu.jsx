@@ -90,7 +90,18 @@ function ServerMenu({ servers, connectedServer, onConnect, onDisconnect, onAddSe
       </button>
 
       <div className={`server-menu-dropdown${open ? ' open' : ''}`} aria-hidden={!open}>
-          <div className="server-menu-section-label">Servers</div>
+          {connected && (
+            <button className="server-menu-action disconnect" onClick={handleDisconnect}>
+              <IconPlugConnected size={16} /> Disconnect
+            </button>
+          )}
+          <div className="server-menu-section-label">
+            <span>Servers</span>
+            <span className="server-menu-section-divider" aria-hidden="true" />
+            <button className="server-menu-add-btn" title="Add server" onClick={openAddModal}>
+              <IconPlus size={15} />
+            </button>
+          </div>
 
           {servers.length === 0 && (
             <div className="server-menu-empty">No saved servers yet</div>
@@ -137,15 +148,7 @@ function ServerMenu({ servers, connectedServer, onConnect, onDisconnect, onAddSe
             )
           })}
 
-          <button className="server-menu-action" onClick={openAddModal}>
-            <IconPlus size={16} /> Add Server
-          </button>
 
-          {connected && (
-            <button className="server-menu-action disconnect" onClick={handleDisconnect}>
-              <IconPlugConnected size={16} /> Disconnect
-            </button>
-          )}
         </div>
 
       {showAddModal && (

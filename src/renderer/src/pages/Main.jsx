@@ -518,7 +518,7 @@ function Main() {
     if (DEV_MODE) {
       setChannels(MOCK_CHANNELS)
       setClients(MOCK_CLIENTS)
-      setFeed([systemEntry('Connected to server (dev mode)')])
+      setFeed([])
       const mockStreams = createMockStreams()
       setAllVideoStreams(mockStreams)
       return () => mockStreams.forEach((s) => s._stopMock?.())
@@ -546,7 +546,7 @@ function Main() {
       // The REST payload uses `muted`/`deaf`, but voice-state updates (and the
       // rest of the UI) use `self_mute`/`self_deaf` - normalize on the way in.
       setClients(clientData.map((c) => ({ ...c, self_mute: c.muted, self_deaf: c.deaf })))
-      setFeed([systemEntry('Connected to server')])
+      setFeed([])
     }).catch((err) => console.error('Failed to fetch:', err))
 
     const ws = new WebSocket(`${wsBase()}/ws`)
@@ -602,21 +602,8 @@ function Main() {
 
       if (ev === 'NewUser') {
         setClients((prev) => [...prev, { ...data, self_mute: data.muted, self_deaf: data.deaf }])
-        setFeed((prev) => appendFeed(prev, systemEntry(`${data.name} joined the server`)))
       } else if (ev === 'ClientModified') {
-        const channelName = (id) => channelsRef.current.find((ch) => ch.id === id)?.name || 'Unknown Channel'
         const oldChannelId = clientsRef.current.find((c) => c.id === data.id)?.channel_id
-
-        let message
-        if (data.channel_id == null) {
-          message = `${data.name} left ${channelName(oldChannelId)}`
-        } else if (oldChannelId == null) {
-          message = `${data.name} joined ${channelName(data.channel_id)}`
-        } else {
-          message = `${data.name} moved to ${channelName(data.channel_id)}`
-        }
-
-        setFeed((prev) => appendFeed(prev, systemEntry(message)))
         setClients((prev) => prev.map((c) => c.id === data.id ? { ...c, channel_id: data.channel_id } : c))
 
         // Join/leave chimes. For ourselves: any move into a channel is a "join",
