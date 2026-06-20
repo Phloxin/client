@@ -21,6 +21,11 @@ const HISTORY_LIMIT = 50
 // is detected and the user is removed from their channel for everyone else.
 const HEARTBEAT_INTERVAL_MS = 10000
 
+// A typing notification lasts this long for everyone else, and is also the
+// minimum gap between our own typing pings — so we never spam the endpoint on
+// every keystroke, but can re-announce once the previous one would have lapsed.
+const TYPING_DURATION_MS = 10000
+
 // Shown in the custom title bar; change this to rebrand the window chrome.
 const APP_TITLE = 'Teamspeak 26'
 
@@ -82,6 +87,9 @@ function Main() {
   const [watchedStreamIds, setWatchedStreamIds] = useState(() => new Set())
   // Server notifications shown in the title-bar bell (newest first).
   const [notifications, setNotifications] = useState([])
+  // Other clients currently typing: { clientId, name, channelId, expiresAt }.
+  // Pruned as entries expire; filtered to the active channel at render.
+  const [typingEntries, setTypingEntries] = useState([])
   const eventsWsRef = useRef(null)
   const channelsRef = useRef([])
   const clientsRef = useRef([])
@@ -97,6 +105,8 @@ function Main() {
   // we join (no burst of "started a stream" on connect).
   const seenStreamIdsRef = useRef(new Set())
   const notifyArmedRef = useRef(false)
+  // Timestamp of our last typing ping, so we throttle to one per TYPING_DURATION.
+  const lastTypingSentRef = useRef(0)
   // Last server event sequence we've processed, reported back in each heartbeat
   // (op 2). Null until the backend starts tagging events with a sequence.
   const lastEventSeqRef = useRef(null)
@@ -507,6 +517,15 @@ function Main() {
         // Tolerate either a full channel object or a bare id.
         const removedId = data !== null && typeof data === 'object' ? data.id : data
         setChannels((prev) => prev.filter((ch) => ch.id !== removedId))
+      } else if (ev === 'TypingStarted') {
+        // { channel_id, timestamp, client } — refresh this client's typing entry
+        // with a fresh 10s expiry (replacing any existing one). Self is filtered
+        // out at render time using the current client id.
+        const { channel_id, client: typingClient } = data
+        setTypingEntries((prev) => [
+          ...prev.filter((t) => t.clientId !== typingClient.id),
+          { clientId: typingClient.id, name: typingClient.name, channelId: channel_id, expiresAt: Date.now() + TYPING_DURATION_MS }
+        ])
       } else {
         setFeed((prev) => appendFeed(prev, systemEntry(`Unknown event: ${ev}`)))
       }
@@ -530,6 +549,31 @@ function Main() {
       window.electron.ipcRenderer.removeAllListeners('log-message')
     }
   }, [token])
+
+  // Drop typing entries as they expire. Re-scheduled to the soonest expiry each
+  // time the set changes (no always-on interval); a fresh TypingStarted bumps an
+  // entry's expiry and re-runs this.
+  useEffect(() => {
+    if (typingEntries.length === 0) return
+    const soonest = Math.min(...typingEntries.map((t) => t.expiresAt))
+    const id = setTimeout(() => {
+      setTypingEntries((prev) => prev.filter((t) => t.expiresAt > Date.now()))
+    }, Math.max(0, soonest - Date.now()))
+    return () => clearTimeout(id)
+  }, [typingEntries])
+
+  // Announce to the server that we're typing, throttled to one ping per
+  // TYPING_DURATION so we don't hit the endpoint on every keystroke.
+  const handleTyping = () => {
+    if (DEV_MODE || selfChannelId == null) return
+    const now = Date.now()
+    if (now - lastTypingSentRef.current < TYPING_DURATION_MS) return
+    lastTypingSentRef.current = now
+    fetch(`${apiBase()}/channels/${selfChannelId}/typing`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` }
+    }).catch((err) => console.error('Failed to send typing:', err))
+  }
 
   // Send a chat message (with any attachments) to the channel we're currently in
   const handleSendMessage = async (text, attachments) => {
@@ -594,6 +638,11 @@ function Main() {
 
   // Sliding pill for the Chat / Video Streams tabs.
   const viewPill = usePillIndicator(viewMode)
+
+  // Names of other clients typing in the channel we're viewing (self excluded).
+  const typingUsers = typingEntries
+    .filter((t) => t.channelId === selfChannelId && t.clientId !== client?.id)
+    .map((t) => t.name)
 
   return (
     <div className="app-shell">
@@ -670,6 +719,8 @@ function Main() {
             feed={feed.filter((e) => e.type === 'system' || e.channelId === selfChannelId)}
             clients={clients}
             onSend={handleSendMessage}
+            onTyping={handleTyping}
+            typingUsers={typingUsers}
             disabled={selfChannelId == null}
           />
         ) : (

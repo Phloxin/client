@@ -25,7 +25,15 @@ function formatTime(ts) {
   return new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
 }
 
-function ChatPanel({ feed, clients, onSend, disabled }) {
+// "Alice is typing", "Alice and Bob are typing", etc.
+function formatTyping(names) {
+  if (names.length === 1) return `${names[0]} is typing`
+  if (names.length === 2) return `${names[0]} and ${names[1]} are typing`
+  if (names.length === 3) return `${names[0]}, ${names[1]} and ${names[2]} are typing`
+  return 'Several people are typing'
+}
+
+function ChatPanel({ feed, clients, onSend, onTyping, typingUsers = [], disabled }) {
   const [text, setText] = useState('')
   const [attachments, setAttachments] = useState([])
   const [showEmoji, setShowEmoji] = useState(false)
@@ -263,6 +271,17 @@ function ChatPanel({ feed, clients, onSend, disabled }) {
         </div>
       )}
 
+      {typingUsers.length > 0 && (
+        <div className="chat-typing-indicator">
+          <span className="chat-typing-dots" aria-hidden="true">
+            <span />
+            <span />
+            <span />
+          </span>
+          <span className="chat-typing-text">{formatTyping(typingUsers)}</span>
+        </div>
+      )}
+
       <div className="chat-input-bar">
         <input
           ref={fileInputRef}
@@ -286,7 +305,10 @@ function ChatPanel({ feed, clients, onSend, disabled }) {
           rows={1}
           placeholder={disabled ? 'Join a channel to chat' : 'Message...'}
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => {
+            setText(e.target.value)
+            if (e.target.value) onTyping?.()
+          }}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
           disabled={disabled}
