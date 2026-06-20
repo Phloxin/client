@@ -68,6 +68,14 @@ function kindFromContentType(type) {
   return 'file'
 }
 
+// Order messages chronologically. The server timestamp is the source of truth
+// for creation order; id is only a tiebreaker (it isn't assumed monotonic, and a
+// large id can lose precision once parsed into a JS number).
+function byChronology(a, b) {
+  if (a.ts !== b.ts) return a.ts - b.ts
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+}
+
 function Main() {
   const { token, setToken, client, setClient } = useAuth()
   const [channels, setChannels] = useState([])
@@ -290,7 +298,7 @@ function Main() {
           if (res?.error) console.error('Failed to load chat history:', res.error)
           return
         }
-        const history = (res.messages || []).map(messageFromApi).sort((a, b) => a.id - b.id)
+        const history = (res.messages || []).map(messageFromApi).sort(byChronology)
         if (!history.length) return
         setFeed((prev) => {
           // Replace this channel's messages with the authoritative fetched set

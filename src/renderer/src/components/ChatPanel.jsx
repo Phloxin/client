@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useLayoutEffect } from 'react'
+import { useState, useRef, useEffect, useLayoutEffect, memo } from 'react'
 import {
   IconPaperclip,
   IconMoodSmile,
@@ -10,6 +10,7 @@ import {
 } from '@tabler/icons-react'
 import ImageViewer from './ImageViewer'
 import EmojiPicker from './EmojiPicker'
+import { renderMarkdown } from '../lib/markdown'
 import './ChatPanel.css'
 
 // The message box grows with its content up to this many lines, then scrolls.
@@ -30,32 +31,12 @@ function formatTime(ts) {
   return new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
 }
 
-// Split text into plain strings + clickable links. Clicking an <a target=_blank>
-// is handled by the main process's window-open handler (opens in the system
-// browser). Trailing sentence punctuation is kept out of the link.
-const URL_RE = /(https?:\/\/[^\s<]+)/g
-function linkify(text) {
-  const out = []
-  let last = 0
-  let m
-  URL_RE.lastIndex = 0
-  while ((m = URL_RE.exec(text)) !== null) {
-    if (m.index > last) out.push(text.slice(last, m.index))
-    let url = m[0]
-    const trail = url.match(/[.,!?;:'")\]}]+$/)
-    const trailing = trail ? trail[0] : ''
-    if (trailing) url = url.slice(0, -trailing.length)
-    out.push(
-      <a key={m.index} href={url} target="_blank" rel="noreferrer noopener" className="chat-link">
-        {url}
-      </a>
-    )
-    if (trailing) out.push(trailing)
-    last = m.index + m[0].length
-  }
-  if (last < text.length) out.push(text.slice(last))
-  return out
-}
+// Renders a message body as Discord-style markdown (links, bold/italic, inline
+// and fenced code, etc.). Memoized so the parse only re-runs when the text
+// changes, not on every feed re-render.
+const MessageText = memo(function MessageText({ text }) {
+  return <div className="chat-message-text">{renderMarkdown(text)}</div>
+})
 
 // Extract a YouTube video id from a watch / youtu.be / embed / shorts URL.
 function youtubeId(url) {
@@ -349,7 +330,7 @@ function ChatPanel({ feed, clients, onSend, onTyping, typingUsers = [], disabled
                     <span className="chat-message-time">{formatTime(entry.ts)}</span>
                   </div>
                 )}
-                {entry.text && <div className="chat-message-text">{linkify(entry.text)}</div>}
+                {entry.text && <MessageText text={entry.text} />}
                 {visibleAttachments.length > 0 && (
                   <div className="chat-message-attachments">
                     {visibleAttachments.map((a) => (
