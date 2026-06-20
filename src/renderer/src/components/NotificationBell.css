@@ -11,6 +11,7 @@
 
 /* The bell reuses .title-bar-btn for sizing/hover; this just hosts the badge. */
 .notif-bell {
+  outline: none;
   position: relative;
 }
 

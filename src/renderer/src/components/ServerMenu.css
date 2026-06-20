@@ -10,6 +10,7 @@
 /* ── Trigger (header button) ─────────────────────────────────────────────── */
 
 .server-menu-trigger {
+  outline: none;
   display: flex;
   align-items: center;
   gap: var(--spacing-sm);
@@ -265,6 +266,7 @@
 }
 
 .add-server-header {
+  outline: none;
   display: flex;
   align-items: center;
   justify-content: space-between;

@@ -65,6 +65,7 @@
 /* The pill background is provided by .pill-indicator; the active tab only
    changes its text color. */
 .source-tab.active {
+  outline: none;
   color: var(--color-text);
 }
 
@@ -137,6 +138,7 @@
 }
 
 .source-card.selected {
+  outline: none;
   border-color: var(--color-primary);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-primary) 30%, transparent);
 }

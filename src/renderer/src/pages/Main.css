@@ -102,6 +102,7 @@
 }
 
 .view-tab {
+  outline: none;
   position: relative;       /* sit above the sliding pill */
   z-index: 1;
   display: flex;
