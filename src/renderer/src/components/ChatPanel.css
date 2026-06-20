@@ -43,6 +43,12 @@
   gap: var(--spacing-md);
 }
 
+/* Blend the scrollbar track into the panel (the global track is the darker
+   --color-background, which otherwise reads as a stripe over the chat area). */
+.chat-messages::-webkit-scrollbar-track {
+  background: var(--color-background-soft);
+}
+
 .chat-system-entry {
   font-size: var(--font-size-sm);
   color: var(--color-text-muted);

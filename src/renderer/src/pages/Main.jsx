@@ -11,7 +11,7 @@ import { disconnect as disconnectVoice, setFocusedScreenAudio, setVideoStreamRol
 import { setServerHost, apiBase, wsBase } from '../lib/serverConfig'
 import { usePillIndicator } from '../lib/usePillIndicator'
 import { DEV_MODE, MOCK_TOKEN, MOCK_CLIENT, MOCK_CHANNELS, MOCK_CLIENTS, createMockStreams } from '../lib/mock'
-import { IconVideo, IconMessage, IconUsersGroup } from '@tabler/icons-react'
+import { IconVideo, IconMessage, IconUsersGroup, IconX } from '@tabler/icons-react'
 
 const MAX_LOG_ENTRIES = 500
 const HISTORY_LIMIT = 50
@@ -233,8 +233,30 @@ function Main() {
     return () => clearInterval(id)
   }, [poppedOut])
 
+  // A channel we're "peeking" into: viewing/posting in its chat without joining
+  // its voice (no streams, no view tabs). Null in the normal joined-channel view.
+  const [previewChannelId, setPreviewChannelId] = useState(null)
+
   // The channel the local client currently has joined (chat is scoped to it)
   const selfChannelId = clients.find((c) => c.id === client?.id)?.channel_id ?? null
+
+  // Chat (messages / typing / history) follows the previewed channel when
+  // peeking, otherwise the joined channel.
+  const activeChatChannelId = previewChannelId ?? selfChannelId
+
+  // Drop the preview once we've actually joined that channel, or it's deleted.
+  useEffect(() => {
+    if (previewChannelId == null) return
+    if (previewChannelId === selfChannelId || !channels.some((c) => c.id === previewChannelId)) {
+      setPreviewChannelId(null)
+    }
+  }, [previewChannelId, selfChannelId, channels])
+
+  // Single-click a channel: peek into its chat. Clicking the one we're already
+  // in just returns to the normal view.
+  const handlePreviewChannel = (channelId) => {
+    setPreviewChannelId(channelId === selfChannelId ? null : channelId)
+  }
 
   // No stream is focused by default (the grid view shows them all). Only clear
   // the focus if the currently focused stream goes away.
@@ -248,9 +270,9 @@ function Main() {
   // opening a channel shows what was said before we got here. The request goes
   // through the main process because the endpoint is a GET with a JSON body.
   useEffect(() => {
-    if (DEV_MODE || !token || selfChannelId == null) return
+    if (DEV_MODE || !token || activeChatChannelId == null) return
     let cancelled = false
-    const channelId = selfChannelId
+    const channelId = activeChatChannelId
 
     window.electron.ipcRenderer
       .invoke('get-channel-messages', {
@@ -278,7 +300,7 @@ function Main() {
     return () => {
       cancelled = true
     }
-  }, [token, selfChannelId])
+  }, [token, activeChatChannelId])
 
   // Load the saved server list from the main process on mount
   useEffect(() => {
@@ -400,6 +422,7 @@ function Main() {
     setAllVideoStreams([])
     setConnectedServer(null)
     setServerHost(null)
+    setPreviewChannelId(null)
   }
 
   // Fetch channels/clients and set up WebSocket + IPC listeners on mount
@@ -511,6 +534,9 @@ function Main() {
         setClients((prev) => prev.map((c) => c.id === data.id ? { ...c, channel_id: data.channel_id } : c))
       } else if (ev === 'MessageCreated') {
         setFeed((prev) => appendFeed(prev, messageFromApi(data)))
+        // Sending a message ends that author's typing indicator immediately,
+        // leaving anyone else still typing untouched.
+        setTypingEntries((prev) => prev.filter((t) => t.clientId !== data.author))
       } else if (ev === 'ChannelCreated') {
         setChannels((prev) => (prev.some((ch) => ch.id === data.id) ? prev : [...prev, data]))
       } else if (ev === 'ChannelDeleted') {
@@ -565,11 +591,11 @@ function Main() {
   // Announce to the server that we're typing, throttled to one ping per
   // TYPING_DURATION so we don't hit the endpoint on every keystroke.
   const handleTyping = () => {
-    if (DEV_MODE || selfChannelId == null) return
+    if (DEV_MODE || activeChatChannelId == null) return
     const now = Date.now()
     if (now - lastTypingSentRef.current < TYPING_DURATION_MS) return
     lastTypingSentRef.current = now
-    fetch(`${apiBase()}/channels/${selfChannelId}/typing`, {
+    fetch(`${apiBase()}/channels/${activeChatChannelId}/typing`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}` }
     }).catch((err) => console.error('Failed to send typing:', err))
@@ -581,7 +607,7 @@ function Main() {
       setFeed((prev) => appendFeed(prev, {
         id: crypto.randomUUID(),
         type: 'message',
-        channelId: selfChannelId,
+        channelId: activeChatChannelId,
         author: client?.name,
         authorId: client?.id,
         text,
@@ -591,7 +617,7 @@ function Main() {
       return
     }
 
-    if (selfChannelId == null) return
+    if (activeChatChannelId == null) return
 
     const payload = {
       content: text || undefined,
@@ -604,7 +630,7 @@ function Main() {
     attachments.forEach((a) => URL.revokeObjectURL(a.url))
 
     try {
-      const res = await fetch(`${apiBase()}/channels/${selfChannelId}/messages`, {
+      const res = await fetch(`${apiBase()}/channels/${activeChatChannelId}/messages`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
         body: formData
@@ -641,8 +667,11 @@ function Main() {
 
   // Names of other clients typing in the channel we're viewing (self excluded).
   const typingUsers = typingEntries
-    .filter((t) => t.channelId === selfChannelId && t.clientId !== client?.id)
+    .filter((t) => t.channelId === activeChatChannelId && t.clientId !== client?.id)
     .map((t) => t.name)
+
+  // Name of the channel being peeked into (for the preview header).
+  const previewChannelName = channels.find((c) => c.id === previewChannelId)?.name ?? 'Channel'
 
   return (
     <div className="app-shell">
@@ -671,12 +700,31 @@ function Main() {
         onRemoveServer={handleRemoveServer}
         onCreateChannel={handleCreateChannel}
         onDeleteChannel={handleDeleteChannel}
+        onPreviewChannel={handlePreviewChannel}
+        previewChannelId={previewChannelId}
       />
 
       <main className="chat-area">
         <div className="chat-header">
           <div className="header-content">
-            {connected ? (
+            {previewChannelId != null ? (
+              // Peeking into another channel's chat: no view tabs (no streams),
+              // just the channel name and a close button to return to our view.
+              <>
+                <span className="view-preview-title">
+                  <IconMessage size={18} stroke={2} />
+                  {previewChannelName}
+                </span>
+                <button
+                  type="button"
+                  className="view-preview-close"
+                  onClick={() => setPreviewChannelId(null)}
+                  title="Close chat"
+                >
+                  <IconX size={18} />
+                </button>
+              </>
+            ) : connected ? (
               <div className="view-tabs-bar" ref={viewPill.barRef}>
                 <span className="pill-indicator" style={viewPill.indicatorStyle} aria-hidden="true" />
                 <button
@@ -714,14 +762,14 @@ function Main() {
               Pick a server from the <strong>Connect</strong> menu to get started.
             </p>
           </div>
-        ) : viewMode === 'log' ? (
+        ) : previewChannelId != null || viewMode === 'log' ? (
           <ChatPanel
-            feed={feed.filter((e) => e.type === 'system' || e.channelId === selfChannelId)}
+            feed={feed.filter((e) => e.type === 'system' || e.channelId === activeChatChannelId)}
             clients={clients}
             onSend={handleSendMessage}
             onTyping={handleTyping}
             typingUsers={typingUsers}
-            disabled={selfChannelId == null}
+            disabled={activeChatChannelId == null}
           />
         ) : (
           <VideoGrid

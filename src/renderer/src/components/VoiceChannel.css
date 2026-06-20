@@ -47,6 +47,14 @@
   color: var(--color-text);
 }
 
+/* Channel whose chat is being peeked into (single-clicked, not joined). A left
+   accent bar distinguishes it from the joined channel's filled highlight. */
+.channel-item.previewing .channel-row {
+  background: var(--color-border);
+  color: var(--color-text);
+  box-shadow: inset 2px 0 0 var(--color-primary);
+}
+
 .channel-icon {
   font-size: 15px;
   width: 18px;

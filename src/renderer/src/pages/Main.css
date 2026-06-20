@@ -52,6 +52,43 @@
   width: 100%;
 }
 
+/* Header when peeking into another channel's chat: name on the left, close on
+   the right (the .header-content row is justified space-between). */
+.view-preview-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.view-preview-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  padding: 0;
+  border: none;
+  border-radius: var(--border-radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, transform 0.12s ease;
+}
+
+.view-preview-close:hover {
+  background: var(--color-background-soft);
+  color: var(--color-text);
+}
+
+.view-preview-close:active {
+  transform: scale(0.9);
+}
+
 /* View switcher styled as a pill segmented control, mirroring the source tabs
    in ScreenSourcePicker. The bar sits a shade darker than the mute header so
    the enclosing pill reads clearly; the active tab raises to the soft tone. */

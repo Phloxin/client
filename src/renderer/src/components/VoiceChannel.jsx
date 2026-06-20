@@ -9,7 +9,7 @@ import { IconVolume, IconCircle, IconCircleFilled, IconLock, IconLockOpen, IconP
 const API_BASE_URL = 'http://47.16.222.82:3000'
 
 const VoiceChannel = forwardRef(function VoiceChannel(
-  { channel, clients, token, self, micMuted, deafened, onStreamsUpdate, onJoinedChange, onSharingChange, onRequestJoin, onDeleteChannel, onRequestCreateChannel },
+  { channel, clients, token, self, micMuted, deafened, onStreamsUpdate, onJoinedChange, onSharingChange, onRequestJoin, onDeleteChannel, onRequestCreateChannel, onPreviewChannel, previewing },
   ref
 ) {
   const [joined, setJoined] = useState(false)
@@ -327,8 +327,12 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   )
 
   return (
-    <div className={`channel-item${joined ? ' active' : ''}`} onDoubleClick={handleDoubleClick}>
-      <div className="channel-row" onContextMenu={handleContextMenu}>
+    <div className={`channel-item${joined ? ' active' : ''}${previewing ? ' previewing' : ''}`} onDoubleClick={handleDoubleClick}>
+      <div
+        className="channel-row"
+        onClick={() => onPreviewChannel?.(channel.id)}
+        onContextMenu={handleContextMenu}
+      >
         {joined ? <IconVolume size={20}/> : <IconCircle size={20}/>}
         <span className="channel-name">{channel.name}</span>
       </div>
