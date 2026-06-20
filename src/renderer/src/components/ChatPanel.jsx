@@ -14,6 +14,10 @@ import './ChatPanel.css'
 // The message box grows with its content up to this many lines, then scrolls.
 const MAX_INPUT_LINES = 10
 
+// Consecutive messages from the same author within this window are grouped under
+// one header (avatar + name + time), like Discord.
+const GROUP_WINDOW_MS = 7 * 60 * 1000
+
 function attachmentKind(file) {
   if (file.type.startsWith('image/')) return 'image'
   if (file.type.startsWith('video/')) return 'video'
@@ -203,19 +207,35 @@ function ChatPanel({ feed, clients, onSend, onTyping, typingUsers = [], disabled
         </div>
       )}
       <div className="chat-messages" ref={listRef}>
-        {feed.map((entry) =>
-          entry.type === 'system' ? (
-            <div key={entry.id} className="chat-system-entry">{entry.text}</div>
-          ) : (
-            <div key={entry.id} className="chat-message">
-              <span className="chat-avatar" aria-hidden="true">
-                {resolveName(entry).charAt(0).toUpperCase()}
-              </span>
+        {feed.map((entry, i) => {
+          if (entry.type === 'system') {
+            return <div key={entry.id} className="chat-system-entry">{entry.text}</div>
+          }
+          // Group consecutive messages from the same author (within a short
+          // window, and not split by a system notice): only the first shows the
+          // avatar + author + time; the rest are bare lines aligned beneath it.
+          const prev = feed[i - 1]
+          const grouped =
+            prev &&
+            prev.type === 'message' &&
+            prev.authorId === entry.authorId &&
+            entry.ts - prev.ts < GROUP_WINDOW_MS
+          return (
+            <div key={entry.id} className={`chat-message${grouped ? ' grouped' : ''}`}>
+              {grouped ? (
+                <span className="chat-avatar-spacer" aria-hidden="true" />
+              ) : (
+                <span className="chat-avatar" aria-hidden="true">
+                  {resolveName(entry).charAt(0).toUpperCase()}
+                </span>
+              )}
               <div className="chat-message-body">
-                <div className="chat-message-header">
-                  <span className="chat-message-author">{resolveName(entry)}</span>
-                  <span className="chat-message-time">{formatTime(entry.ts)}</span>
-                </div>
+                {!grouped && (
+                  <div className="chat-message-header">
+                    <span className="chat-message-author">{resolveName(entry)}</span>
+                    <span className="chat-message-time">{formatTime(entry.ts)}</span>
+                  </div>
+                )}
                 {entry.text && <div className="chat-message-text">{entry.text}</div>}
                 {!!entry.attachments?.length && (
                   <div className="chat-message-attachments">
@@ -243,7 +263,7 @@ function ChatPanel({ feed, clients, onSend, onTyping, typingUsers = [], disabled
               </div>
             </div>
           )
-        )}
+        })}
       </div>
 
       {!!attachments.length && (

@@ -54,7 +54,8 @@ function messageFromApi(msg) {
       kind: kindFromContentType(a.content_type),
       url: a.url
     })),
-    ts: Date.now()
+    // Server timestamp is seconds since the UNIX epoch; JS Date wants ms.
+    ts: msg.timestamp
   }
 }
 

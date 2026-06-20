@@ -61,6 +61,19 @@
   align-items: flex-start;
 }
 
+/* Continuation of a run from the same author: no avatar/header, pulled up tight
+   under the previous line (offsetting the container's gap to ~2px). */
+.chat-message.grouped {
+  margin-top: calc(2px - var(--spacing-md));
+}
+
+/* Invisible stand-in for the avatar so a grouped message's text stays aligned
+   with the text above it. Matches .chat-avatar's width. */
+.chat-avatar-spacer {
+  width: 32px;
+  flex-shrink: 0;
+}
+
 .chat-avatar {
   width: 32px;
   height: 32px;
