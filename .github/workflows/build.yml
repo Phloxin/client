@@ -2,7 +2,7 @@ name: Build Client
 
 on:
   pull_request:
-    branches: [main]   # only PRs targeting main
+    branches: [main]
 
 jobs:
   build:
@@ -25,15 +25,30 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      # Optional but common for Electron projects
-      # Ensures native modules compile correctly
       - name: Rebuild native modules
         run: npx electron-rebuild
-        if: runner.os == 'Linux' || runner.os == 'Windows' || runner.os == 'macOS'
-
-      #- name: Run tests (if available)
-      #  run: npm test
-      #  continue-on-error: true
 
       - name: Build app
         run: npm run build
+
+      # Test release packaging
+      - name: Create release packages
+        run: npm run dist
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Upload packages so they can be downloaded from the PR build
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ runner.os }}
+          path: |
+            dist/**/*.exe
+            dist/**/*.msi
+            dist/**/*.dmg
+            dist/**/*.zip
+            dist/**/*.AppImage
+            dist/**/*.deb
+            dist/**/*.rpm
+            dist/**/*.tar.gz
+          if-no-files-found: error
