@@ -207,6 +207,8 @@ function ChatPanel({
   const [viewerImage, setViewerImage] = useState(null)
   // Id of the message currently being edited inline (only one at a time).
   const [editingId, setEditingId] = useState(null)
+  // Id of the message pending a delete confirmation (drives the in-app dialog).
+  const [pendingDeleteId, setPendingDeleteId] = useState(null)
   const fileInputRef = useRef(null)
   const emojiRef = useRef(null)
   const listRef = useRef(null)
@@ -249,6 +251,16 @@ function ChatPanel({
 
   // Release object URLs for any attachments still pending on unmount
   useEffect(() => () => attachments.forEach((a) => URL.revokeObjectURL(a.url)), [])
+
+  // Escape closes the delete-confirmation dialog while it's open.
+  useEffect(() => {
+    if (pendingDeleteId == null) return
+    const onKey = (e) => {
+      if (e.key === 'Escape') setPendingDeleteId(null)
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [pendingDeleteId])
 
   const handleFiles = (e) => {
     const files = Array.from(e.target.files || [])
@@ -357,11 +369,12 @@ function ChatPanel({
   const resolveName = (entry) =>
     clients?.find((c) => c.id === entry.authorId)?.name || entry.author || 'Unknown'
 
-  const handleDeleteMessage = (id) => {
-    if (window.confirm('Delete this message? This cannot be undone.')) {
-      if (editingId === id) setEditingId(null)
-      onDeleteMessage?.(id)
-    }
+  const confirmDelete = () => {
+    const id = pendingDeleteId
+    setPendingDeleteId(null)
+    if (id == null) return
+    if (editingId === id) setEditingId(null)
+    onDeleteMessage?.(id)
   }
 
   return (
@@ -429,7 +442,7 @@ function ChatPanel({
                     type="button"
                     className="chat-message-action chat-message-action-danger"
                     title="Delete"
-                    onClick={() => handleDeleteMessage(entry.id)}
+                    onClick={() => setPendingDeleteId(entry.id)}
                   >
                     <IconTrash size={15} />
                   </button>
@@ -588,6 +601,48 @@ function ChatPanel({
           name={viewerImage.name}
           onClose={() => setViewerImage(null)}
         />
+      )}
+
+      {pendingDeleteId != null && (
+        <div
+          className="chat-confirm-overlay"
+          onClick={() => setPendingDeleteId(null)}
+          role="presentation"
+        >
+          <div
+            className="chat-confirm-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="chat-confirm-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="chat-confirm-header">
+              <span className="chat-confirm-title" id="chat-confirm-title">
+                Delete message
+              </span>
+            </div>
+            <div className="chat-confirm-body">
+              Are you sure you want to delete this message? This cannot be undone.
+            </div>
+            <div className="chat-confirm-footer">
+              <button
+                type="button"
+                className="chat-confirm-btn secondary"
+                onClick={() => setPendingDeleteId(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="chat-confirm-btn danger"
+                onClick={confirmDelete}
+                autoFocus
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )
