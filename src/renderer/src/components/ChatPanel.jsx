@@ -6,7 +6,9 @@ import {
   IconX,
   IconFileText,
   IconPhotoVideo,
-  IconPlayerPlayFilled
+  IconPlayerPlayFilled,
+  IconPencil,
+  IconTrash
 } from '@tabler/icons-react'
 import ImageViewer from './ImageViewer'
 import EmojiPicker from './EmojiPicker'
@@ -37,6 +39,71 @@ function formatTime(ts) {
 const MessageText = memo(function MessageText({ text }) {
   return <div className="chat-message-text">{renderMarkdown(text)}</div>
 })
+
+// Inline editor swapped in for a message's text while it's being edited. Mirrors
+// the composer's auto-grow; Enter saves, Shift+Enter newlines, Escape cancels.
+function MessageEditor({ initialText, onSave, onCancel }) {
+  const [value, setValue] = useState(initialText)
+  const ref = useRef(null)
+
+  // Focus and place the caret at the end when the editor opens.
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    el.focus()
+    el.setSelectionRange(el.value.length, el.value.length)
+  }, [])
+
+  // Grow to fit the content (no MAX cap here — edits are usually short).
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${el.scrollHeight}px`
+  }, [value])
+
+  const trimmed = value.trim()
+  const submit = () => {
+    if (!trimmed) return
+    // No change → just close, so we don't issue a needless edit (which would
+    // stamp an edited_timestamp for nothing).
+    if (trimmed === initialText.trim()) onCancel()
+    else onSave(trimmed)
+  }
+
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      submit()
+    } else if (e.key === 'Escape') {
+      e.preventDefault()
+      onCancel()
+    }
+  }
+
+  return (
+    <div className="chat-message-edit">
+      <textarea
+        ref={ref}
+        className="chat-message-edit-input"
+        rows={1}
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={handleKeyDown}
+      />
+      <div className="chat-message-edit-hint">
+        escape to{' '}
+        <button type="button" onClick={onCancel}>
+          cancel
+        </button>
+        {' • '}enter to{' '}
+        <button type="button" onClick={submit} disabled={!trimmed}>
+          save
+        </button>
+      </div>
+    </div>
+  )
+}
 
 // Extract a YouTube video id from a watch / youtu.be / embed / shorts URL.
 function youtubeId(url) {
@@ -122,12 +189,24 @@ function formatTyping(names) {
   return 'Several people are typing'
 }
 
-function ChatPanel({ feed, clients, onSend, onTyping, typingUsers = [], disabled }) {
+function ChatPanel({
+  feed,
+  clients,
+  selfId,
+  onSend,
+  onEditMessage,
+  onDeleteMessage,
+  onTyping,
+  typingUsers = [],
+  disabled
+}) {
   const [text, setText] = useState('')
   const [attachments, setAttachments] = useState([])
   const [showEmoji, setShowEmoji] = useState(false)
   const [dragging, setDragging] = useState(false)
   const [viewerImage, setViewerImage] = useState(null)
+  // Id of the message currently being edited inline (only one at a time).
+  const [editingId, setEditingId] = useState(null)
   const fileInputRef = useRef(null)
   const emojiRef = useRef(null)
   const listRef = useRef(null)
@@ -278,6 +357,13 @@ function ChatPanel({ feed, clients, onSend, onTyping, typingUsers = [], disabled
   const resolveName = (entry) =>
     clients?.find((c) => c.id === entry.authorId)?.name || entry.author || 'Unknown'
 
+  const handleDeleteMessage = (id) => {
+    if (window.confirm('Delete this message? This cannot be undone.')) {
+      if (editingId === id) setEditingId(null)
+      onDeleteMessage?.(id)
+    }
+  }
+
   return (
     <div
       className="chat-panel"
@@ -314,6 +400,12 @@ function ChatPanel({ feed, clients, onSend, onTyping, typingUsers = [], disabled
             }
           }
           const visibleAttachments = (entry.attachments || []).filter((a) => !embedUrls.has(a.url))
+          const isEditing = editingId === entry.id
+          // Only the author may edit/delete their own messages (the server
+          // enforces this too); hide the controls while that row is in edit mode.
+          const isOwn = selfId != null && entry.authorId === selfId
+          const canManage = isOwn && !disabled && !isEditing
+          const edited = !!entry.editedTs && !isEditing
           return (
             <div key={entry.id} className={`chat-message${grouped ? ' grouped' : ''}`}>
               {grouped ? (
@@ -323,14 +415,51 @@ function ChatPanel({ feed, clients, onSend, onTyping, typingUsers = [], disabled
                   {resolveName(entry).charAt(0).toUpperCase()}
                 </span>
               )}
+              {canManage && (
+                <div className="chat-message-actions">
+                  <button
+                    type="button"
+                    className="chat-message-action"
+                    title="Edit"
+                    onClick={() => setEditingId(entry.id)}
+                  >
+                    <IconPencil size={15} />
+                  </button>
+                  <button
+                    type="button"
+                    className="chat-message-action chat-message-action-danger"
+                    title="Delete"
+                    onClick={() => handleDeleteMessage(entry.id)}
+                  >
+                    <IconTrash size={15} />
+                  </button>
+                </div>
+              )}
               <div className="chat-message-body">
                 {!grouped && (
                   <div className="chat-message-header">
                     <span className="chat-message-author">{resolveName(entry)}</span>
                     <span className="chat-message-time">{formatTime(entry.ts)}</span>
+                    {edited && <span className="chat-message-edited">(edited)</span>}
                   </div>
                 )}
-                {entry.text && <MessageText text={entry.text} />}
+                {isEditing ? (
+                  <MessageEditor
+                    initialText={entry.text || ''}
+                    onSave={(content) => {
+                      onEditMessage?.(entry.id, content)
+                      setEditingId(null)
+                    }}
+                    onCancel={() => setEditingId(null)}
+                  />
+                ) : (
+                  entry.text && (
+                    <MessageText text={entry.text} />
+                  )
+                )}
+                {grouped && edited && (
+                  <span className="chat-message-edited chat-message-edited-inline">(edited)</span>
+                )}
                 {visibleAttachments.length > 0 && (
                   <div className="chat-message-attachments">
                     {visibleAttachments.map((a) => (

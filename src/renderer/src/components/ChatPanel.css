@@ -59,6 +59,14 @@
   display: flex;
   gap: var(--spacing-sm);
   align-items: flex-start;
+  position: relative;
+}
+
+/* Light highlight across the whole row on hover, so the floating action toolbar
+   reads as belonging to the message it sits over. */
+.chat-message:hover {
+  background: color-mix(in srgb, var(--color-text) 4%, transparent);
+  border-radius: var(--border-radius-sm);
 }
 
 /* Continuation of a run from the same author: no avatar/header, pulled up tight
@@ -115,6 +123,119 @@
   font-size: var(--font-size-md);
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* "(edited)" marker — next to the timestamp in a message header, or trailing the
+   text on a grouped (header-less) continuation line. */
+.chat-message-edited {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+
+.chat-message-edited-inline {
+  margin-left: 4px;
+}
+
+/* ── Per-message hover actions (edit / delete) ───────────────────────────── */
+
+.chat-message-actions {
+  position: absolute;
+  top: -10px;
+  right: var(--spacing-sm);
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--color-background-mute);
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius-sm);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.1s ease;
+  z-index: 2;
+}
+
+.chat-message:hover .chat-message-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.chat-message-action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: var(--border-radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: background 0.1s ease, color 0.1s ease;
+}
+
+.chat-message-action:hover {
+  background: var(--color-border);
+  color: var(--color-text);
+}
+
+.chat-message-action-danger:hover {
+  background: color-mix(in srgb, var(--color-danger, #f04747) 18%, transparent);
+  color: var(--color-danger, #f04747);
+}
+
+/* ── Inline message editor ───────────────────────────────────────────────── */
+
+.chat-message-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.chat-message-edit-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 12px;
+  background: var(--color-background-soft);
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius-md);
+  color: var(--color-text);
+  font-size: var(--font-size-md);
+  font-family: var(--font-family-primary);
+  line-height: 1.4;
+  outline: none;
+  resize: none;
+  overflow-y: hidden;
+}
+
+.chat-message-edit-input:focus {
+  border-color: var(--color-primary);
+}
+
+.chat-message-edit-hint {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+
+.chat-message-edit-hint button {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--color-primary);
+  font-size: inherit;
+  cursor: pointer;
+}
+
+.chat-message-edit-hint button:hover {
+  text-decoration: underline;
+}
+
+.chat-message-edit-hint button:disabled {
+  color: var(--color-text-muted);
+  cursor: not-allowed;
+  text-decoration: none;
 }
 
 /* ── Markdown rendering inside a message ─────────────────────────────────── */

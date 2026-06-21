@@ -59,7 +59,10 @@ function messageFromApi(msg) {
     // server-side, so they're render-ready. May arrive later via MessageUpdated.
     embeds: msg.embeds || [],
     // Server timestamp is seconds since the UNIX epoch; JS Date wants ms.
-    ts: msg.timestamp
+    ts: msg.timestamp,
+    // Milliseconds since the UNIX epoch of the last edit, or null if never
+    // edited. Drives the "(edited)" marker; set/refreshed via MessageUpdated.
+    editedTs: msg.edited_timestamp ?? null
   }
 }
 
@@ -667,6 +670,11 @@ function Main() {
           if (e.type !== 'message' || e.id !== targetId) return e
           return isFull ? messageFromApi(data) : { ...e, embeds: data.embeds || [] }
         }))
+      } else if (ev === 'MessageDeleted') {
+        // Tolerate either a full message object or a bare { message_id } / id.
+        const removedId =
+          data !== null && typeof data === 'object' ? (data.id ?? data.message_id) : data
+        setFeed((prev) => prev.filter((e) => !(e.type === 'message' && e.id === removedId)))
       } else if (ev === 'ChannelCreated') {
         setChannels((prev) => (prev.some((ch) => ch.id === data.id) ? prev : [...prev, data]))
       } else if (ev === 'ChannelDeleted') {
@@ -769,6 +777,69 @@ function Main() {
       // The server broadcasts MessageCreated back to us too, which appends it to the feed
     } catch (err) {
       setFeed((prev) => appendFeed(prev, systemEntry(`Failed to send message: ${err.message}`)))
+    }
+  }
+
+  // Edit one of our own messages. The server validates ownership (only the
+  // author may edit) and broadcasts MessageUpdated with the new content and an
+  // edited_timestamp, which patches the feed entry in place — so we don't touch
+  // local state here on success, mirroring how send relies on MessageCreated.
+  const handleEditMessage = async (messageId, content) => {
+    const trimmed = content.trim()
+    if (!trimmed) return
+
+    if (DEV_MODE) {
+      setFeed((prev) =>
+        prev.map((e) =>
+          e.type === 'message' && e.id === messageId
+            ? { ...e, text: trimmed, editedTs: Date.now() }
+            : e
+        )
+      )
+      return
+    }
+
+    if (activeChatChannelId == null) return
+
+    try {
+      const res = await fetch(
+        `${apiBase()}/channels/${activeChatChannelId}/messages/${messageId}`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ content: trimmed })
+        }
+      )
+      if (!res.ok) throw new Error(`Server responded ${res.status}`)
+      // The server broadcasts MessageUpdated back to us, patching the feed entry.
+    } catch (err) {
+      setFeed((prev) => appendFeed(prev, systemEntry(`Failed to edit message: ${err.message}`)))
+    }
+  }
+
+  // Delete one of our own messages. The server validates ownership and broadcasts
+  // MessageDeleted; we also drop it locally on success so it disappears
+  // immediately even if the broadcast is delayed (the broadcast is idempotent).
+  const handleDeleteMessage = async (messageId) => {
+    if (DEV_MODE) {
+      setFeed((prev) => prev.filter((e) => !(e.type === 'message' && e.id === messageId)))
+      return
+    }
+
+    if (activeChatChannelId == null) return
+
+    try {
+      const res = await fetch(
+        `${apiBase()}/channels/${activeChatChannelId}/messages/${messageId}`,
+        {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${token}` }
+        }
+      )
+      if (!res.ok) throw new Error(`Server responded ${res.status}`)
+      setFeed((prev) => prev.filter((e) => !(e.type === 'message' && e.id === messageId)))
+    } catch (err) {
+      setFeed((prev) => appendFeed(prev, systemEntry(`Failed to delete message: ${err.message}`)))
     }
   }
 
@@ -912,7 +983,10 @@ function Main() {
           <ChatPanel
             feed={feed.filter((e) => e.type === 'system' || e.channelId === activeChatChannelId)}
             clients={clients}
+            selfId={client?.id}
             onSend={handleSendMessage}
+            onEditMessage={handleEditMessage}
+            onDeleteMessage={handleDeleteMessage}
             onTyping={handleTyping}
             typingUsers={typingUsers}
             disabled={activeChatChannelId == null}
