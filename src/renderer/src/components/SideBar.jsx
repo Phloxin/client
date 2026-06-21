@@ -209,7 +209,7 @@ function Sidebar({
             onClick={() => {
               const next = !micMuted
               setMicMutedState(next)
-              playUiSound(next ? 'mute' : 'unmute')
+              playUiSound(next ? 'mic-mute' : 'mic-unmute')
             }}
           >
             {micMuted ? <IconMicrophoneOff className="control-icon" size={20}/> : <IconMicrophone className="control-icon" size={20}/>}
@@ -220,7 +220,7 @@ function Sidebar({
             onClick={() => {
               const next = !soundMuted
               setSoundMutedState(next)
-              playUiSound(next ? 'mute' : 'unmute')
+              playUiSound(next ? 'sound-mute' : 'sound-unmute')
             }}
           >
             {soundMuted ? <IconHeadphonesOff className="control-icon" size={20}/> : <IconHeadphones className="control-icon" size={20}/>}

@@ -3,6 +3,7 @@ import { IconPalette, IconMicrophone, IconAdjustments } from '@tabler/icons-reac
 import { useSettings } from '../context/SettingsContext'
 import { ThemeSwitcher } from '../components/ThemeSwitcher'
 import AudioSettings from '../components/AudioSettings'
+import { SOUND_CATEGORIES } from '../lib/sounds'
 import './Settings.css'
 
 const sections = [
@@ -27,7 +28,7 @@ const sections = [
 ]
 
 function Settings() {
-  const { micSettings, updateMicSettings } = useSettings()
+  const { micSettings, updateMicSettings, soundSettings, updateSoundSettings } = useSettings()
   const [activeSection, setActiveSection] = useState('appearance')
 
   return (
@@ -86,9 +87,29 @@ function Settings() {
               </div>
 
               <div className="settings-panel-group">
-                <div className="settings-card-note">
-                  General settings will appear here once more options are added.
+                <div className="settings-section">
+                  <label>Sounds</label>
+                  <p className="settings-section-desc">
+                    Choose which sound effects play. These are local cues only you hear.
+                  </p>
                 </div>
+
+                {SOUND_CATEGORIES.map((category) => (
+                  <div key={category.id} className="settings-section settings-toggle-row">
+                    <div className="settings-toggle-copy">
+                      <label htmlFor={`sound-${category.id}`}>{category.label}</label>
+                    </div>
+                    <label className="toggle-switch">
+                      <input
+                        type="checkbox"
+                        id={`sound-${category.id}`}
+                        checked={soundSettings[category.id] !== false}
+                        onChange={(e) => updateSoundSettings({ [category.id]: e.target.checked })}
+                      />
+                      <span className="toggle-slider" />
+                    </label>
+                  </div>
+                ))}
               </div>
             </div>
           )}

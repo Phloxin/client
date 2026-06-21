@@ -1,7 +1,12 @@
 import { createContext, useContext, useState, useEffect } from 'react'
 import { setOutputDevice, setMasterVolume } from '../lib/soup'
+import { SOUND_CATEGORIES, setSoundCategoriesEnabled } from '../lib/sounds'
 
 const SettingsContext = createContext(null)
+
+// Sound-effect categories all start enabled. Derived from the soundpack registry
+// so a newly-added category is on by default without touching this file.
+const DEFAULT_SOUND_SETTINGS = Object.fromEntries(SOUND_CATEGORIES.map((c) => [c.id, true]))
 
 // Audio encoding constants — not exposed in settings UI
 const AUDIO_SAMPLE_RATE = 48000
@@ -37,6 +42,31 @@ export function SettingsProvider({ children }) {
     }
   })
 
+  const [soundSettings, setSoundSettings] = useState(() => {
+    try {
+      const saved = localStorage.getItem('soundSettings')
+      // Merge over defaults so a category added after the prefs were saved still
+      // gets a sensible (enabled) value.
+      return saved ? { ...DEFAULT_SOUND_SETTINGS, ...JSON.parse(saved) } : DEFAULT_SOUND_SETTINGS
+    } catch {
+      return DEFAULT_SOUND_SETTINGS
+    }
+  })
+
+  // Mirror sound-category prefs into the (non-React) sounds module so playUiSound
+  // can honour them — on load and on every change.
+  useEffect(() => {
+    setSoundCategoriesEnabled(soundSettings)
+  }, [soundSettings])
+
+  const updateSoundSettings = (changes) => {
+    setSoundSettings((prev) => {
+      const merged = { ...prev, ...changes }
+      localStorage.setItem('soundSettings', JSON.stringify(merged))
+      return merged
+    })
+  }
+
   // Push playback (output) settings into the media layer so they apply to any
   // audio already playing as well as future streams — on load and on change.
   useEffect(() => {
@@ -61,7 +91,7 @@ export function SettingsProvider({ children }) {
   }
 
   return (
-    <SettingsContext.Provider value={{ micSettings, updateMicSettings }}>
+    <SettingsContext.Provider value={{ micSettings, updateMicSettings, soundSettings, updateSoundSettings }}>
       {children}
     </SettingsContext.Provider>
   )
