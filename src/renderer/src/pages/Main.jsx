@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import './Main.css'
 import '../App.css'
 import { useAuth } from '../context/AuthContext'
@@ -6,6 +6,7 @@ import SideBar from '../components/SideBar'
 import VideoGrid from '../components/VideoGrid'
 import ChatPanel from '../components/ChatPanel'
 import TitleBar from '../components/TitleBar'
+import ConnectionOverlay from '../components/ConnectionOverlay'
 import Settings from './Settings'
 import { disconnect as disconnectVoice, setFocusedScreenAudio, setVideoStreamRoles } from '../lib/soup'
 import { playUiSound } from '../lib/sounds'
@@ -21,6 +22,12 @@ const HISTORY_LIMIT = 50
 // backend's eviction timeout so an ungraceful exit (e.g. Ctrl+C / power loss)
 // is detected and the user is removed from their channel for everyone else.
 const HEARTBEAT_INTERVAL_MS = 10000
+
+// Reconnect backoff for the events socket: start short and double each failed
+// attempt up to the cap, so a brief blip recovers fast but we don't hammer a
+// server that's down. A little jitter avoids a thundering herd of clients.
+const RECONNECT_BASE_DELAY_MS = 1000
+const RECONNECT_MAX_DELAY_MS = 30000
 
 // A typing notification lasts this long for everyone else, and is also the
 // minimum gap between our own typing pings — so we never spam the endpoint on
@@ -90,6 +97,9 @@ function Main() {
   const [selectedStreamId, setSelectedStreamId] = useState(null)
   const [servers, setServers] = useState([])
   const [connectedServer, setConnectedServer] = useState(null)
+  // Events-socket health: 'connected' normally, 'reconnecting' once a drop is
+  // detected and we're retrying. Drives the full-app reconnect overlay.
+  const [connectionStatus, setConnectionStatus] = useState('connected')
   const [poppedOut, setPoppedOut] = useState(false)
   // Stream playback volume (0..100) and mute, owned here so they're shared
   // between the in-app grid and the popout window (popping out must not reset
@@ -127,8 +137,12 @@ function Main() {
   // Timestamp of our last typing ping, so we throttle to one per TYPING_DURATION.
   const lastTypingSentRef = useRef(0)
   // Last server event sequence we've processed, reported back in each heartbeat
-  // (op 2). Null until the backend starts tagging events with a sequence.
+  // (op 2) and as `seq` when resuming. Null until we've processed an event.
   const lastEventSeqRef = useRef(null)
+  // Session id handed to us on a fresh IDENTIFY (Authenticated). Sent back in the
+  // resume object on reconnect so the server can replay events we missed. Null
+  // when we have no resumable session.
+  const sessionIdRef = useRef(null)
   // Self id, our joined channel, and the channel whose chat we're viewing — kept
   // as refs so the once-built events-socket handler reads live values (not stale
   // closures) when deciding which UI sounds to play.
@@ -355,41 +369,48 @@ function Main() {
     }
   }, [allVideoStreams, selectedStreamId])
 
-  // Load recent message history whenever the local client enters a channel, so
-  // opening a channel shows what was said before we got here. The request goes
+  // Fetch a channel's recent history and merge it into the feed, replacing that
+  // channel's existing entries with the authoritative set. The request goes
   // through the main process because the endpoint is a GET with a JSON body.
-  useEffect(() => {
-    if (DEV_MODE || !token || activeChatChannelId == null) return
-    let cancelled = false
-    const channelId = activeChatChannelId
-
-    window.electron.ipcRenderer
-      .invoke('get-channel-messages', {
-        url: `${apiBase()}/channels/${channelId}/messages`,
-        token,
-        limit: HISTORY_LIMIT
-      })
-      .then((res) => {
-        if (cancelled) return
-        if (!res?.ok) {
-          if (res?.error) console.error('Failed to load chat history:', res.error)
-          return
-        }
-        const history = (res.messages || []).map(messageFromApi).sort(byChronology)
-        if (!history.length) return
-        setFeed((prev) => {
-          // Replace this channel's messages with the authoritative fetched set
-          // (deduped) and show them above the current session's entries.
-          const rest = prev.filter((e) => !(e.type === 'message' && e.channelId === channelId))
-          return [...history, ...rest]
+  // `shouldApply` lets a caller bail out if the result is no longer wanted
+  // (e.g. the user switched channels before it arrived).
+  const loadChannelHistory = useCallback(
+    (channelId, shouldApply = () => true) => {
+      if (DEV_MODE || !token || channelId == null) return Promise.resolve()
+      return window.electron.ipcRenderer
+        .invoke('get-channel-messages', {
+          url: `${apiBase()}/channels/${channelId}/messages`,
+          token,
+          limit: HISTORY_LIMIT
         })
-      })
-      .catch((err) => console.error('Failed to load chat history:', err))
+        .then((res) => {
+          if (!shouldApply()) return
+          if (!res?.ok) {
+            if (res?.error) console.error('Failed to load chat history:', res.error)
+            return
+          }
+          const history = (res.messages || []).map(messageFromApi).sort(byChronology)
+          if (!history.length) return
+          setFeed((prev) => {
+            const rest = prev.filter((e) => !(e.type === 'message' && e.channelId === channelId))
+            return [...history, ...rest]
+          })
+        })
+        .catch((err) => console.error('Failed to load chat history:', err))
+    },
+    [token]
+  )
 
+  // Load recent message history whenever the local client enters a channel, so
+  // opening a channel shows what was said before we got here.
+  useEffect(() => {
+    if (activeChatChannelId == null) return
+    let cancelled = false
+    loadChannelHistory(activeChatChannelId, () => !cancelled)
     return () => {
       cancelled = true
     }
-  }, [token, activeChatChannelId])
+  }, [activeChatChannelId, loadChannelHistory])
 
   // Load the saved server list from the main process on mount
   useEffect(() => {
@@ -528,6 +549,7 @@ function Main() {
     setConnectedServer(null)
     setServerHost(null)
     setPreviewChannelId(null)
+    setConnectionStatus('connected')
   }
 
   // Fetch channels/clients and set up WebSocket + IPC listeners on mount
@@ -543,75 +565,136 @@ function Main() {
       return () => mockStreams.forEach((s) => s._stopMock?.())
     }
 
-    Promise.all([
-      fetch(`${apiBase()}/server/channel`, {
-        headers: { Authorization: `Bearer ${token}` }
-      }),
-      fetch(`${apiBase()}/server/client`, {
-        headers: { Authorization: `Bearer ${token}` }
-      })
-    ]).then(async ([channelRes, clientRes]) => {
-      // A token may be stale/expired - drop it and return to the disconnected state
-      if (channelRes.status === 401 || clientRes.status === 401) {
+    // Reset any session carried over from a previous token/server so the first
+    // IDENTIFY of this session is fresh — we must never resume into a session
+    // that belongs to a different server.
+    sessionIdRef.current = null
+    lastEventSeqRef.current = null
+    setConnectionStatus('connected')
+
+    // Pull the authoritative channel/client baseline over REST. Resolves true on
+    // success, false if the token was rejected (we drop it) or the fetch failed.
+    const fetchBaseline = () =>
+      Promise.all([
+        fetch(`${apiBase()}/server/channel`, { headers: { Authorization: `Bearer ${token}` } }),
+        fetch(`${apiBase()}/server/client`, { headers: { Authorization: `Bearer ${token}` } })
+      ])
+        .then(async ([channelRes, clientRes]) => {
+          // A token may be stale/expired - drop it and return to disconnected.
+          if (channelRes.status === 401 || clientRes.status === 401) {
+            setToken(null)
+            setClient(null)
+            setConnectedServer(null)
+            setServerHost(null)
+            return false
+          }
+          const [channelData, clientData] = await Promise.all([
+            channelRes.json(),
+            clientRes.json()
+          ])
+          setChannels(channelData)
+          // The REST payload uses `muted`/`deaf`, but voice-state updates (and the
+          // rest of the UI) use `self_mute`/`self_deaf` - normalize on the way in.
+          setClients(clientData.map((c) => ({ ...c, self_mute: c.muted, self_deaf: c.deaf })))
+          return true
+        })
+        .catch((err) => {
+          console.error('Failed to fetch:', err)
+          return false
+        })
+
+    // Full resync after losing our session (we can't replay the events we
+    // missed): re-pull presence/channels and reload the active channel's history.
+    const fullResync = () => {
+      fetchBaseline()
+      loadChannelHistory(activeChatChannelIdRef.current)
+    }
+
+    // Reconnect bookkeeping. `closedByUs` suppresses reconnects on intentional
+    // teardown (effect cleanup, disconnect, or an auth failure).
+    let closedByUs = false
+    let reconnectAttempts = 0
+    let reconnectTimer = null
+    let heartbeatTimer = null
+    let ws = null
+
+    const clearHeartbeat = () => {
+      if (heartbeatTimer) clearInterval(heartbeatTimer)
+      heartbeatTimer = null
+    }
+
+    // Exponential backoff with jitter, capped, so a blip recovers quickly but a
+    // downed server isn't hammered. Reset to 0 on a successful handshake.
+    const scheduleReconnect = () => {
+      if (closedByUs || reconnectTimer) return
+      // Surface the drop to the user (full-app overlay) while we retry.
+      setConnectionStatus('reconnecting')
+      const delay = Math.min(
+        RECONNECT_MAX_DELAY_MS,
+        RECONNECT_BASE_DELAY_MS * 2 ** reconnectAttempts
+      )
+      reconnectAttempts++
+      const jittered = Math.round(delay * (0.5 + Math.random() * 0.5))
+      console.warn(`[Events] Reconnecting in ${jittered}ms`)
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null
+        connect()
+      }, jittered)
+    }
+
+    // The server's one-shot reply to IDENTIFY (op 0) is an internally-tagged
+    // enum: { type: 'Authenticated' | 'Resumed' | 'InvalidSession' | 'Unauthorized',
+    // ...payload }. Returns it (renaming `type` → `kind`) or null for anything
+    // else (heartbeat acks, dispatches).
+    const IDENTIFY_KINDS = ['Authenticated', 'Resumed', 'InvalidSession', 'Unauthorized']
+    const readIdentifyReply = (msg) => {
+      if (typeof msg?.type === 'string' && IDENTIFY_KINDS.includes(msg.type)) {
+        return { kind: msg.type, ...msg }
+      }
+      return null
+    }
+
+    const handleIdentifyReply = (reply) => {
+      // A completed handshake (fresh or resumed) means we're healthy again.
+      reconnectAttempts = 0
+      if (reply.kind === 'Authenticated' || reply.kind === 'Resumed') {
+        setConnectionStatus('connected')
+      }
+      if (reply.kind === 'Authenticated') {
+        // Fresh session: store its id and reset our position (we've processed no
+        // events yet). If we were holding a session before, our resume was
+        // effectively declined — resync so we don't trust state that may have
+        // drifted during the outage.
+        const hadSession = sessionIdRef.current != null
+        sessionIdRef.current = reply.session_id ?? null
+        lastEventSeqRef.current = null
+        if (hadSession) fullResync()
+      } else if (reply.kind === 'Resumed') {
+        // Resume accepted: the events we missed replay next as ordered, dup-free
+        // dispatches, then live events continue. Keep our position; refresh id.
+        if (reply.session_id != null) sessionIdRef.current = reply.session_id
+      } else if (reply.kind === 'InvalidSession') {
+        // Resume refused (server restarted or we were away too long): drop the
+        // session, full resync, and reconnect fresh. Clearing the refs makes the
+        // next connect identify without a resume object.
+        sessionIdRef.current = null
+        lastEventSeqRef.current = null
+        fullResync()
+        closedByUs = false
+        ws.close()
+      } else if (reply.kind === 'Unauthorized') {
+        // Token rejected — stop reconnecting and return to the disconnected state.
+        closedByUs = true
+        ws.close()
         setToken(null)
         setClient(null)
         setConnectedServer(null)
         setServerHost(null)
-        return
       }
-
-      const [channelData, clientData] = await Promise.all([channelRes.json(), clientRes.json()])
-      setChannels(channelData)
-      // The REST payload uses `muted`/`deaf`, but voice-state updates (and the
-      // rest of the UI) use `self_mute`/`self_deaf` - normalize on the way in.
-      setClients(clientData.map((c) => ({ ...c, self_mute: c.muted, self_deaf: c.deaf })))
-      setFeed([])
-    }).catch((err) => console.error('Failed to fetch:', err))
-
-    const ws = new WebSocket(`${wsBase()}/ws`)
-    eventsWsRef.current = ws
-    // Fresh connection → fresh sequence; cleared so a stale seq from a previous
-    // session isn't reported.
-    lastEventSeqRef.current = null
-    let heartbeatTimer = null
-    // True between sending a heartbeat (op 2) and receiving its ack (op 4). If a
-    // beat is still unacknowledged when the next is due, the connection is dead.
-    let awaitingAck = false
-    ws.onopen = () => {
-      console.log('WebSocket connected')
-      ws.send(JSON.stringify({ op: 0, data: { token } }))
-      // Heartbeat: prove we're still alive every interval, reporting the last
-      // event sequence we've processed (null until the backend tags events).
-      // If these stop arriving the server evicts us, so clients that crash or
-      // are force-killed (Ctrl+C) stop appearing in the channel.
-      heartbeatTimer = setInterval(() => {
-        if (ws.readyState !== WebSocket.OPEN) return
-        if (awaitingAck) {
-          // Previous heartbeat was never acknowledged — treat as a zombie
-          // connection and close it (fires onclose; clears the timer).
-          console.warn('[Events] Heartbeat not acknowledged; closing dead connection')
-          ws.close()
-          return
-        }
-        awaitingAck = true
-        ws.send(JSON.stringify({ op: 2, data: lastEventSeqRef.current }))
-      }, HEARTBEAT_INTERVAL_MS)
     }
-    ws.onmessage = (event) => {
-      const msg = JSON.parse(event.data)
 
-      // Heartbeat acknowledgement — clears the outstanding beat; no event body.
-      if (msg.op === 4) {
-        awaitingAck = false
-        return
-      }
-
-      // Events will be wrapped as { op: 3, data: <event>, seq }; today they
-      // arrive bare as { ev, data }. Support both, and remember the latest
-      // sequence so the heartbeat can report our position.
-      if (typeof msg.seq === 'number') lastEventSeqRef.current = msg.seq
-      const { ev, data } = msg.op === 3 ? msg.data : msg
-
+    // Apply a dispatched event to local state.
+    const handleEvent = (ev, data) => {
       // Audio status update (mic mute / deafen) broadcast from another client
       if (ev === 'VoiceStateUpdate') {
         const { client_id, muted, deaf } = data
@@ -694,25 +777,127 @@ function Main() {
         setFeed((prev) => appendFeed(prev, systemEntry(`Unknown event: ${ev}`)))
       }
     }
-    ws.onclose = () => {
-      console.log('WebSocket disconnected')
-      if (heartbeatTimer) clearInterval(heartbeatTimer)
-      heartbeatTimer = null
-      eventsWsRef.current = null
+
+    // Open a socket and run the handshake. Reused for the initial connection and
+    // every reconnect; `connect` reassigns the shared `ws` each time.
+    const connect = () => {
+      ws = new WebSocket(`${wsBase()}/ws`)
+      eventsWsRef.current = ws
+      // True between sending a heartbeat (op 2) and receiving its ack (op 4). If a
+      // beat is still unacknowledged when the next is due, the connection is dead.
+      let awaitingAck = false
+
+      ws.onopen = () => {
+        console.log('WebSocket connected')
+        // Resume only when we hold a session and a position to resume from;
+        // otherwise identify fresh. The server's reply tells us which we got.
+        const canResume = sessionIdRef.current != null && lastEventSeqRef.current != null
+        const data = canResume
+          ? { token, resume: { session_id: sessionIdRef.current, seq: lastEventSeqRef.current } }
+          : { token }
+        ws.send(JSON.stringify({ op: 0, data }))
+        // Heartbeat: prove we're still alive every interval, reporting the last
+        // event sequence we've processed. If these stop arriving the server
+        // evicts us, so clients that crash or are force-killed (Ctrl+C) stop
+        // appearing in the channel.
+        heartbeatTimer = setInterval(() => {
+          if (ws.readyState !== WebSocket.OPEN) return
+          if (awaitingAck) {
+            // Previous heartbeat was never acknowledged — treat as a zombie
+            // connection and close it (fires onclose → reconnect).
+            console.warn('[Events] Heartbeat not acknowledged; closing dead connection')
+            ws.close()
+            return
+          }
+          awaitingAck = true
+          ws.send(JSON.stringify({ op: 2, data: lastEventSeqRef.current }))
+        }, HEARTBEAT_INTERVAL_MS)
+      }
+
+      ws.onmessage = (event) => {
+        const msg = JSON.parse(event.data)
+
+        // One-shot reply to our IDENTIFY (op 0). Checked first since it carries
+        // connection-control state, not a dispatchable event.
+        const reply = readIdentifyReply(msg)
+        if (reply) {
+          handleIdentifyReply(reply)
+          return
+        }
+
+        // Heartbeat acknowledgement — clears the outstanding beat; no event body.
+        if (msg.op === 4) {
+          awaitingAck = false
+          return
+        }
+
+        // Events are wrapped as { op: 3, data: <event>, seq }, or arrive bare as
+        // { ev, data }. Support both, and remember the latest sequence so the
+        // heartbeat and any resume can report our position.
+        if (typeof msg.seq === 'number') lastEventSeqRef.current = msg.seq
+        const { ev, data } = msg.op === 3 ? msg.data : msg
+        handleEvent(ev, data)
+      }
+
+      ws.onclose = () => {
+        console.log('WebSocket disconnected')
+        clearHeartbeat()
+        if (eventsWsRef.current === ws) eventsWsRef.current = null
+        // Recover unless the close was intentional. We resume if we still hold a
+        // session; the next handshake reply decides resume vs. fresh.
+        scheduleReconnect()
+      }
+
+      ws.onerror = (err) => console.error('WebSocket error:', err)
     }
-    ws.onerror = (err) => console.error('WebSocket error:', err)
+
+    // OS connectivity hints. The heartbeat eventually notices a silent drop, but
+    // that can take ~20s; reacting to 'offline'/'online' shows the reconnect
+    // overlay immediately and recovers the moment the network returns (closing a
+    // half-open socket routes through onclose → scheduleReconnect).
+    const handleOffline = () => {
+      if (closedByUs) return
+      setConnectionStatus('reconnecting')
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+        ws.close()
+      }
+    }
+    const handleOnline = () => {
+      if (closedByUs) return
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+        ws.close() // half-open socket that never noticed the drop
+      } else if (reconnectTimer || !eventsWsRef.current) {
+        // Waiting out a backoff (or fully closed) — reconnect now instead.
+        if (reconnectTimer) clearTimeout(reconnectTimer)
+        reconnectTimer = null
+        reconnectAttempts = 0
+        connect()
+      }
+    }
+    window.addEventListener('offline', handleOffline)
+    window.addEventListener('online', handleOnline)
+
+    // Initial baseline + first connection. The first IDENTIFY is always fresh
+    // (session refs were cleared above), so REST state is our starting point.
+    setFeed([])
+    fetchBaseline()
+    connect()
 
     window.electron.ipcRenderer.on('log-message', (_, message) => {
       setFeed((prev) => appendFeed(prev, systemEntry(message)))
     })
 
     return () => {
-      if (heartbeatTimer) clearInterval(heartbeatTimer)
-      ws.close()
+      closedByUs = true
+      if (reconnectTimer) clearTimeout(reconnectTimer)
+      clearHeartbeat()
+      if (ws) ws.close()
       eventsWsRef.current = null
+      window.removeEventListener('offline', handleOffline)
+      window.removeEventListener('online', handleOnline)
       window.electron.ipcRenderer.removeAllListeners('log-message')
     }
-  }, [token])
+  }, [token, loadChannelHistory])
 
   // Drop typing entries as they expire. Re-scheduled to the soonest expiry each
   // time the set changes (no always-on interval); a fresh TypingStarted bumps an
@@ -1021,6 +1206,9 @@ function Main() {
         </div>
       )}
       </div>
+      {connected && connectionStatus === 'reconnecting' && (
+        <ConnectionOverlay onAbort={handleDisconnect} />
+      )}
     </div>
   )
 }

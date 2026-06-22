@@ -1,0 +1,86 @@
+/* ============================================================================
+   CONNECTION OVERLAY
+   Full-app cover shown while the events socket is down and reconnecting.
+   ============================================================================ */
+
+.connection-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 4000; /* above the title bar, modals, everything */
+  background: var(--color-background);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Sits over the custom title bar, so let the user still drag the window from
+     the overlay's empty space. Interactive children opt back out below. */
+  -webkit-app-region: drag;
+  animation: connection-overlay-fade 0.18s ease;
+}
+
+@keyframes connection-overlay-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.connection-overlay-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--spacing-lg);
+  padding: var(--spacing-xl);
+  text-align: center;
+}
+
+.connection-overlay-title {
+  margin: 0;
+  font-size: 24px;
+  font-weight: var(--font-weight-bold);
+  color: var(--color-text);
+  letter-spacing: 0.01em;
+}
+
+.connection-overlay-subtitle {
+  margin: 0;
+  font-size: var(--font-size-md);
+  color: var(--color-text-secondary);
+}
+
+.connection-overlay-art {
+  margin: var(--spacing-sm) 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 14px;
+  line-height: 1.15;
+  letter-spacing: 2px;
+  color: var(--color-primary);
+  white-space: pre;
+  user-select: none;
+  /* Soft glow so the radar reads as "live". */
+  text-shadow: 0 0 8px color-mix(in srgb, var(--color-primary) 55%, transparent);
+}
+
+.connection-overlay-abort {
+  -webkit-app-region: no-drag; /* stay clickable over the draggable overlay */
+  margin-top: var(--spacing-sm);
+  padding: 9px 28px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius-md);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  font-family: var(--font-family-primary);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.connection-overlay-abort:hover {
+  background: color-mix(in srgb, var(--color-danger) 16%, transparent);
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .connection-overlay {
+    animation: none;
+  }
+}

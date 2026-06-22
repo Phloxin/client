@@ -26,9 +26,13 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   const joinedRef = useRef(false)
   const localSpeakingCleanupRef = useRef(null)
   const menuRef = useRef(null)
+  // Latest mic settings, read by the (re)publish path so a background reconnect
+  // re-publishes with current settings rather than those captured at join time.
+  const micSettingsRef = useRef(micSettings)
 
   // Keep joinedRef in sync with joined state
   useEffect(() => { joinedRef.current = joined }, [joined])
+  useEffect(() => { micSettingsRef.current = micSettings }, [micSettings])
 
   // Let the sidebar know when this channel becomes the joined/sharing one
   useEffect(() => { onJoinedChange?.(channel.id, joined) }, [joined])
@@ -61,6 +65,47 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     localSpeakingCleanupRef.current = createSpeakingDetector(stream, (isSpeaking) => {
       handleClientSpeaking(self.id, isSpeaking)
     })
+  }
+
+  // Publish (or, on a reconnect, re-publish) the local mic with current settings.
+  const publishMic = async () => {
+    try {
+      await publish(micSettingsRef.current, (stream) => {
+        console.log('[VoiceChannel] Local stream ready')
+        startLocalSpeakingDetector(stream)
+      })
+    } catch (err) {
+      console.error('[VoiceChannel] Publish failed:', err)
+      setError(err.message)
+    }
+  }
+
+  // Set this client's channel on the server (join / switch / rejoin-on-reconnect).
+  const patchChannel = (channelId) =>
+    fetch(`${API_BASE_URL}/server/client`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ client_id: self.id, channel_id: channelId })
+    })
+
+  // Fired after every successful (re)auth: mark joined and (re)publish the mic.
+  const handleConnectEstablished = async () => {
+    setJoined(true)
+    setConnecting(false)
+    await publishMic()
+  }
+
+  // Fired on an unexpected drop: tear down local media UI but stay "joined" —
+  // soup auto-reconnects, remote tiles re-arrive via replayed NewProducer, and
+  // the mic re-publishes. Screen share is NOT auto-restored (re-capturing the
+  // screen requires a fresh user gesture).
+  const handleReconnecting = () => {
+    setSharing(false)
+    setVideoStreams([])
+    setSpeakingClients({})
+    localSpeakingCleanupRef.current?.()
+    localSpeakingCleanupRef.current = null
+    if (onStreamsUpdate) onStreamsUpdate([])
   }
 
   // Republish audio whenever mic settings change while in a channel
@@ -131,29 +176,10 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     setConnecting(true)
     setError(null)
     try {
-      await fetch(`${API_BASE_URL}/server/client`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
-        },
-        body: JSON.stringify({ client_id: self.id, channel_id: channel.id })
-      })
+      await patchChannel(channel.id)
 
       await connect(token, {
-        onConnect: async () => {
-          setJoined(true)
-          setConnecting(false)
-          try {
-            await publish(micSettings, (stream) => {
-              console.log('[VoiceChannel] Local stream ready')
-              startLocalSpeakingDetector(stream)
-            })
-          } catch (err) {
-            console.error('[VoiceChannel] Publish failed:', err)
-            setError(err.message)
-          }
-        },
+        onConnect: handleConnectEstablished,
         onDisconnect: () => {
           setJoined(false)
           setSharing(false)
@@ -163,6 +189,10 @@ const VoiceChannel = forwardRef(function VoiceChannel(
           localSpeakingCleanupRef.current = null
           if (onStreamsUpdate) onStreamsUpdate([])
         },
+        onReconnecting: handleReconnecting,
+        // Server drops us from the channel when the socket dies — re-assert
+        // membership before each reconnect's ticket fetch.
+        onReconnectRejoin: () => patchChannel(channel.id),
         onVideoStream: handleVideoStream,
         onClientSpeaking: handleClientSpeaking,
         onConsumerClosed: handleConsumerClosed
@@ -182,35 +212,20 @@ const VoiceChannel = forwardRef(function VoiceChannel(
 
     // Rebind callbacks BEFORE the PATCH — TransportsDisconnected can arrive
     // as soon as the server processes the PATCH, so this channel's handler
-    // must already be active to catch it.
+    // must already be active to catch it. This also repoints the reconnect
+    // callbacks at the new channel, so a drop after the switch recovers here.
     rebindCallbacks({
+      onConnect: handleConnectEstablished,
+      onReconnecting: handleReconnecting,
+      onReconnectRejoin: () => patchChannel(channel.id),
       onVideoStream: handleVideoStream,
       onClientSpeaking: handleClientSpeaking,
       onConsumerClosed: handleConsumerClosed,
-      onTransportsDisconnected: async () => {
-        setJoined(true)
-        setConnecting(false)
-        try {
-          await publish(micSettings, (stream) => {
-            console.log('[VoiceChannel] Local stream ready')
-            startLocalSpeakingDetector(stream)
-          })
-        } catch (err) {
-          console.error('[VoiceChannel] Publish failed:', err)
-          setError(err.message)
-        }
-      }
+      onTransportsDisconnected: handleConnectEstablished
     })
 
     try {
-      await fetch(`${API_BASE_URL}/server/client`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
-        },
-        body: JSON.stringify({ client_id: self.id, channel_id: channel.id })
-      })
+      await patchChannel(channel.id)
     } catch (err) {
       setError(err.message)
       setConnecting(false)

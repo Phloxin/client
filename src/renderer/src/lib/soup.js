@@ -51,12 +51,35 @@ let focusedMuted = false
 // in the sidebar) - keyed by clientId.
 let clientAudioOverrides = new Map()
 
+// ─── Reconnection state ──────────────────────────────────────────
+// The voice socket can't "resume": when it drops, the server tears down our
+// transports and removes us from the channel. Recovery is a full re-establish —
+// re-assert channel membership, fetch a fresh ticket, reconnect, re-publish —
+// driven here with capped exponential backoff + jitter (matches the events
+// socket). Remote streams come back on their own: a fresh auth makes the server
+// replay NewProducer for everyone in the channel.
+const VOICE_RECONNECT_BASE_DELAY_MS = 1000
+const VOICE_RECONNECT_MAX_DELAY_MS = 30000
+let reconnectToken = null // token captured at connect(), reused per attempt
+let reconnectAttempts = 0
+let reconnectTimer = null
+let reconnectInFlight = false // an attempt is mid-flight; don't start a second
+let intentionalClose = false // set by disconnect() so onclose won't reconnect
+let everAuthenticated = false // only auto-reconnect drops that follow a real auth
+
 // ─── Pending response handlers ───────────────────────────────────
 const pendingHandlers = []
 
 // ─── Send a message and wait for a response ──────────────────────
 function send(type, data = null) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
+    // Don't queue a resolver against a dead socket — the response would never
+    // come, and a stale handler left in the queue desyncs response routing once
+    // we reconnect.
+    if (ws?.readyState !== WebSocket.OPEN) {
+      reject(new Error(`Voice socket not open (cannot send ${type})`))
+      return
+    }
     pendingHandlers.push(resolve)
     const message = data ? { type, data } : { type }
     ws.send(JSON.stringify(message))
@@ -69,34 +92,69 @@ function send(type, data = null) {
 // Does NOT push onto pendingHandlers, so an unanswered message can't
 // desync the response queue for subsequent send() calls.
 function notify(type, data = null) {
+  if (ws?.readyState !== WebSocket.OPEN) return
   const message = data ? { type, data } : { type }
   ws.send(JSON.stringify(message))
   console.log(`[Soup] Notify: ${type}`, message)
 }
 
 // ─── Connect to signaling server ────────────────────────────────
-export async function connect(token, { onConnect, onDisconnect, onNewProducer, onVideoStream, onTransportsDisconnected, onClientSpeaking, onConsumerClosed } = {}) {
-  activeCallbacks = { onConnect, onDisconnect, onNewProducer, onVideoStream, onTransportsDisconnected, onClientSpeaking, onConsumerClosed }
+// Callbacks: onConnect (fired after each successful auth — initial and
+// reconnect), onDisconnect (intentional/unrecoverable teardown), onReconnecting
+// (an unexpected drop; clear remote tiles but stay "joined"), onReconnectRejoin
+// (async; re-assert channel membership before a reconnect's ticket fetch),
+// onNewProducer, onVideoStream, onTransportsDisconnected, onClientSpeaking,
+// onConsumerClosed.
+export async function connect(token, callbacks = {}) {
+  activeCallbacks = { ...callbacks }
+  reconnectToken = token
+  intentionalClose = false
+  everAuthenticated = false
+  reconnectAttempts = 0
+  // Cancel any pending reconnect from a prior session so it can't fire alongside
+  // this fresh connection.
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer)
+    reconnectTimer = null
+  }
+  // Watch OS connectivity. A silent network drop leaves the voice socket
+  // half-open (onclose never fires on its own — unlike the events socket, this
+  // one has no heartbeat to notice), so we use these to detect death and
+  // recover. addEventListener dedupes the stable refs, so repeat calls are safe.
+  window.addEventListener('offline', handleOffline)
+  window.addEventListener('online', handleOnline)
+  await openSocket(token)
+}
 
+// Open the voice WebSocket: fetch a fresh (single-use) ticket, wire every
+// handler, then authenticate. Used for the initial connection and every
+// reconnect attempt — each call replaces the shared `ws`. A stale-socket guard
+// on every handler ignores a superseded socket once a newer one takes over.
+async function openSocket(token) {
   // Step 1 — get ticket
   const res = await fetch(`${apiBase()}/server/voice`, {
     headers: { Authorization: `Bearer ${token}` }
   })
+  if (!res.ok) throw new Error(`Voice ticket request failed: ${res.status}`)
   const { ticket } = await res.json()
   console.log('[Soup] Got ticket:', ticket)
 
   // Step 2 — connect to voice WebSocket
-  ws = new WebSocket(`${wsBase()}/voice`)
-  console.log('[Soup] WebSocket created, readyState:', ws.readyState)
+  const socket = new WebSocket(`${wsBase()}/voice`)
+  ws = socket
+  console.log('[Soup] WebSocket created, readyState:', socket.readyState)
 
   // ─── Assign ALL handlers before anything can fire ───────────────
-  ws.onmessage = (event) => {
+  socket.onmessage = (event) => {
+    if (ws !== socket) return // superseded by a newer socket
     const message = JSON.parse(event.data)
     console.log('[Soup] Received:', message)
 
     // Authenticated confirmation
     if (message.type === 'Authenticated') {
       console.log('[Soup] Authenticated')
+      everAuthenticated = true
+      reconnectAttempts = 0
       activeCallbacks.onConnect?.()
       return
     }
@@ -153,28 +211,125 @@ export async function connect(token, { onConnect, onDisconnect, onNewProducer, o
     console.log('[Soup] Unhandled message:', message)
   }
 
-  ws.onclose = (event) => {
+  socket.onclose = (event) => {
+    if (ws !== socket) return // a newer socket has already taken over
     console.log('[Soup] WebSocket disconnected — code:', event.code, 'reason:', event.reason)
     currentChannel = null
+    // Drop any in-flight request resolvers so the next connection's responses
+    // can't resolve stale handlers and desync the response queue.
+    pendingHandlers.length = 0
     resetMediaState()
-    activeCallbacks.onDisconnect?.()
+
+    if (intentionalClose || !everAuthenticated) {
+      // Deliberate teardown, or a connection that never authenticated (treat a
+      // failed initial join as a normal disconnect, not something to retry).
+      ws = null
+      activeCallbacks.onDisconnect?.()
+    } else {
+      // Unexpected drop after a healthy session — keep the user "joined" and
+      // recover in the background. Remote tiles are cleared now and re-arrive
+      // via replayed NewProducer once we're back; mic is re-published on auth.
+      activeCallbacks.onReconnecting?.()
+      scheduleVoiceReconnect()
+    }
   }
 
-  ws.onerror = (err) => {
+  socket.onerror = (err) => {
     console.error('[Soup] WebSocket error:', err)
   }
 
   // ─── onopen last so handlers are guaranteed to be in place ──────
-  ws.onopen = () => {
+  socket.onopen = () => {
+    if (ws !== socket) return
     console.log('[Soup] WebSocket connected, authenticating...')
-    ws.send(JSON.stringify({ ticket }))
+    socket.send(JSON.stringify({ ticket }))
   }
+}
+
+// Schedule a reconnect with capped exponential backoff + jitter.
+function scheduleVoiceReconnect() {
+  if (intentionalClose || reconnectTimer) return
+  const delay = Math.min(
+    VOICE_RECONNECT_MAX_DELAY_MS,
+    VOICE_RECONNECT_BASE_DELAY_MS * 2 ** reconnectAttempts
+  )
+  reconnectAttempts++
+  const jittered = Math.round(delay * (0.5 + Math.random() * 0.5))
+  console.warn(`[Soup] Reconnecting voice in ${jittered}ms (attempt ${reconnectAttempts})`)
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null
+    attemptReconnect()
+  }, jittered)
+}
+
+// One reconnect attempt: re-assert channel membership (the server drops us from
+// the channel when the socket dies), then re-open the socket. The fresh auth
+// makes the server replay NewProducer for everyone in the channel, so remote
+// audio/video re-consume automatically; onConnect re-publishes our mic.
+async function attemptReconnect() {
+  if (intentionalClose || reconnectInFlight) return
+  reconnectInFlight = true
+  try {
+    await activeCallbacks.onReconnectRejoin?.()
+    await openSocket(reconnectToken)
+  } catch (err) {
+    console.error('[Soup] Voice reconnect failed:', err)
+    scheduleVoiceReconnect()
+  } finally {
+    reconnectInFlight = false
+  }
+}
+
+// Recover from a detected network failure. Because the voice socket has no
+// heartbeat, a half-open connection can sit in OPEN forever without firing
+// onclose — so the ICE-transport 'failed' state and the OS online/offline
+// events call this to kick recovery. No-op unless we have a live, non-
+// intentional session.
+function forceVoiceReconnect(reason) {
+  if (!everAuthenticated || intentionalClose) return
+  // A socket that still thinks it's open/connecting is the half-open case:
+  // close it so onclose runs the normal teardown + reconnect path.
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+    console.warn(`[Soup] ${reason} — closing half-open voice socket to recover`)
+    ws.close()
+    return
+  }
+  // Already closed and waiting out a backoff — jump straight to a fresh attempt.
+  if (reconnectInFlight) return
+  console.warn(`[Soup] ${reason} — retrying voice connection now`)
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer)
+    reconnectTimer = null
+  }
+  reconnectAttempts = 0
+  attemptReconnect()
+}
+
+// OS reports the network interface went down: tear the dead socket down now so
+// the UI clears and backoff starts (attempts fail until we're back online).
+function handleOffline() {
+  forceVoiceReconnect('Network offline')
+}
+
+// OS reports connectivity is back: recover promptly rather than waiting out the
+// current backoff delay.
+function handleOnline() {
+  forceVoiceReconnect('Network online')
 }
 
 // ─── Disconnect ──────────────────────────────────────────────────
 export function disconnect() {
+  intentionalClose = true
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer)
+    reconnectTimer = null
+  }
+  reconnectAttempts = 0
+  window.removeEventListener('offline', handleOffline)
+  window.removeEventListener('online', handleOnline)
+  // Let the (guarded) onclose handler run resetMediaState + onDisconnect and
+  // null out `ws`; closing synchronously here would race that cleanup.
   ws?.close()
-  ws = null
 }
 
 // ─── Load mediasoup Device ───────────────────────────────────────
@@ -340,6 +495,9 @@ export async function publish(micSettings, onStream) {
 
   producerTransport.on('connectionstatechange', (state) => {
     console.log('[Soup] Producer transport connection state:', state)
+    // ICE gave up (network died without the socket noticing) — recover. Our own
+    // teardown closes transports as 'closed', not 'failed', so this won't loop.
+    if (state === 'failed') forceVoiceReconnect('Producer transport failed')
   })
 
   producerTransport.on('connect', ({ dtlsParameters }, callback, errback) => {
@@ -667,6 +825,7 @@ export async function subscribe() {
 
     consumerTransport.on('connectionstatechange', (state) => {
       console.log('[Soup] Consumer transport connection state:', state)
+      if (state === 'failed') forceVoiceReconnect('Consumer transport failed')
     })
 
     consumerTransport.on('connect', ({ dtlsParameters }, callback, errback) => {
