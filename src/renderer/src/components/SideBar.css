@@ -10,7 +10,11 @@
   flex-shrink: 0;
   border-radius: 10px;
   position: relative;
-  user-select: none; 
+  user-select: none;
+}
+
+html[data-transparency="true"] .sidebar {
+  background: color-mix(in srgb, var(--color-background-soft) var(--transparency-opacity, 85%), transparent);
 }
 
 .server-header {
@@ -20,7 +24,11 @@
   align-items: center;
   justify-content: space-between;
   background: var(--color-background-mute);
-  border-radius: 10px ;
+  border-radius: 10px;
+}
+
+html[data-transparency="true"] .server-header {
+  background: color-mix(in srgb, var(--color-background-mute) var(--transparency-opacity, 85%), transparent);
 }
 
 .server-name {
@@ -95,6 +103,10 @@
   flex-direction: column;
   gap: var(--spacing-sm);
   background: var(--color-background-mute);
+}
+
+html[data-transparency="true"] .control-rows {
+  background: color-mix(in srgb, var(--color-background-mute) var(--transparency-opacity, 85%), transparent);
 }
 
 .control-row {

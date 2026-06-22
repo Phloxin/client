@@ -1,6 +1,8 @@
 import { createContext, useContext, useState, useEffect } from 'react'
 import { setOutputDevice, setMasterVolume } from '../lib/soup'
 import { SOUND_CATEGORIES, setSoundCategoriesEnabled } from '../lib/sounds'
+import { applyAppearanceSettings, applyAnimationSettings } from '../lib/uiSettings'
+import { prefersReducedMotion } from '../lib/animation'
 
 const SettingsContext = createContext(null)
 
@@ -27,10 +29,72 @@ const DEFAULT_SETTINGS = {
   volumeGateThreshold: 30,
   useRnnoise: true,
   outputDeviceId: 'default',
-  outputVolume: 100,
+  outputVolume: 100
+}
+
+const DEFAULT_APPEARANCE = {
+  transparencyEnabled: false,
+  transparencyBlur: 20,
+  transparencyOpacity: 85
+}
+
+const DEFAULT_ANIMATIONS = {
+  // enabled is the master switch; the rest are 'off' or a per-category style.
+  enabled: true,
+  channelSwitch: 'fade', // 'fade' | 'slide' | 'off'
+  userJoin: 'slide', // 'slide' | 'pop' | 'off'
+  channelList: 'slide' // 'slide' | 'pop' | 'off'
 }
 
 export function SettingsProvider({ children }) {
+  const [appearanceSettings, setAppearanceSettings] = useState(() => {
+    try {
+      const saved = localStorage.getItem('appearanceSettings')
+      return saved ? { ...DEFAULT_APPEARANCE, ...JSON.parse(saved) } : DEFAULT_APPEARANCE
+    } catch {
+      return DEFAULT_APPEARANCE
+    }
+  })
+
+  useEffect(() => {
+    applyAppearanceSettings(appearanceSettings)
+    try {
+      window.electron?.ipcRenderer?.send(
+        'set-window-vibrancy',
+        appearanceSettings.transparencyEnabled
+      )
+    } catch {}
+  }, [appearanceSettings])
+
+  const updateAppearanceSettings = (changes) => {
+    setAppearanceSettings((prev) => {
+      const merged = { ...prev, ...changes }
+      localStorage.setItem('appearanceSettings', JSON.stringify(merged))
+      return merged
+    })
+  }
+
+  const [animationSettings, setAnimationSettings] = useState(() => {
+    try {
+      const saved = localStorage.getItem('animationSettings')
+      return saved ? { ...DEFAULT_ANIMATIONS, ...JSON.parse(saved) } : DEFAULT_ANIMATIONS
+    } catch {
+      return DEFAULT_ANIMATIONS
+    }
+  })
+
+  useEffect(() => {
+    applyAnimationSettings(animationSettings)
+  }, [animationSettings])
+
+  const updateAnimationSettings = (changes) => {
+    setAnimationSettings((prev) => {
+      const merged = { ...prev, ...changes }
+      localStorage.setItem('animationSettings', JSON.stringify(merged))
+      return merged
+    })
+  }
+
   const [micSettings, setMicSettings] = useState(() => {
     try {
       const saved = localStorage.getItem('micSettings')
@@ -84,14 +148,25 @@ export function SettingsProvider({ children }) {
       // Always enforce hardcoded encoding constants
       sampleRate: AUDIO_SAMPLE_RATE,
       channelCount: AUDIO_CHANNEL_COUNT,
-      bitrate: AUDIO_BITRATE,
+      bitrate: AUDIO_BITRATE
     }
     setMicSettings(merged)
     localStorage.setItem('micSettings', JSON.stringify(merged))
   }
 
   return (
-    <SettingsContext.Provider value={{ micSettings, updateMicSettings, soundSettings, updateSoundSettings }}>
+    <SettingsContext.Provider
+      value={{
+        micSettings,
+        updateMicSettings,
+        soundSettings,
+        updateSoundSettings,
+        appearanceSettings,
+        updateAppearanceSettings,
+        animationSettings,
+        updateAnimationSettings
+      }}
+    >
       {children}
     </SettingsContext.Provider>
   )
@@ -99,4 +174,13 @@ export function SettingsProvider({ children }) {
 
 export function useSettings() {
   return useContext(SettingsContext)
+}
+
+// Whether a given animation category should actually run: master switch on, the
+// category not 'off', and the OS isn't asking us to reduce motion.
+export function useAnimationCategory(category) {
+  const { animationSettings } = useSettings()
+  return (
+    animationSettings.enabled && animationSettings[category] !== 'off' && !prefersReducedMotion()
+  )
 }

@@ -8,11 +8,22 @@ import ChatPanel from '../components/ChatPanel'
 import TitleBar from '../components/TitleBar'
 import ConnectionOverlay from '../components/ConnectionOverlay'
 import Settings from './Settings'
-import { disconnect as disconnectVoice, setFocusedScreenAudio, setVideoStreamRoles } from '../lib/soup'
+import {
+  disconnect as disconnectVoice,
+  setFocusedScreenAudio,
+  setVideoStreamRoles
+} from '../lib/soup'
 import { playUiSound } from '../lib/sounds'
 import { setServerHost, apiBase, wsBase } from '../lib/serverConfig'
 import { usePillIndicator } from '../lib/usePillIndicator'
-import { DEV_MODE, MOCK_TOKEN, MOCK_CLIENT, MOCK_CHANNELS, MOCK_CLIENTS, createMockStreams } from '../lib/mock'
+import {
+  DEV_MODE,
+  MOCK_TOKEN,
+  MOCK_CLIENT,
+  MOCK_CHANNELS,
+  MOCK_CLIENTS,
+  createMockStreams
+} from '../lib/mock'
 import { IconVideo, IconMessage, IconUsersGroup, IconX } from '@tabler/icons-react'
 
 const APP_TITLE = 'Teamspeak 26'
@@ -30,7 +41,6 @@ const TYPING_DURATION_MS = 10000
 // Sized to cover the gap between the events socket reporting healthy and the
 // voice socket re-consuming streams after a reconnect.
 const STREAM_BASELINE_MS = 2000
-
 
 // Append an entry to the feed, dropping the oldest entries once the cap is hit.
 function appendFeed(prev, entry) {
@@ -153,16 +163,30 @@ function Main() {
 
   // Keep refs to the latest channels/clients so the events websocket handler
   // (created once in the effect below) can look them up without stale closures.
-  useEffect(() => { channelsRef.current = channels }, [channels])
-  useEffect(() => { clientsRef.current = clients }, [clients])
+  useEffect(() => {
+    channelsRef.current = channels
+  }, [channels])
+  useEffect(() => {
+    clientsRef.current = clients
+  }, [clients])
 
   // Keep refs to the latest streams/selection/volume so the popout bridge (set
   // up once below) always reads current values without stale closures.
-  useEffect(() => { allVideoStreamsRef.current = allVideoStreams }, [allVideoStreams])
-  useEffect(() => { selectedStreamIdRef.current = selectedStreamId }, [selectedStreamId])
-  useEffect(() => { streamVolumeRef.current = streamVolume }, [streamVolume])
-  useEffect(() => { streamMutedRef.current = streamMuted }, [streamMuted])
-  useEffect(() => { watchedStreamIdsRef.current = watchedStreamIds }, [watchedStreamIds])
+  useEffect(() => {
+    allVideoStreamsRef.current = allVideoStreams
+  }, [allVideoStreams])
+  useEffect(() => {
+    selectedStreamIdRef.current = selectedStreamId
+  }, [selectedStreamId])
+  useEffect(() => {
+    streamVolumeRef.current = streamVolume
+  }, [streamVolume])
+  useEffect(() => {
+    streamMutedRef.current = streamMuted
+  }, [streamMuted])
+  useEffect(() => {
+    watchedStreamIdsRef.current = watchedStreamIds
+  }, [watchedStreamIds])
 
   // Notify the popout window whenever the data it mirrors changes.
   useEffect(() => {
@@ -241,7 +265,9 @@ function Main() {
         return () => popoutListenersRef.current.delete(cb)
       }
     }
-    return () => { delete window.__videoPopout }
+    return () => {
+      delete window.__videoPopout
+    }
   }, [])
 
   // Pop the video grid out into its own window: switch the main window back to
@@ -292,7 +318,9 @@ function Main() {
       allVideoStreamsRef.current.filter((s) => !s.isSelf).map((s) => s.clientId)
     )
     if (!token || connectionStatus !== 'connected') return
-    const t = setTimeout(() => { notifyArmedRef.current = true }, STREAM_BASELINE_MS)
+    const t = setTimeout(() => {
+      notifyArmedRef.current = true
+    }, STREAM_BASELINE_MS)
     return () => clearTimeout(t)
   }, [token, selfChannelId, connectionStatus])
 
@@ -306,10 +334,18 @@ function Main() {
   // tab is selected (mirrors the render condition below).
   const chatVisible = previewChannelId != null || viewMode === 'log'
 
-  useEffect(() => { selfIdRef.current = client?.id ?? null }, [client])
-  useEffect(() => { selfChannelIdRef.current = selfChannelId }, [selfChannelId])
-  useEffect(() => { activeChatChannelIdRef.current = activeChatChannelId }, [activeChatChannelId])
-  useEffect(() => { chatVisibleRef.current = chatVisible }, [chatVisible])
+  useEffect(() => {
+    selfIdRef.current = client?.id ?? null
+  }, [client])
+  useEffect(() => {
+    selfChannelIdRef.current = selfChannelId
+  }, [selfChannelId])
+  useEffect(() => {
+    activeChatChannelIdRef.current = activeChatChannelId
+  }, [activeChatChannelId])
+  useEffect(() => {
+    chatVisibleRef.current = chatVisible
+  }, [chatVisible])
 
   // Actually viewing a channel's chat marks it read — drop it from the unread
   // set. Gated on chatVisible so switching to the Chat tab (not just being in the
@@ -335,7 +371,9 @@ function Main() {
     streamSoundsArmedRef.current = false
     prevStreamIdsRef.current = new Set(allVideoStreamsRef.current.map((s) => s.clientId))
     if (!token || connectionStatus !== 'connected') return
-    const t = setTimeout(() => { streamSoundsArmedRef.current = true }, STREAM_BASELINE_MS)
+    const t = setTimeout(() => {
+      streamSoundsArmedRef.current = true
+    }, STREAM_BASELINE_MS)
     return () => clearTimeout(t)
   }, [token, selfChannelId, connectionStatus])
 
@@ -532,7 +570,9 @@ function Main() {
         setConnectedServer(server)
       } else {
         setServerHost(null)
-        setFeed([systemEntry(`Failed to connect to ${server.nickname}: ${data.message || 'login failed'}`)])
+        setFeed([
+          systemEntry(`Failed to connect to ${server.nickname}: ${data.message || 'login failed'}`)
+        ])
       }
     } catch {
       setServerHost(null)
@@ -597,10 +637,7 @@ function Main() {
             setServerHost(null)
             return false
           }
-          const [channelData, clientData] = await Promise.all([
-            channelRes.json(),
-            clientRes.json()
-          ])
+          const [channelData, clientData] = await Promise.all([channelRes.json(), clientRes.json()])
           setChannels(channelData)
           // The REST payload uses `muted`/`deaf`, but voice-state updates (and the
           // rest of the UI) use `self_mute`/`self_deaf` - normalize on the way in.
@@ -707,7 +744,9 @@ function Main() {
       // Audio status update (mic mute / deafen) broadcast from another client
       if (ev === 'VoiceStateUpdate') {
         const { client_id, muted, deaf } = data
-        setClients((prev) => prev.map((c) => c.id === client_id ? { ...c, self_mute: muted, self_deaf: deaf } : c))
+        setClients((prev) =>
+          prev.map((c) => (c.id === client_id ? { ...c, self_mute: muted, self_deaf: deaf } : c))
+        )
         return
       }
 
@@ -715,7 +754,9 @@ function Main() {
         setClients((prev) => [...prev, { ...data, self_mute: data.muted, self_deaf: data.deaf }])
       } else if (ev === 'ClientModified') {
         const oldChannelId = clientsRef.current.find((c) => c.id === data.id)?.channel_id
-        setClients((prev) => prev.map((c) => c.id === data.id ? { ...c, channel_id: data.channel_id } : c))
+        setClients((prev) =>
+          prev.map((c) => (c.id === data.id ? { ...c, channel_id: data.channel_id } : c))
+        )
 
         // Join/leave chimes. For ourselves: any move into a channel is a "join",
         // dropping out (channel_id null) is a "leave". For others: only sound
@@ -737,13 +778,17 @@ function Main() {
         setTypingEntries((prev) => prev.filter((t) => t.clientId !== data.author))
         // Chime for messages arriving in the channel we're viewing, from anyone
         // but ourselves — regardless of whether we're on the chat or video tab.
-        if (data.author !== selfIdRef.current && data.channel_id === activeChatChannelIdRef.current) {
+        if (
+          data.author !== selfIdRef.current &&
+          data.channel_id === activeChatChannelIdRef.current
+        ) {
           playUiSound('new-message')
         }
         // Mark unread when a message from someone else lands anywhere we aren't
         // actively reading — either a different channel, or the active channel
         // while we're on the video tab (chat not visible).
-        const readingHere = data.channel_id === activeChatChannelIdRef.current && chatVisibleRef.current
+        const readingHere =
+          data.channel_id === activeChatChannelIdRef.current && chatVisibleRef.current
         if (data.author !== selfIdRef.current && !readingHere) {
           setUnreadChannelIds((prev) => {
             if (prev.has(data.channel_id)) return prev
@@ -758,10 +803,12 @@ function Main() {
         // matching feed entry in place by id.
         const isFull = data.content !== undefined && data.author !== undefined
         const targetId = data.id ?? data.message_id
-        setFeed((prev) => prev.map((e) => {
-          if (e.type !== 'message' || e.id !== targetId) return e
-          return isFull ? messageFromApi(data) : { ...e, embeds: data.embeds || [] }
-        }))
+        setFeed((prev) =>
+          prev.map((e) => {
+            if (e.type !== 'message' || e.id !== targetId) return e
+            return isFull ? messageFromApi(data) : { ...e, embeds: data.embeds || [] }
+          })
+        )
       } else if (ev === 'MessageDeleted') {
         // Tolerate either a full message object or a bare { message_id } / id.
         const removedId =
@@ -780,7 +827,12 @@ function Main() {
         const { channel_id, client: typingClient } = data
         setTypingEntries((prev) => [
           ...prev.filter((t) => t.clientId !== typingClient.id),
-          { clientId: typingClient.id, name: typingClient.name, channelId: channel_id, expiresAt: Date.now() + TYPING_DURATION_MS }
+          {
+            clientId: typingClient.id,
+            name: typingClient.name,
+            channelId: channel_id,
+            expiresAt: Date.now() + TYPING_DURATION_MS
+          }
         ])
       } else {
         setFeed((prev) => appendFeed(prev, systemEntry(`Unknown event: ${ev}`)))
@@ -914,9 +966,12 @@ function Main() {
   useEffect(() => {
     if (typingEntries.length === 0) return
     const soonest = Math.min(...typingEntries.map((t) => t.expiresAt))
-    const id = setTimeout(() => {
-      setTypingEntries((prev) => prev.filter((t) => t.expiresAt > Date.now()))
-    }, Math.max(0, soonest - Date.now()))
+    const id = setTimeout(
+      () => {
+        setTypingEntries((prev) => prev.filter((t) => t.expiresAt > Date.now()))
+      },
+      Math.max(0, soonest - Date.now())
+    )
     return () => clearTimeout(id)
   }, [typingEntries])
 
@@ -936,16 +991,18 @@ function Main() {
   // Send a chat message (with any attachments) to the channel we're currently in
   const handleSendMessage = async (text, attachments) => {
     if (DEV_MODE) {
-      setFeed((prev) => appendFeed(prev, {
-        id: crypto.randomUUID(),
-        type: 'message',
-        channelId: activeChatChannelId,
-        author: client?.name,
-        authorId: client?.id,
-        text,
-        attachments,
-        ts: Date.now()
-      }))
+      setFeed((prev) =>
+        appendFeed(prev, {
+          id: crypto.randomUUID(),
+          type: 'message',
+          channelId: activeChatChannelId,
+          author: client?.name,
+          authorId: client?.id,
+          text,
+          attachments,
+          ts: Date.now()
+        })
+      )
       return
     }
 
@@ -957,7 +1014,10 @@ function Main() {
     }
 
     const formData = new FormData()
-    formData.append('payload_json', new Blob([JSON.stringify(payload)], { type: 'application/json' }))
+    formData.append(
+      'payload_json',
+      new Blob([JSON.stringify(payload)], { type: 'application/json' })
+    )
     attachments.forEach((a, i) => formData.append(`files[${i}]`, a.file, a.file.name))
     attachments.forEach((a) => URL.revokeObjectURL(a.url))
 
@@ -1040,7 +1100,9 @@ function Main() {
   // Broadcast our mic-mute / deafen status to other clients
   const sendStatus = (selfMute, selfDeaf) => {
     if (eventsWsRef.current?.readyState === WebSocket.OPEN) {
-      eventsWsRef.current.send(JSON.stringify({ op: 1, data: { self_mute: selfMute, self_deaf: selfDeaf } }))
+      eventsWsRef.current.send(
+        JSON.stringify({ op: 1, data: { self_mute: selfMute, self_deaf: selfDeaf } })
+      )
     }
   }
 
@@ -1092,128 +1154,146 @@ function Main() {
         onClearNotifications={() => setNotifications([])}
       />
       <div className="layout">
-      <SideBar
-        channels={channels}
-        clients={clients}
-        token={token}
-        self={client}
-        onStreamsUpdate={handleStreamsUpdate}
-        onStatusChange={sendStatus}
-        // provide a renderer-level openSettings hook
-        onOpenSettings={openSettings}
-        servers={servers}
-        connectedServer={connectedServer}
-        onConnect={handleConnect}
-        onDisconnect={handleDisconnect}
-        onAddServer={handleAddServer}
-        onEditServer={handleEditServer}
-        onRemoveServer={handleRemoveServer}
-        onCreateChannel={handleCreateChannel}
-        onDeleteChannel={handleDeleteChannel}
-        onPreviewChannel={handlePreviewChannel}
-        previewChannelId={previewChannelId}
-        unreadChannelIds={unreadChannelIds}
-      />
+        <SideBar
+          channels={channels}
+          clients={clients}
+          token={token}
+          self={client}
+          onStreamsUpdate={handleStreamsUpdate}
+          onStatusChange={sendStatus}
+          // provide a renderer-level openSettings hook
+          onOpenSettings={openSettings}
+          servers={servers}
+          connectedServer={connectedServer}
+          onConnect={handleConnect}
+          onDisconnect={handleDisconnect}
+          onAddServer={handleAddServer}
+          onEditServer={handleEditServer}
+          onRemoveServer={handleRemoveServer}
+          onCreateChannel={handleCreateChannel}
+          onDeleteChannel={handleDeleteChannel}
+          onPreviewChannel={handlePreviewChannel}
+          previewChannelId={previewChannelId}
+          unreadChannelIds={unreadChannelIds}
+        />
 
-      <main className="chat-area">
-        <div className="chat-header">
-          <div className="header-content">
-            {previewChannelId != null ? (
-              // Peeking into another channel's chat: no view tabs (no streams),
-              // just the channel name and a close button to return to our view.
-              <>
-                <span className="view-preview-title">
+        <main className="chat-area">
+          <div className="chat-header">
+            <div className="header-content">
+              {previewChannelId != null ? (
+                // Peeking into another channel's chat: no view tabs (no streams),
+                // just the channel name and a close button to return to our view.
+                <>
+                  <span className="view-preview-title">
+                    <IconMessage size={18} stroke={2} />
+                    {previewChannelName}
+                  </span>
+                  <button
+                    type="button"
+                    className="view-preview-close"
+                    onClick={() => setPreviewChannelId(null)}
+                    title="Close chat"
+                  >
+                    <IconX size={18} />
+                  </button>
+                </>
+              ) : connected ? (
+                <div className="view-tabs-bar" ref={viewPill.barRef}>
+                  <span
+                    className="pill-indicator"
+                    style={viewPill.indicatorStyle}
+                    aria-hidden="true"
+                  />
+                  <button
+                    type="button"
+                    className={`view-tab${viewMode === 'log' ? ' active' : ''}`}
+                    data-active={viewMode === 'log'}
+                    onClick={() => setViewMode('log')}
+                  >
+                    <IconMessage size={15} stroke={2} /> Chat
+                  </button>
+                  <button
+                    type="button"
+                    className={`view-tab${viewMode === 'video' ? ' active' : ''}`}
+                    data-active={viewMode === 'video'}
+                    onClick={() => setViewMode('video')}
+                    disabled={poppedOut}
+                    title={poppedOut ? 'Video is open in a separate window' : undefined}
+                  >
+                    <IconVideo size={15} stroke={2} /> Video Streams
+                  </button>
+                </div>
+              ) : (
+                <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <IconMessage size={18} stroke={2} />
-                  {previewChannelName}
+                  Chat
                 </span>
-                <button
-                  type="button"
-                  className="view-preview-close"
-                  onClick={() => setPreviewChannelId(null)}
-                  title="Close chat"
-                >
-                  <IconX size={18} />
-                </button>
-              </>
-            ) : connected ? (
-              <div className="view-tabs-bar" ref={viewPill.barRef}>
-                <span className="pill-indicator" style={viewPill.indicatorStyle} aria-hidden="true" />
-                <button
-                  type="button"
-                  className={`view-tab${viewMode === 'log' ? ' active' : ''}`}
-                  data-active={viewMode === 'log'}
-                  onClick={() => setViewMode('log')}
-                >
-                  <IconMessage size={15} stroke={2} /> Chat
-                </button>
-                <button
-                  type="button"
-                  className={`view-tab${viewMode === 'video' ? ' active' : ''}`}
-                  data-active={viewMode === 'video'}
-                  onClick={() => setViewMode('video')}
-                  disabled={poppedOut}
-                  title={poppedOut ? 'Video is open in a separate window' : undefined}
-                >
-                  <IconVideo size={15} stroke={2} /> Video Streams
-                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Keyed so switching channel/tab remounts and replays the switch animation. */}
+          <div
+            className="chat-switch-region"
+            key={
+              !connected
+                ? 'disconnected'
+                : previewChannelId != null
+                  ? `preview-${previewChannelId}`
+                  : viewMode
+            }
+          >
+            {!connected ? (
+              <div className="disconnected-placeholder">
+                <p className="disconnected-title">Not connected</p>
+                <p className="disconnected-subtitle">
+                  Pick a server from the <strong>Connect</strong> menu to get started.
+                </p>
               </div>
+            ) : previewChannelId != null || viewMode === 'log' ? (
+              <ChatPanel
+                feed={feed.filter(
+                  (e) => e.type === 'system' || e.channelId === activeChatChannelId
+                )}
+                clients={clients}
+                selfId={client?.id}
+                onSend={handleSendMessage}
+                onEditMessage={handleEditMessage}
+                onDeleteMessage={handleDeleteMessage}
+                onTyping={handleTyping}
+                typingUsers={typingUsers}
+                disabled={activeChatChannelId == null}
+              />
             ) : (
-              <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <IconMessage size={18} stroke={2} />
-                Chat
-              </span>
+              <VideoGrid
+                streams={allVideoStreams}
+                clients={clients}
+                selectedStreamId={selectedStreamId}
+                onSelect={setSelectedStreamId}
+                onPopout={handlePopout}
+                watchedStreamIds={watchedStreamIds}
+                onSetStreamWatched={handleSetStreamWatched}
+                volume={streamVolume}
+                muted={streamMuted}
+                onVolumeChange={setStreamVolume}
+                onMutedChange={setStreamMuted}
+              />
             )}
           </div>
-        </div>
-
-        {!connected ? (
-          <div className="disconnected-placeholder">
-            <p className="disconnected-title">Not connected</p>
-            <p className="disconnected-subtitle">
-              Pick a server from the <strong>Connect</strong> menu to get started.
-            </p>
+        </main>
+        {showSettings && (
+          <div
+            className={`settings-overlay${settingsClosing ? ' closing' : ''}`}
+            onClick={closeSettings}
+          >
+            <div className="settings-modal" onClick={(e) => e.stopPropagation()}>
+              <button className="settings-close-btn" onClick={closeSettings}>
+                ×
+              </button>
+              <Settings />
+            </div>
           </div>
-        ) : previewChannelId != null || viewMode === 'log' ? (
-          <ChatPanel
-            feed={feed.filter((e) => e.type === 'system' || e.channelId === activeChatChannelId)}
-            clients={clients}
-            selfId={client?.id}
-            onSend={handleSendMessage}
-            onEditMessage={handleEditMessage}
-            onDeleteMessage={handleDeleteMessage}
-            onTyping={handleTyping}
-            typingUsers={typingUsers}
-            disabled={activeChatChannelId == null}
-          />
-        ) : (
-          <VideoGrid
-            streams={allVideoStreams}
-            clients={clients}
-            selectedStreamId={selectedStreamId}
-            onSelect={setSelectedStreamId}
-            onPopout={handlePopout}
-            watchedStreamIds={watchedStreamIds}
-            onSetStreamWatched={handleSetStreamWatched}
-            volume={streamVolume}
-            muted={streamMuted}
-            onVolumeChange={setStreamVolume}
-            onMutedChange={setStreamMuted}
-          />
         )}
-      </main>
-      {showSettings && (
-        <div
-          className={`settings-overlay${settingsClosing ? ' closing' : ''}`}
-          onClick={closeSettings}
-        >
-          <div className="settings-modal" onClick={(e) => e.stopPropagation()}>
-            <button className="settings-close-btn" onClick={closeSettings}>
-              ×
-            </button>
-            <Settings />
-          </div>
-        </div>
-      )}
       </div>
       {connected && connectionStatus === 'reconnecting' && (
         <ConnectionOverlay onAbort={handleDisconnect} />

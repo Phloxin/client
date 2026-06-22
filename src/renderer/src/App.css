@@ -16,3 +16,7 @@ body {
   overflow: hidden;
   transition: background-color 0.2s, color 0.2s;
 }
+
+html[data-transparency="true"] body {
+  background: transparent;
+}

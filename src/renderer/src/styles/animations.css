@@ -1,0 +1,235 @@
+/* ============================================================================
+   UI ANIMATIONS — gated by data-anim-* attributes on <html> (set in
+   SettingsContext). Enter/leave rows are tagged data-anim-status by
+   useAnimatedPresence; channel reordering is handled by useFlip.
+   ============================================================================ */
+
+/* ── Channel / tab switch wipe ───────────────────────────────────────────── */
+
+/* The keyed wrapper around the chat/video/preview content. It must reproduce the
+   flex context its single child relied on when it was a direct .chat-area child. */
+.chat-switch-region {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+html[data-anim-channel-switch='fade'] .chat-switch-region {
+  animation: animSwitchFade 200ms ease;
+}
+
+html[data-anim-channel-switch='slide'] .chat-switch-region {
+  animation: animSwitchSlide 240ms cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+@keyframes animSwitchFade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes animSwitchSlide {
+  from {
+    opacity: 0;
+    transform: translateX(18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* ── User join / leave (client rows within a channel) ────────────────────────
+   These rows have no FLIP, so the leave animation also collapses the row's box
+   (max-height / margin / padding) to let the rows below slide up smoothly. */
+
+html[data-anim-user-join='slide'] .client-indicator[data-anim-status='entering'] {
+  animation: animClientSlideIn 240ms cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+html[data-anim-user-join='slide'] .client-indicator[data-anim-status='leaving'] {
+  animation: animClientSlideOut 240ms ease forwards;
+  pointer-events: none;
+}
+
+html[data-anim-user-join='pop'] .client-indicator[data-anim-status='entering'] {
+  animation: animClientPopIn 240ms cubic-bezier(0.34, 1.56, 0.64, 1);
+  transform-origin: left center;
+}
+
+html[data-anim-user-join='pop'] .client-indicator[data-anim-status='leaving'] {
+  animation: animClientPopOut 220ms ease forwards;
+  transform-origin: left center;
+  pointer-events: none;
+}
+
+@keyframes animClientSlideIn {
+  from {
+    opacity: 0;
+    transform: translateX(-12px);
+    max-height: 0;
+    margin-top: 0;
+    margin-bottom: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+    max-height: 36px;
+    margin-top: 3px;
+    margin-bottom: 3px;
+    padding-top: 5px;
+    padding-bottom: 5px;
+  }
+}
+
+@keyframes animClientSlideOut {
+  from {
+    opacity: 1;
+    transform: translateX(0);
+    max-height: 36px;
+    margin-top: 3px;
+    margin-bottom: 3px;
+    padding-top: 5px;
+    padding-bottom: 5px;
+  }
+  to {
+    opacity: 0;
+    transform: translateX(-12px);
+    max-height: 0;
+    margin-top: 0;
+    margin-bottom: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+}
+
+@keyframes animClientPopIn {
+  from {
+    opacity: 0;
+    transform: scale(0.6);
+    max-height: 0;
+    margin-top: 0;
+    margin-bottom: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+  60% {
+    opacity: 1;
+    max-height: 36px;
+    margin-top: 3px;
+    margin-bottom: 3px;
+    padding-top: 5px;
+    padding-bottom: 5px;
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+    max-height: 36px;
+  }
+}
+
+@keyframes animClientPopOut {
+  from {
+    opacity: 1;
+    transform: scale(1);
+    max-height: 36px;
+    margin-top: 3px;
+    margin-bottom: 3px;
+    padding-top: 5px;
+    padding-bottom: 5px;
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.6);
+    max-height: 0;
+    margin-top: 0;
+    margin-bottom: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+}
+
+/* ── Channel added / removed / moved in the sidebar ──────────────────────────
+   The whole .channel-item enters/leaves; sibling repositioning (the gap closing
+   on delete, opening on add, or items swapping on move) is animated by useFlip,
+   so these only animate the item itself. */
+
+html[data-anim-channel-list='slide'] .channel-item[data-anim-status='entering'] {
+  animation: animChannelSlideIn 260ms cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+html[data-anim-channel-list='slide'] .channel-item[data-anim-status='leaving'] {
+  animation: animChannelSlideOut 260ms ease forwards;
+  pointer-events: none;
+}
+
+html[data-anim-channel-list='pop'] .channel-item[data-anim-status='entering'] {
+  animation: animChannelPopIn 260ms cubic-bezier(0.34, 1.56, 0.64, 1);
+  transform-origin: left center;
+}
+
+html[data-anim-channel-list='pop'] .channel-item[data-anim-status='leaving'] {
+  animation: animChannelPopOut 240ms ease forwards;
+  transform-origin: left center;
+  pointer-events: none;
+}
+
+@keyframes animChannelSlideIn {
+  from {
+    opacity: 0;
+    transform: translateX(-16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes animChannelSlideOut {
+  from {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(-16px);
+  }
+}
+
+@keyframes animChannelPopIn {
+  from {
+    opacity: 0;
+    transform: scale(0.85);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes animChannelPopOut {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.85);
+  }
+}
+
+/* Respect the OS "reduce motion" setting as a hard safety net, even if the user
+   explicitly enabled animations. The hooks also short-circuit in this case. */
+@media (prefers-reduced-motion: reduce) {
+  .chat-switch-region,
+  .client-indicator,
+  .channel-item {
+    animation: none !important;
+  }
+}

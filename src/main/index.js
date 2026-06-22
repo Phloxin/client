@@ -1,4 +1,13 @@
-import { app, shell, BrowserWindow, ipcMain, session, desktopCapturer, safeStorage, dialog } from 'electron'
+import {
+  app,
+  shell,
+  BrowserWindow,
+  ipcMain,
+  session,
+  desktopCapturer,
+  safeStorage,
+  dialog
+} from 'electron'
 import { basename, join } from 'path'
 import { readFileSync, writeFileSync, unlinkSync } from 'fs'
 import http from 'http'
@@ -139,7 +148,8 @@ function createWindow() {
     // Frameless: the renderer draws its own Discord-style title bar (see
     // TitleBar.jsx). Window controls are driven via the window-* IPC below.
     frame: false,
-    backgroundColor: '#1e1e1e',
+    // Let CSS/compositor handle window transparency (opaque backgrounds when off).
+    transparent: true,
     ...(process.platform === 'linux' ? { icon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -246,6 +256,21 @@ app.whenReady().then(() => {
   // IPC test
   ipcMain.on('ping', () => console.log('pong'))
 
+  // ─── Window transparency / vibrancy ───────────────────────────────
+  // On Windows 11+ applies native Acrylic blur-behind material.
+  // On Linux the CSS backdrop-filter handles the blur; nothing extra needed.
+  ipcMain.on('set-window-vibrancy', (e, enabled) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    if (!win) return
+    if (process.platform === 'win32') {
+      try {
+        win.setBackgroundMaterial(enabled ? 'acrylic' : 'none')
+      } catch {
+        // setBackgroundMaterial not available on older Windows builds
+      }
+    }
+  })
+
   // ─── Custom title bar window controls ─────────────────────────────
   // Resolved from the calling window's sender, so the same handlers work for
   // any frameless window that renders the custom title bar.
@@ -257,8 +282,9 @@ app.whenReady().then(() => {
     else win.maximize()
   })
   ipcMain.on('window-close', (e) => BrowserWindow.fromWebContents(e.sender)?.close())
-  ipcMain.handle('window-is-maximized', (e) =>
-    BrowserWindow.fromWebContents(e.sender)?.isMaximized() ?? false
+  ipcMain.handle(
+    'window-is-maximized',
+    (e) => BrowserWindow.fromWebContents(e.sender)?.isMaximized() ?? false
   )
 
   // Load any previously persisted auth from disk

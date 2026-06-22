@@ -17,6 +17,11 @@
   user-select: none;
 }
 
+html[data-transparency="true"] .title-bar {
+  background: color-mix(in srgb, var(--color-background) var(--transparency-opacity, 85%), transparent);
+  backdrop-filter: blur(var(--transparency-blur, 20px));
+}
+
 /* Left region balancing the right controls so the title sits at true center.
    It holds the pinned notification bell plus a draggable fill, and may shrink
    (the fill collapsing toward 0) when space is tight, while the right controls

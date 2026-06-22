@@ -13,7 +13,7 @@ import {
 } from '@tabler/icons-react'
 import { setClientAudioState, getClientAudioState } from '../lib/soup'
 
-function ClientIndicator({ client, speaking, micMuted, deafened, isSelf, streaming }) {
+function ClientIndicator({ client, speaking, micMuted, deafened, isSelf, streaming, animStatus }) {
   const initial = client.name?.charAt(0).toUpperCase() ?? '?'
   const [menuPos, setMenuPos] = useState(null)
   const menuRef = useRef(null)
@@ -94,7 +94,7 @@ function ClientIndicator({ client, speaking, micMuted, deafened, isSelf, streami
     : volume < 50 ? IconVolume4 : volume <= 99 ? IconVolume2 : IconVolume
 
   return (
-    <div className="client-indicator" onContextMenu={handleContextMenu}>
+    <div className="client-indicator" data-anim-status={animStatus} onContextMenu={handleContextMenu}>
       {statusIcon}
       <span className="client-avatar" aria-hidden="true">{initial}</span>
       {client.name}
