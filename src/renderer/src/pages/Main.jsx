@@ -15,27 +15,22 @@ import { usePillIndicator } from '../lib/usePillIndicator'
 import { DEV_MODE, MOCK_TOKEN, MOCK_CLIENT, MOCK_CHANNELS, MOCK_CLIENTS, createMockStreams } from '../lib/mock'
 import { IconVideo, IconMessage, IconUsersGroup, IconX } from '@tabler/icons-react'
 
+const APP_TITLE = 'Teamspeak 26'
+
+//Various Timing Definitions
 const MAX_LOG_ENTRIES = 500
 const HISTORY_LIMIT = 50
-
-// How often we send an events-socket heartbeat (op 2). Must stay under the
-// backend's eviction timeout so an ungraceful exit (e.g. Ctrl+C / power loss)
-// is detected and the user is removed from their channel for everyone else.
 const HEARTBEAT_INTERVAL_MS = 10000
-
-// Reconnect backoff for the events socket: start short and double each failed
-// attempt up to the cap, so a brief blip recovers fast but we don't hammer a
-// server that's down. A little jitter avoids a thundering herd of clients.
 const RECONNECT_BASE_DELAY_MS = 1000
 const RECONNECT_MAX_DELAY_MS = 30000
-
-// A typing notification lasts this long for everyone else, and is also the
-// minimum gap between our own typing pings — so we never spam the endpoint on
-// every keystroke, but can re-announce once the previous one would have lapsed.
 const TYPING_DURATION_MS = 10000
 
-// Shown in the custom title bar; change this to rebrand the window chrome.
-const APP_TITLE = 'Teamspeak 26'
+// Grace period after (re)connecting or changing channels during which streams
+// already in view are adopted silently (no chime / "started a stream" toast).
+// Sized to cover the gap between the events socket reporting healthy and the
+// voice socket re-consuming streams after a reconnect.
+const STREAM_BASELINE_MS = 2000
+
 
 // Append an entry to the feed, dropping the oldest entries once the cap is hit.
 function appendFeed(prev, entry) {
@@ -79,9 +74,6 @@ function kindFromContentType(type) {
   return 'file'
 }
 
-// Order messages chronologically. The server timestamp is the source of truth
-// for creation order; id is only a tiebreaker (it isn't assumed monotonic, and a
-// large id can lose precision once parsed into a JS number).
 function byChronology(a, b) {
   if (a.ts !== b.ts) return a.ts - b.ts
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
@@ -199,30 +191,29 @@ function Main() {
     })
   }, [allVideoStreams])
 
-  // (Re)baseline notifications on connect/disconnect: clear history, then arm
-  // after a short delay so the streams already live when we join don't each fire
-  // a "started a stream" notification.
+  // Clear notification + unread history on connect/disconnect only — switching
+  // channels shouldn't wipe what you've already been notified of.
   useEffect(() => {
-    notifyArmedRef.current = false
-    seenStreamIdsRef.current = new Set()
     setNotifications([])
     setUnreadChannelIds(new Set())
-    if (!token) return
-    const t = setTimeout(() => { notifyArmedRef.current = true }, 1500)
-    return () => clearTimeout(t)
   }, [token])
 
-  // Emit a notification when a new remote stream appears (someone started
-  // sharing). Self streams are ignored; clientsRef gives the freshest name.
+  // Emit a notification when a remote client starts streaming. Keyed by clientId
+  // (deduped) so a reconnect's new consumerIds don't re-announce existing
+  // streams; self streams are ignored; clientsRef gives the freshest name.
   useEffect(() => {
     const seen = seenStreamIdsRef.current
-    const fresh = allVideoStreams.filter((s) => !s.isSelf && !seen.has(s.consumerId))
-    seenStreamIdsRef.current = new Set(allVideoStreams.map((s) => s.consumerId))
-    if (!notifyArmedRef.current || fresh.length === 0) return
+    const remoteIds = [...new Set(allVideoStreams.filter((s) => !s.isSelf).map((s) => s.clientId))]
+    const freshIds = remoteIds.filter((id) => !seen.has(id))
+    seenStreamIdsRef.current = new Set(remoteIds)
+    if (!notifyArmedRef.current || freshIds.length === 0) return
     const now = Date.now()
-    const entries = fresh.map((s) => {
-      const name = clientsRef.current.find((c) => c.id === s.clientId)?.name || s.fallbackLabel || 'Someone'
-      return { id: `${s.consumerId}-${now}`, message: `${name} has started a stream.`, timestamp: now }
+    const entries = freshIds.map((clientId) => {
+      const name =
+        clientsRef.current.find((c) => c.id === clientId)?.name ||
+        allVideoStreams.find((s) => s.clientId === clientId)?.fallbackLabel ||
+        'Someone'
+      return { id: `${clientId}-${now}`, message: `${name} has started a stream.`, timestamp: now }
     })
     setNotifications((prev) => [...entries, ...prev].slice(0, 50))
   }, [allVideoStreams])
@@ -289,6 +280,22 @@ function Main() {
   // The channel the local client currently has joined (chat is scoped to it)
   const selfChannelId = clients.find((c) => c.id === client?.id)?.channel_id ?? null
 
+  // (Re)baseline "started a stream" notifications on connect, channel change,
+  // and connection recovery: snapshot the remote streamers already present —
+  // keyed by clientId, which (unlike consumerId) survives a reconnect's
+  // re-consume — then arm after a short delay. Stays disarmed until the
+  // connection is healthy, so the transient clear/re-add while reconnecting
+  // doesn't read as a flurry of new streams.
+  useEffect(() => {
+    notifyArmedRef.current = false
+    seenStreamIdsRef.current = new Set(
+      allVideoStreamsRef.current.filter((s) => !s.isSelf).map((s) => s.clientId)
+    )
+    if (!token || connectionStatus !== 'connected') return
+    const t = setTimeout(() => { notifyArmedRef.current = true }, STREAM_BASELINE_MS)
+    return () => clearTimeout(t)
+  }, [token, selfChannelId, connectionStatus])
+
   // Chat (messages / typing / history) follows the previewed channel when
   // peeking, otherwise the joined channel.
   const activeChatChannelId = previewChannelId ?? selfChannelId
@@ -317,25 +324,27 @@ function Main() {
     })
   }, [activeChatChannelId, chatVisible])
 
-  // (Re)baseline stream-sound detection on connect and whenever we change
-  // channels: snapshot the streams currently in view without sounding, then arm
-  // after a short delay. This declaration sits before the diff effect below so
-  // that on a channel switch it runs first in the same commit — disarming before
-  // the diff sees the incoming channel's streams, so we don't chime for each.
+  // (Re)baseline stream-sound detection on connect, channel change, and
+  // connection recovery: snapshot the streams currently in view (by clientId, so
+  // a reconnect's re-consumed streams aren't heard as restarts) without
+  // sounding, then arm after a short delay. Stays disarmed until the connection
+  // is healthy so the transient clear/re-add while reconnecting is silent. Sits
+  // before the diff effect below so on a channel switch it runs first in the
+  // same commit — disarming before the diff sees the incoming channel's streams.
   useEffect(() => {
     streamSoundsArmedRef.current = false
-    prevStreamIdsRef.current = new Set(allVideoStreamsRef.current.map((s) => s.consumerId))
-    if (!token) return
-    const t = setTimeout(() => { streamSoundsArmedRef.current = true }, 1500)
+    prevStreamIdsRef.current = new Set(allVideoStreamsRef.current.map((s) => s.clientId))
+    if (!token || connectionStatus !== 'connected') return
+    const t = setTimeout(() => { streamSoundsArmedRef.current = true }, STREAM_BASELINE_MS)
     return () => clearTimeout(t)
-  }, [token, selfChannelId])
+  }, [token, selfChannelId, connectionStatus])
 
   // Play start/stop chimes as streams appear/vanish in our channel. Includes our
   // own streams (isSelf) so we hear feedback when we start/stop sharing, and
   // fires regardless of chat vs video view.
   useEffect(() => {
     const prev = prevStreamIdsRef.current
-    const curIds = new Set(allVideoStreams.map((s) => s.consumerId))
+    const curIds = new Set(allVideoStreams.map((s) => s.clientId))
     if (streamSoundsArmedRef.current) {
       let started = false
       let stopped = false
