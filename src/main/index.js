@@ -6,6 +6,14 @@ import https from 'https'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 
+// On Linux, safeStorage requires a running secret service (GNOME Keyring / KWallet).
+// If neither is available, isEncryptionAvailable() returns false and the server list
+// silently doesn't persist. The 'basic' backend uses Chromium's built-in key store
+// so encryption is always available as a fallback.
+if (process.platform === 'linux') {
+  app.commandLine.appendSwitch('password-store', 'basic')
+}
+
 // Store auth token in main process so it persists across windows
 let authToken = null
 let authClient = null
@@ -19,13 +27,18 @@ function authFilePath() {
 }
 
 function readAuthFile() {
-  if (!safeStorage.isEncryptionAvailable()) return { token: null, client: null }
   try {
     const raw = readFileSync(authFilePath(), 'utf-8')
     const data = JSON.parse(raw)
+    if (safeStorage.isEncryptionAvailable() && (data.token || data.client)) {
+      return {
+        token: data.token ? safeStorage.decryptString(Buffer.from(data.token, 'base64')) : null,
+        client: data.client ? safeStorage.decryptString(Buffer.from(data.client, 'base64')) : null
+      }
+    }
     return {
-      token: data.token ? safeStorage.decryptString(Buffer.from(data.token, 'base64')) : null,
-      client: data.client ? safeStorage.decryptString(Buffer.from(data.client, 'base64')) : null
+      token: data.plainToken ?? null,
+      client: data.plainClient ?? null
     }
   } catch {
     return { token: null, client: null }
@@ -33,12 +46,16 @@ function readAuthFile() {
 }
 
 function persistAuth() {
-  if (!safeStorage.isEncryptionAvailable()) return
   try {
-    const data = {}
-    if (authToken != null) data.token = safeStorage.encryptString(authToken).toString('base64')
-    if (authClient != null) data.client = safeStorage.encryptString(authClient).toString('base64')
-    writeFileSync(authFilePath(), JSON.stringify(data))
+    if (safeStorage.isEncryptionAvailable()) {
+      const data = {}
+      if (authToken != null) data.token = safeStorage.encryptString(authToken).toString('base64')
+      if (authClient != null) data.client = safeStorage.encryptString(authClient).toString('base64')
+      writeFileSync(authFilePath(), JSON.stringify(data))
+    } else {
+      const data = { plainToken: authToken, plainClient: authClient }
+      writeFileSync(authFilePath(), JSON.stringify(data))
+    }
   } catch (err) {
     console.error('Failed to persist auth data:', err)
   }
@@ -55,22 +72,25 @@ function serversFilePath() {
 }
 
 function readServersFile() {
-  if (!safeStorage.isEncryptionAvailable()) return []
   try {
     const raw = readFileSync(serversFilePath(), 'utf-8')
-    const { data } = JSON.parse(raw)
-    if (!data) return []
-    return JSON.parse(safeStorage.decryptString(Buffer.from(data, 'base64')))
-  } catch {
-    return []
-  }
+    const { data, plain } = JSON.parse(raw)
+    if (data && safeStorage.isEncryptionAvailable()) {
+      return JSON.parse(safeStorage.decryptString(Buffer.from(data, 'base64')))
+    }
+    if (plain) return JSON.parse(plain)
+  } catch {}
+  return []
 }
 
 function persistServers() {
-  if (!safeStorage.isEncryptionAvailable()) return
   try {
-    const data = safeStorage.encryptString(JSON.stringify(servers)).toString('base64')
-    writeFileSync(serversFilePath(), JSON.stringify({ data }))
+    if (safeStorage.isEncryptionAvailable()) {
+      const data = safeStorage.encryptString(JSON.stringify(servers)).toString('base64')
+      writeFileSync(serversFilePath(), JSON.stringify({ data }))
+    } else {
+      writeFileSync(serversFilePath(), JSON.stringify({ plain: JSON.stringify(servers) }))
+    }
   } catch (err) {
     console.error('Failed to persist servers:', err)
   }
