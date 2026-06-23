@@ -43,19 +43,13 @@ html[data-anim-channel-switch='slide'] .chat-switch-region {
   }
 }
 
-/* ── User join / leave (client rows within a channel) ────────────────────────
-   These rows have no FLIP, so the leave animation also collapses the row's box
-   (max-height / margin / padding) to let the rows below slide up smoothly. */
+/* ── User join (client rows within a channel) ────────────────────────────────
+   Rows pop in when someone joins; leaving is instant (the presence hook has no
+   exit phase), so there's no 'leaving' rule here. */
 
 html[data-anim-user-join='pop'] .client-indicator[data-anim-status='entering'] {
   animation: animClientPopIn 240ms cubic-bezier(0.34, 1.56, 0.64, 1);
   transform-origin: left center;
-}
-
-html[data-anim-user-join='pop'] .client-indicator[data-anim-status='leaving'] {
-  animation: animClientPopOut 220ms ease forwards;
-  transform-origin: left center;
-  pointer-events: none;
 }
 
 @keyframes animClientPopIn {
@@ -83,41 +77,16 @@ html[data-anim-user-join='pop'] .client-indicator[data-anim-status='leaving'] {
   }
 }
 
-@keyframes animClientPopOut {
-  from {
-    opacity: 1;
-    transform: scale(1);
-    max-height: 36px;
-    margin-top: 3px;
-    margin-bottom: 3px;
-    padding-top: 5px;
-    padding-bottom: 5px;
-  }
-  to {
-    opacity: 0;
-    transform: scale(0.6);
-    max-height: 0;
-    margin-top: 0;
-    margin-bottom: 0;
-    padding-top: 0;
-    padding-bottom: 0;
-  }
-}
-
-/* ── Channel added / removed / moved in the sidebar ──────────────────────────
-   The whole .channel-item enters/leaves; sibling repositioning (the gap closing
-   on delete, opening on add, or items swapping on move) is animated by useFlip,
-   so these only animate the item itself. */
+/* ── Channel added / moved in the sidebar ────────────────────────────────────
+   The whole .channel-item pops in on add (or on connecting to a server); sibling
+   repositioning (the gap opening on add, items swapping on move) is animated by
+   useFlip. Channel exits are intentionally instant (useAnimatedPresence
+   animateOut: false) — the bulk exit on disconnect looked bad — so there's no
+   'leaving' rule here. */
 
 html[data-anim-channel-list='pop'] .channel-item[data-anim-status='entering'] {
   animation: animChannelPopIn 260ms cubic-bezier(0.34, 1.56, 0.64, 1);
   transform-origin: left center;
-}
-
-html[data-anim-channel-list='pop'] .channel-item[data-anim-status='leaving'] {
-  animation: animChannelPopOut 240ms ease forwards;
-  transform-origin: left center;
-  pointer-events: none;
 }
 
 @keyframes animChannelPopIn {
@@ -128,17 +97,6 @@ html[data-anim-channel-list='pop'] .channel-item[data-anim-status='leaving'] {
   to {
     opacity: 1;
     transform: scale(1);
-  }
-}
-
-@keyframes animChannelPopOut {
-  from {
-    opacity: 1;
-    transform: scale(1);
-  }
-  to {
-    opacity: 0;
-    transform: scale(0.85);
   }
 }
 

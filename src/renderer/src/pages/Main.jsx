@@ -7,6 +7,7 @@ import VideoGrid from '../components/VideoGrid'
 import ChatPanel from '../components/ChatPanel'
 import TitleBar from '../components/TitleBar'
 import ConnectionOverlay from '../components/ConnectionOverlay'
+import IdleAnimation from '../components/IdleAnimation'
 import Settings from './Settings'
 import {
   disconnect as disconnectVoice,
@@ -24,7 +25,7 @@ import {
   MOCK_CLIENTS,
   createMockStreams
 } from '../lib/mock'
-import { IconVideo, IconMessage, IconUsersGroup, IconX } from '@tabler/icons-react'
+import { IconVideo, IconMessage, IconUsersGroup, IconX, IconPlugConnected } from '@tabler/icons-react'
 
 const APP_TITLE = 'Teamspeak 26'
 
@@ -1204,8 +1205,7 @@ function Main() {
                 </div>
               ) : (
                 <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <IconMessage size={18} stroke={2} />
-                  Chat
+                  
                 </span>
               )}
             </div>
@@ -1224,7 +1224,8 @@ function Main() {
           >
             {!connected ? (
               <div className="disconnected-placeholder">
-                <p className="disconnected-title">Not connected</p>
+                <p className="disconnected-title">No Server Connected</p>
+                <IdleAnimation />
                 <p className="disconnected-subtitle">
                   Pick a server from the <strong>Connect</strong> menu to get started.
                 </p>

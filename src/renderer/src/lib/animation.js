@@ -21,86 +21,31 @@ export function prefersReducedMotion() {
   )
 }
 
-// Track a keyed list so removed entries linger (status 'leaving') long enough to
-// animate out, and new entries are tagged 'entering'. Returns ordered
-// `{ key, item, status }`. When disabled it's a pass-through with instant removal.
-export function useAnimatedPresence(items, getKey, { duration = 240, enabled = true } = {}) {
+// Track a keyed list, tagging newly-arrived entries 'entering' (everything else
+// 'present') so they can play an enter animation. Returns ordered
+// `{ key, item, status }` in live source order. Removals take effect immediately
+// — there's no exit phase, so callers that want something to animate away should
+// not rely on this hook to keep it mounted. When disabled it's a pass-through
+// that tags everything 'present'.
+export function useAnimatedPresence(items, getKey, { enabled = true } = {}) {
   const [rendered, setRendered] = useState(() =>
     items.map((item) => ({ key: getKey(item), item, status: 'present' }))
   )
   const renderedRef = useRef(rendered)
-  const timersRef = useRef(new Map())
 
   useLayoutEffect(() => {
-    // Disabled: drop any pending exit timers and mirror the live list verbatim.
-    if (!enabled) {
-      for (const t of timersRef.current.values()) clearTimeout(t)
-      timersRef.current.clear()
-      const next = items.map((item) => ({ key: getKey(item), item, status: 'present' }))
-      if (sameEntries(next, renderedRef.current)) return
-      renderedRef.current = next
-      setRendered(next)
-      return
-    }
-
-    const prev = renderedRef.current
-    const prevMap = new Map(prev.map((r) => [r.key, r]))
-    const nextKeys = new Set(items.map(getKey))
-
-    // A key that reappeared cancels its scheduled removal.
-    for (const [key, t] of timersRef.current) {
-      if (nextKeys.has(key)) {
-        clearTimeout(t)
-        timersRef.current.delete(key)
-      }
-    }
-
-    // Live items in source order. Anything not previously 'present' is entering.
-    const result = items.map((item) => {
+    // A key already on screen stays 'present'; a brand-new key is 'entering'.
+    // When disabled, skip the entering tag and mirror the live list verbatim.
+    const prevKeys = enabled ? new Set(renderedRef.current.map((r) => r.key)) : null
+    const next = items.map((item) => {
       const key = getKey(item)
-      const existing = prevMap.get(key)
-      return {
-        key,
-        item,
-        status: existing && existing.status !== 'leaving' ? 'present' : 'entering'
-      }
+      return { key, item, status: prevKeys && !prevKeys.has(key) ? 'entering' : 'present' }
     })
 
-    // Re-insert departed entries as 'leaving', anchored after their old neighbour.
-    prev.forEach((r, idx) => {
-      if (nextKeys.has(r.key)) return
-      let insertAt = result.length
-      for (let j = idx - 1; j >= 0; j--) {
-        const at = result.findIndex((x) => x.key === prev[j].key)
-        if (at !== -1) {
-          insertAt = at + 1
-          break
-        }
-      }
-      result.splice(insertAt, 0, { key: r.key, item: r.item, status: 'leaving' })
-
-      if (!timersRef.current.has(r.key)) {
-        const timer = setTimeout(() => {
-          timersRef.current.delete(r.key)
-          renderedRef.current = renderedRef.current.filter((x) => x.key !== r.key)
-          setRendered(renderedRef.current)
-        }, duration)
-        timersRef.current.set(r.key, timer)
-      }
-    })
-
-    if (sameEntries(result, renderedRef.current)) return
-    renderedRef.current = result
-    setRendered(result)
+    if (sameEntries(next, renderedRef.current)) return
+    renderedRef.current = next
+    setRendered(next)
   }, [items, enabled])
-
-  useLayoutEffect(
-    () => () => {
-      for (const t of timersRef.current.values()) clearTimeout(t)
-      timersRef.current.clear()
-    },
-    []
-  )
 
   return rendered
 }

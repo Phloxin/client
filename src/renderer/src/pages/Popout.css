@@ -1,8 +1,10 @@
-/* The popout window hosts a single full-bleed VideoGrid. */
+/* The popout window hosts a single full-bleed VideoGrid. Black backdrop to match
+   fullscreen (.video-viewer.fullscreen), so letterboxing around contained video
+   reads the same in both modes. */
 .popout-root {
   height: 100vh;
   width: 100vw;
-  background: var(--color-background, #1e1e1e);
+  background: #000;
 }
 
 .popout-empty {

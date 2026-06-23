@@ -88,8 +88,9 @@ function Sidebar({
     [channels]
   )
 
+  // Channels pop in on connect / add; removals are instant (the hook has no exit
+  // phase) since the bulk exit on disconnect looked bad.
   const channelPresence = useAnimatedPresence(sortedChannels, (ch) => ch.id, {
-    duration: 260,
     enabled: channelAnimEnabled
   })
   const channelOrderKey = channelPresence.map((c) => c.key).join(',')

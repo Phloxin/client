@@ -173,8 +173,7 @@ function Settings() {
                   <div className="settings-toggle-copy">
                     <label htmlFor="animations-toggle">Animations</label>
                     <p className="settings-section-desc">
-                      Subtle motion for switching channels, users joining or leaving a channel, and
-                      channels being added, removed, or reordered.
+                      Subtle motion for loading/joining channels and switching between channel views.
                     </p>
                   </div>
                   <label className="toggle-switch">
@@ -191,7 +190,7 @@ function Settings() {
                 {animationSettings.enabled && (
                   <>
                     <div className="settings-section">
-                      <label htmlFor="anim-channel-switch">Channel / Tab Switch</label>
+                      <label htmlFor="anim-channel-switch">Switch Views</label>
                       <select
                         id="anim-channel-switch"
                         value={animationSettings.channelSwitch}
@@ -204,7 +203,7 @@ function Settings() {
                     </div>
 
                     <div className="settings-section">
-                      <label htmlFor="anim-user-join">User Join / Leave</label>
+                      <label htmlFor="anim-user-join">User Join</label>
                       <select
                         id="anim-user-join"
                         value={animationSettings.userJoin}

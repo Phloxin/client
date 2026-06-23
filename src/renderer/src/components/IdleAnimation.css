@@ -1,0 +1,12 @@
+/* Bouncing-ball filler for the disconnected screen. Muted monospace so it reads
+   as ambient idle motion, not a primary UI element. Updated imperatively each
+   tick (see IdleAnimation.jsx). */
+.idle-animation {
+  margin: 0 0 var(--spacing-md);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.15;
+  white-space: pre;
+  color: var(--color-primary);
+  user-select: none;
+}

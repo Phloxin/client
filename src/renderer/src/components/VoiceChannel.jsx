@@ -62,7 +62,6 @@ const VoiceChannel = forwardRef(function VoiceChannel(
 
   const clientAnimEnabled = useAnimationCategory('userJoin')
   const clientPresence = useAnimatedPresence(clients, (c) => c.id, {
-    duration: 240,
     enabled: clientAnimEnabled
   })
 
