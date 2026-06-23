@@ -1,0 +1,67 @@
+/* ============================================================================
+   GRADIENT TOKENS
+
+   Derived gradients that add subtle visual depth to surfaces and accents.
+
+   These are defined once here, not per theme. CSS custom properties resolve
+   lazily on the element that *uses* them, so the `color-mix()` calls below pull
+   in whatever `--color-*` value is in scope for the current `[data-theme]`.
+   The result: every theme gets matching gradients for free, and adding a new
+   theme requires no changes here.
+
+   Mix percentages are intentionally small (5-15%) so the depth reads as a soft
+   lift/vignette rather than a loud color wash.
+   ============================================================================ */
+:root {
+  /* App backdrop: a faint accent-tinted glow at the top fading into a deeper
+     bottom, giving the whole window a sense of light coming from above. */
+  --gradient-app: radial-gradient(
+    140% 120% at 50% 0%,
+    color-mix(in srgb, var(--color-background) 90%, var(--color-primary)) 0%,
+    var(--color-background) 55%,
+    color-mix(in srgb, var(--color-background) 93%, #000) 100%
+  );
+
+  /* Elevated panels (sidebar, chat area, login box): top edge lifted toward the
+     lighter surface tone, settling into the base — reads as a raised surface. */
+  --gradient-surface: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--color-background-soft) 88%, var(--color-surface)) 0%,
+    var(--color-background-soft) 55%
+  );
+
+  /* Recessed bars (headers, control tray): a shallow top-down gradient that
+     keeps them reading a touch darker and inset against the panels. */
+  --gradient-header: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--color-background-mute) 90%, var(--color-surface)) 0%,
+    var(--color-background-mute) 100%
+  );
+
+  /* Primary accent (buttons): vertical sheen from the hover tone down to the
+     base accent, like a softly lit key. */
+  --gradient-primary: linear-gradient(
+    180deg,
+    var(--color-primary-hover) 0%,
+    var(--color-primary) 100%
+  );
+
+  --gradient-primary-hover: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--color-primary-hover) 85%, #fff) 0%,
+    var(--color-primary-hover) 100%
+  );
+}
+
+/* Gradients off: collapse every token back to its flat source color. Because all
+   surfaces consume the `--gradient-*` tokens (never the raw colors directly),
+   redefining the tokens here reverts the whole app to flat fills in one place —
+   no per-surface CSS needs to know about the toggle. Driven by the
+   `gradientsEnabled` appearance setting via uiSettings.applyAppearanceSettings. */
+html[data-gradients="off"] {
+  --gradient-app: var(--color-background);
+  --gradient-surface: var(--color-background-soft);
+  --gradient-header: var(--color-background-mute);
+  --gradient-primary: var(--color-primary);
+  --gradient-primary-hover: var(--color-primary-hover);
+}

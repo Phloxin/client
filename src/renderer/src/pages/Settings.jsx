@@ -145,6 +145,27 @@ function Settings() {
                     </div>
                   </>
                 )}
+
+                <div className="settings-section settings-toggle-row">
+                  <div className="settings-toggle-copy">
+                    <label htmlFor="gradients-toggle">Surface Gradients</label>
+                    <p className="settings-section-desc">
+                      Add soft gradient shading to backgrounds, panels, and buttons for extra depth.
+                      Turn off for flat, solid surfaces.
+                    </p>
+                  </div>
+                  <label className="toggle-switch">
+                    <input
+                      type="checkbox"
+                      id="gradients-toggle"
+                      checked={appearanceSettings.gradientsEnabled}
+                      onChange={(e) =>
+                        updateAppearanceSettings({ gradientsEnabled: e.target.checked })
+                      }
+                    />
+                    <span className="toggle-slider" />
+                  </label>
+                </div>
               </div>
 
               <div className="settings-panel-group">

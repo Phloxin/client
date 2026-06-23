@@ -46,7 +46,7 @@ body {
 body {
   min-height: 100vh;
   color: var(--color-text);
-  background: var(--color-background);
+  background: var(--gradient-app);
   font-family: var(--font-family-primary);
   line-height: 1.6;
   transition: background-color 0.2s, color 0.2s;

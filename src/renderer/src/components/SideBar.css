@@ -4,7 +4,7 @@
 
 .sidebar {
   width: 240px;
-  background: var(--color-background-soft);
+  background: var(--gradient-surface);
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
@@ -23,7 +23,7 @@ html[data-transparency="true"] .sidebar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  background: var(--color-background-mute);
+  background: var(--gradient-header);
   border-radius: 10px;
 }
 
@@ -102,7 +102,7 @@ html[data-transparency="true"] .server-header {
   display: flex;
   flex-direction: column;
   gap: var(--spacing-sm);
-  background: var(--color-background-mute);
+  background: var(--gradient-header);
 }
 
 html[data-transparency="true"] .control-rows {

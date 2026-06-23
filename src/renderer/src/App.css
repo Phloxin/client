@@ -9,7 +9,7 @@
 }
 
 body {
-  background: var(--color-background);
+  background: var(--gradient-app);
   color: var(--color-text);
   font-family: var(--font-family-primary);
   height: 100vh;

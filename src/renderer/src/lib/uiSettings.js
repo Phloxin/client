@@ -4,7 +4,8 @@
 export function applyAppearanceSettings({
   transparencyEnabled,
   transparencyBlur = 20,
-  transparencyOpacity = 85
+  transparencyOpacity = 85,
+  gradientsEnabled = true
 }) {
   const html = document.documentElement
   if (transparencyEnabled) {
@@ -13,6 +14,14 @@ export function applyAppearanceSettings({
     html.style.setProperty('--transparency-opacity', `${transparencyOpacity}%`)
   } else {
     html.removeAttribute('data-transparency')
+  }
+
+  // Gradients are on by default; flag the document only when they're disabled so
+  // gradients.css can flatten the gradient tokens back to solid colors.
+  if (gradientsEnabled) {
+    html.removeAttribute('data-gradients')
+  } else {
+    html.setAttribute('data-gradients', 'off')
   }
 }
 

@@ -35,7 +35,8 @@ const DEFAULT_SETTINGS = {
 const DEFAULT_APPEARANCE = {
   transparencyEnabled: false,
   transparencyBlur: 20,
-  transparencyOpacity: 85
+  transparencyOpacity: 85,
+  gradientsEnabled: true
 }
 
 const DEFAULT_ANIMATIONS = {
