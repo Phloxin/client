@@ -12,7 +12,10 @@
   align-items: stretch;
   height: var(--title-bar-height);
   flex-shrink: 0;
-  background: var(--color-background);
+  /* Transparent so the window-anchored app gradient on <body> shows through
+     continuously from here down into the layout — no seam at the title-bar
+     boundary. Transparency mode overrides this below with its own blurred fill. */
+  background: transparent;
   color: var(--color-text-secondary);
   user-select: none;
 }

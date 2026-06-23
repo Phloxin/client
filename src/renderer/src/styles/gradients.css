@@ -16,7 +16,7 @@
   /* App backdrop: a faint accent-tinted glow at the top fading into a deeper
      bottom, giving the whole window a sense of light coming from above. */
   --gradient-app: radial-gradient(
-    140% 120% at 50% 0%,
+    140% 120% at 50% -10%,
     color-mix(in srgb, var(--color-background) 90%, var(--color-primary)) 0%,
     var(--color-background) 55%,
     color-mix(in srgb, var(--color-background) 93%, #000) 100%

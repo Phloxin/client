@@ -15,7 +15,10 @@
   min-height: 0;
   padding: var(--spacing-sm);
   gap: var(--spacing-sm);
-  background: var(--gradient-app);
+  /* Transparent so the single app gradient on <body> remains continuous across
+     the title-bar/layout boundary, rather than restarting its bright top here.
+     Transparency mode overrides this below with its own blurred fill. */
+  background: transparent;
 }
 
 html[data-transparency="true"] .layout {
