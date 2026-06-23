@@ -77,9 +77,9 @@ body[data-theme="catppuccin-frappe"] {
   --color-text-tertiary: rgba(235, 235, 245, 0.6);
   --color-text-muted: rgba(235, 235, 245, 0.38);
   
-  /* Accent Colors */
-  --color-primary: #8caaee;
-  --color-primary-hover: #99d1db;
+  /* Accent Colors — Mauve is Catppuccin's signature accent */
+  --color-primary: #ca9ee6;
+  --color-primary-hover: #d8b2ee;
   --color-success: #a6d189;
   --color-success-hover: #8ac07e;
   --color-danger: #e78284;
@@ -107,9 +107,9 @@ body[data-theme="catppuccin-mocha"] {
   --color-text-tertiary: #a6adc8;
   --color-text-muted: rgba(205, 214, 244, 0.5);
   
-  /* Accent Colors */
-  --color-primary: #89b4fa;
-  --color-primary-hover: #74c7ec;
+  /* Accent Colors — Mauve is Catppuccin's signature accent */
+  --color-primary: #cba6f7;
+  --color-primary-hover: #d8bafa;
   --color-success: #a6e3a1;
   --color-success-hover: #94e2d5;
   --color-danger: #f38ba8;
@@ -167,9 +167,9 @@ body[data-theme="dracula"] {
   --color-text-tertiary: #d3d3d8;
   --color-text-muted: rgba(248, 248, 242, 0.6);
   
-  /* Accent Colors */
-  --color-primary: #8be9fd;
-  --color-primary-hover: #a4ebf7;
+  /* Accent Colors — Purple is Dracula's iconic accent */
+  --color-primary: #bd93f9;
+  --color-primary-hover: #cda9fb;
   --color-success: #50fa7b;
   --color-success-hover: #6bff8f;
   --color-danger: #ff5555;
@@ -227,9 +227,10 @@ body[data-theme="gruvbox"] {
   --color-text-tertiary: #bdae93;
   --color-text-muted: rgba(235, 219, 178, 0.4);
 
-  /* Accent Colors */
-  --color-primary: #83a598;
-  --color-primary-hover: #8ec07c;
+  /* Accent Colors — warm orange is Gruvbox's signature (kept distinct from the
+     red danger color) */
+  --color-primary: #fe8019;
+  --color-primary-hover: #ff9642;
   --color-success: #b8bb26;
   --color-success-hover: #98971a;
   --color-danger: #fb4934;
