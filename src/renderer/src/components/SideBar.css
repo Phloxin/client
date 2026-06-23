@@ -102,7 +102,7 @@ html[data-transparency="true"] .server-header {
   display: flex;
   flex-direction: column;
   gap: var(--spacing-sm);
-  background: var(--gradient-header);
+  background: var(--gradient-footer);
 }
 
 html[data-transparency="true"] .control-rows {

@@ -685,7 +685,7 @@ a.chat-embed-title:hover {
 /* ── Input bar ────────────────────────────────────────────────────────────── */
 
 .chat-input-bar {
-  background: var(--color-background-mute);
+  background: var(--gradient-footer);
   border-radius: 10px;
   display: flex;
   /* Anchor the buttons to the top so they ride up with the first line as the

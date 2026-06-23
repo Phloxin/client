@@ -30,12 +30,24 @@
     var(--color-background-soft) 55%
   );
 
-  /* Recessed bars (headers, control tray): a shallow top-down gradient that
-     keeps them reading a touch darker and inset against the panels. */
+  /* Header bars (top of a panel): highlight on the top edge settling into the
+     base — light catching the upper lip of a recessed bar. */
   --gradient-header: linear-gradient(
     180deg,
     color-mix(in srgb, var(--color-background-mute) 90%, var(--color-surface)) 0%,
     var(--color-background-mute) 100%
+  );
+
+  /* Footer bars (bottom of a panel: sidebar control tray, chat input). The
+     mirror of --gradient-header: a faint shadow on the TOP edge to separate the
+     bar from the panel content above, settling to a slightly lighter lip at the
+     BOTTOM. The lighter lip lands where the surrounding surface gradient is
+     darkest, so the bar stays distinct instead of blending into it. */
+  --gradient-footer: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--color-background-mute) 98%, #000) 0%,
+    var(--color-background-mute) 55%,
+    color-mix(in srgb, var(--color-background-mute) 91%, var(--color-surface)) 100%
   );
 
   /* Primary accent (buttons): vertical sheen from the hover tone down to the
@@ -62,6 +74,7 @@ html[data-gradients="off"] {
   --gradient-app: var(--color-background);
   --gradient-surface: var(--color-background-soft);
   --gradient-header: var(--color-background-mute);
+  --gradient-footer: var(--color-background-mute);
   --gradient-primary: var(--color-primary);
   --gradient-primary-hover: var(--color-primary-hover);
 }
