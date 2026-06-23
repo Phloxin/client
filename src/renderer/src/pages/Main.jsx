@@ -582,7 +582,12 @@ function Main() {
 
   // Disconnect from the current server and return to the disconnected state.
   // Clearing the token tears down the events websocket via the effect cleanup.
-  const handleDisconnect = () => {
+  // This is the single source of truth for "drop back to disconnected": the
+  // reconnect paths that hit a rejected token call it too, so they can't leave
+  // half-cleared state (e.g. a stale channel list) on screen. Only stable
+  // setters/refs are touched, so it's safe to memoize with empty deps and to
+  // call from the events effect.
+  const handleDisconnect = useCallback(() => {
     if (popoutWindowRef.current && !popoutWindowRef.current.closed) {
       popoutWindowRef.current.close()
     }
@@ -599,7 +604,7 @@ function Main() {
     setServerHost(null)
     setPreviewChannelId(null)
     setConnectionStatus('connected')
-  }
+  }, [setToken, setClient])
 
   // Fetch channels/clients and set up WebSocket + IPC listeners on mount
   useEffect(() => {
@@ -629,12 +634,15 @@ function Main() {
         fetch(`${apiBase()}/server/client`, { headers: { Authorization: `Bearer ${token}` } })
       ])
         .then(async ([channelRes, clientRes]) => {
-          // A token may be stale/expired - drop it and return to disconnected.
+          // Token is stale/expired (e.g. the server restarted and dropped it).
+          // Tear the whole session down so we land on a clean "Not connected"
+          // screen — clearing only the token would leave the stale channel list
+          // and presence on screen while the rest of the UI reads as
+          // disconnected. Close first so the reconnect loop stops here.
           if (channelRes.status === 401 || clientRes.status === 401) {
-            setToken(null)
-            setClient(null)
-            setConnectedServer(null)
-            setServerHost(null)
+            closedByUs = true
+            ws?.close()
+            handleDisconnect()
             return false
           }
           const [channelData, clientData] = await Promise.all([channelRes.json(), clientRes.json()])
@@ -729,13 +737,12 @@ function Main() {
         closedByUs = false
         ws.close()
       } else if (reply.kind === 'Unauthorized') {
-        // Token rejected — stop reconnecting and return to the disconnected state.
+        // Token rejected — stop reconnecting and return to a fully clean
+        // disconnected state (not a half-torn-down one that would leave a stale
+        // channel list on screen).
         closedByUs = true
         ws.close()
-        setToken(null)
-        setClient(null)
-        setConnectedServer(null)
-        setServerHost(null)
+        handleDisconnect()
       }
     }
 
@@ -930,7 +937,7 @@ function Main() {
       eventsWsRef.current = null
       window.electron.ipcRenderer.removeAllListeners('log-message')
     }
-  }, [token, loadChannelHistory])
+  }, [token, loadChannelHistory, handleDisconnect])
 
   // Drop typing entries as they expire. Re-scheduled to the soonest expiry each
   // time the set changes (no always-on interval); a fresh TypingStarted bumps an
