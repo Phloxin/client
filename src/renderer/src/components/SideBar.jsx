@@ -1,10 +1,24 @@
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import VoiceChannel from './VoiceChannel'
 import ServerMenu from './ServerMenu'
 import { setMicMuted, setSoundMuted } from '../lib/soup'
 import { playUiSound } from '../lib/sounds'
+import { useAnimationCategory } from '../context/SettingsContext'
+import { useAnimatedPresence, useFlip } from '../lib/animation'
 import './SideBar.css'
-import {IconSettings, IconShield, IconDoorExit, IconHeadphones, IconHeadphonesOff, IconMicrophone, IconMicrophoneOff, IconScreenShare, IconScreenShareOff, IconPlus, IconX} from '@tabler/icons-react'
+import {
+  IconSettings,
+  IconShield,
+  IconDoorExit,
+  IconHeadphones,
+  IconHeadphonesOff,
+  IconMicrophone,
+  IconMicrophoneOff,
+  IconScreenShare,
+  IconScreenShareOff,
+  IconPlus,
+  IconX
+} from '@tabler/icons-react'
 
 const MIN_WIDTH = 180
 const MAX_WIDTH = 550
@@ -66,8 +80,19 @@ function Sidebar({
     setShowCreateChannel(false)
   }
 
-  // Channels render in server-defined order.
-  const sortedChannels = [...channels].sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+  const channelAnimEnabled = useAnimationCategory('channelList')
+
+  // Memoized so the reference is stable for the presence hook's effect.
+  const sortedChannels = useMemo(
+    () => [...channels].sort((a, b) => (a.position ?? 0) - (b.position ?? 0)),
+    [channels]
+  )
+
+  const channelPresence = useAnimatedPresence(sortedChannels, (ch) => ch.id, {
+    duration: 260,
+    enabled: channelAnimEnabled
+  })
+  const channelOrderKey = channelPresence.map((c) => c.key).join(',')
 
   // Apply mute state to soup whenever it changes. Deafening (soundMuted)
   // also silences the mic, regardless of the independent mic-mute toggle.
@@ -86,6 +111,12 @@ function Sidebar({
 
   const isDragging = useRef(false)
   const sidebarRef = useRef(null)
+
+  // Slide channels to their new positions when the order changes.
+  useFlip(sidebarRef, [channelOrderKey], {
+    selector: '.channel-item[data-flip-key]',
+    enabled: channelAnimEnabled
+  })
 
   const onMouseDown = useCallback((e) => {
     isDragging.current = true
@@ -145,10 +176,13 @@ function Sidebar({
         </button>
       </div>
 
-      {sortedChannels.map((ch) => (
+      {channelPresence.map(({ key, item: ch, status }) => (
         <VoiceChannel
-          key={ch.id}
-          ref={(el) => { channelRefs.current[ch.id] = el }}
+          key={key}
+          ref={(el) => {
+            channelRefs.current[ch.id] = el
+          }}
+          animStatus={status}
           channel={ch}
           clients={clients.filter((c) => c.channel_id === ch.id)}
           token={token}
@@ -191,7 +225,11 @@ function Sidebar({
             disabled={!joinedChannelId}
             onClick={() => channelRefs.current[joinedChannelId]?.toggleShare()}
           >
-            {sharing ? <IconScreenShareOff className="control-icon" size={20}/> : <IconScreenShare className="control-icon" size={20}/>}
+            {sharing ? (
+              <IconScreenShareOff className="control-icon" size={20} />
+            ) : (
+              <IconScreenShare className="control-icon" size={20} />
+            )}
           </button>
           <button
             className="control-btn"
@@ -199,7 +237,7 @@ function Sidebar({
             disabled={!joinedChannelId}
             onClick={() => channelRefs.current[joinedChannelId]?.leave()}
           >
-            <IconDoorExit size={20}/>
+            <IconDoorExit size={20} />
           </button>
         </div>
         <div className="control-row">
@@ -212,7 +250,11 @@ function Sidebar({
               playUiSound(next ? 'mic-mute' : 'mic-unmute')
             }}
           >
-            {micMuted ? <IconMicrophoneOff className="control-icon" size={20}/> : <IconMicrophone className="control-icon" size={20}/>}
+            {micMuted ? (
+              <IconMicrophoneOff className="control-icon" size={20} />
+            ) : (
+              <IconMicrophone className="control-icon" size={20} />
+            )}
           </button>
           <button
             className={`control-btn${soundMuted ? ' active' : ''}`}
@@ -223,7 +265,11 @@ function Sidebar({
               playUiSound(next ? 'sound-mute' : 'sound-unmute')
             }}
           >
-            {soundMuted ? <IconHeadphonesOff className="control-icon" size={20}/> : <IconHeadphones className="control-icon" size={20}/>}
+            {soundMuted ? (
+              <IconHeadphonesOff className="control-icon" size={20} />
+            ) : (
+              <IconHeadphones className="control-icon" size={20} />
+            )}
           </button>
           <button
             className="control-btn"
@@ -239,7 +285,7 @@ function Sidebar({
               }
             }}
           >
-            <IconSettings size={20}/>
+            <IconSettings size={20} />
           </button>
         </div>
       </div>
@@ -281,7 +327,10 @@ function Sidebar({
             </div>
 
             <div className="add-server-footer">
-              <button className="add-server-btn secondary" onClick={() => setShowCreateChannel(false)}>
+              <button
+                className="add-server-btn secondary"
+                onClick={() => setShowCreateChannel(false)}
+              >
                 Cancel
               </button>
               <button className="add-server-btn primary" onClick={submitCreateChannel}>

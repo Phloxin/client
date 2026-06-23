@@ -273,6 +273,11 @@
   color: var(--color-success);
 }
 
+.mic-indicator.speaking-fade {
+  color: var(--color-border-light);
+  transition: color 0.4s ease;
+}
+
 .mic-indicator.muted,
 .mic-indicator.deafened {
   color: var(--color-danger);

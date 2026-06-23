@@ -51,6 +51,11 @@ export const AVAILABLE_THEMES = [
     description: 'Deep navy blues inspired by Tokyo at night'
   },
   {
+    id: 'gruvbox',
+    name: 'Gruvbox',
+    description: 'Retro groove color scheme with warm earthy tones'
+  },
+  {
     id: 'one-dark-pro',
     name: 'One Dark Pro',
     description: 'The classic Atom-inspired neutral dark theme'

@@ -1,15 +1,52 @@
 import { useState, useEffect, useRef, forwardRef, useImperativeHandle } from 'react'
-import { connect, publish, republish, disconnect, shareScreen, shareCamera, stopScreenShare, rebindCallbacks, createSpeakingDetector } from '../lib/soup'
-import { useSettings } from '../context/SettingsContext'
+import {
+  connect,
+  publish,
+  republish,
+  disconnect,
+  shareScreen,
+  shareCamera,
+  stopScreenShare,
+  rebindCallbacks,
+  createSpeakingDetector
+} from '../lib/soup'
+import { useSettings, useAnimationCategory } from '../context/SettingsContext'
+import { useAnimatedPresence } from '../lib/animation'
 import ClientIndicator from './ClientIndicator'
 import ScreenSourcePicker from './ScreenSourcePicker'
 import './VoiceChannel.css'
-import { IconVolume, IconCircle, IconCircleFilled, IconLock, IconLockOpen, IconPlus, IconTrash, IconPointFilled } from '@tabler/icons-react'
+import {
+  IconVolume,
+  IconCircle,
+  IconCircleFilled,
+  IconLock,
+  IconLockOpen,
+  IconPlus,
+  IconTrash,
+  IconPointFilled
+} from '@tabler/icons-react'
 
 const API_BASE_URL = 'http://47.16.222.82:3000'
 
 const VoiceChannel = forwardRef(function VoiceChannel(
-  { channel, clients, token, self, micMuted, deafened, onStreamsUpdate, onJoinedChange, onSharingChange, onRequestJoin, onDeleteChannel, onRequestCreateChannel, onPreviewChannel, previewing, unread },
+  {
+    channel,
+    clients,
+    token,
+    self,
+    micMuted,
+    deafened,
+    onStreamsUpdate,
+    onJoinedChange,
+    onSharingChange,
+    onRequestJoin,
+    onDeleteChannel,
+    onRequestCreateChannel,
+    onPreviewChannel,
+    previewing,
+    unread,
+    animStatus
+  },
   ref
 ) {
   const [joined, setJoined] = useState(false)
@@ -23,6 +60,12 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   const [menuPos, setMenuPos] = useState(null)
   const { micSettings } = useSettings()
 
+  const clientAnimEnabled = useAnimationCategory('userJoin')
+  const clientPresence = useAnimatedPresence(clients, (c) => c.id, {
+    duration: 240,
+    enabled: clientAnimEnabled
+  })
+
   const joinedRef = useRef(false)
   const localSpeakingCleanupRef = useRef(null)
   const menuRef = useRef(null)
@@ -31,12 +74,20 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   const micSettingsRef = useRef(micSettings)
 
   // Keep joinedRef in sync with joined state
-  useEffect(() => { joinedRef.current = joined }, [joined])
-  useEffect(() => { micSettingsRef.current = micSettings }, [micSettings])
+  useEffect(() => {
+    joinedRef.current = joined
+  }, [joined])
+  useEffect(() => {
+    micSettingsRef.current = micSettings
+  }, [micSettings])
 
   // Let the sidebar know when this channel becomes the joined/sharing one
-  useEffect(() => { onJoinedChange?.(channel.id, joined) }, [joined])
-  useEffect(() => { onSharingChange?.(channel.id, sharing) }, [sharing])
+  useEffect(() => {
+    onJoinedChange?.(channel.id, joined)
+  }, [joined])
+  useEffect(() => {
+    onSharingChange?.(channel.id, sharing)
+  }, [sharing])
 
   // Close the right-click menu on an outside click.
   useEffect(() => {
@@ -124,13 +175,16 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   // callbacks point at this dead component and `joinedChannelId` still names the
   // gone channel — so the next channel the user joins takes the "switch" path on
   // a broken session and can't transmit audio or leave.
-  useEffect(() => () => {
-    localSpeakingCleanupRef.current?.()
-    if (joinedRef.current) {
-      disconnect()
-      onJoinedChange?.(channel.id, false)
-    }
-  }, [])
+  useEffect(
+    () => () => {
+      localSpeakingCleanupRef.current?.()
+      if (joinedRef.current) {
+        disconnect()
+        onJoinedChange?.(channel.id, false)
+      }
+    },
+    []
+  )
 
   // Remove a remote video tile whose consumer was closed (e.g. the
   // remote client restarted screen share, replacing its old producer)
@@ -147,16 +201,19 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     // channel may not have caught up with this client's channel move yet.
     // The label is resolved at render time from clientId instead.
     setVideoStreams((prev) => {
-      const updated = [...prev, {
-        stream,
-        consumerId,
-        kind,
-        isSelf: false,
-        clientId,
-        channelId: channel.id,
-        channelName: channel.name,
-        fallbackLabel: `${channel.name} ${kind === 'video' ? 'Stream' : 'Feed'}`
-      }]
+      const updated = [
+        ...prev,
+        {
+          stream,
+          consumerId,
+          kind,
+          isSelf: false,
+          clientId,
+          channelId: channel.id,
+          channelName: channel.name,
+          fallbackLabel: `${channel.name} ${kind === 'video' ? 'Stream' : 'Feed'}`
+        }
+      ]
       if (onStreamsUpdate) onStreamsUpdate(updated)
       return updated
     })
@@ -298,15 +355,18 @@ const VoiceChannel = forwardRef(function VoiceChannel(
         }
 
         setVideoStreams((prev) => {
-          const updated = [...prev, {
-            stream: screen.stream,
-            consumerId: screen.id,
-            kind: 'video',
-            isSelf: true,
-            clientId: self.id,
-            channelName: channel.name,
-            fallbackLabel: self.name || 'You'
-          }]
+          const updated = [
+            ...prev,
+            {
+              stream: screen.stream,
+              consumerId: screen.id,
+              kind: 'video',
+              isSelf: true,
+              clientId: self.id,
+              channelName: channel.name,
+              fallbackLabel: self.name || 'You'
+            }
+          ]
           if (onStreamsUpdate) onStreamsUpdate(updated)
           return updated
         })
@@ -342,25 +402,33 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   )
 
   return (
-    <div className={`channel-item${joined ? ' active' : ''}${previewing ? ' previewing' : ''}`} onDoubleClick={handleDoubleClick}>
+    <div
+      className={`channel-item${joined ? ' active' : ''}${previewing ? ' previewing' : ''}`}
+      data-flip-key={channel.id}
+      data-anim-status={animStatus}
+      onDoubleClick={handleDoubleClick}
+    >
       <div
         className="channel-row"
         onClick={() => onPreviewChannel?.(channel.id)}
         onContextMenu={handleContextMenu}
       >
-        {joined ? <IconVolume size={20}/> : <IconCircle size={20}/>}
+        {joined ? <IconVolume size={20} /> : <IconCircle size={20} />}
         <span className="channel-name">{channel.name}</span>
-        {unread && <IconPointFilled className="channel-unread-dot" size={12} aria-label="Unread messages" />}
+        {unread && (
+          <IconPointFilled className="channel-unread-dot" size={12} aria-label="Unread messages" />
+        )}
       </div>
       {error && <div style={{ color: '#ed4245', fontSize: 11, paddingLeft: 16 }}>{error}</div>}
-      {clients.map((c) => (
+      {clientPresence.map(({ key, item: c, status }) => (
         <ClientIndicator
-          key={c.id}
+          key={key}
           client={c}
+          animStatus={status}
           speaking={!!speakingClients[c.id]}
-          micMuted={c.id === self.id ? micMuted : !!c.self_mute}
-          deafened={c.id === self.id ? deafened : !!c.self_deaf}
-          isSelf={c.id === self.id}
+          micMuted={c.id === self?.id ? micMuted : !!c.self_mute}
+          deafened={c.id === self?.id ? deafened : !!c.self_deaf}
+          isSelf={c.id === self?.id}
           streaming={streamingClientIds.has(c.id)}
         />
       ))}
@@ -380,14 +448,20 @@ const VoiceChannel = forwardRef(function VoiceChannel(
           <button
             type="button"
             className="channel-context-item"
-            onClick={() => { setMenuPos(null); onRequestCreateChannel?.() }}
+            onClick={() => {
+              setMenuPos(null)
+              onRequestCreateChannel?.()
+            }}
           >
             <IconPlus size={16} /> Add Channel
           </button>
           <button
             type="button"
             className="channel-context-item danger"
-            onClick={() => { setMenuPos(null); onDeleteChannel?.(channel.id) }}
+            onClick={() => {
+              setMenuPos(null)
+              onDeleteChannel?.(channel.id)
+            }}
           >
             <IconTrash size={16} /> Delete Channel
           </button>

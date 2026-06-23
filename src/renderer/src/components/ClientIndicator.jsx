@@ -13,10 +13,28 @@ import {
 } from '@tabler/icons-react'
 import { setClientAudioState, getClientAudioState } from '../lib/soup'
 
-function ClientIndicator({ client, speaking, micMuted, deafened, isSelf, streaming }) {
+function ClientIndicator({ client, speaking, micMuted, deafened, isSelf, streaming, animStatus }) {
   const initial = client.name?.charAt(0).toUpperCase() ?? '?'
   const [menuPos, setMenuPos] = useState(null)
   const menuRef = useRef(null)
+  const [visualSpeaking, setVisualSpeaking] = useState(speaking)
+  const [isFadingOut, setIsFadingOut] = useState(false)
+  const fadeTimerRef = useRef(null)
+
+  useEffect(() => {
+    if (speaking) {
+      clearTimeout(fadeTimerRef.current)
+      setVisualSpeaking(true)
+      setIsFadingOut(false)
+    } else {
+      setIsFadingOut(true)
+      fadeTimerRef.current = setTimeout(() => {
+        setVisualSpeaking(false)
+        setIsFadingOut(false)
+      }, 100)
+    }
+    return () => clearTimeout(fadeTimerRef.current)
+  }, [speaking])
 
   const initialAudioState = getClientAudioState(client.id)
   const [volume, setVolume] = useState(Math.round(initialAudioState.volume * 100))
@@ -64,8 +82,9 @@ function ClientIndicator({ client, speaking, micMuted, deafened, isSelf, streami
     statusIcon = <IconHeadphonesOff size={14} className="mic-indicator deafened" aria-label="Deafened" />
   } else if (micMuted) {
     statusIcon = <IconMicrophoneOff size={14} className="mic-indicator muted" aria-label="Muted" />
-  } else if (speaking) {
-    statusIcon = <IconMicrophoneFilled size={14} className="mic-indicator speaking" aria-label="Speaking" />
+  } else if (visualSpeaking) {
+    const cls = isFadingOut ? 'mic-indicator speaking-fade' : 'mic-indicator speaking'
+    statusIcon = <IconMicrophoneFilled size={14} className={cls} aria-label="Speaking" />
   } else {
     statusIcon = <IconMicrophone size={14} className="mic-indicator" aria-label="Not speaking" />
   }
@@ -75,7 +94,7 @@ function ClientIndicator({ client, speaking, micMuted, deafened, isSelf, streami
     : volume < 50 ? IconVolume4 : volume <= 99 ? IconVolume2 : IconVolume
 
   return (
-    <div className="client-indicator" onContextMenu={handleContextMenu}>
+    <div className="client-indicator" data-anim-status={animStatus} onContextMenu={handleContextMenu}>
       {statusIcon}
       <span className="client-avatar" aria-hidden="true">{initial}</span>
       {client.name}

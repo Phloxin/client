@@ -18,6 +18,11 @@
   background: var(--color-background);
 }
 
+html[data-transparency="true"] .layout {
+  background: color-mix(in srgb, var(--color-background) var(--transparency-opacity, 85%), transparent);
+  backdrop-filter: blur(var(--transparency-blur, 20px));
+}
+
 /* ============================================================================
    CHAT AREA STYLES
    ============================================================================ */
@@ -29,6 +34,10 @@
   flex-direction: column;
   background: var(--color-background-soft);
   border-radius: 10px;
+}
+
+html[data-transparency="true"] .chat-area {
+  background: color-mix(in srgb, var(--color-background-soft) var(--transparency-opacity, 85%), transparent);
 }
 
 .chat-header {
@@ -43,6 +52,10 @@
   align-items: center;
   background: var(--color-background-mute);
   border-radius: 10px;
+}
+
+html[data-transparency="true"] .chat-header {
+  background: color-mix(in srgb, var(--color-background-mute) var(--transparency-opacity, 85%), transparent);
 }
 
 .header-content {
