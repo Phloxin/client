@@ -42,8 +42,18 @@ const DEFAULT_ANIMATIONS = {
   // enabled is the master switch; the rest are 'off' or a per-category style.
   enabled: true,
   channelSwitch: 'fade', // 'fade' | 'slide' | 'off'
-  userJoin: 'slide', // 'slide' | 'pop' | 'off'
-  channelList: 'slide' // 'slide' | 'pop' | 'off'
+  userJoin: 'pop', // 'pop' | 'off'
+  channelList: 'pop' // 'pop' | 'off'
+}
+
+// 'slide' was retired for user-join / channel-list (only 'pop' read well there);
+// fold any persisted 'slide' back to 'pop' so old saves don't dangle on a value
+// the UI no longer offers.
+function migrateAnimations(settings) {
+  const next = { ...settings }
+  if (next.userJoin === 'slide') next.userJoin = 'pop'
+  if (next.channelList === 'slide') next.channelList = 'pop'
+  return next
 }
 
 export function SettingsProvider({ children }) {
@@ -77,7 +87,9 @@ export function SettingsProvider({ children }) {
   const [animationSettings, setAnimationSettings] = useState(() => {
     try {
       const saved = localStorage.getItem('animationSettings')
-      return saved ? { ...DEFAULT_ANIMATIONS, ...JSON.parse(saved) } : DEFAULT_ANIMATIONS
+      return saved
+        ? migrateAnimations({ ...DEFAULT_ANIMATIONS, ...JSON.parse(saved) })
+        : DEFAULT_ANIMATIONS
     } catch {
       return DEFAULT_ANIMATIONS
     }

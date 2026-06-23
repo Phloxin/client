@@ -189,7 +189,6 @@ function Settings() {
                         value={animationSettings.userJoin}
                         onChange={(e) => updateAnimationSettings({ userJoin: e.target.value })}
                       >
-                        <option value="slide">Slide</option>
                         <option value="pop">Pop</option>
                         <option value="off">Off</option>
                       </select>
@@ -202,7 +201,6 @@ function Settings() {
                         value={animationSettings.channelList}
                         onChange={(e) => updateAnimationSettings({ channelList: e.target.value })}
                       >
-                        <option value="slide">Slide</option>
                         <option value="pop">Pop</option>
                         <option value="off">Off</option>
                       </select>

@@ -148,8 +148,6 @@ function createWindow() {
     // Frameless: the renderer draws its own Discord-style title bar (see
     // TitleBar.jsx). Window controls are driven via the window-* IPC below.
     frame: false,
-    // Let CSS/compositor handle window transparency (opaque backgrounds when off).
-    transparent: true,
     ...(process.platform === 'linux' ? { icon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),

@@ -19,8 +19,8 @@ export function applyAppearanceSettings({
 export function applyAnimationSettings({
   enabled = true,
   channelSwitch = 'fade',
-  userJoin = 'slide',
-  channelList = 'slide'
+  userJoin = 'pop',
+  channelList = 'pop'
 }) {
   const html = document.documentElement
   // An attribute is present only when animations are on and the category isn't

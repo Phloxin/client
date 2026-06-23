@@ -912,32 +912,6 @@ function Main() {
       ws.onerror = (err) => console.error('WebSocket error:', err)
     }
 
-    // OS connectivity hints. The heartbeat eventually notices a silent drop, but
-    // that can take ~20s; reacting to 'offline'/'online' shows the reconnect
-    // overlay immediately and recovers the moment the network returns (closing a
-    // half-open socket routes through onclose → scheduleReconnect).
-    const handleOffline = () => {
-      if (closedByUs) return
-      setConnectionStatus('reconnecting')
-      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
-        ws.close()
-      }
-    }
-    const handleOnline = () => {
-      if (closedByUs) return
-      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
-        ws.close() // half-open socket that never noticed the drop
-      } else if (reconnectTimer || !eventsWsRef.current) {
-        // Waiting out a backoff (or fully closed) — reconnect now instead.
-        if (reconnectTimer) clearTimeout(reconnectTimer)
-        reconnectTimer = null
-        reconnectAttempts = 0
-        connect()
-      }
-    }
-    window.addEventListener('offline', handleOffline)
-    window.addEventListener('online', handleOnline)
-
     // Initial baseline + first connection. The first IDENTIFY is always fresh
     // (session refs were cleared above), so REST state is our starting point.
     setFeed([])
@@ -954,8 +928,6 @@ function Main() {
       clearHeartbeat()
       if (ws) ws.close()
       eventsWsRef.current = null
-      window.removeEventListener('offline', handleOffline)
-      window.removeEventListener('online', handleOnline)
       window.electron.ipcRenderer.removeAllListeners('log-message')
     }
   }, [token, loadChannelHistory])
