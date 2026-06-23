@@ -168,7 +168,7 @@ body[data-theme="dracula"] {
   --color-text-muted: rgba(248, 248, 242, 0.6);
   
   /* Accent Colors — Purple is Dracula's iconic accent */
-  --color-primary: #bd93f9;
+  --color-primary: #ff79c6;
   --color-primary-hover: #cda9fb;
   --color-success: #50fa7b;
   --color-success-hover: #6bff8f;

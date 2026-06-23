@@ -9,49 +9,75 @@
    The result: every theme gets matching gradients for free, and adding a new
    theme requires no changes here.
 
-   Mix percentages are intentionally small (5-15%) so the depth reads as a soft
-   lift/vignette rather than a loud color wash.
+   HARMONY RULES — so the gradients never clash with each other or with a theme:
+
+   1. One ramp. Every theme exposes a neutral background ramp, dark -> light:
+        --color-background-mute  ->  --color-background
+        ->  --color-background-soft  ->  --color-surface
+      All neutral gradients are just a short slide ALONG this ramp: lighten an
+      edge toward --color-surface, deepen an edge toward the next-darker ramp
+      tone. Endpoints are always theme tones, so contrast auto-scales per theme.
+
+   2. One contrast budget. Neutral edges move ~8-12% toward a neighbouring ramp
+      tone — never more, so no surface shouts louder than another.
+
+   3. No absolute black/white on neutral surfaces. Mixing toward #000/#fff
+      desaturates unevenly across themes (worst on saturated palettes like
+      Gruvbox/Dracula) and reads as a muddy patch. Stay within the ramp.
+
+   4. Hue lives only in accents. The lone exception is a faint accent whisper in
+      the app backdrop (intentional brand glow) and the primary-button tokens.
+      Neutral panels/bars never carry the accent hue.
+
+   5. Light from above. Top edges catch the highlight; the footer is the
+      deliberate mirror (lip on its BOTTOM edge) so it separates from the panel
+      content above rather than blending into it.
    ============================================================================ */
 :root {
-  /* App backdrop: a faint accent-tinted glow at the top fading into a deeper
-     bottom, giving the whole window a sense of light coming from above. */
+  /* App backdrop (built on --color-background). A faint accent whisper at the
+     top — the only hue in the neutral chrome — fading through the base into a
+     deeper bottom. The bottom deepens toward the theme's own darkest neutral
+     (--color-background-mute), not black, so it stays in-palette. */
   --gradient-app: radial-gradient(
     140% 120% at 50% -10%,
-    color-mix(in srgb, var(--color-background) 90%, var(--color-primary)) 0%,
+    color-mix(in srgb, var(--color-background) 94%, var(--color-primary)) 0%,
     var(--color-background) 55%,
-    color-mix(in srgb, var(--color-background) 93%, #000) 100%
+    color-mix(in srgb, var(--color-background) 88%, var(--color-background-mute)) 100%
   );
 
-  /* Elevated panels (sidebar, chat area, login box): top edge lifted toward the
-     lighter surface tone, settling into the base — reads as a raised surface. */
+  /* Elevated panels (built on --color-background-soft): sidebar, chat area,
+     login box. Full-height slide along the ramp — lifted toward --color-surface
+     at the top, settling through the base, deepening toward --color-background
+     at the bottom. Reads as a gently raised surface. */
   --gradient-surface: linear-gradient(
     180deg,
     color-mix(in srgb, var(--color-background-soft) 88%, var(--color-surface)) 0%,
-    var(--color-background-soft) 55%
+    var(--color-background-soft) 55%,
+    color-mix(in srgb, var(--color-background-soft) 92%, var(--color-background)) 100%
   );
 
-  /* Header bars (top of a panel): highlight on the top edge settling into the
-     base — light catching the upper lip of a recessed bar. */
+  /* Header bars (built on --color-background-mute): top of a panel. Highlight
+     toward --color-surface on the TOP edge, settling to the base — light
+     catching the upper lip of a recessed bar. */
   --gradient-header: linear-gradient(
     180deg,
     color-mix(in srgb, var(--color-background-mute) 90%, var(--color-surface)) 0%,
     var(--color-background-mute) 100%
   );
 
-  /* Footer bars (bottom of a panel: sidebar control tray, chat input). The
-     mirror of --gradient-header: a faint shadow on the TOP edge to separate the
-     bar from the panel content above, settling to a slightly lighter lip at the
-     BOTTOM. The lighter lip lands where the surrounding surface gradient is
-     darkest, so the bar stays distinct instead of blending into it. */
+  /* Footer bars (built on --color-background-mute): sidebar control tray, chat
+     input. The mirror of --gradient-header — base across the top (where the
+     darker mute already steps down from the lighter panel above, giving natural
+     separation) easing to a soft highlight lip toward --color-surface at the
+     BOTTOM. Same ramp, same budget as the header, so the two read as a pair. */
   --gradient-footer: linear-gradient(
     180deg,
-    color-mix(in srgb, var(--color-background-mute) 98%, #000) 0%,
-    var(--color-background-mute) 55%,
-    color-mix(in srgb, var(--color-background-mute) 91%, var(--color-surface)) 100%
+    var(--color-background-mute) 95%,
+    color-mix(in srgb, var(--color-background-mute) 90%, var(--color-surface)) 100%
   );
 
-  /* Primary accent (buttons): vertical sheen from the hover tone down to the
-     base accent, like a softly lit key. */
+  /* Primary accent (buttons), built on the accent: vertical sheen from the
+     hover tone down to the base accent, like a softly lit key. */
   --gradient-primary: linear-gradient(
     180deg,
     var(--color-primary-hover) 0%,
@@ -60,7 +86,7 @@
 
   --gradient-primary-hover: linear-gradient(
     180deg,
-    color-mix(in srgb, var(--color-primary-hover) 85%, #fff) 0%,
+    color-mix(in srgb, var(--color-primary-hover) 88%, #fff) 0%,
     var(--color-primary-hover) 100%
   );
 }

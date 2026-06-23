@@ -693,7 +693,7 @@ a.chat-embed-title:hover {
   align-items: flex-start;
   gap: var(--spacing-sm);
   padding: var(--spacing-md) var(--spacing-lg);
-  margin: var(--spacing-sm);
+  
 }
 
 .chat-input-bar textarea {
