@@ -137,8 +137,8 @@ const MIN_CONTENT_HEIGHT =
 function createWindow() {
   // Create the browser window.
   const mainWindow = new BrowserWindow({
-    width: 1100,
-    height: 670,
+    width: 1000,
+    height: 700,
     // Treat width/height/min* as the web content area (excludes the OS title
     // bar) so the minimums map directly onto the renderer layout below.
     useContentSize: true,

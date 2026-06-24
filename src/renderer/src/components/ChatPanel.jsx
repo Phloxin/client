@@ -616,11 +616,6 @@ function ChatPanel({
             aria-labelledby="chat-confirm-title"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="chat-confirm-header">
-              <span className="chat-confirm-title" id="chat-confirm-title">
-                Delete message
-              </span>
-            </div>
             <div className="chat-confirm-body">
               Are you sure you want to delete this message? This cannot be undone.
             </div>
