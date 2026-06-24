@@ -469,7 +469,10 @@ export function createSpeakingDetector(stream, onChange, { threshold = 8, holdMs
     cancelAnimationFrame(rafId)
     if (speaking) onChange(false)
     try { source.disconnect() } catch {}
-    try { audioContext.close() } catch {}
+    // close() rejects (async) if the context is already closed — e.g. this
+    // cleanup runs twice during teardown. Skip when closed and swallow the
+    // rejection so it never surfaces as an uncaught promise error.
+    if (audioContext.state !== 'closed') audioContext.close().catch(() => {})
   }
 }
 

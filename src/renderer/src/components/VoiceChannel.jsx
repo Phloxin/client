@@ -26,8 +26,6 @@ import {
   IconPointFilled
 } from '@tabler/icons-react'
 
-const API_BASE_URL = 'http://47.16.222.82:3000'
-
 const VoiceChannel = forwardRef(function VoiceChannel(
   {
     channel,
@@ -37,6 +35,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     micMuted,
     deafened,
     onStreamsUpdate,
+    onSelfChannelChange,
     onJoinedChange,
     onSharingChange,
     onRequestJoin,
@@ -130,13 +129,12 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     }
   }
 
-  // Set this client's channel on the server (join / switch / rejoin-on-reconnect).
-  const patchChannel = (channelId) =>
-    fetch(`${API_BASE_URL}/server/client`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ client_id: self.id, channel_id: channelId })
-    })
+  // Set our own channel on the server (join / switch / rejoin-on-reconnect) by
+  // sending a VoiceStateUpdate over the event websocket instead of PATCHing
+  // /server/client. Wrapped in Promise.resolve so the soup reconnect path can
+  // await it the same way it awaited the old REST call. The merge in
+  // sendVoiceState carries our current mute/deafen alongside the channel.
+  const patchChannel = (channelId) => Promise.resolve(onSelfChannelChange?.(channelId))
 
   // Fired after every successful (re)auth: mark joined and (re)publish the mic.
   const handleConnectEstablished = async () => {
@@ -300,7 +298,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     if (onStreamsUpdate) onStreamsUpdate([])
   }
 
-  const handleLeave = async () => {
+  const handleLeave = () => {
     disconnect()
     setJoined(false)
     setSharing(false)
@@ -309,18 +307,8 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     localSpeakingCleanupRef.current?.()
     localSpeakingCleanupRef.current = null
     if (onStreamsUpdate) onStreamsUpdate([])
-    try {
-      await fetch(`${API_BASE_URL}/server/client`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
-        },
-        body: JSON.stringify({ client_id: self.id, channel_id: null })
-      })
-    } catch (err) {
-      console.error('[VoiceChannel] Failed to leave channel:', err)
-    }
+    // Tell the server we're leaving all channels (channel_id: null).
+    onSelfChannelChange?.(null)
   }
 
   // Remove the local (self) screen-share tile after the share ends

@@ -63,11 +63,52 @@ html[data-transparency="true"] .server-header {
   gap: var(--spacing-sm);
 }
 
-/* Divider line filling the space between the "Channels" label and the + button. */
-.channel-section-divider {
-  flex: 1;
-  height: 1px;
-  background: var(--color-border);
+/* Segmented Channels / Users switch that replaces the static section label.
+   Mirrors the chat-area view tabs (.view-tabs-bar in Main.css) but sized for the
+   narrow sidebar. The sliding pill is positioned inline by usePillIndicator. */
+.sidebar-view-tabs {
+  position: relative;       /* positioning context for the sliding pill */
+  display: flex;
+  background: var(--color-background);
+  border-radius: 999px;
+  padding: 3px;
+  gap: 2px;
+}
+
+.sidebar-view-tab {
+  outline: none;
+  position: relative;       /* sit above the sliding pill */
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 12px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  text-transform: none;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+
+.sidebar-view-tab:hover:not(.active),
+.sidebar-view-tab.active {
+  color: var(--color-text);
+}
+
+/* Pill background; the active tab only changes its text color. */
+.sidebar-view-tabs .pill-indicator {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 0;
+  border-radius: 999px;
+  background: var(--color-background-soft);
+  pointer-events: none;
 }
 
 .channel-add-btn {
@@ -77,6 +118,8 @@ html[data-transparency="true"] .server-header {
   width: 20px;
   height: 20px;
   flex-shrink: 0;
+  /* Push to the far right now that the section label is a left-aligned toggle. */
+  margin-left: auto;
   padding: 0;
   border: none;
   border-radius: var(--border-radius-sm);
@@ -84,6 +127,37 @@ html[data-transparency="true"] .server-header {
   color: var(--color-text-muted);
   cursor: pointer;
   transition: background 0.12s ease, color 0.12s ease, transform 0.12s ease;
+}
+
+/* Wrapper that keeps the channel list mounted while the Users view is showing,
+   preserving the live voice session. display:contents leaves the channels as
+   direct flex children of the sidebar (identical layout to before); .hidden
+   collapses the whole subtree. */
+.sidebar-channel-list {
+  display: contents;
+}
+
+.sidebar-channel-list.hidden {
+  display: none;
+}
+
+/* Flat client roster shown in "Users" view. Scrolls independently so a long
+   roster never pushes the control rows off the bottom of the sidebar. */
+.sidebar-user-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--spacing-xs) var(--spacing-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sidebar-user-empty {
+  padding: var(--spacing-md) 14px;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+  text-align: center;
 }
 
 .channel-add-btn:hover {

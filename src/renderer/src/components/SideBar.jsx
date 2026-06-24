@@ -1,14 +1,15 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import VoiceChannel from './VoiceChannel'
+import ClientIndicator from './ClientIndicator'
 import ServerMenu from './ServerMenu'
 import { setMicMuted, setSoundMuted } from '../lib/soup'
 import { playUiSound } from '../lib/sounds'
 import { useAnimationCategory } from '../context/SettingsContext'
 import { useAnimatedPresence, useFlip } from '../lib/animation'
+import { usePillIndicator } from '../lib/usePillIndicator'
 import './SideBar.css'
 import {
   IconSettings,
-  IconShield,
   IconDoorExit,
   IconHeadphones,
   IconHeadphonesOff,
@@ -32,6 +33,7 @@ function Sidebar({
   onStreamsUpdate,
   onOpenSettings,
   onStatusChange,
+  onSelfChannelChange,
   servers,
   connectedServer,
   onConnect,
@@ -55,6 +57,11 @@ function Sidebar({
   const [micMuted, setMicMutedState] = useState(false)
   const [soundMuted, setSoundMutedState] = useState(false)
   const channelRefs = useRef({})
+
+  // Which list the sidebar body shows: the channel tree or a flat roster of every
+  // connected client. Toggled by the segmented control in the section header.
+  const [sidebarView, setSidebarView] = useState('channels')
+  const viewPill = usePillIndicator(sidebarView)
 
   // Create-channel modal (opened from the section "+" or a channel's right-click
   // "Add Channel"). user_limit of 0 means unlimited.
@@ -170,53 +177,104 @@ function Sidebar({
       </div>
 
       <div className="channel-section-label">
-        <span>Channels</span>
-        <span className="channel-section-divider" aria-hidden="true" />
-        <button className="channel-add-btn" title="Add channel" onClick={openCreateChannel}>
-          <IconPlus size={15} />
-        </button>
+        <div className="sidebar-view-tabs" ref={viewPill.barRef}>
+          <span
+            className="pill-indicator"
+            style={viewPill.indicatorStyle}
+            aria-hidden="true"
+          />
+          <button
+            type="button"
+            className={`sidebar-view-tab${sidebarView === 'channels' ? ' active' : ''}`}
+            data-active={sidebarView === 'channels'}
+            onClick={() => setSidebarView('channels')}
+          >
+            Channels
+          </button>
+          <button
+            type="button"
+            className={`sidebar-view-tab${sidebarView === 'users' ? ' active' : ''}`}
+            data-active={sidebarView === 'users'}
+            onClick={() => setSidebarView('users')}
+          >
+            Users
+          </button>
+        </div>
+        {sidebarView === 'channels' && (
+          <button className="channel-add-btn" title="Add channel" onClick={openCreateChannel}>
+            <IconPlus size={15} />
+          </button>
+        )}
       </div>
 
-      {channelPresence.map(({ key, item: ch, status }) => (
-        <VoiceChannel
-          key={key}
-          ref={(el) => {
-            channelRefs.current[ch.id] = el
-          }}
-          animStatus={status}
-          channel={ch}
-          clients={clients.filter((c) => c.channel_id === ch.id)}
-          token={token}
-          self={self}
-          micMuted={micMuted}
-          deafened={soundMuted}
-          onDeleteChannel={onDeleteChannel}
-          onRequestCreateChannel={openCreateChannel}
-          onPreviewChannel={onPreviewChannel}
-          previewing={previewChannelId === ch.id}
-          unread={!!unreadChannelIds?.has(ch.id)}
-          onStreamsUpdate={(streams) => {
-            onStreamsUpdate(ch.id, streams)
-          }}
-          onJoinedChange={(channelId, joined) => {
-            setJoinedChannelId((prev) => {
-              if (joined) return channelId
-              return prev === channelId ? null : prev
-            })
-          }}
-          onSharingChange={(channelId, isSharing) => {
-            if (channelId === joinedChannelId || isSharing) setSharing(isSharing)
-          }}
-          onRequestJoin={(doJoin, doSwitch) => {
-            if (joinedChannelId && joinedChannelId !== ch.id) {
-              channelRefs.current[joinedChannelId]?.deactivate()
-              doSwitch()
-            } else {
-              doJoin()
-            }
-          }}
-        />
-      ))}
+      {/* Keep the channel list mounted across view switches. Unmounting it would
+          run VoiceChannel's unmount cleanup, which calls disconnect() and tears
+          down the live voice session. display:contents keeps the channels as
+          direct flex children of the sidebar when shown; .hidden collapses them. */}
+      <div className={`sidebar-channel-list${sidebarView === 'channels' ? '' : ' hidden'}`}>
+        {channelPresence.map(({ key, item: ch, status }) => (
+          <VoiceChannel
+            key={key}
+            ref={(el) => {
+              channelRefs.current[ch.id] = el
+            }}
+            animStatus={status}
+            channel={ch}
+            clients={clients.filter((c) => c.channel_id === ch.id)}
+            token={token}
+            self={self}
+            micMuted={micMuted}
+            deafened={soundMuted}
+            onSelfChannelChange={onSelfChannelChange}
+            onDeleteChannel={onDeleteChannel}
+            onRequestCreateChannel={openCreateChannel}
+            onPreviewChannel={onPreviewChannel}
+            previewing={previewChannelId === ch.id}
+            unread={!!unreadChannelIds?.has(ch.id)}
+            onStreamsUpdate={(streams) => {
+              onStreamsUpdate(ch.id, streams)
+            }}
+            onJoinedChange={(channelId, joined) => {
+              setJoinedChannelId((prev) => {
+                if (joined) return channelId
+                return prev === channelId ? null : prev
+              })
+            }}
+            onSharingChange={(channelId, isSharing) => {
+              if (channelId === joinedChannelId || isSharing) setSharing(isSharing)
+            }}
+            onRequestJoin={(doJoin, doSwitch) => {
+              if (joinedChannelId && joinedChannelId !== ch.id) {
+                channelRefs.current[joinedChannelId]?.deactivate()
+                doSwitch()
+              } else {
+                doJoin()
+              }
+            }}
+          />
+        ))}
+      </div>
+
+      {sidebarView === 'users' && (
+        <div className="sidebar-user-list">
+          {[...clients]
+            .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+            .map((c) => {
+              const isSelf = c.id === self?.id
+              return (
+                <ClientIndicator
+                  key={c.id}
+                  client={c}
+                  speaking={false}
+                  micMuted={isSelf ? micMuted : !!c.self_mute}
+                  deafened={isSelf ? soundMuted : !!c.self_deaf}
+                  isSelf={isSelf}
+                />
+              )
+            })}
+          {clients.length === 0 && <div className="sidebar-user-empty">No users connected</div>}
+        </div>
+      )}
 
       <div className="control-rows">
         <div className="control-row">

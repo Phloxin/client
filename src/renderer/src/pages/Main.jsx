@@ -627,43 +627,11 @@ function Main() {
     lastEventSeqRef.current = null
     setConnectionStatus('connected')
 
-    // Pull the authoritative channel/client baseline over REST. Resolves true on
-    // success, false if the token was rejected (we drop it) or the fetch failed.
-    const fetchBaseline = () =>
-      Promise.all([
-        fetch(`${apiBase()}/server/channel`, { headers: { Authorization: `Bearer ${token}` } }),
-        fetch(`${apiBase()}/server/client`, { headers: { Authorization: `Bearer ${token}` } })
-      ])
-        .then(async ([channelRes, clientRes]) => {
-          // Token is stale/expired (e.g. the server restarted and dropped it).
-          // Tear the whole session down so we land on a clean "Not connected"
-          // screen — clearing only the token would leave the stale channel list
-          // and presence on screen while the rest of the UI reads as
-          // disconnected. Close first so the reconnect loop stops here.
-          if (channelRes.status === 401 || clientRes.status === 401) {
-            closedByUs = true
-            ws?.close()
-            handleDisconnect()
-            return false
-          }
-          const [channelData, clientData] = await Promise.all([channelRes.json(), clientRes.json()])
-          setChannels(channelData)
-          // The REST payload uses `muted`/`deaf`, but voice-state updates (and the
-          // rest of the UI) use `self_mute`/`self_deaf` - normalize on the way in.
-          setClients(clientData.map((c) => ({ ...c, self_mute: c.muted, self_deaf: c.deaf })))
-          return true
-        })
-        .catch((err) => {
-          console.error('Failed to fetch:', err)
-          return false
-        })
-
-    // Full resync after losing our session (we can't replay the events we
-    // missed): re-pull presence/channels and reload the active channel's history.
-    const fullResync = () => {
-      fetchBaseline()
-      loadChannelHistory(activeChatChannelIdRef.current)
-    }
+    // Resync after losing our session (we can't replay the events we missed).
+    // Channels/clients are restored by the server's Ready event on fresh re-auth;
+    // here we only need to reload the active channel's message history, which
+    // Ready does not include.
+    const reloadHistory = () => loadChannelHistory(activeChatChannelIdRef.current)
 
     // Reconnect bookkeeping. `closedByUs` suppresses reconnects on intentional
     // teardown (effect cleanup, disconnect, or an auth failure).
@@ -723,7 +691,7 @@ function Main() {
         const hadSession = sessionIdRef.current != null
         sessionIdRef.current = reply.session_id ?? null
         lastEventSeqRef.current = null
-        if (hadSession) fullResync()
+        if (hadSession) reloadHistory()
       } else if (reply.kind === 'Resumed') {
         // Resume accepted: the events we missed replay next as ordered, dup-free
         // dispatches, then live events continue. Keep our position; refresh id.
@@ -734,7 +702,7 @@ function Main() {
         // next connect identify without a resume object.
         sessionIdRef.current = null
         lastEventSeqRef.current = null
-        fullResync()
+        reloadHistory()
         closedByUs = false
         ws.close()
       } else if (reply.kind === 'Unauthorized') {
@@ -749,6 +717,17 @@ function Main() {
 
     // Apply a dispatched event to local state.
     const handleEvent = (ev, data) => {
+      // Initial snapshot pushed by the server right after a fresh, non-resuming
+      // auth. Replaces (not merges) the lists with the authoritative state — this
+      // is the websocket's equivalent of the old REST baseline fetch.
+      if (ev === 'Ready') {
+        setChannels(data.channels)
+        // ClientApiObject uses `muted`/`deaf`; the rest of the UI uses
+        // `self_mute`/`self_deaf` - normalize on the way in.
+        setClients(data.clients.map((c) => ({ ...c, self_mute: c.muted, self_deaf: c.deaf })))
+        return
+      }
+
       // Audio status update (mic mute / deafen) broadcast from another client
       if (ev === 'VoiceStateUpdate') {
         const { client_id, muted, deaf } = data
@@ -766,12 +745,17 @@ function Main() {
           prev.map((c) => (c.id === data.id ? { ...c, channel_id: data.channel_id } : c))
         )
 
-        // Join/leave chimes. For ourselves: any move into a channel is a "join",
-        // dropping out (channel_id null) is a "leave". For others: only sound
-        // when they enter or leave the channel we're currently in.
+        // Join/leave chimes. For ourselves: a move into a channel is a "join",
+        // dropping out (channel_id null) is a "leave" — but only when the channel
+        // actually changed. ClientModified now also fires for same-channel updates
+        // (e.g. a mute/deafen VoiceStateUpdate re-asserts our channel_id), and
+        // those must stay silent. For others: only sound when they enter or leave
+        // the channel we're currently in.
         const myChannel = selfChannelIdRef.current
         if (data.id === selfIdRef.current) {
-          playUiSound(data.channel_id == null ? 'channel-leave' : 'channel-join')
+          if (oldChannelId !== data.channel_id) {
+            playUiSound(data.channel_id == null ? 'channel-leave' : 'channel-join')
+          }
         } else if (myChannel != null) {
           if (data.channel_id === myChannel && oldChannelId !== myChannel) {
             playUiSound('channel-join')
@@ -920,10 +904,10 @@ function Main() {
       ws.onerror = (err) => console.error('WebSocket error:', err)
     }
 
-    // Initial baseline + first connection. The first IDENTIFY is always fresh
-    // (session refs were cleared above), so REST state is our starting point.
+    // First connection. The first IDENTIFY is always fresh (session refs were
+    // cleared above), so the server's Ready event — pushed right after the
+    // Authenticated handshake — is our starting channel/client state.
     setFeed([])
-    fetchBaseline()
     connect()
 
     window.electron.ipcRenderer.on('log-message', (_, message) => {
@@ -1077,14 +1061,25 @@ function Main() {
     }
   }
 
-  // Broadcast our mic-mute / deafen status to other clients
-  const sendStatus = (selfMute, selfDeaf) => {
+  // Single source of truth for our outbound voice state. The server's
+  // VoiceStateUpdate (op 1) is declarative: it carries the *full* desired state,
+  // and a missing channel_id is read as "leave all channels". So every send must
+  // include all three fields. We hold them in a ref and merge each partial update
+  // optimistically — that way a mute toggle never drops our channel, a channel
+  // move never resets our mute/deafen, and a rapid move-then-mute can't race on a
+  // server-echoed field that hasn't arrived yet.
+  const voiceStateRef = useRef({ self_mute: false, self_deaf: false, channel_id: null })
+  const sendVoiceState = useCallback((patch) => {
+    const next = { ...voiceStateRef.current, ...patch }
+    voiceStateRef.current = next
     if (eventsWsRef.current?.readyState === WebSocket.OPEN) {
-      eventsWsRef.current.send(
-        JSON.stringify({ op: 1, data: { self_mute: selfMute, self_deaf: selfDeaf } })
-      )
+      eventsWsRef.current.send(JSON.stringify({ op: 1, data: next }))
     }
-  }
+  }, [])
+
+  // Broadcast our mic-mute / deafen status, keeping our current channel.
+  const sendStatus = (selfMute, selfDeaf) =>
+    sendVoiceState({ self_mute: selfMute, self_deaf: selfDeaf })
 
   // Merge stream updates from a specific channel into the global streams list
   const handleStreamsUpdate = (channelId, streams) => {
@@ -1141,6 +1136,7 @@ function Main() {
           self={client}
           onStreamsUpdate={handleStreamsUpdate}
           onStatusChange={sendStatus}
+          onSelfChannelChange={(channelId) => sendVoiceState({ channel_id: channelId })}
           // provide a renderer-level openSettings hook
           onOpenSettings={openSettings}
           servers={servers}
