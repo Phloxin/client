@@ -261,16 +261,7 @@ function Sidebar({
             .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
             .map((c) => {
               const isSelf = c.id === self?.id
-              return (
-                <ClientIndicator
-                  key={c.id}
-                  client={c}
-                  speaking={false}
-                  micMuted={isSelf ? micMuted : !!c.self_mute}
-                  deafened={isSelf ? soundMuted : !!c.self_deaf}
-                  isSelf={isSelf}
-                />
-              )
+              return <ClientIndicator key={c.id} client={c} isSelf={isSelf} rosterMode />
             })}
           {clients.length === 0 && <div className="sidebar-user-empty">No users connected</div>}
         </div>

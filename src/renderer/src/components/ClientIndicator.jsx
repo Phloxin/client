@@ -13,7 +13,19 @@ import {
 } from '@tabler/icons-react'
 import { setClientAudioState, getClientAudioState } from '../lib/soup'
 
-function ClientIndicator({ client, speaking, micMuted, deafened, isSelf, streaming, animStatus }) {
+// rosterMode renders a presence-only entry (the sidebar's Users tab): no mic/
+// status indicator and no right-click volume control, since those entries aren't
+// voice participants we're listening to.
+function ClientIndicator({
+  client,
+  speaking,
+  micMuted,
+  deafened,
+  isSelf,
+  streaming,
+  animStatus,
+  rosterMode
+}) {
   const initial = client.name?.charAt(0).toUpperCase() ?? '?'
   const [menuPos, setMenuPos] = useState(null)
   const menuRef = useRef(null)
@@ -40,11 +52,13 @@ function ClientIndicator({ client, speaking, micMuted, deafened, isSelf, streami
   const [volume, setVolume] = useState(Math.round(initialAudioState.volume * 100))
   const [localMuted, setLocalMuted] = useState(initialAudioState.muted)
 
-  // Apply this client's local volume/mute override whenever it changes
+  // Apply this client's local volume/mute override whenever it changes. Skipped
+  // in rosterMode — those entries don't control playback (and shouldn't clobber
+  // the volume the in-channel indicator manages for the same client).
   useEffect(() => {
-    if (isSelf) return
+    if (isSelf || rosterMode) return
     setClientAudioState(client.id, { volume: volume / 100, muted: localMuted })
-  }, [client.id, volume, localMuted, isSelf])
+  }, [client.id, volume, localMuted, isSelf, rosterMode])
 
   // Close the context menu on outside click
   useEffect(() => {
@@ -57,7 +71,7 @@ function ClientIndicator({ client, speaking, micMuted, deafened, isSelf, streami
   }, [menuPos])
 
   const handleContextMenu = (e) => {
-    if (isSelf) return
+    if (isSelf || rosterMode) return
     e.preventDefault()
     setMenuPos({ x: e.clientX, y: e.clientY })
   }
@@ -95,7 +109,7 @@ function ClientIndicator({ client, speaking, micMuted, deafened, isSelf, streami
 
   return (
     <div className="client-indicator" data-anim-status={animStatus} onContextMenu={handleContextMenu}>
-      {statusIcon}
+      {!rosterMode && statusIcon}
       <span className="client-avatar" aria-hidden="true">{initial}</span>
       {client.name}
       {streaming && (
