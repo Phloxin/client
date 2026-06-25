@@ -25,7 +25,8 @@ function ClientIndicator({
   streaming,
   animStatus,
   rosterMode,
-  onOpenDm
+  onOpenDm,
+  onShowClientSummary
 }) {
   const initial = client.name?.charAt(0).toUpperCase() ?? '?'
   const [menuPos, setMenuPos] = useState(null)
@@ -77,9 +78,22 @@ function ClientIndicator({
     setMenuPos({ x: e.clientX, y: e.clientY })
   }
 
-  // Double-click another user to open a direct message with them. stopPropagation
-  // keeps the click off the enclosing channel row (whose double-click joins voice).
+  // Single-click opens this client's summary; double-click opens a DM. A click
+  // always precedes a dblclick, so the single-click action is deferred briefly and
+  // cancelled if a double-click follows. stopPropagation keeps both off the
+  // enclosing channel row (whose double-click joins voice).
+  const clickTimerRef = useRef(null)
+  useEffect(() => () => clearTimeout(clickTimerRef.current), [])
+
+  const handleClick = (e) => {
+    if (!onShowClientSummary) return
+    e.stopPropagation()
+    clearTimeout(clickTimerRef.current)
+    clickTimerRef.current = setTimeout(() => onShowClientSummary(client.id), 200)
+  }
+
   const handleDoubleClick = (e) => {
+    clearTimeout(clickTimerRef.current)
     if (isSelf || !onOpenDm) return
     e.stopPropagation()
     onOpenDm(client.id)
@@ -121,6 +135,7 @@ function ClientIndicator({
       className="client-indicator"
       data-anim-status={animStatus}
       onContextMenu={handleContextMenu}
+      onClick={handleClick}
       onDoubleClick={handleDoubleClick}
     >
       {!rosterMode && statusIcon}

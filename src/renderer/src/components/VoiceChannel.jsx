@@ -43,6 +43,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     onRequestCreateChannel,
     onPreviewChannel,
     onOpenDm,
+    onShowClientSummary,
     previewing,
     unread,
     animStatus
@@ -419,6 +420,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
           isSelf={c.id === self?.id}
           streaming={streamingClientIds.has(c.id)}
           onOpenDm={onOpenDm}
+          onShowClientSummary={onShowClientSummary}
         />
       ))}
       {showSourcePicker && (

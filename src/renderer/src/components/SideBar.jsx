@@ -45,6 +45,7 @@ function Sidebar({
   onDeleteChannel,
   onPreviewChannel,
   onOpenDm,
+  onShowClientSummary,
   previewChannelId,
   unreadChannelIds
 }) {
@@ -236,6 +237,7 @@ function Sidebar({
             onRequestCreateChannel={openCreateChannel}
             onPreviewChannel={onPreviewChannel}
             onOpenDm={onOpenDm}
+            onShowClientSummary={onShowClientSummary}
             previewing={previewChannelId === ch.id}
             unread={!!unreadChannelIds?.has(ch.id)}
             onStreamsUpdate={(streams) => {
@@ -275,6 +277,7 @@ function Sidebar({
                   isSelf={isSelf}
                   rosterMode
                   onOpenDm={onOpenDm}
+                  onShowClientSummary={onShowClientSummary}
                 />
               )
             })}

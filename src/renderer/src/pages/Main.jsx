@@ -5,6 +5,7 @@ import { useAuth } from '../context/AuthContext'
 import SideBar from '../components/SideBar'
 import VideoGrid from '../components/VideoGrid'
 import ChatPanel from '../components/ChatPanel'
+import ClientSummary from '../components/ClientSummary'
 import TitleBar from '../components/TitleBar'
 import ConnectionOverlay from '../components/ConnectionOverlay'
 import IdleAnimation from '../components/IdleAnimation'
@@ -308,6 +309,10 @@ function Main() {
   // its voice (no streams, no view tabs). Null in the normal joined-channel view.
   const [previewChannelId, setPreviewChannelId] = useState(null)
 
+  // A client whose summary/profile we're viewing in the main area (single-click a
+  // client). Mutually exclusive with the chat preview. Null when not viewing one.
+  const [summaryClientId, setSummaryClientId] = useState(null)
+
   // The channel the local client currently has joined (chat is scoped to it)
   const selfChannelId = clients.find((c) => c.id === client?.id)?.channel_id ?? null
 
@@ -414,10 +419,25 @@ function Main() {
   }, [previewChannelId, selfChannelId, channels])
 
   // Single-click a channel: peek into its chat. Clicking the one we're already
-  // in just returns to the normal view.
+  // in just returns to the normal view. Closes any open client summary.
   const handlePreviewChannel = (channelId) => {
+    setSummaryClientId(null)
     setPreviewChannelId(channelId === selfChannelId ? null : channelId)
   }
+
+  // Single-click a client: show their summary/profile in the main area.
+  const handleShowClientSummary = (userId) => {
+    setPreviewChannelId(null)
+    setSummaryClientId(userId)
+  }
+
+  // Close the summary if the client leaves the server (mirrors the preview-drop
+  // above): we can't show a profile for someone no longer connected.
+  useEffect(() => {
+    if (summaryClientId != null && !clients.some((c) => c.id === summaryClientId)) {
+      setSummaryClientId(null)
+    }
+  }, [summaryClientId, clients])
 
   // Open (or create) a 1:1 DM with another user and peek into its chat. DMs are
   // just channels of type 'dm' — no voice/streams — so they ride the same
@@ -428,6 +448,7 @@ function Main() {
   const handleOpenDm = useCallback(
     async (userId) => {
       if (!userId || userId === client?.id) return
+      setSummaryClientId(null)
 
       if (DEV_MODE) {
         const id = `dm-${userId}`
@@ -676,6 +697,7 @@ function Main() {
     setConnectedServer(null)
     setServerHost(null)
     setPreviewChannelId(null)
+    setSummaryClientId(null)
     setConnectionStatus('connected')
   }, [setToken, setClient])
 
@@ -1217,6 +1239,9 @@ function Main() {
         'Direct Message'
       : (previewChannel?.name ?? 'Channel')
 
+  // The client whose summary is open (single-click), or null.
+  const summaryClient = summaryClientId != null ? clients.find((c) => c.id === summaryClientId) : null
+
   return (
     <div className="app-shell">
       <TitleBar
@@ -1250,6 +1275,7 @@ function Main() {
           onDeleteChannel={handleDeleteChannel}
           onPreviewChannel={handlePreviewChannel}
           onOpenDm={handleOpenDm}
+          onShowClientSummary={handleShowClientSummary}
           previewChannelId={previewChannelId}
           unreadChannelIds={unreadChannelIds}
         />
@@ -1257,7 +1283,24 @@ function Main() {
         <main className="chat-area">
           <div className="chat-header">
             <div className="header-content">
-              {previewChannelId != null ? (
+              {summaryClientId != null ? (
+                // Viewing a client's summary/profile: just their name and a close
+                // button back to the normal view.
+                <>
+                  <span className="view-preview-title">
+                    <IconUser size={18} stroke={2} />
+                    {summaryClient?.name ?? 'Unknown user'}
+                  </span>
+                  <button
+                    type="button"
+                    className="view-preview-close"
+                    onClick={() => setSummaryClientId(null)}
+                    title="Close"
+                  >
+                    <IconX size={18} />
+                  </button>
+                </>
+              ) : previewChannelId != null ? (
                 // Peeking into another channel's chat: no view tabs (no streams),
                 // just the channel name and a close button to return to our view.
                 <>
@@ -1318,9 +1361,11 @@ function Main() {
             key={
               !connected
                 ? 'disconnected'
-                : previewChannelId != null
-                  ? `preview-${previewChannelId}`
-                  : viewMode
+                : summaryClientId != null
+                  ? `summary-${summaryClientId}`
+                  : previewChannelId != null
+                    ? `preview-${previewChannelId}`
+                    : viewMode
             }
           >
             {!connected ? (
@@ -1331,6 +1376,8 @@ function Main() {
                   Pick a server from the <strong>Connect</strong> menu to get started.
                 </p>
               </div>
+            ) : summaryClientId != null ? (
+              <ClientSummary client={summaryClient} />
             ) : previewChannelId != null || viewMode === 'log' ? (
               <ChatPanel
                 feed={feed.filter(
