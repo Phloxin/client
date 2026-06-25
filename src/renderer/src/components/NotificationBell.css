@@ -202,6 +202,24 @@
   border-bottom: none;
 }
 
+/* Clickable inbox rows: reset the button chrome but keep the .notif-item layout
+   (and its bottom divider), and highlight on hover. */
+.notif-item.clickable {
+  width: 100%;
+  border-top: none;
+  border-left: none;
+  border-right: none;
+  background: transparent;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.notif-item.clickable:hover {
+  background: var(--color-background-mute);
+}
+
 .notif-item-msg {
   font-size: var(--font-size-sm);
   color: var(--color-text);

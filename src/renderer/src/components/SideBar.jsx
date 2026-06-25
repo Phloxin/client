@@ -44,6 +44,7 @@ function Sidebar({
   onCreateChannel,
   onDeleteChannel,
   onPreviewChannel,
+  onOpenDm,
   previewChannelId,
   unreadChannelIds
 }) {
@@ -89,9 +90,14 @@ function Sidebar({
 
   const channelAnimEnabled = useAnimationCategory('channelList')
 
-  // Memoized so the reference is stable for the presence hook's effect.
+  // Memoized so the reference is stable for the presence hook's effect. DMs are
+  // channels of type 'dm' — they're opened by double-clicking a user, not listed
+  // here, so keep them out of the channel tree.
   const sortedChannels = useMemo(
-    () => [...channels].sort((a, b) => (a.position ?? 0) - (b.position ?? 0)),
+    () =>
+      channels
+        .filter((c) => c.type !== 'dm')
+        .sort((a, b) => (a.position ?? 0) - (b.position ?? 0)),
     [channels]
   )
 
@@ -229,6 +235,7 @@ function Sidebar({
             onDeleteChannel={onDeleteChannel}
             onRequestCreateChannel={openCreateChannel}
             onPreviewChannel={onPreviewChannel}
+            onOpenDm={onOpenDm}
             previewing={previewChannelId === ch.id}
             unread={!!unreadChannelIds?.has(ch.id)}
             onStreamsUpdate={(streams) => {
@@ -261,7 +268,15 @@ function Sidebar({
             .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
             .map((c) => {
               const isSelf = c.id === self?.id
-              return <ClientIndicator key={c.id} client={c} isSelf={isSelf} rosterMode />
+              return (
+                <ClientIndicator
+                  key={c.id}
+                  client={c}
+                  isSelf={isSelf}
+                  rosterMode
+                  onOpenDm={onOpenDm}
+                />
+              )
             })}
           {clients.length === 0 && <div className="sidebar-user-empty">No users connected</div>}
         </div>

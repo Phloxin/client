@@ -2,13 +2,22 @@ import { useEffect, useState } from 'react'
 import './TitleBar.css'
 import { IconMinus, IconSquare, IconCopy, IconX } from '@tabler/icons-react'
 import NotificationBell from './NotificationBell'
+import Inbox from './Inbox'
 
 // Discord-style custom title bar for the frameless main window. The left side
 // hosts the notification bell (pinned far-left) plus a drag region; the center
 // shows an app icon + title (both configurable via props); the right side hosts
 // the minimize / maximize-restore / close controls. Drag regions use
 // -webkit-app-region: drag in CSS; the buttons opt out.
-function TitleBar({ title, icon: Icon, notifications = [], onClearNotifications }) {
+function TitleBar({
+  title,
+  icon: Icon,
+  notifications = [],
+  onClearNotifications,
+  dmNotifications = [],
+  onOpenDmNotification,
+  onClearDmNotifications
+}) {
   const ipc = window.electron?.ipcRenderer
   const [maximized, setMaximized] = useState(false)
 
@@ -26,6 +35,11 @@ function TitleBar({ title, icon: Icon, notifications = [], onClearNotifications 
           window-centered: the bell is pinned far-left, the rest is drag space. */}
       <div className="title-bar-controls-left">
         <NotificationBell notifications={notifications} onClear={onClearNotifications} />
+        <Inbox
+          notifications={dmNotifications}
+          onOpen={onOpenDmNotification}
+          onClear={onClearDmNotifications}
+        />
         <div className="title-bar-left-fill" aria-hidden="true" />
       </div>
       <div className="title-bar-drag">

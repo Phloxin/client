@@ -24,7 +24,8 @@ function ClientIndicator({
   isSelf,
   streaming,
   animStatus,
-  rosterMode
+  rosterMode,
+  onOpenDm
 }) {
   const initial = client.name?.charAt(0).toUpperCase() ?? '?'
   const [menuPos, setMenuPos] = useState(null)
@@ -76,6 +77,14 @@ function ClientIndicator({
     setMenuPos({ x: e.clientX, y: e.clientY })
   }
 
+  // Double-click another user to open a direct message with them. stopPropagation
+  // keeps the click off the enclosing channel row (whose double-click joins voice).
+  const handleDoubleClick = (e) => {
+    if (isSelf || !onOpenDm) return
+    e.stopPropagation()
+    onOpenDm(client.id)
+  }
+
   const toggleLocalMute = () => setLocalMuted((prev) => !prev)
 
   const handleVolumeChange = (e) => {
@@ -108,7 +117,12 @@ function ClientIndicator({
     : volume < 50 ? IconVolume4 : volume <= 99 ? IconVolume2 : IconVolume
 
   return (
-    <div className="client-indicator" data-anim-status={animStatus} onContextMenu={handleContextMenu}>
+    <div
+      className="client-indicator"
+      data-anim-status={animStatus}
+      onContextMenu={handleContextMenu}
+      onDoubleClick={handleDoubleClick}
+    >
       {!rosterMode && statusIcon}
       <span className="client-avatar" aria-hidden="true">{initial}</span>
       {client.name}

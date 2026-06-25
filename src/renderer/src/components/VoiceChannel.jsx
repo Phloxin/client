@@ -42,6 +42,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     onDeleteChannel,
     onRequestCreateChannel,
     onPreviewChannel,
+    onOpenDm,
     previewing,
     unread,
     animStatus
@@ -417,6 +418,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
           deafened={c.id === self?.id ? deafened : !!c.self_deaf}
           isSelf={c.id === self?.id}
           streaming={streamingClientIds.has(c.id)}
+          onOpenDm={onOpenDm}
         />
       ))}
       {showSourcePicker && (

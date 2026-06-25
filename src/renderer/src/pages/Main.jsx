@@ -25,7 +25,7 @@ import {
   MOCK_CLIENTS,
   createMockStreams
 } from '../lib/mock'
-import { IconVideo, IconMessage, IconUsersGroup, IconX, IconPlugConnected } from '@tabler/icons-react'
+import { IconVideo, IconMessage, IconUser, IconUsersGroup, IconX, IconPlugConnected } from '@tabler/icons-react'
 
 const APP_TITLE = 'Teamspeak 26'
 
@@ -116,6 +116,9 @@ function Main() {
   const [watchedStreamIds, setWatchedStreamIds] = useState(() => new Set())
   // Server notifications shown in the title-bar bell (newest first).
   const [notifications, setNotifications] = useState([])
+  // DM alerts shown in the title-bar inbox (newest first), deduped to one entry
+  // per DM channel. Each carries the sender so clicking it opens that DM.
+  const [dmNotifications, setDmNotifications] = useState([])
   // Channel ids with messages we haven't seen yet (arrived while their chat
   // wasn't the active view). Drives the unread dot in the sidebar.
   const [unreadChannelIds, setUnreadChannelIds] = useState(() => new Set())
@@ -220,6 +223,7 @@ function Main() {
   // channels shouldn't wipe what you've already been notified of.
   useEffect(() => {
     setNotifications([])
+    setDmNotifications([])
     setUnreadChannelIds(new Set())
   }, [token])
 
@@ -359,6 +363,12 @@ function Main() {
       next.delete(activeChatChannelId)
       return next
     })
+    // Reading a DM also clears its inbox alert.
+    setDmNotifications((prev) =>
+      prev.some((n) => n.channelId === activeChatChannelId)
+        ? prev.filter((n) => n.channelId !== activeChatChannelId)
+        : prev
+    )
   }, [activeChatChannelId, chatVisible])
 
   // (Re)baseline stream-sound detection on connect, channel change, and
@@ -408,6 +418,68 @@ function Main() {
   const handlePreviewChannel = (channelId) => {
     setPreviewChannelId(channelId === selfChannelId ? null : channelId)
   }
+
+  // Open (or create) a 1:1 DM with another user and peek into its chat. DMs are
+  // just channels of type 'dm' — no voice/streams — so they ride the same
+  // preview/chat path as a channel peek: once we know the channel id we only set
+  // it as the previewed channel and everything else (history, send, typing) works
+  // unchanged. Get-or-create is idempotent server-side; messages persist, so a DM
+  // sent to an offline user is there when they next open it.
+  const handleOpenDm = useCallback(
+    async (userId) => {
+      if (!userId || userId === client?.id) return
+
+      if (DEV_MODE) {
+        const id = `dm-${userId}`
+        setChannels((prev) =>
+          prev.some((c) => c.id === id)
+            ? prev
+            : [
+                ...prev,
+                {
+                  id,
+                  type: 'dm',
+                  name: clientsRef.current.find((c) => c.id === userId)?.name,
+                  recipients: [client?.id, userId]
+                }
+              ]
+        )
+        setPreviewChannelId(id)
+        return
+      }
+
+      try {
+        const res = await fetch(`${apiBase()}/channels/dm`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          // Array so the same endpoint creates a group chat later; today the
+          // double-click entry point only ever sends one recipient.
+          body: JSON.stringify({ recipient_ids: [userId] })
+        })
+        if (!res.ok) throw new Error(`Server responded ${res.status}`)
+        const channel = await res.json()
+        if (channel?.id == null) return
+        // Stamp the recipients/type we know from the double-click so the header
+        // resolves to the other user's name regardless of the server's channel
+        // shape. (A future group chat would trust server-provided recipients.)
+        const dm = { ...channel, type: 'dm', recipients: [client?.id, userId] }
+        // Make the DM channel known before previewing it — the preview-drop
+        // effect clears any previewed id that isn't in `channels`. Merge onto any
+        // existing entry: the server's Ready/ChannelCreated may have already added
+        // this channel in its bare shape, and we need our type/recipients stamp to
+        // win so the header resolves to the other user's name.
+        setChannels((prev) =>
+          prev.some((c) => c.id === dm.id)
+            ? prev.map((c) => (c.id === dm.id ? { ...c, ...dm } : c))
+            : [...prev, dm]
+        )
+        setPreviewChannelId(dm.id)
+      } catch (err) {
+        setFeed((prev) => appendFeed(prev, systemEntry(`Failed to open direct message: ${err.message}`)))
+      }
+    },
+    [token, client]
+  )
 
   // No stream is focused by default (the grid view shows them all). Only clear
   // the focus if the currently focused stream goes away.
@@ -788,6 +860,22 @@ function Main() {
             next.add(data.channel_id)
             return next
           })
+          // A DM message from someone else, while we're not reading it, raises a
+          // clickable inbox alert (deduped to the latest message per DM channel).
+          const dmChannel = channelsRef.current.find((c) => c.id === data.channel_id)
+          if (dmChannel?.type === 'dm') {
+            const name = clientsRef.current.find((c) => c.id === data.author)?.name || 'Someone'
+            setDmNotifications((prev) => [
+              {
+                id: data.id ?? `${data.channel_id}-${Date.now()}`,
+                channelId: data.channel_id,
+                authorId: data.author,
+                message: `${name} sent you a direct message`,
+                timestamp: Date.now()
+              },
+              ...prev.filter((n) => n.channelId !== data.channel_id)
+            ])
+          }
         }
       } else if (ev === 'MessageUpdated') {
         // Pushed after async work (e.g. link-unfurl embeds). Carries either the
@@ -1117,8 +1205,17 @@ function Main() {
     .filter((t) => t.channelId === activeChatChannelId && t.clientId !== client?.id)
     .map((t) => t.name)
 
-  // Name of the channel being peeked into (for the preview header).
-  const previewChannelName = channels.find((c) => c.id === previewChannelId)?.name ?? 'Channel'
+  // Title for the peeked-into chat header: for a DM, the other recipient's name;
+  // otherwise the channel name. The name may be unresolvable if the other user is
+  // offline (not in `clients`), so fall back to the channel's own name.
+  const previewChannel = channels.find((c) => c.id === previewChannelId)
+  const previewChannelName =
+    previewChannel?.type === 'dm'
+      ? clients.find((c) => c.id === (previewChannel.recipients || []).find((id) => id !== client?.id))
+          ?.name ||
+        previewChannel.name ||
+        'Direct Message'
+      : (previewChannel?.name ?? 'Channel')
 
   return (
     <div className="app-shell">
@@ -1127,6 +1224,9 @@ function Main() {
         icon={IconUsersGroup}
         notifications={notifications}
         onClearNotifications={() => setNotifications([])}
+        dmNotifications={dmNotifications}
+        onOpenDmNotification={(n) => handleOpenDm(n.authorId)}
+        onClearDmNotifications={() => setDmNotifications([])}
       />
       <div className="layout">
         <SideBar
@@ -1149,6 +1249,7 @@ function Main() {
           onCreateChannel={handleCreateChannel}
           onDeleteChannel={handleDeleteChannel}
           onPreviewChannel={handlePreviewChannel}
+          onOpenDm={handleOpenDm}
           previewChannelId={previewChannelId}
           unreadChannelIds={unreadChannelIds}
         />
@@ -1161,7 +1262,11 @@ function Main() {
                 // just the channel name and a close button to return to our view.
                 <>
                   <span className="view-preview-title">
-                    <IconMessage size={18} stroke={2} />
+                    {previewChannel?.type === 'dm' ? (
+                      <IconUser size={18} stroke={2} />
+                    ) : (
+                      <IconMessage size={18} stroke={2} />
+                    )}
                     {previewChannelName}
                   </span>
                   <button
