@@ -36,7 +36,8 @@ const DEFAULT_APPEARANCE = {
   transparencyEnabled: false,
   transparencyBlur: 20,
   transparencyOpacity: 85,
-  gradientsEnabled: true
+  gradientsEnabled: true,
+  fontFamily: 'inter'
 }
 
 const DEFAULT_ANIMATIONS = {

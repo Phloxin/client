@@ -55,6 +55,23 @@
   text-align: center;
 }
 
+.chat-day-divider {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  margin: var(--spacing-sm) 0;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+}
+
+.chat-day-divider::before,
+.chat-day-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--color-border, rgba(255, 255, 255, 0.1));
+}
+
 .chat-message {
   display: flex;
   gap: var(--spacing-sm);

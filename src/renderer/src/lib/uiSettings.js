@@ -1,13 +1,30 @@
 // Apply appearance/animation preferences to the document. Shared by the
 // SettingsContext effects and the pre-paint init in main.jsx so the two can't drift.
 
+// Selectable interface fonts. Each `stack` ends in the system sans so it still
+// renders if the bundled woff2 (imported in main.jsx) somehow fails to load.
+// `id` is what's persisted; the Settings dropdown is built from this list.
+export const UI_FONTS = [
+  { id: 'inter', label: 'Inter', stack: "'Inter Variable', Inter, system-ui, sans-serif" },
+  { id: 'open-sans', label: 'Open Sans', stack: "'Open Sans Variable', 'Open Sans', system-ui, sans-serif" },
+  { id: 'dm-sans', label: 'DM Sans', stack: "'DM Sans Variable', 'DM Sans', system-ui, sans-serif" },
+  { id: 'roboto', label: 'Roboto', stack: "'Roboto Variable', Roboto, system-ui, sans-serif" },
+  { id: 'nunito', label: 'Nunito', stack: "'Nunito Variable', Nunito, system-ui, sans-serif" }
+]
+
 export function applyAppearanceSettings({
   transparencyEnabled,
   transparencyBlur = 20,
   transparencyOpacity = 85,
-  gradientsEnabled = true
+  gradientsEnabled = true,
+  fontFamily = 'inter'
 }) {
   const html = document.documentElement
+
+  // Drive the global --font-family-primary token off the saved choice; every
+  // surface already consumes that token, so the whole UI switches at once.
+  const font = UI_FONTS.find((f) => f.id === fontFamily) || UI_FONTS[0]
+  html.style.setProperty('--font-family-primary', font.stack)
   if (transparencyEnabled) {
     html.setAttribute('data-transparency', 'true')
     html.style.setProperty('--transparency-blur', `${transparencyBlur}px`)

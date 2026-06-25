@@ -1,5 +1,7 @@
 :root {
-  --font-family-primary: 'gg sans', 'Noto Sans', sans-serif;
+  /* Default interface font; overridden at runtime by the Appearance font picker
+     via applyAppearanceSettings (which rewrites this token). */
+  --font-family-primary: 'Inter Variable', Inter, system-ui, sans-serif;
   --font-size-xs: 11px;
   --font-size-sm: 12px;
   --font-size-base: 13px;
@@ -50,19 +52,6 @@ body {
   font-family: var(--font-family-primary);
   line-height: 1.6;
   transition: background-color 0.2s, color 0.2s;
-  font-family:
-    Inter,
-    -apple-system,
-    BlinkMacSystemFont,
-    'Segoe UI',
-    Roboto,
-    Oxygen,
-    Ubuntu,
-    Cantarell,
-    'Fira Sans',
-    'Droid Sans',
-    'Helvetica Neue',
-    sans-serif;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;

@@ -40,7 +40,7 @@ body[data-theme="classic-light"] {
   --color-background: #ffffff;
   --color-background-soft: #cacaca;
   --color-background-mute: #aaaaaa;
-  --color-surface: #040405;
+  --color-surface: #b3bac2;
 
   /* Text Colors — deepened for stronger contrast on light surfaces */
   --color-text: #0a0d11;

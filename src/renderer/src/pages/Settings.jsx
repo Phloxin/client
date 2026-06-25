@@ -4,6 +4,7 @@ import { useSettings } from '../context/SettingsContext'
 import { ThemeSwitcher } from '../components/ThemeSwitcher'
 import AudioSettings from '../components/AudioSettings'
 import { SOUND_CATEGORIES } from '../lib/sounds'
+import { UI_FONTS } from '../lib/uiSettings'
 import './Settings.css'
 
 const sections = [
@@ -165,6 +166,25 @@ function Settings() {
                     />
                     <span className="toggle-slider" />
                   </label>
+                </div>
+
+                <div className="settings-section">
+                  <label htmlFor="interface-font">Interface Font</label>
+                  <p className="settings-section-desc">The typeface used across the app.</p>
+                  <select
+                    id="interface-font"
+                    value={appearanceSettings.fontFamily}
+                    onChange={(e) => updateAppearanceSettings({ fontFamily: e.target.value })}
+                    style={{
+                      fontFamily: UI_FONTS.find((f) => f.id === appearanceSettings.fontFamily)?.stack
+                    }}
+                  >
+                    {UI_FONTS.map((f) => (
+                      <option key={f.id} value={f.id} style={{ fontFamily: f.stack }}>
+                        {f.label}
+                      </option>
+                    ))}
+                  </select>
                 </div>
               </div>
 

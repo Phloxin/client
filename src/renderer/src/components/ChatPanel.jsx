@@ -33,6 +33,17 @@ function formatTime(ts) {
   return new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
 }
 
+// "Today" / "Yesterday" / "June 24, 2026" label for a day divider.
+function formatDateLabel(ts) {
+  const d = new Date(ts)
+  const today = new Date()
+  const yesterday = new Date(today)
+  yesterday.setDate(today.getDate() - 1)
+  if (d.toDateString() === today.toDateString()) return 'Today'
+  if (d.toDateString() === yesterday.toDateString()) return 'Yesterday'
+  return d.toLocaleDateString([], { month: 'long', day: 'numeric', year: 'numeric' })
+}
+
 // Renders a message body as Discord-style markdown (links, bold/italic, inline
 // and fenced code, etc.). Memoized so the parse only re-runs when the text
 // changes, not on every feed re-render.
@@ -392,14 +403,29 @@ function ChatPanel({
       )}
       <div className="chat-messages" ref={listRef}>
         {feed.map((entry, i) => {
+          const prev = feed[i - 1]
+          // A divider marking the start of a new calendar day.
+          const dayDivider =
+            entry.ts &&
+            (!prev || !prev.ts || new Date(prev.ts).toDateString() !== new Date(entry.ts).toDateString()) ? (
+              <div key={`day-${entry.id}`} className="chat-day-divider">
+                <span>{formatDateLabel(entry.ts)}</span>
+              </div>
+            ) : null
+
           if (entry.type === 'system') {
-            return <div key={entry.id} className="chat-system-entry">{entry.text}</div>
+            return (
+              <div key={entry.id}>
+                {dayDivider}
+                <div className="chat-system-entry">{entry.text}</div>
+              </div>
+            )
           }
           // Group consecutive messages from the same author (within a short
-          // window, and not split by a system notice): only the first shows the
-          // avatar + author + time; the rest are bare lines aligned beneath it.
-          const prev = feed[i - 1]
+          // window, and not split by a system notice or day divider): only the
+          // first shows the avatar + author + time; the rest are bare lines.
           const grouped =
+            !dayDivider &&
             prev &&
             prev.type === 'message' &&
             prev.authorId === entry.authorId &&
@@ -420,7 +446,9 @@ function ChatPanel({
           const canManage = isOwn && !disabled && !isEditing
           const edited = !!entry.editedTs && !isEditing
           return (
-            <div key={entry.id} className={`chat-message${grouped ? ' grouped' : ''}`}>
+            <div key={entry.id}>
+              {dayDivider}
+              <div className={`chat-message${grouped ? ' grouped' : ''}`}>
               {grouped ? (
                 <span className="chat-avatar-spacer" aria-hidden="true" />
               ) : (
@@ -499,6 +527,7 @@ function ChatPanel({
                 {(entry.embeds || []).map((embed, idx) => (
                   <MessageEmbed key={idx} embed={embed} onImageClick={setViewerImage} />
                 ))}
+              </div>
               </div>
             </div>
           )
