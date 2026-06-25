@@ -27,25 +27,66 @@ export function prefersReducedMotion() {
 // — there's no exit phase, so callers that want something to animate away should
 // not rely on this hook to keep it mounted. When disabled it's a pass-through
 // that tags everything 'present'.
-export function useAnimatedPresence(items, getKey, { enabled = true } = {}) {
+//
+// A key stays 'entering' for `enterDuration` ms (covering the CSS enter
+// animation) before being demoted to 'present', rather than on the next effect
+// run. Without this sticky window, an unrelated re-render that hands us a new
+// `items` array reference (e.g. the self-join cascade re-running this effect)
+// would demote a just-added key to 'present' before the browser ever painted
+// 'entering' — so the animation would silently not play.
+export function useAnimatedPresence(items, getKey, { enabled = true, enterDuration = 320 } = {}) {
   const [rendered, setRendered] = useState(() =>
     items.map((item) => ({ key: getKey(item), item, status: 'present' }))
   )
   const renderedRef = useRef(rendered)
+  // key -> demotion timer id, for keys currently mid-enter. While a key's timer
+  // is pending it stays 'entering' across effect re-runs.
+  const enterTimersRef = useRef(new Map())
 
   useLayoutEffect(() => {
-    // A key already on screen stays 'present'; a brand-new key is 'entering'.
-    // When disabled, skip the entering tag and mirror the live list verbatim.
-    const prevKeys = enabled ? new Set(renderedRef.current.map((r) => r.key)) : null
+    const timers = enterTimersRef.current
+    const prevKeys = new Set(renderedRef.current.map((r) => r.key))
+
     const next = items.map((item) => {
       const key = getKey(item)
-      return { key, item, status: prevKeys && !prevKeys.has(key) ? 'entering' : 'present' }
+      // Begin the enter phase for a brand-new key: tag it 'entering' and start
+      // the timer that will demote it once the animation has played.
+      if (enabled && !prevKeys.has(key) && !timers.has(key)) {
+        const id = setTimeout(() => {
+          timers.delete(key)
+          const demoted = renderedRef.current.map((r) =>
+            r.key === key ? { ...r, status: 'present' } : r
+          )
+          renderedRef.current = demoted
+          setRendered(demoted)
+        }, enterDuration)
+        timers.set(key, id)
+      }
+      return { key, item, status: enabled && timers.has(key) ? 'entering' : 'present' }
     })
+
+    // Drop timers for keys that have since left, so their pending demotion can't
+    // fire against a stale list.
+    for (const [key, id] of timers) {
+      if (!next.some((n) => n.key === key)) {
+        clearTimeout(id)
+        timers.delete(key)
+      }
+    }
 
     if (sameEntries(next, renderedRef.current)) return
     renderedRef.current = next
     setRendered(next)
   }, [items, enabled])
+
+  // Clear any pending timers on unmount.
+  useLayoutEffect(
+    () => () => {
+      for (const id of enterTimersRef.current.values()) clearTimeout(id)
+      enterTimersRef.current.clear()
+    },
+    []
+  )
 
   return rendered
 }
