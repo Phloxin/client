@@ -354,7 +354,7 @@ app.whenReady().then(() => {
   // body ({ limit }), which the renderer's fetch can't send (the Fetch spec
   // forbids a body on GET). Node's http.request has no such restriction, so we
   // make the request here and hand the parsed messages back to the renderer.
-  ipcMain.handle('get-channel-messages', async (_, { url, token, limit }) => {
+  ipcMain.handle('get-channel-messages', async (_, { url, token, limit, before, after, around }) => {
     return new Promise((resolve) => {
       let target
       try {
@@ -364,7 +364,12 @@ app.whenReady().then(() => {
         return
       }
       const lib = target.protocol === 'https:' ? https : http
-      const body = JSON.stringify({ limit })
+      const body = JSON.stringify({
+        limit,
+        ...(before != null ? { before } : {}),
+        ...(after != null ? { after } : {}),
+        ...(around != null ? { around } : {})
+      })
       const req = lib.request(
         {
           hostname: target.hostname,

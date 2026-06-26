@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import './Main.css'
 import '../App.css'
 import { useAuth } from '../context/AuthContext'
@@ -91,6 +91,16 @@ function byChronology(a, b) {
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
 }
 
+// The other party in a DM channel, given our own id. `recipients` may be plain
+// ids or { id, name } objects; returns { id, name } with name possibly undefined.
+function dmOther(channel, selfId) {
+  for (const r of channel?.recipients || []) {
+    const id = r && typeof r === 'object' ? r.id : r
+    if (id !== selfId) return { id, name: r && typeof r === 'object' ? r.name : undefined }
+  }
+  return { id: undefined, name: undefined }
+}
+
 function Main() {
   const { token, setToken, client, setClient } = useAuth()
   const [channels, setChannels] = useState([])
@@ -120,9 +130,11 @@ function Main() {
   // DM alerts shown in the title-bar inbox (newest first), deduped to one entry
   // per DM channel. Each carries the sender so clicking it opens that DM.
   const [dmNotifications, setDmNotifications] = useState([])
-  // Channel ids with messages we haven't seen yet (arrived while their chat
-  // wasn't the active view). Drives the unread dot in the sidebar.
-  const [unreadChannelIds, setUnreadChannelIds] = useState(() => new Set())
+  // Per-channel read cursors: { [channel_id]: last_acknowledged_message_id|null }.
+  // Seeded from Ready.read_states, patched by ReadStateUpdated, and acked back to
+  // the server when we view a channel. Unread is derived (see unreadChannelIds
+  // below) by comparing against each channel's last_message_id.
+  const [readStates, setReadStates] = useState({})
   // Other clients currently typing: { clientId, name, channelId, expiresAt }.
   // Pruned as entries expire; filtered to the active channel at render.
   const [typingEntries, setTypingEntries] = useState([])
@@ -160,6 +172,13 @@ function Main() {
   // active channel only counts as "read" while its chat is actually visible, so
   // a message arriving while we're in stream view still marks it unread.
   const chatVisibleRef = useRef(true)
+  // Current feed, mirrored so loadOlderMessages can read it without re-creating
+  // the callback (and re-binding scroll handlers) on every message.
+  const feedRef = useRef([])
+  // Guards a single in-flight "load older" fetch, and tracks channels whose
+  // history we've scrolled all the way back to (so we stop asking).
+  const loadingOlderRef = useRef(false)
+  const [exhaustedChannels, setExhaustedChannels] = useState(() => new Set())
   // Stream-sound detection: ids present last time we diffed, and a gate that
   // suppresses chimes until shortly after a (re)connect or channel change so the
   // streams already live in a channel we just joined don't each fire a start.
@@ -225,7 +244,7 @@ function Main() {
   useEffect(() => {
     setNotifications([])
     setDmNotifications([])
-    setUnreadChannelIds(new Set())
+    setReadStates({})
   }, [token])
 
   // Emit a notification when a remote client starts streaming. Keyed by clientId
@@ -356,25 +375,53 @@ function Main() {
   useEffect(() => {
     chatVisibleRef.current = chatVisible
   }, [chatVisible])
+  useEffect(() => {
+    feedRef.current = feed
+  }, [feed])
 
-  // Actually viewing a channel's chat marks it read — drop it from the unread
-  // set. Gated on chatVisible so switching to the Chat tab (not just being in the
-  // channel) is what clears the dot.
+  // Unread is derived, not stored: a channel is unread when its newest message
+  // (last_message_id) differs from our acknowledged cursor. A null===null pair
+  // (empty channel, never acked) is correctly read. Drives the sidebar dot.
+  const unreadChannelIds = useMemo(() => {
+    const set = new Set()
+    for (const ch of channels) {
+      if ((ch.last_message_id ?? null) !== (readStates[ch.id] ?? null)) set.add(ch.id)
+    }
+    return set
+  }, [channels, readStates])
+
+  // Ack our read cursor in a channel up to `messageId` (the channel's latest).
+  const markChannelRead = useCallback(
+    (channelId, messageId) => {
+      if (DEV_MODE || !token || channelId == null) return
+      fetch(`${apiBase()}/channels/${channelId}/read-state`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ last_acknowledged_message_id: messageId ?? null })
+      }).catch((err) => console.error('Failed to mark channel read:', err))
+    },
+    [token]
+  )
+
+  // Viewing a channel's chat acks its latest message, clearing the unread dot.
+  // Gated on chatVisible (the Chat tab is actually on screen), and re-runs when a
+  // new message lands in the open channel (its last_message_id advances), which
+  // the backend lists as an acceptable time to ack. Optimistically updates the
+  // local cursor so the dot clears without waiting on the round trip.
   useEffect(() => {
     if (activeChatChannelId == null || !chatVisible) return
-    setUnreadChannelIds((prev) => {
-      if (!prev.has(activeChatChannelId)) return prev
-      const next = new Set(prev)
-      next.delete(activeChatChannelId)
-      return next
-    })
     // Reading a DM also clears its inbox alert.
     setDmNotifications((prev) =>
       prev.some((n) => n.channelId === activeChatChannelId)
         ? prev.filter((n) => n.channelId !== activeChatChannelId)
         : prev
     )
-  }, [activeChatChannelId, chatVisible])
+    if (DEV_MODE || !token) return
+    const latest = channels.find((c) => c.id === activeChatChannelId)?.last_message_id ?? null
+    if (latest === (readStates[activeChatChannelId] ?? null)) return
+    setReadStates((prev) => ({ ...prev, [activeChatChannelId]: latest }))
+    markChannelRead(activeChatChannelId, latest)
+  }, [activeChatChannelId, chatVisible, channels, readStates, token, markChannelRead])
 
   // (Re)baseline stream-sound detection on connect, channel change, and
   // connection recovery: snapshot the streams currently in view (by clientId, so
@@ -429,6 +476,19 @@ function Main() {
   const handleShowClientSummary = (userId) => {
     setPreviewChannelId(null)
     setSummaryClientId(userId)
+  }
+
+  // Open the DM an inbox alert points at. Prefer the sender id (get-or-create +
+  // stamps recipients so the header resolves); if we never resolved it (server
+  // didn't include recipients in Ready), the channel already exists — just peek
+  // it by id. Viewing it clears the alert via the view→ack effect.
+  const handleOpenDmNotification = (n) => {
+    if (n.authorId != null) {
+      handleOpenDm(n.authorId)
+    } else if (n.channelId != null) {
+      setSummaryClientId(null)
+      setPreviewChannelId(n.channelId)
+    }
   }
 
   // Close the summary if the client leaves the server (mirrors the preview-drop
@@ -531,6 +591,14 @@ function Main() {
             return
           }
           const history = (res.messages || []).map(messageFromApi).sort(byChronology)
+          // We just replaced this channel's messages with the recent page, so
+          // it's no longer scrolled to the start — let scroll-up paginate again.
+          setExhaustedChannels((prev) => {
+            if (!prev.has(channelId)) return prev
+            const next = new Set(prev)
+            next.delete(channelId)
+            return next
+          })
           if (!history.length) return
           setFeed((prev) => {
             const rest = prev.filter((e) => !(e.type === 'message' && e.channelId === channelId))
@@ -541,6 +609,49 @@ function Main() {
     },
     [token]
   )
+
+  // Scroll-up pagination: fetch the page of messages older than the oldest one
+  // we currently hold for the active channel and prepend it. The server returns
+  // at most HISTORY_LIMIT; a short page means we've reached the start, so we
+  // mark the channel exhausted and stop asking.
+  const loadOlderMessages = useCallback(() => {
+    const channelId = activeChatChannelIdRef.current
+    if (DEV_MODE || !token || channelId == null || loadingOlderRef.current) return Promise.resolve()
+    const oldest = feedRef.current.reduce((min, e) => {
+      if (e.type !== 'message' || e.channelId !== channelId) return min
+      return !min || byChronology(e, min) < 0 ? e : min
+    }, null)
+    if (!oldest) return Promise.resolve()
+    loadingOlderRef.current = true
+    return window.electron.ipcRenderer
+      .invoke('get-channel-messages', {
+        url: `${apiBase()}/channels/${channelId}/messages`,
+        token,
+        limit: HISTORY_LIMIT,
+        before: oldest.id
+      })
+      .then((res) => {
+        if (!res?.ok) {
+          if (res?.error) console.error('Failed to load older messages:', res.error)
+          return 0
+        }
+        const older = (res.messages || []).map(messageFromApi)
+        if (older.length < HISTORY_LIMIT) {
+          setExhaustedChannels((prev) => new Set(prev).add(channelId))
+        }
+        const have = new Set(feedRef.current.map((e) => e.id))
+        const fresh = older.filter((m) => !have.has(m.id)).sort(byChronology)
+        if (fresh.length) setFeed((prev) => [...fresh, ...prev])
+        return fresh.length
+      })
+      .catch((err) => {
+        console.error('Failed to load older messages:', err)
+        return 0
+      })
+      .finally(() => {
+        loadingOlderRef.current = false
+      })
+  }, [token])
 
   // Load recent message history whenever the local client enters a channel, so
   // opening a channel shows what was said before we got here.
@@ -698,6 +809,7 @@ function Main() {
     setServerHost(null)
     setPreviewChannelId(null)
     setSummaryClientId(null)
+    setReadStates({})
     setConnectionStatus('connected')
   }, [setToken, setClient])
 
@@ -726,6 +838,31 @@ function Main() {
     // here we only need to reload the active channel's message history, which
     // Ready does not include.
     const reloadHistory = () => loadChannelHistory(activeChatChannelIdRef.current)
+
+    // Seed the inbox from DM channels that are unread per the read cursors (i.e.
+    // messages arrived while we were offline). `clientList` is Ready's clients —
+    // the refs aren't populated yet when Ready fires, so resolve names from it.
+    const seedUnreadDms = (chans, reads, clientList) => {
+      const self = selfIdRef.current
+      const seeded = chans
+        .filter(
+          (c) => c.type === 'dm' && (c.last_message_id ?? null) !== (reads[c.id] ?? null)
+        )
+        .map((c) => {
+          const o = dmOther(c, self)
+          const name = o.name || clientList.find((cl) => cl.id === o.id)?.name || c.name || 'Someone'
+          return {
+            id: `unread-${c.id}`,
+            channelId: c.id,
+            authorId: o.id,
+            message: `${name} sent you a direct message`,
+            timestamp: Date.now()
+          }
+        })
+      if (!seeded.length) return
+      const seededChannels = new Set(seeded.map((s) => s.channelId))
+      setDmNotifications((prev) => [...seeded, ...prev.filter((p) => !seededChannels.has(p.channelId))])
+    }
 
     // Reconnect bookkeeping. `closedByUs` suppresses reconnects on intentional
     // teardown (effect cleanup, disconnect, or an auth failure).
@@ -819,6 +956,14 @@ function Main() {
         // ClientApiObject uses `muted`/`deaf`; the rest of the UI uses
         // `self_mute`/`self_deaf` - normalize on the way in.
         setClients(data.clients.map((c) => ({ ...c, self_mute: c.muted, self_deaf: c.deaf })))
+        // Seed read cursors (one entry per visible channel).
+        const reads = {}
+        for (const rs of data.read_states || []) {
+          reads[rs.channel_id] = rs.last_acknowledged_message_id
+        }
+        setReadStates(reads)
+        // Surface DMs that went unread while we were away in the inbox.
+        seedUnreadDms(data.channels || [], reads, data.clients || [])
         return
       }
 
@@ -859,6 +1004,12 @@ function Main() {
         }
       } else if (ev === 'MessageCreated') {
         setFeed((prev) => appendFeed(prev, messageFromApi(data)))
+        // Advance the channel's newest-message pointer — unread is derived from
+        // this vs. our read cursor. (The server does not auto-ack the sender, so
+        // our own sends rely on the view→ack effect to mark them read.)
+        setChannels((prev) =>
+          prev.map((c) => (c.id === data.channel_id ? { ...c, last_message_id: data.id } : c))
+        )
         // Sending a message ends that author's typing indicator immediately,
         // leaving anyone else still typing untouched.
         setTypingEntries((prev) => prev.filter((t) => t.clientId !== data.author))
@@ -870,20 +1021,11 @@ function Main() {
         ) {
           playUiSound('new-message')
         }
-        // Mark unread when a message from someone else lands anywhere we aren't
-        // actively reading — either a different channel, or the active channel
-        // while we're on the video tab (chat not visible).
+        // A DM message from someone else, while we're not reading it, raises a
+        // clickable inbox alert (deduped to the latest message per DM channel).
         const readingHere =
           data.channel_id === activeChatChannelIdRef.current && chatVisibleRef.current
         if (data.author !== selfIdRef.current && !readingHere) {
-          setUnreadChannelIds((prev) => {
-            if (prev.has(data.channel_id)) return prev
-            const next = new Set(prev)
-            next.add(data.channel_id)
-            return next
-          })
-          // A DM message from someone else, while we're not reading it, raises a
-          // clickable inbox alert (deduped to the latest message per DM channel).
           const dmChannel = channelsRef.current.find((c) => c.id === data.channel_id)
           if (dmChannel?.type === 'dm') {
             const name = clientsRef.current.find((c) => c.id === data.author)?.name || 'Someone'
@@ -899,6 +1041,12 @@ function Main() {
             ])
           }
         }
+      } else if (ev === 'ReadStateUpdated') {
+        // Private to us: another session (or our own ack) moved a read cursor.
+        setReadStates((prev) => ({
+          ...prev,
+          [data.channel_id]: data.last_acknowledged_message_id
+        }))
       } else if (ev === 'MessageUpdated') {
         // Pushed after async work (e.g. link-unfurl embeds). Carries either the
         // full updated message, or a partial { message_id, embeds }. Patch the
@@ -916,6 +1064,15 @@ function Main() {
         const removedId =
           data !== null && typeof data === 'object' ? (data.id ?? data.message_id) : data
         setFeed((prev) => prev.filter((e) => !(e.type === 'message' && e.id === removedId)))
+        // The event carries the channel's new newest-message id (null if now
+        // empty); keep last_message_id in sync so unread derivation stays correct.
+        if (data !== null && typeof data === 'object' && 'last_message_id' in data) {
+          setChannels((prev) =>
+            prev.map((c) =>
+              c.id === data.channel_id ? { ...c, last_message_id: data.last_message_id } : c
+            )
+          )
+        }
       } else if (ev === 'ChannelCreated') {
         setChannels((prev) => (prev.some((ch) => ch.id === data.id) ? prev : [...prev, data]))
       } else if (ev === 'ChannelDeleted') {
@@ -1231,13 +1388,14 @@ function Main() {
   // otherwise the channel name. The name may be unresolvable if the other user is
   // offline (not in `clients`), so fall back to the channel's own name.
   const previewChannel = channels.find((c) => c.id === previewChannelId)
-  const previewChannelName =
-    previewChannel?.type === 'dm'
-      ? clients.find((c) => c.id === (previewChannel.recipients || []).find((id) => id !== client?.id))
-          ?.name ||
-        previewChannel.name ||
-        'Direct Message'
-      : (previewChannel?.name ?? 'Channel')
+  let previewChannelName
+  if (previewChannel?.type === 'dm') {
+    const o = dmOther(previewChannel, client?.id)
+    previewChannelName =
+      o.name || clients.find((c) => c.id === o.id)?.name || previewChannel.name || 'Direct Message'
+  } else {
+    previewChannelName = previewChannel?.name ?? 'Channel'
+  }
 
   // The client whose summary is open (single-click), or null.
   const summaryClient = summaryClientId != null ? clients.find((c) => c.id === summaryClientId) : null
@@ -1250,7 +1408,7 @@ function Main() {
         notifications={notifications}
         onClearNotifications={() => setNotifications([])}
         dmNotifications={dmNotifications}
-        onOpenDmNotification={(n) => handleOpenDm(n.authorId)}
+        onOpenDmNotification={handleOpenDmNotification}
         onClearDmNotifications={() => setDmNotifications([])}
       />
       <div className="layout">
@@ -1391,6 +1549,9 @@ function Main() {
                 onTyping={handleTyping}
                 typingUsers={typingUsers}
                 disabled={activeChatChannelId == null}
+                channelKey={activeChatChannelId}
+                onLoadOlder={loadOlderMessages}
+                hasMoreOlder={activeChatChannelId != null && !exhaustedChannels.has(activeChatChannelId)}
               />
             ) : (
               <VideoGrid

@@ -209,7 +209,10 @@ function ChatPanel({
   onDeleteMessage,
   onTyping,
   typingUsers = [],
-  disabled
+  disabled,
+  channelKey,
+  onLoadOlder,
+  hasMoreOlder = false
 }) {
   const [text, setText] = useState('')
   const [attachments, setAttachments] = useState([])
@@ -225,13 +228,58 @@ function ChatPanel({
   const listRef = useRef(null)
   const inputRef = useRef(null)
   const dragCounterRef = useRef(0)
+  // Last-seen scroll metrics, the channel we measured them in, and a flag set
+  // when a scroll-up load is prepending older messages (so we hold the viewport
+  // in place instead of snapping to the bottom).
+  const metricsRef = useRef({ scrollTop: 0, scrollHeight: 0, clientHeight: 0 })
+  const channelKeyRef = useRef(channelKey)
+  const prependingRef = useRef(false)
 
-  // Keep the message list pinned to the latest entry
-  useEffect(() => {
-    if (listRef.current) {
-      listRef.current.scrollTop = listRef.current.scrollHeight
+  // After every feed change, decide where to leave the scroll position:
+  //  - switched channels        → snap to the bottom (newest)
+  //  - just prepended older msgs → keep the same messages under the viewport
+  //  - was already near bottom   → follow new messages down
+  //  - scrolled up reading       → leave it alone
+  useLayoutEffect(() => {
+    const el = listRef.current
+    if (!el) return
+    const prev = metricsRef.current
+    if (channelKeyRef.current !== channelKey) {
+      channelKeyRef.current = channelKey
+      prependingRef.current = false
+      el.scrollTop = el.scrollHeight
+    } else if (prependingRef.current) {
+      prependingRef.current = false
+      el.scrollTop = el.scrollHeight - prev.scrollHeight + prev.scrollTop
+    } else if (prev.scrollHeight - prev.scrollTop - prev.clientHeight < 80) {
+      el.scrollTop = el.scrollHeight
     }
-  }, [feed])
+    metricsRef.current = {
+      scrollTop: el.scrollTop,
+      scrollHeight: el.scrollHeight,
+      clientHeight: el.clientHeight
+    }
+  }, [feed, channelKey])
+
+  // Near the top → pull the previous page (once at a time), remembering the
+  // pre-prepend metrics so the layout effect can restore the viewport.
+  const handleScroll = () => {
+    const el = listRef.current
+    if (!el) return
+    metricsRef.current = {
+      scrollTop: el.scrollTop,
+      scrollHeight: el.scrollHeight,
+      clientHeight: el.clientHeight
+    }
+    if (el.scrollTop < 80 && hasMoreOlder && !prependingRef.current && onLoadOlder) {
+      prependingRef.current = true
+      Promise.resolve(onLoadOlder()).then((added) => {
+        // Nothing actually prepended (deduped/empty) → drop the hold so the
+        // next scroll can try again.
+        if (added === 0) prependingRef.current = false
+      })
+    }
+  }
 
   // Grow the message box to fit its content, up to MAX_INPUT_LINES, then let it
   // scroll. Runs on every text change (typing, emoji insert, send-clear).
@@ -401,7 +449,7 @@ function ChatPanel({
           <div className="chat-drop-overlay-inner">Drop files to attach</div>
         </div>
       )}
-      <div className="chat-messages" ref={listRef}>
+      <div className="chat-messages" ref={listRef} onScroll={handleScroll}>
         {feed.map((entry, i) => {
           const prev = feed[i - 1]
           // A divider marking the start of a new calendar day.
