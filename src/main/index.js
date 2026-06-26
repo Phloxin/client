@@ -14,6 +14,7 @@ import http from 'http'
 import https from 'https'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
+import { setupGlobalKeybinds, stopGlobalKeybinds } from './keybinds'
 
 // On Linux, safeStorage requires a running secret service (GNOME Keyring / KWallet).
 // If neither is available, isEncryptionAvailable() returns false and the server list
@@ -449,6 +450,9 @@ app.whenReady().then(() => {
 
   createWindow()
 
+  // OS-wide passive keybinds for mute/deafen (see keybinds.js).
+  setupGlobalKeybinds()
+
   app.on('activate', function () {
     // On macOS it's common to re-create a window in the app when the
     // dock icon is clicked and there are no other windows open.
@@ -464,6 +468,10 @@ app.on('window-all-closed', () => {
     app.quit()
   }
 })
+
+// Tear down the global keyboard hook so the native listener thread doesn't
+// linger past quit.
+app.on('will-quit', stopGlobalKeybinds)
 
 // In this file you can include the rest of your app's specific main process
 // code. You can also put them in separate files and require them here.

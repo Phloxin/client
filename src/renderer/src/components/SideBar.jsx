@@ -110,6 +110,40 @@ function Sidebar({
   })
   const channelOrderKey = channelPresence.map((c) => c.key).join(',')
 
+  // Single toggle path for mic/sound mute, shared by the control buttons and the
+  // global keybind listener. Refs hold the latest value so the listener (bound
+  // once) never reads stale state.
+  const micMutedRef = useRef(micMuted)
+  const soundMutedRef = useRef(soundMuted)
+  useEffect(() => {
+    micMutedRef.current = micMuted
+  }, [micMuted])
+  useEffect(() => {
+    soundMutedRef.current = soundMuted
+  }, [soundMuted])
+
+  const toggleMic = useCallback(() => {
+    const next = !micMutedRef.current
+    setMicMutedState(next)
+    playUiSound(next ? 'mic-mute' : 'mic-unmute')
+  }, [])
+
+  const toggleSound = useCallback(() => {
+    const next = !soundMutedRef.current
+    setSoundMutedState(next)
+    playUiSound(next ? 'sound-mute' : 'sound-unmute')
+  }, [])
+
+  // The main process owns the OS-wide keyboard hook and tells us which action
+  // fired (see main/keybinds.js). We just run the matching toggle.
+  useEffect(() => {
+    const off = window.electron?.ipcRenderer?.on('keybinds:trigger', (_e, action) => {
+      if (action === 'toggleMicMute') toggleMic()
+      else if (action === 'toggleSoundMute') toggleSound()
+    })
+    return () => off?.()
+  }, [toggleMic, toggleSound])
+
   // Apply mute state to soup whenever it changes. Deafening (soundMuted)
   // also silences the mic, regardless of the independent mic-mute toggle.
   useEffect(() => {
@@ -315,11 +349,7 @@ function Sidebar({
           <button
             className={`control-btn${micMuted ? ' active' : ''}`}
             title={micMuted ? 'Unmute Microphone' : 'Mute Microphone'}
-            onClick={() => {
-              const next = !micMuted
-              setMicMutedState(next)
-              playUiSound(next ? 'mic-mute' : 'mic-unmute')
-            }}
+            onClick={toggleMic}
           >
             {micMuted ? (
               <IconMicrophoneOff className="control-icon" size={20} />
@@ -330,11 +360,7 @@ function Sidebar({
           <button
             className={`control-btn${soundMuted ? ' active' : ''}`}
             title={soundMuted ? 'Unmute Sound' : 'Mute Sound'}
-            onClick={() => {
-              const next = !soundMuted
-              setSoundMutedState(next)
-              playUiSound(next ? 'sound-mute' : 'sound-unmute')
-            }}
+            onClick={toggleSound}
           >
             {soundMuted ? (
               <IconHeadphonesOff className="control-icon" size={20} />

@@ -40,6 +40,12 @@ const DEFAULT_APPEARANCE = {
   fontFamily: 'inter'
 }
 
+// No shortcuts assigned by default; a value is a combo string like "Ctrl+Shift+M".
+const DEFAULT_KEYBINDS = {
+  toggleMicMute: null,
+  toggleSoundMute: null
+}
+
 const DEFAULT_ANIMATIONS = {
   // enabled is the master switch; the rest are 'off' or a per-category style.
   enabled: true,
@@ -108,6 +114,29 @@ export function SettingsProvider({ children }) {
       return merged
     })
   }
+
+  const [keybindSettings, setKeybindSettings] = useState(() => {
+    try {
+      const saved = localStorage.getItem('keybindSettings')
+      return saved ? { ...DEFAULT_KEYBINDS, ...JSON.parse(saved) } : DEFAULT_KEYBINDS
+    } catch {
+      return DEFAULT_KEYBINDS
+    }
+  })
+
+  const updateKeybindSettings = (changes) => {
+    setKeybindSettings((prev) => {
+      const merged = { ...prev, ...changes }
+      localStorage.setItem('keybindSettings', JSON.stringify(merged))
+      return merged
+    })
+  }
+
+  // Mirror the current binds into the main process, which owns the global
+  // (OS-wide) keyboard hook — on load and on every change.
+  useEffect(() => {
+    window.electron?.ipcRenderer?.send('keybinds:set', keybindSettings)
+  }, [keybindSettings])
 
   const [micSettings, setMicSettings] = useState(() => {
     try {
@@ -178,7 +207,9 @@ export function SettingsProvider({ children }) {
         appearanceSettings,
         updateAppearanceSettings,
         animationSettings,
-        updateAnimationSettings
+        updateAnimationSettings,
+        keybindSettings,
+        updateKeybindSettings
       }}
     >
       {children}

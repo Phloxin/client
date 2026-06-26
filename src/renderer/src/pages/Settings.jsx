@@ -1,8 +1,9 @@
 import { useState } from 'react'
-import { IconPalette, IconMicrophone, IconAdjustments } from '@tabler/icons-react'
+import { IconPalette, IconMicrophone, IconBellRinging, IconKeyboard } from '@tabler/icons-react'
 import { useSettings } from '../context/SettingsContext'
 import { ThemeSwitcher } from '../components/ThemeSwitcher'
 import AudioSettings from '../components/AudioSettings'
+import KeybindsSettings from '../components/KeybindsSettings'
 import { SOUND_CATEGORIES } from '../lib/sounds'
 import { UI_FONTS } from '../lib/uiSettings'
 import './Settings.css'
@@ -21,10 +22,16 @@ const sections = [
     icon: IconMicrophone
   },
   {
-    id: 'general',
-    title: 'General',
-    description: 'Core app preferences and behavior options.',
-    icon: IconAdjustments
+    id: 'keybinds',
+    title: 'Keybinds',
+    description: 'Keyboard shortcuts for muting and deafening.',
+    icon: IconKeyboard
+  },
+  {
+    id: 'notifications',
+    title: 'Notifications',
+    description: 'Adjust volume and toggle notification sounds.',
+    icon: IconBellRinging
   }
 ]
 
@@ -262,18 +269,20 @@ function Settings() {
             <AudioSettings micSettings={micSettings} updateMicSettings={updateMicSettings} />
           )}
 
-          {activeSection === 'general' && (
+          {activeSection === 'keybinds' && <KeybindsSettings />}
+
+          {activeSection === 'notifications' && (
             <div className="settings-panel-card">
               <div className="settings-panel-header">
                 <div>
-                  <h2>General</h2>
+                  <h2>Notifications</h2>
                   <p>Manage primary application preferences and accessibility options.</p>
                 </div>
               </div>
 
               <div className="settings-panel-group">
                 <div className="settings-section">
-                  <label>Sounds</label>
+                  <label>Sound Toggles</label>
                   <p className="settings-section-desc">
                     Choose which sound effects play. These are local cues only you hear.
                   </p>
