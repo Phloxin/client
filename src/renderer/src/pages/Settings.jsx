@@ -81,6 +81,13 @@ function Settings() {
 
               <ThemeSwitcher />
 
+              <div className="theme-switcher-header">
+                <h3>Interface</h3>
+                <p className="theme-switcher-description">
+                  Adjust surface gradients, background transparency, interface font, and animations.
+                </p>
+              </div>
+
               <div className="settings-panel-group">
                 <div className="settings-section settings-toggle-row">
                   <div className="settings-toggle-copy">

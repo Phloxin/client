@@ -11,10 +11,47 @@
   border-radius: var(--border-radius-md);
 }
 
+/* Collapsible wrapper around the header + theme grid. */
+.theme-switcher-collapse {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-lg);
+}
+
 .theme-switcher-header {
   display: flex;
   flex-direction: column;
   gap: var(--spacing-sm);
+  cursor: pointer;
+  list-style: none; /* drop the default <summary> disclosure triangle */
+}
+
+.theme-switcher-header::-webkit-details-marker {
+  display: none;
+}
+
+.theme-switcher-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.theme-switcher-title {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.theme-switcher-title-row svg {
+  color: var(--color-text-tertiary);
+}
+
+.theme-switcher-chevron {
+  transition: transform 0.2s ease;
+}
+
+.theme-switcher-collapse[open] .theme-switcher-chevron {
+  transform: rotate(180deg);
 }
 
 .theme-switcher-header h3 {

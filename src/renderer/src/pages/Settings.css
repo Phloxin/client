@@ -203,6 +203,22 @@
   border-color: var(--color-border-light);
 }
 
+.settings-select-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.settings-select-row select {
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-select-row svg {
+  flex-shrink: 0;
+  color: var(--color-text-tertiary);
+}
+
 .settings-volume-row {
   display: flex;
   align-items: center;

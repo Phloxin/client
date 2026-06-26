@@ -1,3 +1,4 @@
+import { IconChevronDown } from '@tabler/icons-react';
 import { useTheme } from '../hooks/useTheme';
 import './ThemeSwitcher.css';
 
@@ -12,29 +13,34 @@ export function ThemeSwitcher() {
 
   return (
     <div className="theme-switcher">
-      <div className="theme-switcher-header">
-        <h3>Theme</h3>
-        <p className="theme-switcher-description">
-          Choose your preferred color theme
-        </p>
-      </div>
+      <details className="theme-switcher-collapse">
+        <summary className="theme-switcher-header">
+          <div className="theme-switcher-title-row">
+            <h3>Theme</h3>
+            <IconChevronDown size={20} stroke={2} className="theme-switcher-chevron" />
+          </div>
+          <p className="theme-switcher-description">
+            Choose your preferred color theme
+          </p>
+        </summary>
 
-      <div className="theme-options">
-        {availableThemes.map((t) => (
-          <button
-            key={t.id}
-            className={`theme-option ${theme === t.id ? 'active' : ''}`}
-            onClick={() => setCurrentTheme(t.id)}
-            title={t.description}
-          >
-            <span className="theme-option-info">
-              <span className="theme-option-name">{t.name}</span>
-              <span className="theme-option-desc">{t.description}</span>
-            </span>
-            {theme === t.id && <span className="theme-option-check">✓</span>}
-          </button>
-        ))}
-      </div>
+        <div className="theme-options">
+          {availableThemes.map((t) => (
+            <button
+              key={t.id}
+              className={`theme-option ${theme === t.id ? 'active' : ''}`}
+              onClick={() => setCurrentTheme(t.id)}
+              title={t.description}
+            >
+              <span className="theme-option-info">
+                <span className="theme-option-name">{t.name}</span>
+                <span className="theme-option-desc">{t.description}</span>
+              </span>
+              {theme === t.id && <span className="theme-option-check">✓</span>}
+            </button>
+          ))}
+        </div>
+      </details>
 
       <div className="theme-switcher-info">
         <p>

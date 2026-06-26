@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { IconMicrophone, IconHeadphones } from '@tabler/icons-react'
 import VolumeGateMeter from './VolumeGateMeter'
 
 function AudioSettings({ micSettings, updateMicSettings }) {
@@ -43,18 +44,21 @@ function AudioSettings({ micSettings, updateMicSettings }) {
 
         {/* 1. Microphone Device */}
         <div className="settings-section">
-          <label>Microphone Device</label>
-          <select
-            value={draftSettings.deviceId || 'default'}
-            onChange={(e) => updateDraft({ deviceId: e.target.value })}
-          >
-            <option value="default">Default Device</option>
-            {audioDevices.map((device) => (
-              <option key={device.deviceId} value={device.deviceId}>
-                {device.label || `Audio Input ${device.deviceId.slice(0, 8)}`}
-              </option>
-            ))}
-          </select>
+          <label>Input Device</label>
+          <div className="settings-select-row">
+            <IconMicrophone size={18} stroke={2} />
+            <select
+              value={draftSettings.deviceId || 'default'}
+              onChange={(e) => updateDraft({ deviceId: e.target.value })}
+            >
+              <option value="default">Default Device</option>
+              {audioDevices.map((device) => (
+                <option key={device.deviceId} value={device.deviceId}>
+                  {device.label || `Audio Input ${device.deviceId.slice(0, 8)}`}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
 
         {/* 2. Output Device */}
@@ -63,17 +67,20 @@ function AudioSettings({ micSettings, updateMicSettings }) {
           <p className="settings-section-desc">
             Choose which speakers or headphones other people&apos;s audio plays through.
           </p>
-          <select
-            value={draftSettings.outputDeviceId || 'default'}
-            onChange={(e) => updateDraft({ outputDeviceId: e.target.value })}
-          >
-            <option value="default">Default Device</option>
-            {outputDevices.map((device) => (
-              <option key={device.deviceId} value={device.deviceId}>
-                {device.label || `Audio Output ${device.deviceId.slice(0, 8)}`}
-              </option>
-            ))}
-          </select>
+          <div className="settings-select-row">
+            <IconHeadphones size={18} stroke={2} />
+            <select
+              value={draftSettings.outputDeviceId || 'default'}
+              onChange={(e) => updateDraft({ outputDeviceId: e.target.value })}
+            >
+              <option value="default">Default Device</option>
+              {outputDevices.map((device) => (
+                <option key={device.deviceId} value={device.deviceId}>
+                  {device.label || `Audio Output ${device.deviceId.slice(0, 8)}`}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
 
         {/* 3. Output Volume */}
