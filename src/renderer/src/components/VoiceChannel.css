@@ -182,6 +182,71 @@
   gap: var(--spacing-sm);
 }
 
+/* A full-width action entry (e.g. Poke). Sits below the volume row when both
+   are shown, so give it a little breathing room. */
+.client-context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  width: 100%;
+  margin-top: var(--spacing-xs);
+  padding: 6px 4px;
+  border: none;
+  border-radius: var(--border-radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.client-context-menu-item:hover {
+  background: var(--color-border);
+  color: var(--color-text);
+}
+
+.client-poke-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  margin-top: var(--spacing-xs);
+}
+
+.client-poke-input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius-sm);
+  background: var(--color-background);
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+  outline: none;
+}
+
+.client-poke-input:focus {
+  border-color: var(--color-primary);
+}
+
+.client-poke-send {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  padding: 0;
+  border: none;
+  border-radius: var(--border-radius-sm);
+  background: var(--color-primary);
+  color: #fff;
+  cursor: pointer;
+}
+
+.client-poke-send:hover {
+  filter: brightness(1.1);
+}
+
 .client-volume-btn {
   display: flex;
   align-items: center;

@@ -499,17 +499,11 @@ function Main() {
     }
   }, [summaryClientId, clients])
 
-  // Open (or create) a 1:1 DM with another user and peek into its chat. DMs are
-  // just channels of type 'dm' — no voice/streams — so they ride the same
-  // preview/chat path as a channel peek: once we know the channel id we only set
-  // it as the previewed channel and everything else (history, send, typing) works
-  // unchanged. Get-or-create is idempotent server-side; messages persist, so a DM
-  // sent to an offline user is there when they next open it.
-  const handleOpenDm = useCallback(
+  // Get-or-create the 1:1 DM channel with another user and make it known to
+  // `channels`, returning its id. Shared by handleOpenDm (peek) and handlePoke
+  // (fire a message without necessarily switching views). Idempotent server-side.
+  const ensureDmChannel = useCallback(
     async (userId) => {
-      if (!userId || userId === client?.id) return
-      setSummaryClientId(null)
-
       if (DEV_MODE) {
         const id = `dm-${userId}`
         setChannels((prev) =>
@@ -525,41 +519,100 @@ function Main() {
                 }
               ]
         )
-        setPreviewChannelId(id)
-        return
+        return id
       }
 
+      const res = await fetch(`${apiBase()}/channels/dm`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        // Array so the same endpoint creates a group chat later; today both entry
+        // points (double-click, poke) only ever send one recipient.
+        body: JSON.stringify({ recipient_ids: [userId] })
+      })
+      if (!res.ok) throw new Error(`Server responded ${res.status}`)
+      const channel = await res.json()
+      if (channel?.id == null) return null
+      // Stamp the recipients/type we know from the click so the header resolves to
+      // the other user's name regardless of the server's channel shape. Merge onto
+      // any existing entry: the server's Ready/ChannelCreated may have already added
+      // this channel in its bare shape, and our stamp needs to win.
+      const dm = { ...channel, type: 'dm', recipients: [client?.id, userId] }
+      setChannels((prev) =>
+        prev.some((c) => c.id === dm.id)
+          ? prev.map((c) => (c.id === dm.id ? { ...c, ...dm } : c))
+          : [...prev, dm]
+      )
+      return dm.id
+    },
+    [token, client]
+  )
+
+  // Open (or create) a 1:1 DM with another user and peek into its chat. DMs are
+  // just channels of type 'dm' — no voice/streams — so they ride the same
+  // preview/chat path as a channel peek: once we know the channel id we only set
+  // it as the previewed channel and everything else (history, send, typing) works
+  // unchanged.
+  const handleOpenDm = useCallback(
+    async (userId) => {
+      if (!userId || userId === client?.id) return
+      setSummaryClientId(null)
       try {
-        const res = await fetch(`${apiBase()}/channels/dm`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-          // Array so the same endpoint creates a group chat later; today the
-          // double-click entry point only ever sends one recipient.
-          body: JSON.stringify({ recipient_ids: [userId] })
-        })
-        if (!res.ok) throw new Error(`Server responded ${res.status}`)
-        const channel = await res.json()
-        if (channel?.id == null) return
-        // Stamp the recipients/type we know from the double-click so the header
-        // resolves to the other user's name regardless of the server's channel
-        // shape. (A future group chat would trust server-provided recipients.)
-        const dm = { ...channel, type: 'dm', recipients: [client?.id, userId] }
-        // Make the DM channel known before previewing it — the preview-drop
-        // effect clears any previewed id that isn't in `channels`. Merge onto any
-        // existing entry: the server's Ready/ChannelCreated may have already added
-        // this channel in its bare shape, and we need our type/recipients stamp to
-        // win so the header resolves to the other user's name.
-        setChannels((prev) =>
-          prev.some((c) => c.id === dm.id)
-            ? prev.map((c) => (c.id === dm.id ? { ...c, ...dm } : c))
-            : [...prev, dm]
-        )
-        setPreviewChannelId(dm.id)
+        const id = await ensureDmChannel(userId)
+        // The preview-drop effect clears any previewed id not in `channels`, but
+        // ensureDmChannel has already registered it, so this is safe.
+        if (id != null) setPreviewChannelId(id)
       } catch (err) {
         setFeed((prev) => appendFeed(prev, systemEntry(`Failed to open direct message: ${err.message}`)))
       }
     },
-    [token, client]
+    [client, ensureDmChannel]
+  )
+
+  // Poke a client: fire off a DM message (the attached note, or a wave if none)
+  // without leaving the current view. For now it's just a normal DM under the
+  // hood; the dedicated poke notification can come later.
+  const handlePoke = useCallback(
+    async (userId, message) => {
+      if (!userId || userId === client?.id) return
+      const text = (message || '').trim() || '👋'
+
+      if (DEV_MODE) {
+        const id = await ensureDmChannel(userId)
+        setFeed((prev) =>
+          appendFeed(prev, {
+            id: crypto.randomUUID(),
+            type: 'message',
+            channelId: id,
+            author: client?.name,
+            authorId: client?.id,
+            text,
+            ts: Date.now()
+          })
+        )
+        return
+      }
+
+      try {
+        const id = await ensureDmChannel(userId)
+        if (id == null) return
+        // Mirror handleSendMessage's multipart shape (text-only, no files) so the
+        // server sees an ordinary DM message and broadcasts MessageCreated back.
+        const formData = new FormData()
+        formData.append(
+          'payload_json',
+          new Blob([JSON.stringify({ content: text, attachments: [] })], { type: 'application/json' })
+        )
+        const res = await fetch(`${apiBase()}/channels/${id}/messages`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+          body: formData
+        })
+        if (!res.ok) throw new Error(`Server responded ${res.status}`)
+      } catch (err) {
+        setFeed((prev) => appendFeed(prev, systemEntry(`Failed to poke: ${err.message}`)))
+      }
+    },
+    [client, token, ensureDmChannel]
   )
 
   // No stream is focused by default (the grid view shows them all). Only clear
@@ -1433,6 +1486,7 @@ function Main() {
           onDeleteChannel={handleDeleteChannel}
           onPreviewChannel={handlePreviewChannel}
           onOpenDm={handleOpenDm}
+          onPoke={handlePoke}
           onShowClientSummary={handleShowClientSummary}
           previewChannelId={previewChannelId}
           unreadChannelIds={unreadChannelIds}

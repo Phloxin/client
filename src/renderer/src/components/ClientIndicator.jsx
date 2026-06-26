@@ -9,7 +9,9 @@ import {
   IconVolume3,
   IconVolume4,
   IconVolumeOff,
-  IconVideoFilled
+  IconVideoFilled,
+  IconHandFinger,
+  IconSend
 } from '@tabler/icons-react'
 import { setClientAudioState, getClientAudioState } from '../lib/soup'
 
@@ -26,10 +28,14 @@ function ClientIndicator({
   animStatus,
   rosterMode,
   onOpenDm,
+  onPoke,
   onShowClientSummary
 }) {
   const initial = client.name?.charAt(0).toUpperCase() ?? '?'
   const [menuPos, setMenuPos] = useState(null)
+  // Poke composer state, scoped to the open context menu.
+  const [pokeOpen, setPokeOpen] = useState(false)
+  const [pokeText, setPokeText] = useState('')
   const menuRef = useRef(null)
   const [visualSpeaking, setVisualSpeaking] = useState(speaking)
   const [isFadingOut, setIsFadingOut] = useState(false)
@@ -72,10 +78,25 @@ function ClientIndicator({
     return () => document.removeEventListener('mousedown', close)
   }, [menuPos])
 
+  // Reset the poke composer whenever the menu closes.
+  useEffect(() => {
+    if (!menuPos) {
+      setPokeOpen(false)
+      setPokeText('')
+    }
+  }, [menuPos])
+
   const handleContextMenu = (e) => {
-    if (isSelf || rosterMode) return
+    // Can't poke or adjust your own volume. In rosterMode the only action is the
+    // poke, so skip the menu entirely if there's nothing to poke with.
+    if (isSelf || (rosterMode && !onPoke)) return
     e.preventDefault()
     setMenuPos({ x: e.clientX, y: e.clientY })
+  }
+
+  const submitPoke = () => {
+    onPoke?.(client.id, pokeText)
+    setMenuPos(null)
   }
 
   // Single-click opens this client's summary; double-click opens a DM. A click
@@ -149,32 +170,64 @@ function ClientIndicator({
           className="client-context-menu"
           ref={menuRef}
           style={{ top: menuPos.y, left: menuPos.x }}
+          onClick={(e) => e.stopPropagation()}
+          onDoubleClick={(e) => e.stopPropagation()}
         >
           <div className="client-context-menu-header">{client.name}</div>
-          <div className="client-context-menu-row">
-            <button
-              type="button"
-              className="client-volume-btn"
-              onClick={toggleLocalMute}
-              title={localMuted ? 'Unmute for me' : 'Mute for me'}
-            >
-              <VolumeIcon size={16} />
-            </button>
-            <div className="client-volume-slider-wrap">
-              <span className="client-volume-center-tick" aria-hidden="true" />
-              <input
-                type="range"
-                className="client-volume-slider"
-                min={0}
-                max={200}
-                value={localMuted ? 0 : volume}
-                onChange={handleVolumeChange}
-                onDoubleClick={resetVolume}
-                title="Volume — 100% is normal, drag right to boost (double-click to reset)"
-              />
+          {!rosterMode && (
+            <div className="client-context-menu-row">
+              <button
+                type="button"
+                className="client-volume-btn"
+                onClick={toggleLocalMute}
+                title={localMuted ? 'Unmute for me' : 'Mute for me'}
+              >
+                <VolumeIcon size={16} />
+              </button>
+              <div className="client-volume-slider-wrap">
+                <span className="client-volume-center-tick" aria-hidden="true" />
+                <input
+                  type="range"
+                  className="client-volume-slider"
+                  min={0}
+                  max={200}
+                  value={localMuted ? 0 : volume}
+                  onChange={handleVolumeChange}
+                  onDoubleClick={resetVolume}
+                  title="Volume — 100% is normal, drag right to boost (double-click to reset)"
+                />
+              </div>
+              <span className="client-volume-value">{localMuted ? 0 : volume}%</span>
             </div>
-            <span className="client-volume-value">{localMuted ? 0 : volume}%</span>
-          </div>
+          )}
+          {onPoke &&
+            (pokeOpen ? (
+              <div className="client-poke-row">
+                <input
+                  className="client-poke-input"
+                  value={pokeText}
+                  autoFocus
+                  placeholder="Add a message (optional)"
+                  onChange={(e) => setPokeText(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault()
+                      submitPoke()
+                    } else if (e.key === 'Escape') {
+                      setPokeOpen(false)
+                    }
+                  }}
+                />
+                <button type="button" className="client-poke-send" onClick={submitPoke} title="Send poke">
+                  <IconSend size={16} />
+                </button>
+              </div>
+            ) : (
+              <button type="button" className="client-context-menu-item" onClick={() => setPokeOpen(true)}>
+                <IconHandFinger size={16} />
+                Poke
+              </button>
+            ))}
         </div>
       )}
     </div>

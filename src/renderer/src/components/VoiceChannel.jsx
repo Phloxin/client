@@ -43,6 +43,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     onRequestCreateChannel,
     onPreviewChannel,
     onOpenDm,
+    onPoke,
     onShowClientSummary,
     previewing,
     unread,
@@ -420,6 +421,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
           isSelf={c.id === self?.id}
           streaming={streamingClientIds.has(c.id)}
           onOpenDm={onOpenDm}
+          onPoke={onPoke}
           onShowClientSummary={onShowClientSummary}
         />
       ))}
