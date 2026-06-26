@@ -10,8 +10,7 @@ import {
   IconVolume4,
   IconVolumeOff,
   IconVideoFilled,
-  IconHandFinger,
-  IconSend
+  IconHandFinger
 } from '@tabler/icons-react'
 import { setClientAudioState, getClientAudioState } from '../lib/soup'
 
@@ -219,7 +218,7 @@ function ClientIndicator({
                   }}
                 />
                 <button type="button" className="client-poke-send" onClick={submitPoke} title="Send poke">
-                  <IconSend size={16} />
+                  <IconHandFinger size={16} />
                 </button>
               </div>
             ) : (
