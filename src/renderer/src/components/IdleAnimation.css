@@ -1,12 +1,35 @@
-/* Bouncing-ball filler for the disconnected screen. Muted monospace so it reads
-   as ambient idle motion, not a primary UI element. Updated imperatively each
-   tick (see IdleAnimation.jsx). */
+/* Fire screensaver for the disconnected chat area (see IdleAnimation.jsx).
+   The root fills the flex region; the fire <pre> fills the root; the caption
+   sits centered in a carved-out hole the flames never touch. */
 .idle-animation {
-  margin: 0 0 var(--spacing-md);
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  user-select: none;
+}
+
+.idle-fire {
+  position: absolute;
+  inset: 0;
+  margin: 0;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 13px;
   line-height: 1.15;
   white-space: pre;
   color: var(--color-primary);
-  user-select: none;
+  overflow: hidden;
+}
+
+.idle-caption {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+  max-width: 80%;
+  text-align: center;
+  pointer-events: none;
 }

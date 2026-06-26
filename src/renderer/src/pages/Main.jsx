@@ -1581,13 +1581,7 @@ function Main() {
             }
           >
             {!connected ? (
-              <div className="disconnected-placeholder">
-                <p className="disconnected-title">No Server Connected</p>
-                <IdleAnimation />
-                <p className="disconnected-subtitle">
-                  Pick a server from the <strong>Connect</strong> menu to get started.
-                </p>
-              </div>
+              <IdleAnimation />
             ) : summaryClientId != null ? (
               <ClientSummary client={summaryClient} />
             ) : previewChannelId != null || viewMode === 'log' ? (
