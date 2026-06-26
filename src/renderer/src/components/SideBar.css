@@ -286,3 +286,29 @@ html[data-transparency="true"] .control-rows {
 .sidebar-resize-handle:active::after {
   background: var(--color-primary);
 }
+
+.client-indicator {
+  margin-top: 3px;
+  margin-bottom: 3px;
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  font-size: var(--font-size-md);
+  /* Tighten the text line box so the name sits on the same optical center as
+     the icons/avatar (the global 1.6 line-height pushes it visually low). */
+  line-height: 1;
+  color: var(--color-text);
+  padding: 8px var(--spacing-xs) 8px 18px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  min-width: 0;
+  position: relative;
+  border-radius: var(--border-radius-sm);
+  transition: background 0.12s, color 0.12s;
+}
+
+.client-indicator:hover {
+  background: var(--color-border);
+  color: var(--color-text);
+}

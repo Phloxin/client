@@ -106,14 +106,24 @@ function ClientIndicator({
     setMenuPos(null)
   }
 
-  // Read the chosen image, downscale it to a small square (avatars render in a
-  // tiny circle and the data URL is broadcast to everyone, so full-res photos
-  // would bloat every payload), and hand the JPEG data URL up to be saved.
+  // Hand an avatar image up to be saved. Animated GIFs can't survive a canvas
+  // re-encode (it captures a single frame), so send them as-is to keep the
+  // animation. Other formats (JPG/PNG/WebP) get downscaled to a small square —
+  // avatars render tiny and the data URL is broadcast to everyone, so full-res
+  // photos would bloat every payload. We re-encode to WebP, which keeps PNG
+  // transparency (JPEG would flatten it) and compresses well; the backend
+  // accepts JPG/PNG/GIF/WebP.
   const handleAvatarFile = (e) => {
     const file = e.target.files?.[0]
     e.target.value = ''
     if (!file) return
     setMenuPos(null)
+    if (file.type === 'image/gif') {
+      const reader = new FileReader()
+      reader.onload = () => onSetAvatar(reader.result)
+      reader.readAsDataURL(file)
+      return
+    }
     const img = new Image()
     img.onload = () => {
       const size = 256
@@ -126,7 +136,7 @@ function ClientIndicator({
       const w = img.width * scale
       const h = img.height * scale
       ctx.drawImage(img, (size - w) / 2, (size - h) / 2, w, h)
-      onSetAvatar(canvas.toDataURL('image/jpeg', 0.85))
+      onSetAvatar(canvas.toDataURL('image/webp', 0.85))
       URL.revokeObjectURL(img.src)
     }
     img.src = URL.createObjectURL(file)
