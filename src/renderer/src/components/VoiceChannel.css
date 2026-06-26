@@ -89,7 +89,7 @@
      the icons/avatar (the global 1.6 line-height pushes it visually low). */
   line-height: 1;
   color: var(--color-text-muted);
-  padding: 5px var(--spacing-xs) 5px 18px;
+  padding: 8px var(--spacing-xs) 8px 18px;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -349,17 +349,24 @@
 }
 
 .client-avatar {
-  width: 16px;
-  height: 16px;
+  width: 24px;
+  height: 24px;
   border-radius: 50%;
   background: color-mix(in srgb, var(--color-primary) 20%, transparent);
   color: var(--color-primary);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 9px;
+  font-size: 12px;
   font-weight: var(--font-weight-bold);
   flex-shrink: 0;
+  overflow: hidden;
+}
+
+.client-avatar-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 /* Shown only while the client is streaming. Pinned to the far right and left

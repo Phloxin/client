@@ -10,7 +10,8 @@ import {
   IconVolume4,
   IconVolumeOff,
   IconVideoFilled,
-  IconHandFinger
+  IconHandFinger,
+  IconPhotoUp
 } from '@tabler/icons-react'
 import { setClientAudioState, getClientAudioState } from '../lib/soup'
 
@@ -28,6 +29,7 @@ function ClientIndicator({
   rosterMode,
   onOpenDm,
   onPoke,
+  onSetAvatar,
   onShowClientSummary
 }) {
   const initial = client.name?.charAt(0).toUpperCase() ?? '?'
@@ -36,6 +38,7 @@ function ClientIndicator({
   const [pokeOpen, setPokeOpen] = useState(false)
   const [pokeText, setPokeText] = useState('')
   const menuRef = useRef(null)
+  const avatarInputRef = useRef(null)
   const [visualSpeaking, setVisualSpeaking] = useState(speaking)
   const [isFadingOut, setIsFadingOut] = useState(false)
   const fadeTimerRef = useRef(null)
@@ -85,10 +88,15 @@ function ClientIndicator({
     }
   }, [menuPos])
 
+  // Which actions this indicator's menu can offer: volume + poke for others,
+  // avatar for ourselves. (rosterMode entries aren't voice participants, so no
+  // volume there.)
+  const canVolume = !isSelf && !rosterMode
+  const canPoke = !isSelf && !!onPoke
+  const canSetAvatar = isSelf && !!onSetAvatar
+
   const handleContextMenu = (e) => {
-    // Can't poke or adjust your own volume. In rosterMode the only action is the
-    // poke, so skip the menu entirely if there's nothing to poke with.
-    if (isSelf || (rosterMode && !onPoke)) return
+    if (!canVolume && !canPoke && !canSetAvatar) return
     e.preventDefault()
     setMenuPos({ x: e.clientX, y: e.clientY })
   }
@@ -96,6 +104,32 @@ function ClientIndicator({
   const submitPoke = () => {
     onPoke?.(client.id, pokeText)
     setMenuPos(null)
+  }
+
+  // Read the chosen image, downscale it to a small square (avatars render in a
+  // tiny circle and the data URL is broadcast to everyone, so full-res photos
+  // would bloat every payload), and hand the JPEG data URL up to be saved.
+  const handleAvatarFile = (e) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    setMenuPos(null)
+    const img = new Image()
+    img.onload = () => {
+      const size = 256
+      const canvas = document.createElement('canvas')
+      canvas.width = size
+      canvas.height = size
+      const ctx = canvas.getContext('2d')
+      // Cover-crop: scale so the shorter side fills, center the overflow.
+      const scale = Math.max(size / img.width, size / img.height)
+      const w = img.width * scale
+      const h = img.height * scale
+      ctx.drawImage(img, (size - w) / 2, (size - h) / 2, w, h)
+      onSetAvatar(canvas.toDataURL('image/jpeg', 0.85))
+      URL.revokeObjectURL(img.src)
+    }
+    img.src = URL.createObjectURL(file)
   }
 
   // Single-click opens this client's summary; double-click opens a DM. A click
@@ -136,14 +170,14 @@ function ClientIndicator({
 
   let statusIcon
   if (deafened) {
-    statusIcon = <IconHeadphonesOff size={14} className="mic-indicator deafened" aria-label="Deafened" />
+    statusIcon = <IconHeadphonesOff size={18} className="mic-indicator deafened" aria-label="Deafened" />
   } else if (micMuted) {
-    statusIcon = <IconMicrophoneOff size={14} className="mic-indicator muted" aria-label="Muted" />
+    statusIcon = <IconMicrophoneOff size={18} className="mic-indicator muted" aria-label="Muted" />
   } else if (visualSpeaking) {
     const cls = isFadingOut ? 'mic-indicator speaking-fade' : 'mic-indicator speaking'
-    statusIcon = <IconMicrophoneFilled size={14} className={cls} aria-label="Speaking" />
+    statusIcon = <IconMicrophoneFilled size={18} className={cls} aria-label="Speaking" />
   } else {
-    statusIcon = <IconMicrophone size={14} className="mic-indicator" aria-label="Not speaking" />
+    statusIcon = <IconMicrophone size={18} className="mic-indicator" aria-label="Not speaking" />
   }
 
   const VolumeIcon = localMuted || volume === 0
@@ -159,7 +193,13 @@ function ClientIndicator({
       onDoubleClick={handleDoubleClick}
     >
       {!rosterMode && statusIcon}
-      <span className="client-avatar" aria-hidden="true">{initial}</span>
+      <span className="client-avatar" aria-hidden="true">
+        {client.avatar ? (
+          <img className="client-avatar-img" src={client.avatar} alt="" />
+        ) : (
+          initial
+        )}
+      </span>
       {client.name}
       {streaming && (
         <IconVideoFilled size={15} className="client-streaming-icon" aria-label="Streaming" />
@@ -173,7 +213,26 @@ function ClientIndicator({
           onDoubleClick={(e) => e.stopPropagation()}
         >
           <div className="client-context-menu-header">{client.name}</div>
-          {!rosterMode && (
+          {canSetAvatar && (
+            <>
+              <input
+                ref={avatarInputRef}
+                type="file"
+                accept="image/*"
+                style={{ display: 'none' }}
+                onChange={handleAvatarFile}
+              />
+              <button
+                type="button"
+                className="client-context-menu-item"
+                onClick={() => avatarInputRef.current?.click()}
+              >
+                <IconPhotoUp size={16} />
+                Set avatar
+              </button>
+            </>
+          )}
+          {canVolume && (
             <div className="client-context-menu-row">
               <button
                 type="button"
@@ -199,7 +258,7 @@ function ClientIndicator({
               <span className="client-volume-value">{localMuted ? 0 : volume}%</span>
             </div>
           )}
-          {onPoke &&
+          {canPoke &&
             (pokeOpen ? (
               <div className="client-poke-row">
                 <input

@@ -11,7 +11,11 @@ function ClientSummary({ client }) {
     <div className="client-summary">
       <div className="client-summary-card">
         <span className="client-summary-avatar" aria-hidden="true">
-          {initial}
+          {client?.avatar ? (
+            <img className="client-summary-avatar-img" src={client.avatar} alt="" />
+          ) : (
+            initial
+          )}
         </span>
         <span className="client-summary-name">{client?.name ?? 'Unknown user'}</span>
       </div>

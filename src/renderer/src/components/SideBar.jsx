@@ -46,6 +46,7 @@ function Sidebar({
   onPreviewChannel,
   onOpenDm,
   onPoke,
+  onSetAvatar,
   onShowClientSummary,
   previewChannelId,
   unreadChannelIds
@@ -273,6 +274,7 @@ function Sidebar({
             onPreviewChannel={onPreviewChannel}
             onOpenDm={onOpenDm}
             onPoke={onPoke}
+            onSetAvatar={onSetAvatar}
             onShowClientSummary={onShowClientSummary}
             previewing={previewChannelId === ch.id}
             unread={!!unreadChannelIds?.has(ch.id)}
@@ -314,6 +316,7 @@ function Sidebar({
                   rosterMode
                   onOpenDm={onOpenDm}
                   onPoke={onPoke}
+                  onSetAvatar={onSetAvatar}
                   onShowClientSummary={onShowClientSummary}
                 />
               )

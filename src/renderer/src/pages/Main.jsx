@@ -91,10 +91,12 @@ function byChronology(a, b) {
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
 }
 
-// The other party in a DM channel, given our own id. `recipients` may be plain
-// ids or { id, name } objects; returns { id, name } with name possibly undefined.
+// The other party in a DM channel, given our own id. The server sends ids in
+// `participant_ids` (plain id strings); locally-created DMs stamp `recipients`,
+// which may be plain ids or { id, name } objects. Returns { id, name } with name
+// possibly undefined (the caller resolves it against the client roster).
 function dmOther(channel, selfId) {
-  for (const r of channel?.recipients || []) {
+  for (const r of channel?.participant_ids || channel?.recipients || []) {
     const id = r && typeof r === 'object' ? r.id : r
     if (id !== selfId) return { id, name: r && typeof r === 'object' ? r.name : undefined }
   }
@@ -148,11 +150,6 @@ function Main() {
   const streamVolumeRef = useRef(100)
   const streamMutedRef = useRef(false)
   const watchedStreamIdsRef = useRef(new Set())
-  // Video stream consumerIds we've already accounted for, so we only notify on
-  // genuinely new streams. notifyArmed gates out the streams already live when
-  // we join (no burst of "started a stream" on connect).
-  const seenStreamIdsRef = useRef(new Set())
-  const notifyArmedRef = useRef(false)
   // Timestamp of our last typing ping, so we throttle to one per TYPING_DURATION.
   const lastTypingSentRef = useRef(0)
   // Last server event sequence we've processed, reported back in each heartbeat
@@ -247,26 +244,6 @@ function Main() {
     setReadStates({})
   }, [token])
 
-  // Emit a notification when a remote client starts streaming. Keyed by clientId
-  // (deduped) so a reconnect's new consumerIds don't re-announce existing
-  // streams; self streams are ignored; clientsRef gives the freshest name.
-  useEffect(() => {
-    const seen = seenStreamIdsRef.current
-    const remoteIds = [...new Set(allVideoStreams.filter((s) => !s.isSelf).map((s) => s.clientId))]
-    const freshIds = remoteIds.filter((id) => !seen.has(id))
-    seenStreamIdsRef.current = new Set(remoteIds)
-    if (!notifyArmedRef.current || freshIds.length === 0) return
-    const now = Date.now()
-    const entries = freshIds.map((clientId) => {
-      const name =
-        clientsRef.current.find((c) => c.id === clientId)?.name ||
-        allVideoStreams.find((s) => s.clientId === clientId)?.fallbackLabel ||
-        'Someone'
-      return { id: `${clientId}-${now}`, message: `${name} has started a stream.`, timestamp: now }
-    })
-    setNotifications((prev) => [...entries, ...prev].slice(0, 50))
-  }, [allVideoStreams])
-
   // Expose a bridge the popout window reads via window.opener. Live MediaStream
   // objects are shared by reference (same origin/process), never serialized.
   useEffect(() => {
@@ -334,24 +311,6 @@ function Main() {
 
   // The channel the local client currently has joined (chat is scoped to it)
   const selfChannelId = clients.find((c) => c.id === client?.id)?.channel_id ?? null
-
-  // (Re)baseline "started a stream" notifications on connect, channel change,
-  // and connection recovery: snapshot the remote streamers already present —
-  // keyed by clientId, which (unlike consumerId) survives a reconnect's
-  // re-consume — then arm after a short delay. Stays disarmed until the
-  // connection is healthy, so the transient clear/re-add while reconnecting
-  // doesn't read as a flurry of new streams.
-  useEffect(() => {
-    notifyArmedRef.current = false
-    seenStreamIdsRef.current = new Set(
-      allVideoStreamsRef.current.filter((s) => !s.isSelf).map((s) => s.clientId)
-    )
-    if (!token || connectionStatus !== 'connected') return
-    const t = setTimeout(() => {
-      notifyArmedRef.current = true
-    }, STREAM_BASELINE_MS)
-    return () => clearTimeout(t)
-  }, [token, selfChannelId, connectionStatus])
 
   // Chat (messages / typing / history) follows the previewed channel when
   // peeking, otherwise the joined channel.
@@ -613,6 +572,29 @@ function Main() {
       }
     },
     [client, token, ensureDmChannel]
+  )
+
+  // Set our own avatar: PATCH /client/self with a data-URL image. Update our
+  // local client immediately; the server broadcasts a ClientModified so others
+  // pick it up. avatar is a `data:image/...;base64,...` string.
+  const handleSetAvatar = useCallback(
+    async (avatar) => {
+      if (!avatar) return
+      const selfId = client?.id
+      setClients((prev) => prev.map((c) => (c.id === selfId ? { ...c, avatar } : c)))
+      if (DEV_MODE) return
+      try {
+        const res = await fetch(`${apiBase()}/client/self`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ avatar })
+        })
+        if (!res.ok) throw new Error(`Server responded ${res.status}`)
+      } catch (err) {
+        setFeed((prev) => appendFeed(prev, systemEntry(`Failed to set avatar: ${err.message}`)))
+      }
+    },
+    [client, token]
   )
 
   // No stream is focused by default (the grid view shows them all). Only clear
@@ -1031,10 +1013,31 @@ function Main() {
 
       if (ev === 'NewUser') {
         setClients((prev) => [...prev, { ...data, self_mute: data.muted, self_deaf: data.deaf }])
+        // Surface lobby arrivals in the bell — NewUser fires when someone joins
+        // the server (Ready already seeded everyone present at connect), so this
+        // catches people lurking before they enter any channel.
+        const now = Date.now()
+        setNotifications((prev) =>
+          [
+            { id: `join-${data.id}-${now}`, message: `${data.name || 'Someone'} joined the server.`, timestamp: now },
+            ...prev
+          ].slice(0, 50)
+        )
       } else if (ev === 'ClientModified') {
         const oldChannelId = clientsRef.current.find((c) => c.id === data.id)?.channel_id
+        // ClientModified also carries profile changes (avatar / nickname). Merge
+        // whatever fields are present so we don't clobber the others; `in` guards
+        // keep an event that omits a field from wiping it.
         setClients((prev) =>
-          prev.map((c) => (c.id === data.id ? { ...c, channel_id: data.channel_id } : c))
+          prev.map((c) => {
+            if (c.id !== data.id) return c
+            const next = { ...c }
+            if ('channel_id' in data) next.channel_id = data.channel_id
+            if ('avatar' in data) next.avatar = data.avatar
+            if (data.nickname != null) next.name = data.nickname
+            if (data.name != null) next.name = data.name
+            return next
+          })
         )
 
         // Join/leave chimes. For ourselves: a move into a channel is a "join",
@@ -1042,9 +1045,12 @@ function Main() {
         // actually changed. ClientModified now also fires for same-channel updates
         // (e.g. a mute/deafen VoiceStateUpdate re-asserts our channel_id), and
         // those must stay silent. For others: only sound when they enter or leave
-        // the channel we're currently in.
+        // the channel we're currently in. Skip entirely for profile-only edits
+        // (avatar/nickname) that don't carry a channel_id.
         const myChannel = selfChannelIdRef.current
-        if (data.id === selfIdRef.current) {
+        if (!('channel_id' in data)) {
+          // no channel move to chime for
+        } else if (data.id === selfIdRef.current) {
           if (oldChannelId !== data.channel_id) {
             playUiSound(data.channel_id == null ? 'channel-leave' : 'channel-join')
           }
@@ -1487,6 +1493,7 @@ function Main() {
           onPreviewChannel={handlePreviewChannel}
           onOpenDm={handleOpenDm}
           onPoke={handlePoke}
+          onSetAvatar={handleSetAvatar}
           onShowClientSummary={handleShowClientSummary}
           previewChannelId={previewChannelId}
           unreadChannelIds={unreadChannelIds}

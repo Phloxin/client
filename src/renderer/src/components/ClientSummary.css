@@ -26,6 +26,13 @@
   font-size: 24px;
   font-weight: var(--font-weight-bold);
   flex-shrink: 0;
+  overflow: hidden;
+}
+
+.client-summary-avatar-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .client-summary-name {

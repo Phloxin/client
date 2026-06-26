@@ -428,6 +428,8 @@ function ChatPanel({
   const resolveName = (entry) =>
     clients?.find((c) => c.id === entry.authorId)?.name || entry.author || 'Unknown'
 
+  const resolveAvatar = (entry) => clients?.find((c) => c.id === entry.authorId)?.avatar
+
   const confirmDelete = () => {
     const id = pendingDeleteId
     setPendingDeleteId(null)
@@ -501,7 +503,11 @@ function ChatPanel({
                 <span className="chat-avatar-spacer" aria-hidden="true" />
               ) : (
                 <span className="chat-avatar" aria-hidden="true">
-                  {resolveName(entry).charAt(0).toUpperCase()}
+                  {resolveAvatar(entry) ? (
+                    <img className="chat-avatar-img" src={resolveAvatar(entry)} alt="" />
+                  ) : (
+                    resolveName(entry).charAt(0).toUpperCase()
+                  )}
                 </span>
               )}
               {canManage && (
