@@ -17,7 +17,7 @@ import {
   setVideoStreamRoles
 } from '../lib/soup'
 import { playUiSound } from '../lib/sounds'
-import { setServerHost, apiBase, wsBase, cdnUrl } from '../lib/serverConfig'
+import { setServerHost, apiBase, wsBase, cdnUrl, throwIfError } from '../lib/serverConfig'
 import { usePillIndicator } from '../lib/usePillIndicator'
 import {
   DEV_MODE,
@@ -457,7 +457,7 @@ function Main() {
         // points (double-click, poke) only ever send one recipient.
         body: JSON.stringify({ recipient_ids: [userId] })
       })
-      if (!res.ok) throw new Error(`Server responded ${res.status}`)
+      await throwIfError(res)
       const channel = await res.json()
       if (channel?.id == null) return null
       // Stamp the recipients/type we know from the click so the header resolves to
@@ -532,7 +532,7 @@ function Main() {
           headers: { Authorization: `Bearer ${token}` },
           body: formData
         })
-        if (!res.ok) throw new Error(`Server responded ${res.status}`)
+        await throwIfError(res)
       } catch (err) {
         showError(`Failed to poke: ${err.message}`)
       }
@@ -552,7 +552,7 @@ function Main() {
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
           body: JSON.stringify({})
         })
-        if (!res.ok) throw new Error(`Server responded ${res.status}`)
+        await throwIfError(res)
       } catch (err) {
         showError(`Failed to kick user: ${err.message}`)
       }
@@ -570,7 +570,7 @@ function Main() {
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
           body: JSON.stringify({ duration_seconds: 0 })
         })
-        if (!res.ok) throw new Error(`Server responded ${res.status}`)
+        await throwIfError(res)
       } catch (err) {
         showError(`Failed to ban user: ${err.message}`)
       }
@@ -592,7 +592,7 @@ function Main() {
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
           body: JSON.stringify({ avatar })
         })
-        if (!res.ok) throw new Error(`Server responded ${res.status}`)
+        await throwIfError(res)
       } catch (err) {
         showError(`Failed to set avatar: ${err.message}`)
       }
@@ -735,7 +735,7 @@ function Main() {
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ name: trimmed, user_limit, position })
       })
-      if (!res.ok) throw new Error(`Server responded ${res.status}`)
+      await throwIfError(res)
       const created = await res.json().catch(() => null)
       if (created && created.id != null) {
         setChannels((prev) => (prev.some((ch) => ch.id === created.id) ? prev : [...prev, created]))
@@ -758,7 +758,7 @@ function Main() {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` }
       })
-      if (!res.ok) throw new Error(`Server responded ${res.status}`)
+      await throwIfError(res)
       setChannels((prev) => prev.filter((ch) => ch.id !== id))
     } catch (err) {
       showError(`Failed to delete channel: ${err.message}`)
@@ -806,7 +806,7 @@ function Main() {
         setConnectedServer(server)
       } else {
         setServerHost(null)
-        showError(`Failed to connect to ${server.nickname}: ${data.message || 'login failed'}`)
+        showError(`Failed to connect to ${server.nickname}: ${data.error || 'login failed'}`)
       }
     } catch {
       setServerHost(null)
@@ -1220,10 +1220,24 @@ function Main() {
         handleEvent(ev, data)
       }
 
-      ws.onclose = () => {
-        console.log('WebSocket disconnected')
+      ws.onclose = (event) => {
+        console.log('WebSocket disconnected', event.code, event.reason)
         clearHeartbeat()
         if (eventsWsRef.current === ws) eventsWsRef.current = null
+        // Forced removal by an admin: the server closes with an application code
+        // and a reason. Stop retrying (a reconnect would just be rejected) and
+        // tell the user instead of silently dropping to the disconnected screen.
+        // ponytail: codes assumed 4001 kick / 4002 ban; the reason-text match is
+        // the fallback if the server numbers them differently.
+        const reason = (event.reason || '').toLowerCase()
+        const banned = event.code === 4002 || reason.includes('ban')
+        const kicked = event.code === 4001 || reason.includes('kick')
+        if (banned || kicked) {
+          closedByUs = true // suppress the reconnect path below
+          showError(`You have been ${banned ? 'banned' : 'kicked'} from the server`)
+          handleDisconnect()
+          return
+        }
         // Recover unless the close was intentional. We resume if we still hold a
         // session; the next handshake reply decides resume vs. fresh.
         scheduleReconnect()
@@ -1319,7 +1333,7 @@ function Main() {
         headers: { Authorization: `Bearer ${token}` },
         body: formData
       })
-      if (!res.ok) throw new Error(`Server responded ${res.status}`)
+      await throwIfError(res)
       // The server broadcasts MessageCreated back to us too, which appends it to the feed
     } catch (err) {
       showError(`Failed to send message: ${err.message}`)
@@ -1356,7 +1370,7 @@ function Main() {
           body: JSON.stringify({ content: trimmed })
         }
       )
-      if (!res.ok) throw new Error(`Server responded ${res.status}`)
+      await throwIfError(res)
       // The server broadcasts MessageUpdated back to us, patching the feed entry.
     } catch (err) {
       showError(`Failed to edit message: ${err.message}`)
@@ -1382,7 +1396,7 @@ function Main() {
           headers: { Authorization: `Bearer ${token}` }
         }
       )
-      if (!res.ok) throw new Error(`Server responded ${res.status}`)
+      await throwIfError(res)
       setFeed((prev) => prev.filter((e) => !(e.type === 'message' && e.id === messageId)))
     } catch (err) {
       showError(`Failed to delete message: ${err.message}`)

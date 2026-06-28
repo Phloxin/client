@@ -320,6 +320,8 @@ function Sidebar({
                   rosterMode
                   onOpenDm={onOpenDm}
                   onPoke={onPoke}
+                  onKick={onKick}
+                  onBan={onBan}
                   onSetAvatar={onSetAvatar}
                   onShowClientSummary={onShowClientSummary}
                 />

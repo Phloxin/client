@@ -20,6 +20,16 @@ export function wsBase() {
   return `ws://${currentHost}`
 }
 
+// Throw on a failed API response, preferring the server's human-readable
+// message. Handler errors come back as `{ "error": "..." }`; fall back to the
+// status code when there's no JSON body. Returns the response when it's ok, so
+// callers can `await throwIfError(res)` inline.
+export async function throwIfError(res) {
+  if (res.ok) return res
+  const body = await res.json().catch(() => null)
+  throw new Error(body?.error || `Server responded ${res.status}`)
+}
+
 // Resolve a server-relative asset path (e.g. /cdn/foo.png) against the active
 // host. The server no longer ties file paths to an IP, so it sends bare /cdn/…
 // paths that we anchor to the current host at use time. data:/blob:/absolute

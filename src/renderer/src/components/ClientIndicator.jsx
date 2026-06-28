@@ -99,9 +99,11 @@ function ClientIndicator({
   const canVolume = !isSelf && !rosterMode
   const canPoke = !isSelf && !!onPoke
   const canSetAvatar = isSelf && !!onSetAvatar
-  // Moderation actions on another user in the channel view. Not wired up yet —
-  // the menu items just appear.
-  const canModerate = !isSelf && !rosterMode
+  // Moderation actions on another user. Roles + ban work offline too, so they
+  // show in both the channel view and the Users roster. Kick only boots a live
+  // session, so it's channel-view only.
+  const canModerate = !isSelf
+  const canKick = !isSelf && !rosterMode
 
   const handleContextMenu = (e) => {
     if (!canVolume && !canPoke && !canSetAvatar && !canModerate) return
@@ -311,17 +313,19 @@ function ClientIndicator({
                 <IconUserShield size={16} />
                 Assign Role
               </button>
-              <button
-                type="button"
-                className="client-context-menu-item danger"
-                onClick={() => {
-                  onKick?.(client.id)
-                  setMenuPos(null)
-                }}
-              >
-                <IconUserX size={16} />
-                Kick User
-              </button>
+              {canKick && (
+                <button
+                  type="button"
+                  className="client-context-menu-item danger"
+                  onClick={() => {
+                    onKick?.(client.id)
+                    setMenuPos(null)
+                  }}
+                >
+                  <IconUserX size={16} />
+                  Kick User
+                </button>
+              )}
               <button
                 type="button"
                 className="client-context-menu-item danger"
