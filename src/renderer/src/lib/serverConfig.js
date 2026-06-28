@@ -20,6 +20,15 @@ export function wsBase() {
   return `ws://${currentHost}`
 }
 
+// Resolve a server-relative asset path (e.g. /cdn/foo.png) against the active
+// host. The server no longer ties file paths to an IP, so it sends bare /cdn/…
+// paths that we anchor to the current host at use time. data:/blob:/absolute
+// URLs (self-set avatars, pending uploads) pass through untouched.
+export function cdnUrl(path) {
+  if (!path || !path.startsWith('/')) return path
+  return `${apiBase()}${path}`
+}
+
 // ICE servers for mediasoup transports. STUN is fixed; the TURN relay is
 // derived from the active server's IP (port 3478) so voice media relays through
 // whichever server we're connected to.

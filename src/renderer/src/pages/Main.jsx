@@ -16,7 +16,7 @@ import {
   setVideoStreamRoles
 } from '../lib/soup'
 import { playUiSound } from '../lib/sounds'
-import { setServerHost, apiBase, wsBase } from '../lib/serverConfig'
+import { setServerHost, apiBase, wsBase, cdnUrl } from '../lib/serverConfig'
 import { usePillIndicator } from '../lib/usePillIndicator'
 import {
   DEV_MODE,
@@ -67,7 +67,7 @@ function messageFromApi(msg) {
       id: a.id,
       name: a.filename,
       kind: kindFromContentType(a.content_type),
-      url: a.url
+      url: cdnUrl(a.url)
     })),
     // Link-preview / rich cards. URLs (incl. attachment://) are resolved
     // server-side, so they're render-ready. May arrive later via MessageUpdated.
@@ -934,7 +934,14 @@ function Main() {
         setChannels(data.channels)
         // ClientApiObject uses `muted`/`deaf`; the rest of the UI uses
         // `self_mute`/`self_deaf` - normalize on the way in.
-        setClients(data.clients.map((c) => ({ ...c, self_mute: c.muted, self_deaf: c.deaf })))
+        setClients(
+          data.clients.map((c) => ({
+            ...c,
+            avatar: cdnUrl(c.avatar),
+            self_mute: c.muted,
+            self_deaf: c.deaf
+          }))
+        )
         // Seed read cursors (one entry per visible channel).
         const reads = {}
         for (const rs of data.read_states || []) {
@@ -956,7 +963,10 @@ function Main() {
       }
 
       if (ev === 'NewUser') {
-        setClients((prev) => [...prev, { ...data, self_mute: data.muted, self_deaf: data.deaf }])
+        setClients((prev) => [
+          ...prev,
+          { ...data, avatar: cdnUrl(data.avatar), self_mute: data.muted, self_deaf: data.deaf }
+        ])
         // Surface lobby arrivals in the bell — NewUser fires when someone joins
         // the server (Ready already seeded everyone present at connect), so this
         // catches people lurking before they enter any channel.
@@ -977,7 +987,7 @@ function Main() {
             if (c.id !== data.id) return c
             const next = { ...c }
             if ('channel_id' in data) next.channel_id = data.channel_id
-            if ('avatar' in data) next.avatar = data.avatar
+            if ('avatar' in data) next.avatar = cdnUrl(data.avatar)
             if (data.nickname != null) next.name = data.nickname
             if (data.name != null) next.name = data.name
             return next
