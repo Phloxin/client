@@ -42,6 +42,14 @@ function ClientIndicator({
   // Poke composer state, scoped to the open context menu.
   const [pokeOpen, setPokeOpen] = useState(false)
   const [pokeText, setPokeText] = useState('')
+  // Kick/ban composer: which action is being composed ('kick' | 'ban' | null),
+  // its optional reason, and the ban duration in seconds (0 = permanent).
+  const [modAction, setModAction] = useState(null)
+  const [modReason, setModReason] = useState('')
+  const [banDuration, setBanDuration] = useState(0)
+  // True when the duration select is in "Custom…" mode (banDuration comes from a
+  // free-form seconds input rather than a preset).
+  const [customDuration, setCustomDuration] = useState(false)
   const menuRef = useRef(null)
   const avatarInputRef = useRef(null)
   const [visualSpeaking, setVisualSpeaking] = useState(speaking)
@@ -90,6 +98,10 @@ function ClientIndicator({
     if (!menuPos) {
       setPokeOpen(false)
       setPokeText('')
+      setModAction(null)
+      setModReason('')
+      setBanDuration(0)
+      setCustomDuration(false)
     }
   }, [menuPos])
 
@@ -113,6 +125,13 @@ function ClientIndicator({
 
   const submitPoke = () => {
     onPoke?.(client.id, pokeText)
+    setMenuPos(null)
+  }
+
+  const submitMod = () => {
+    const reason = modReason.trim()
+    if (modAction === 'ban') onBan?.(client.id, { durationSeconds: banDuration, reason })
+    else if (modAction === 'kick') onKick?.(client.id, reason)
     setMenuPos(null)
   }
 
@@ -309,34 +328,87 @@ function ClientIndicator({
           {canModerate && (
             <>
               <div className="client-context-menu-divider" aria-hidden="true" />
-              <button type="button" className="client-context-menu-item" onClick={() => setMenuPos(null)}>
-                <IconUserShield size={16} />
-                Assign Role
-              </button>
-              {canKick && (
-                <button
-                  type="button"
-                  className="client-context-menu-item danger"
-                  onClick={() => {
-                    onKick?.(client.id)
-                    setMenuPos(null)
-                  }}
-                >
-                  <IconUserX size={16} />
-                  Kick User
-                </button>
+              {modAction ? (
+                <div className="client-mod-composer">
+                  <input
+                    className="client-poke-input"
+                    value={modReason}
+                    autoFocus
+                    placeholder={`${modAction === 'ban' ? 'Ban' : 'Kick'} reason (optional)`}
+                    onChange={(e) => setModReason(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        submitMod()
+                      } else if (e.key === 'Escape') {
+                        setModAction(null)
+                      }
+                    }}
+                  />
+                  {modAction === 'ban' && (
+                    <>
+                      <select
+                        className="client-mod-duration"
+                        value={customDuration ? 'custom' : banDuration}
+                        onChange={(e) => {
+                          if (e.target.value === 'custom') {
+                            setCustomDuration(true)
+                          } else {
+                            setCustomDuration(false)
+                            setBanDuration(Number(e.target.value))
+                          }
+                        }}
+                      >
+                        <option value={0}>Permanent</option>
+                        <option value={3600}>1 hour</option>
+                        <option value={86400}>1 day</option>
+                        <option value={604800}>1 week</option>
+                        <option value={2592000}>30 days</option>
+                        <option value="custom">Custom…</option>
+                      </select>
+                      {customDuration && (
+                        <input
+                          type="number"
+                          min={0}
+                          className="client-mod-duration"
+                          value={banDuration}
+                          placeholder="Seconds"
+                          onChange={(e) => setBanDuration(Math.max(0, Number(e.target.value) || 0))}
+                        />
+                      )}
+                    </>
+                  )}
+                  <button type="button" className="client-context-menu-item danger" onClick={submitMod}>
+                    {modAction === 'ban' ? <IconBan size={16} /> : <IconUserX size={16} />}
+                    Confirm {modAction === 'ban' ? 'Ban' : 'Kick'}
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <button type="button" className="client-context-menu-item" onClick={() => setMenuPos(null)}>
+                    <IconUserShield size={16} />
+                    Assign Role
+                  </button>
+                  {canKick && (
+                    <button
+                      type="button"
+                      className="client-context-menu-item danger"
+                      onClick={() => setModAction('kick')}
+                    >
+                      <IconUserX size={16} />
+                      Kick User
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="client-context-menu-item danger"
+                    onClick={() => setModAction('ban')}
+                  >
+                    <IconBan size={16} />
+                    Ban User
+                  </button>
+                </>
               )}
-              <button
-                type="button"
-                className="client-context-menu-item danger"
-                onClick={() => {
-                  onBan?.(client.id)
-                  setMenuPos(null)
-                }}
-              >
-                <IconBan size={16} />
-                Ban User
-              </button>
             </>
           )}
         </div>

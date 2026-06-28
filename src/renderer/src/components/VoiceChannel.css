@@ -237,6 +237,36 @@
   filter: brightness(1.1);
 }
 
+/* Kick/ban composer: reason input, optional duration select, confirm button
+   stacked. The confirm button reuses .client-context-menu-item.danger. */
+.client-mod-composer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+  margin-top: var(--spacing-xs);
+}
+
+.client-mod-composer .client-context-menu-item {
+  justify-content: center;
+  margin-top: 0;
+}
+
+.client-mod-duration {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius-sm);
+  background: var(--color-background);
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+  outline: none;
+  cursor: pointer;
+}
+
+.client-mod-duration:focus {
+  border-color: var(--color-primary);
+}
+
 .client-volume-btn {
   display: flex;
   align-items: center;

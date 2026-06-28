@@ -544,13 +544,13 @@ function Main() {
   // admin and enforces these; non-admins just get an error toast. The kicked/
   // banned user leaving is broadcast back as a normal roster removal.
   const handleKickUser = useCallback(
-    async (userId) => {
+    async (userId, reason) => {
       if (!userId || userId === client?.id) return
       try {
         const res = await fetch(`${apiBase()}/server/clients/${userId}/kick`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-          body: JSON.stringify({})
+          body: JSON.stringify(reason ? { reason } : {})
         })
         await throwIfError(res)
       } catch (err) {
@@ -560,15 +560,17 @@ function Main() {
     [client, token, showError]
   )
 
+  // durationSeconds 0 = permanent (server default); reason optional.
   const handleBanUser = useCallback(
-    async (userId) => {
+    async (userId, { durationSeconds = 0, reason } = {}) => {
       if (!userId || userId === client?.id) return
       try {
-        // duration_seconds 0 = permanent (server default); no reason for now.
+        const body = { duration_seconds: durationSeconds }
+        if (reason) body.reason = reason
         const res = await fetch(`${apiBase()}/server/clients/${userId}/ban`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ duration_seconds: 0 })
+          body: JSON.stringify(body)
         })
         await throwIfError(res)
       } catch (err) {
