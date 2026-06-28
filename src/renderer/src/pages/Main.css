@@ -4,9 +4,13 @@
 
 /* Column shell: custom title bar on top, app layout fills the rest. */
 .app-shell {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100vh;
+  /* Expose the title-bar height to absolutely-positioned children (the error
+     toast) that live outside .title-bar's scope. */
+  --title-bar-height: 32px;
 }
 
 .layout {

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { prefersReducedMotion } from '../lib/animation'
 import './IdleAnimation.css'
 
@@ -58,7 +58,15 @@ function makeFire(cols, rows, holeRef) {
   }
 }
 
-export default function IdleAnimation() {
+export default function IdleAnimation({ connecting = false }) {
+  // Cycle 0..3 trailing dots while connecting for a simple "…" animation.
+  const [dots, setDots] = useState(0)
+  useEffect(() => {
+    if (!connecting) return
+    const id = setInterval(() => setDots((d) => (d + 1) % 4), 400)
+    return () => clearInterval(id)
+  }, [connecting])
+
   const rootRef = useRef(null)
   const preRef = useRef(null)
   const capRef = useRef(null)
@@ -115,10 +123,19 @@ export default function IdleAnimation() {
     <div className="idle-animation" ref={rootRef}>
       <pre className="idle-fire" aria-hidden="true" ref={preRef} />
       <div className="idle-caption" ref={capRef}>
-        <p className="disconnected-title">No Server Connected</p>
-        <p className="disconnected-subtitle">
-          Pick a server from the <strong>Connect</strong> menu to get started.
-        </p>
+        {connecting ? (
+          <>
+            <p className="disconnected-title">Connecting{'.'.repeat(dots)}</p>
+            <p className="disconnected-subtitle">Reaching the server.</p>
+          </>
+        ) : (
+          <>
+            <p className="disconnected-title">No Server Connected</p>
+            <p className="disconnected-subtitle">
+              Pick a server from the <strong>Connect</strong> menu to get started.
+            </p>
+          </>
+        )}
       </div>
     </div>
   )

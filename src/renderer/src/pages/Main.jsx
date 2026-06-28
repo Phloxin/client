@@ -8,6 +8,7 @@ import ChatPanel from '../components/ChatPanel'
 import ClientSummary from '../components/ClientSummary'
 import TitleBar from '../components/TitleBar'
 import ConnectionOverlay from '../components/ConnectionOverlay'
+import Toast from '../components/Toast'
 import IdleAnimation from '../components/IdleAnimation'
 import Settings from './Settings'
 import {
@@ -112,7 +113,15 @@ function Main() {
   const [servers, setServers] = useState([])
   const [connectedServer, setConnectedServer] = useState(null)
   const [connectionStatus, setConnectionStatus] = useState('connected')
-  
+  // Transient error banner for partial failures (bad requests, permission
+  // denials, failed fetches). Null = hidden. Latest error replaces any showing.
+  const [toastError, setToastError] = useState(null)
+  // True while a connect attempt is in flight (login → token), so the idle view
+  // can say so. Cleared on success (we leave the idle view) or failure.
+  const [connecting, setConnecting] = useState(false)
+  const showError = useCallback((message) => setToastError(message), [])
+  const dismissError = useCallback(() => setToastError(null), [])
+
   //Client UI Hooks
   const [allVideoStreams, setAllVideoStreams] = useState([])
   const [selectedStreamId, setSelectedStreamId] = useState(null)
@@ -478,7 +487,7 @@ function Main() {
         // ensureDmChannel has already registered it, so this is safe.
         if (id != null) setPreviewChannelId(id)
       } catch (err) {
-        setFeed((prev) => appendFeed(prev, systemEntry(`Failed to open direct message: ${err.message}`)))
+        showError(`Failed to open direct message: ${err.message}`)
       }
     },
     [client, ensureDmChannel]
@@ -525,7 +534,7 @@ function Main() {
         })
         if (!res.ok) throw new Error(`Server responded ${res.status}`)
       } catch (err) {
-        setFeed((prev) => appendFeed(prev, systemEntry(`Failed to poke: ${err.message}`)))
+        showError(`Failed to poke: ${err.message}`)
       }
     },
     [client, token, ensureDmChannel]
@@ -547,7 +556,7 @@ function Main() {
         })
         if (!res.ok) throw new Error(`Server responded ${res.status}`)
       } catch (err) {
-        setFeed((prev) => appendFeed(prev, systemEntry(`Failed to set avatar: ${err.message}`)))
+        showError(`Failed to set avatar: ${err.message}`)
       }
     },
     [client, token]
@@ -694,7 +703,7 @@ function Main() {
         setChannels((prev) => (prev.some((ch) => ch.id === created.id) ? prev : [...prev, created]))
       }
     } catch (err) {
-      setFeed((prev) => appendFeed(prev, systemEntry(`Failed to create channel: ${err.message}`)))
+      showError(`Failed to create channel: ${err.message}`)
     }
   }
 
@@ -714,7 +723,7 @@ function Main() {
       if (!res.ok) throw new Error(`Server responded ${res.status}`)
       setChannels((prev) => prev.filter((ch) => ch.id !== id))
     } catch (err) {
-      setFeed((prev) => appendFeed(prev, systemEntry(`Failed to delete channel: ${err.message}`)))
+      showError(`Failed to delete channel: ${err.message}`)
     }
   }
 
@@ -730,6 +739,7 @@ function Main() {
     }
 
     setServerHost(server.host)
+    setConnecting(true)
 
     const credentials = JSON.stringify({ username: server.username, password: server.password })
     const login = () =>
@@ -758,13 +768,13 @@ function Main() {
         setConnectedServer(server)
       } else {
         setServerHost(null)
-        setFeed([
-          systemEntry(`Failed to connect to ${server.nickname}: ${data.message || 'login failed'}`)
-        ])
+        showError(`Failed to connect to ${server.nickname}: ${data.message || 'login failed'}`)
       }
     } catch {
       setServerHost(null)
-      setFeed([systemEntry(`Failed to connect to ${server.nickname}: could not reach server`)])
+      showError(`Failed to connect to ${server.nickname}: could not reach server`)
+    } finally {
+      setConnecting(false)
     }
   }
 
@@ -1274,7 +1284,7 @@ function Main() {
       if (!res.ok) throw new Error(`Server responded ${res.status}`)
       // The server broadcasts MessageCreated back to us too, which appends it to the feed
     } catch (err) {
-      setFeed((prev) => appendFeed(prev, systemEntry(`Failed to send message: ${err.message}`)))
+      showError(`Failed to send message: ${err.message}`)
     }
   }
 
@@ -1311,7 +1321,7 @@ function Main() {
       if (!res.ok) throw new Error(`Server responded ${res.status}`)
       // The server broadcasts MessageUpdated back to us, patching the feed entry.
     } catch (err) {
-      setFeed((prev) => appendFeed(prev, systemEntry(`Failed to edit message: ${err.message}`)))
+      showError(`Failed to edit message: ${err.message}`)
     }
   }
 
@@ -1337,7 +1347,7 @@ function Main() {
       if (!res.ok) throw new Error(`Server responded ${res.status}`)
       setFeed((prev) => prev.filter((e) => !(e.type === 'message' && e.id === messageId)))
     } catch (err) {
-      setFeed((prev) => appendFeed(prev, systemEntry(`Failed to delete message: ${err.message}`)))
+      showError(`Failed to delete message: ${err.message}`)
     }
   }
 
@@ -1415,6 +1425,7 @@ function Main() {
 
   return (
     <div className="app-shell">
+      <Toast message={toastError} onDismiss={dismissError} />
       <TitleBar
         title={titleText}
         icon={IconUsersGroup}
@@ -1542,7 +1553,7 @@ function Main() {
             }
           >
             {!connected ? (
-              <IdleAnimation />
+              <IdleAnimation connecting={connecting} />
             ) : summaryClientId != null ? (
               <ClientSummary client={summaryClient} />
             ) : previewChannelId != null || viewMode === 'log' ? (

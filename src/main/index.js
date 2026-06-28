@@ -114,8 +114,9 @@ function persistServers() {
 const LAYOUT_PADDING = 8
 const SIDEBAR_MIN_WIDTH = 180
 
-// Width: both side paddings + the sidebar, so it never clips horizontally.
-const MIN_CONTENT_WIDTH = SIDEBAR_MIN_WIDTH + LAYOUT_PADDING * 2 // 196
+// Width: both side paddings + the sidebar is the clip floor (196), but we hold
+// the window to a wider 385px minimum so the chat area stays usable too.
+const MIN_CONTENT_WIDTH = Math.max(385, SIDEBAR_MIN_WIDTH + LAYOUT_PADDING * 2)
 
 // Height: top+bottom padding + the sidebar's fixed-height chrome - the server
 // header, the "Channels" label, and the bottom control-button wrapper - so the
