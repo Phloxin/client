@@ -4,7 +4,6 @@ import {
   getTheme,
   getAvailableThemes,
   getThemeById,
-  nextTheme,
   initializeTheme
 } from '../lib/themeUtils';
 
@@ -14,7 +13,7 @@ import {
  * Provides theme state and switching functionality to React components
  * 
  * Usage:
- *   const { theme, availableThemes, setCurrentTheme, nextTheme } = useTheme();
+ *   const { theme, availableThemes, setCurrentTheme } = useTheme();
  */
 export function useTheme() {
   const [theme, setThemeState] = useState(() => {
@@ -40,17 +39,10 @@ export function useTheme() {
     }
   };
 
-  const handleNextTheme = () => {
-    const newTheme = nextTheme();
-    setThemeState(newTheme);
-  };
-
   return {
     theme,
     availableThemes: getAvailableThemes(),
     currentThemeInfo: getThemeById(theme),
-    setCurrentTheme,
-    nextTheme: handleNextTheme,
-    getThemeById
+    setCurrentTheme
   };
 }

@@ -1171,14 +1171,6 @@ export function isConnected() {
   return ws?.readyState === WebSocket.OPEN
 }
 
-export function isMicMuted() {
-  return micMuted
-}
-
-export function isSoundMuted() {
-  return soundMuted
-}
-
 // ─── TEMP DIAGNOSTIC: live inbound kbps per remote video consumer ─────────
 // Verifies that PauseConsumer actually stops RTP (kbps → ~0) vs. the stream
 // quietly playing in the background. Dev-only; remove once confirmed.

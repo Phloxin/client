@@ -10,10 +10,6 @@ export function setServerHost(host) {
   currentHost = host
 }
 
-export function getServerHost() {
-  return currentHost
-}
-
 // HTTP API base, e.g. http://1.2.3.4:3000
 export function apiBase() {
   return `http://${currentHost}`

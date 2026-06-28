@@ -6,7 +6,6 @@ import { SettingsProvider } from './context/SettingsContext'
 import ErrorBoundary from './components/ErrorBoundary'
 import './styles/main.css'
 import './styles/animations.css'
-import '@tabler/icons-webfont/dist/tabler-icons.min.css'
 // Bundled interface fonts (self-hosted woff2) selectable in Appearance settings.
 import '@fontsource-variable/inter'
 import '@fontsource-variable/open-sans'

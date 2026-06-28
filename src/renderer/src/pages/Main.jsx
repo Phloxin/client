@@ -91,10 +91,8 @@ function byChronology(a, b) {
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
 }
 
-// The other party in a DM channel, given our own id. The server sends ids in
-// `participant_ids` (plain id strings); locally-created DMs stamp `recipients`,
-// which may be plain ids or { id, name } objects. Returns { id, name } with name
-// possibly undefined (the caller resolves it against the client roster).
+// The other party in a DM channel, given our own id. Reads `participant_ids`
+// (server) or `recipients` (local), which may be plain ids or { id, name }.
 function dmOther(channel, selfId) {
   for (const r of channel?.participant_ids || channel?.recipients || []) {
     const id = r && typeof r === 'object' ? r.id : r
@@ -104,45 +102,35 @@ function dmOther(channel, selfId) {
 }
 
 function Main() {
+
+  //Server Connection State Hooks
   const { token, setToken, client, setClient } = useAuth()
   const [channels, setChannels] = useState([])
   const [clients, setClients] = useState([])
   const [feed, setFeed] = useState([])
   const [viewMode, setViewMode] = useState('log') // 'log' or 'video'
-  const [allVideoStreams, setAllVideoStreams] = useState([])
-  const [selectedStreamId, setSelectedStreamId] = useState(null)
   const [servers, setServers] = useState([])
   const [connectedServer, setConnectedServer] = useState(null)
-  // Events-socket health: 'connected' normally, 'reconnecting' once a drop is
-  // detected and we're retrying. Drives the full-app reconnect overlay.
   const [connectionStatus, setConnectionStatus] = useState('connected')
+  
+  //Client UI Hooks
+  const [allVideoStreams, setAllVideoStreams] = useState([])
+  const [selectedStreamId, setSelectedStreamId] = useState(null)
   const [poppedOut, setPoppedOut] = useState(false)
-  // Stream playback volume (0..100) and mute, owned here so they're shared
-  // between the in-app grid and the popout window (popping out must not reset
-  // a volume the user already lowered).
   const [streamVolume, setStreamVolume] = useState(100)
   const [streamMuted, setStreamMuted] = useState(false)
-  // Which streams the user is actively watching. Streams default to stopped, so
-  // a stream is only consumed once its id is in here. Owned at this level (not in
-  // VideoGrid) so the choice survives chat/popout view switches that unmount the
-  // grid, and is shared with the popout window via the bridge below.
   const [watchedStreamIds, setWatchedStreamIds] = useState(() => new Set())
-  // Server notifications shown in the title-bar bell (newest first).
   const [notifications, setNotifications] = useState([])
-  // DM alerts shown in the title-bar inbox (newest first), deduped to one entry
-  // per DM channel. Each carries the sender so clicking it opens that DM.
   const [dmNotifications, setDmNotifications] = useState([])
-  // Per-channel read cursors: { [channel_id]: last_acknowledged_message_id|null }.
-  // Seeded from Ready.read_states, patched by ReadStateUpdated, and acked back to
-  // the server when we view a channel. Unread is derived (see unreadChannelIds
-  // below) by comparing against each channel's last_message_id.
   const [readStates, setReadStates] = useState({})
-  // Other clients currently typing: { clientId, name, channelId, expiresAt }.
-  // Pruned as entries expire; filtered to the active channel at render.
   const [typingEntries, setTypingEntries] = useState([])
+
+  //Broad Server Ref Hooks
   const eventsWsRef = useRef(null)
   const channelsRef = useRef([])
   const clientsRef = useRef([])
+
+  //Stream Ref Hooks
   const popoutWindowRef = useRef(null)
   const popoutListenersRef = useRef(new Set())
   const allVideoStreamsRef = useRef([])
@@ -150,35 +138,17 @@ function Main() {
   const streamVolumeRef = useRef(100)
   const streamMutedRef = useRef(false)
   const watchedStreamIdsRef = useRef(new Set())
-  // Timestamp of our last typing ping, so we throttle to one per TYPING_DURATION.
+
   const lastTypingSentRef = useRef(0)
-  // Last server event sequence we've processed, reported back in each heartbeat
-  // (op 2) and as `seq` when resuming. Null until we've processed an event.
   const lastEventSeqRef = useRef(null)
-  // Session id handed to us on a fresh IDENTIFY (Authenticated). Sent back in the
-  // resume object on reconnect so the server can replay events we missed. Null
-  // when we have no resumable session.
   const sessionIdRef = useRef(null)
-  // Self id, our joined channel, and the channel whose chat we're viewing — kept
-  // as refs so the once-built events-socket handler reads live values (not stale
-  // closures) when deciding which UI sounds to play.
   const selfIdRef = useRef(null)
   const selfChannelIdRef = useRef(null)
   const activeChatChannelIdRef = useRef(null)
-  // Whether the chat panel (not the video tab) is currently on screen. The
-  // active channel only counts as "read" while its chat is actually visible, so
-  // a message arriving while we're in stream view still marks it unread.
   const chatVisibleRef = useRef(true)
-  // Current feed, mirrored so loadOlderMessages can read it without re-creating
-  // the callback (and re-binding scroll handlers) on every message.
   const feedRef = useRef([])
-  // Guards a single in-flight "load older" fetch, and tracks channels whose
-  // history we've scrolled all the way back to (so we stop asking).
   const loadingOlderRef = useRef(false)
   const [exhaustedChannels, setExhaustedChannels] = useState(() => new Set())
-  // Stream-sound detection: ids present last time we diffed, and a gate that
-  // suppresses chimes until shortly after a (re)connect or channel change so the
-  // streams already live in a channel we just joined don't each fire a start.
   const prevStreamIdsRef = useRef(new Set())
   const streamSoundsArmedRef = useRef(false)
 
@@ -191,8 +161,7 @@ function Main() {
     clientsRef.current = clients
   }, [clients])
 
-  // Keep refs to the latest streams/selection/volume so the popout bridge (set
-  // up once below) always reads current values without stale closures.
+  // Same for the popout bridge's data, read once-bound without stale closures.
   useEffect(() => {
     allVideoStreamsRef.current = allVideoStreams
   }, [allVideoStreams])
@@ -214,8 +183,7 @@ function Main() {
     popoutListenersRef.current.forEach((cb) => cb())
   }, [allVideoStreams, clients, selectedStreamId, streamVolume, streamMuted, watchedStreamIds])
 
-  // Toggle whether a stream is being watched (consumed). Shared by the in-app
-  // grid and, via the bridge, the popout. Functional update so it's stable.
+  // Toggle whether a stream is watched (consumed); shared with the popout.
   const handleSetStreamWatched = (consumerId, watched) =>
     setWatchedStreamIds((prev) => {
       if (watched === prev.has(consumerId)) return prev
@@ -316,8 +284,6 @@ function Main() {
   // peeking, otherwise the joined channel.
   const activeChatChannelId = previewChannelId ?? selfChannelId
 
-  // Mirror self id / channel / active chat channel into refs for the events
-  // handler (built once) to read without stale closures.
   // Chat is on screen when peeking a channel or when the joined channel's Chat
   // tab is selected (mirrors the render condition below).
   const chatVisible = previewChannelId != null || viewMode === 'log'
@@ -362,11 +328,9 @@ function Main() {
     [token]
   )
 
-  // Viewing a channel's chat acks its latest message, clearing the unread dot.
-  // Gated on chatVisible (the Chat tab is actually on screen), and re-runs when a
-  // new message lands in the open channel (its last_message_id advances), which
-  // the backend lists as an acceptable time to ack. Optimistically updates the
-  // local cursor so the dot clears without waiting on the round trip.
+  // Viewing a channel's chat (chatVisible) acks its latest message and clears the
+  // unread dot, optimistically updating the local cursor. Re-runs when a new
+  // message lands in the open channel.
   useEffect(() => {
     if (activeChatChannelId == null || !chatVisible) return
     // Reading a DM also clears its inbox alert.
@@ -382,13 +346,11 @@ function Main() {
     markChannelRead(activeChatChannelId, latest)
   }, [activeChatChannelId, chatVisible, channels, readStates, token, markChannelRead])
 
-  // (Re)baseline stream-sound detection on connect, channel change, and
-  // connection recovery: snapshot the streams currently in view (by clientId, so
-  // a reconnect's re-consumed streams aren't heard as restarts) without
-  // sounding, then arm after a short delay. Stays disarmed until the connection
-  // is healthy so the transient clear/re-add while reconnecting is silent. Sits
-  // before the diff effect below so on a channel switch it runs first in the
-  // same commit — disarming before the diff sees the incoming channel's streams.
+  // (Re)baseline stream-sound detection on connect / channel change / recovery:
+  // snapshot the streams in view (by clientId, so re-consumed streams after a
+  // reconnect aren't heard as restarts) without sounding, then arm after a delay.
+  // Stays disarmed until healthy. Must run before the diff effect below so a
+  // channel switch disarms before the diff sees the new channel's streams.
   useEffect(() => {
     streamSoundsArmedRef.current = false
     prevStreamIdsRef.current = new Set(allVideoStreamsRef.current.map((s) => s.clientId))
@@ -437,10 +399,8 @@ function Main() {
     setSummaryClientId(userId)
   }
 
-  // Open the DM an inbox alert points at. Prefer the sender id (get-or-create +
-  // stamps recipients so the header resolves); if we never resolved it (server
-  // didn't include recipients in Ready), the channel already exists — just peek
-  // it by id. Viewing it clears the alert via the view→ack effect.
+  // Open the DM an inbox alert points at: by sender id when known (resolves the
+  // header), else peek the channel by id. Viewing clears the alert.
   const handleOpenDmNotification = (n) => {
     if (n.authorId != null) {
       handleOpenDm(n.authorId)
@@ -506,11 +466,8 @@ function Main() {
     [token, client]
   )
 
-  // Open (or create) a 1:1 DM with another user and peek into its chat. DMs are
-  // just channels of type 'dm' — no voice/streams — so they ride the same
-  // preview/chat path as a channel peek: once we know the channel id we only set
-  // it as the previewed channel and everything else (history, send, typing) works
-  // unchanged.
+  // Open (or create) a 1:1 DM and peek into its chat. DMs are just 'dm' channels,
+  // so they ride the same preview path as a channel peek.
   const handleOpenDm = useCallback(
     async (userId) => {
       if (!userId || userId === client?.id) return
@@ -574,9 +531,8 @@ function Main() {
     [client, token, ensureDmChannel]
   )
 
-  // Set our own avatar: PATCH /client/self with a data-URL image. Update our
-  // local client immediately; the server broadcasts a ClientModified so others
-  // pick it up. avatar is a `data:image/...;base64,...` string.
+  // Set our own avatar: PATCH /client/self with data-URL image //Update locally -> Server broadcasts ClientModified to others
+  // avatar is a `data:image/...;base64,...` string.
   const handleSetAvatar = useCallback(
     async (avatar) => {
       if (!avatar) return
@@ -597,19 +553,16 @@ function Main() {
     [client, token]
   )
 
-  // No stream is focused by default (the grid view shows them all). Only clear
-  // the focus if the currently focused stream goes away.
+  // No stream is focused by default (the grid view shows them all). Only clear the focus if the currently focused stream goes away.
   useEffect(() => {
     if (selectedStreamId && !allVideoStreams.some((s) => s.consumerId === selectedStreamId)) {
       setSelectedStreamId(null)
     }
   }, [allVideoStreams, selectedStreamId])
 
-  // Fetch a channel's recent history and merge it into the feed, replacing that
-  // channel's existing entries with the authoritative set. The request goes
-  // through the main process because the endpoint is a GET with a JSON body.
-  // `shouldApply` lets a caller bail out if the result is no longer wanted
-  // (e.g. the user switched channels before it arrived).
+  // Fetch a channel's recent history and replace that channel's feed entries with it.
+  // Routed through the main process (GET with a JSON body). `shouldApply`
+  // bails if the result is stale (user switched channels before it arrived).
   const loadChannelHistory = useCallback(
     (channelId, shouldApply = () => true) => {
       if (DEV_MODE || !token || channelId == null) return Promise.resolve()
@@ -645,10 +598,8 @@ function Main() {
     [token]
   )
 
-  // Scroll-up pagination: fetch the page of messages older than the oldest one
-  // we currently hold for the active channel and prepend it. The server returns
-  // at most HISTORY_LIMIT; a short page means we've reached the start, so we
-  // mark the channel exhausted and stop asking.
+  // Scroll-up pagination: fetch the page of messages older than the oldest one currently held and prepend it
+  // The server returns at most HISTORY_LIMIT; a short page means we've reached the start -> mark the channel exhausted and stop asking.
   const loadOlderMessages = useCallback(() => {
     const channelId = activeChatChannelIdRef.current
     if (DEV_MODE || !token || channelId == null || loadingOlderRef.current) return Promise.resolve()
@@ -688,8 +639,7 @@ function Main() {
       })
   }, [token])
 
-  // Load recent message history whenever the local client enters a channel, so
-  // opening a channel shows what was said before we got here.
+  // Load recent messages when local client joins channel, opening a channel shows what was said before joining
   useEffect(() => {
     if (activeChatChannelId == null) return
     let cancelled = false
@@ -719,9 +669,8 @@ function Main() {
 
   const handleRemoveServer = (id) => saveServers(servers.filter((s) => s.id !== id))
 
-  // Create a channel on the server. Position is computed to append after the
-  // current last channel. The server also broadcasts ChannelCreated, so the add
-  // here is deduped by id in case that broadcast echoes back to us.
+  // Create a channel on the server. Position is computed to append after the current last channel. 
+  //The server also broadcasts ChannelCreated, so the add here is deduped by id in case that broadcast echoes back to us.
   const handleCreateChannel = async ({ name, user_limit }) => {
     const trimmed = name.trim()
     if (!trimmed) return
@@ -793,8 +742,7 @@ function Main() {
     try {
       let data = await login()
       // No token usually means the account doesn't exist yet (we're moving to
-      // DB-backed users). Self-register with the saved credentials, then retry
-      // the login once.
+      // DB-backed users). Self-register with the saved credentials, then retry the login once.
       if (!data.token) {
         await fetch(`${apiBase()}/register`, {
           method: 'POST',
@@ -820,13 +768,9 @@ function Main() {
     }
   }
 
-  // Disconnect from the current server and return to the disconnected state.
-  // Clearing the token tears down the events websocket via the effect cleanup.
-  // This is the single source of truth for "drop back to disconnected": the
-  // reconnect paths that hit a rejected token call it too, so they can't leave
-  // half-cleared state (e.g. a stale channel list) on screen. Only stable
-  // setters/refs are touched, so it's safe to memoize with empty deps and to
-  // call from the events effect.
+  // Single source of truth for dropping back to the disconnected state (the
+  // reconnect paths call it too on a rejected token, so none leave half-cleared
+  // state). Clearing the token tears down the events socket via effect cleanup.
   const handleDisconnect = useCallback(() => {
     if (popoutWindowRef.current && !popoutWindowRef.current.closed) {
       popoutWindowRef.current.close()

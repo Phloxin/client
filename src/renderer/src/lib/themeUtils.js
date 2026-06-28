@@ -163,7 +163,7 @@ export function listenForThemeUpdates() {
  * @returns {Array}
  */
 export function getAvailableThemes() {
-  return [...AVAILABLE_THEMES];
+  return AVAILABLE_THEMES;
 }
 
 /**
@@ -173,17 +173,4 @@ export function getAvailableThemes() {
  */
 export function getThemeById(themeId) {
   return AVAILABLE_THEMES.find(t => t.id === themeId) || null;
-}
-
-/**
- * Cycle to the next theme in the list.
- * @returns {string} - The ID of the new theme
- */
-export function nextTheme() {
-  const current = getTheme();
-  const currentIndex = AVAILABLE_THEMES.findIndex(t => t.id === current);
-  const nextIndex = (currentIndex + 1) % AVAILABLE_THEMES.length;
-  const nextThemeId = AVAILABLE_THEMES[nextIndex].id;
-  setTheme(nextThemeId);
-  return nextThemeId;
 }
