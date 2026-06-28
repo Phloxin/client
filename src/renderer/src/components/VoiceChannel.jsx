@@ -44,6 +44,8 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     onPreviewChannel,
     onOpenDm,
     onPoke,
+    onKick,
+    onBan,
     onSetAvatar,
     onShowClientSummary,
     previewing,
@@ -423,6 +425,8 @@ const VoiceChannel = forwardRef(function VoiceChannel(
           streaming={streamingClientIds.has(c.id)}
           onOpenDm={onOpenDm}
           onPoke={onPoke}
+          onKick={onKick}
+          onBan={onBan}
           onSetAvatar={onSetAvatar}
           onShowClientSummary={onShowClientSummary}
         />

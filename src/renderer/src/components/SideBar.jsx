@@ -46,6 +46,8 @@ function Sidebar({
   onPreviewChannel,
   onOpenDm,
   onPoke,
+  onKick,
+  onBan,
   onSetAvatar,
   onShowClientSummary,
   previewChannelId,
@@ -274,6 +276,8 @@ function Sidebar({
             onPreviewChannel={onPreviewChannel}
             onOpenDm={onOpenDm}
             onPoke={onPoke}
+            onKick={onKick}
+            onBan={onBan}
             onSetAvatar={onSetAvatar}
             onShowClientSummary={onShowClientSummary}
             previewing={previewChannelId === ch.id}

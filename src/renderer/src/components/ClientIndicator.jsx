@@ -32,6 +32,8 @@ function ClientIndicator({
   rosterMode,
   onOpenDm,
   onPoke,
+  onKick,
+  onBan,
   onSetAvatar,
   onShowClientSummary
 }) {
@@ -312,7 +314,10 @@ function ClientIndicator({
               <button
                 type="button"
                 className="client-context-menu-item danger"
-                onClick={() => setMenuPos(null)}
+                onClick={() => {
+                  onKick?.(client.id)
+                  setMenuPos(null)
+                }}
               >
                 <IconUserX size={16} />
                 Kick User
@@ -320,7 +325,10 @@ function ClientIndicator({
               <button
                 type="button"
                 className="client-context-menu-item danger"
-                onClick={() => setMenuPos(null)}
+                onClick={() => {
+                  onBan?.(client.id)
+                  setMenuPos(null)
+                }}
               >
                 <IconBan size={16} />
                 Ban User

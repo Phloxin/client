@@ -540,6 +540,44 @@ function Main() {
     [client, token, ensureDmChannel]
   )
 
+  // Admin moderation. The backend designates the first user to enter a server as
+  // admin and enforces these; non-admins just get an error toast. The kicked/
+  // banned user leaving is broadcast back as a normal roster removal.
+  const handleKickUser = useCallback(
+    async (userId) => {
+      if (!userId || userId === client?.id) return
+      try {
+        const res = await fetch(`${apiBase()}/server/clients/${userId}/kick`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({})
+        })
+        if (!res.ok) throw new Error(`Server responded ${res.status}`)
+      } catch (err) {
+        showError(`Failed to kick user: ${err.message}`)
+      }
+    },
+    [client, token, showError]
+  )
+
+  const handleBanUser = useCallback(
+    async (userId) => {
+      if (!userId || userId === client?.id) return
+      try {
+        // duration_seconds 0 = permanent (server default); no reason for now.
+        const res = await fetch(`${apiBase()}/server/clients/${userId}/ban`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ duration_seconds: 0 })
+        })
+        if (!res.ok) throw new Error(`Server responded ${res.status}`)
+      } catch (err) {
+        showError(`Failed to ban user: ${err.message}`)
+      }
+    },
+    [client, token, showError]
+  )
+
   // Set our own avatar: PATCH /client/self with data-URL image //Update locally -> Server broadcasts ClientModified to others
   // avatar is a `data:image/...;base64,...` string.
   const handleSetAvatar = useCallback(
@@ -1458,6 +1496,8 @@ function Main() {
           onPreviewChannel={handlePreviewChannel}
           onOpenDm={handleOpenDm}
           onPoke={handlePoke}
+          onKick={handleKickUser}
+          onBan={handleBanUser}
           onSetAvatar={handleSetAvatar}
           onShowClientSummary={handleShowClientSummary}
           previewChannelId={previewChannelId}
