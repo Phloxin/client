@@ -11,7 +11,10 @@ import {
   IconVolumeOff,
   IconVideoFilled,
   IconHandFinger,
-  IconPhotoUp
+  IconPhotoUp,
+  IconUserShield,
+  IconUserX,
+  IconBan
 } from '@tabler/icons-react'
 import { setClientAudioState, getClientAudioState } from '../lib/soup'
 
@@ -94,9 +97,12 @@ function ClientIndicator({
   const canVolume = !isSelf && !rosterMode
   const canPoke = !isSelf && !!onPoke
   const canSetAvatar = isSelf && !!onSetAvatar
+  // Moderation actions on another user in the channel view. Not wired up yet —
+  // the menu items just appear.
+  const canModerate = !isSelf && !rosterMode
 
   const handleContextMenu = (e) => {
-    if (!canVolume && !canPoke && !canSetAvatar) return
+    if (!canVolume && !canPoke && !canSetAvatar && !canModerate) return
     e.preventDefault()
     setMenuPos({ x: e.clientX, y: e.clientY })
   }
@@ -296,6 +302,31 @@ function ClientIndicator({
                 Poke
               </button>
             ))}
+          {canModerate && (
+            <>
+              <div className="client-context-menu-divider" aria-hidden="true" />
+              <button type="button" className="client-context-menu-item" onClick={() => setMenuPos(null)}>
+                <IconUserShield size={16} />
+                Assign Role
+              </button>
+              <button
+                type="button"
+                className="client-context-menu-item danger"
+                onClick={() => setMenuPos(null)}
+              >
+                <IconUserX size={16} />
+                Kick User
+              </button>
+              <button
+                type="button"
+                className="client-context-menu-item danger"
+                onClick={() => setMenuPos(null)}
+              >
+                <IconBan size={16} />
+                Ban User
+              </button>
+            </>
+          )}
         </div>
       )}
     </div>

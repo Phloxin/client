@@ -179,6 +179,22 @@
   color: var(--color-text);
 }
 
+.client-context-menu-item.danger {
+  color: var(--color-danger);
+}
+
+.client-context-menu-item.danger:hover {
+  background: color-mix(in srgb, var(--color-danger) 14%, transparent);
+  color: var(--color-danger);
+}
+
+/* Divider above the moderation actions (Assign Role / Kick / Ban). */
+.client-context-menu-divider {
+  height: 1px;
+  margin: var(--spacing-sm) 0 2px;
+  background: var(--color-border);
+}
+
 .client-poke-row {
   display: flex;
   align-items: center;
