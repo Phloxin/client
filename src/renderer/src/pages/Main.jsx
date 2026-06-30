@@ -1584,7 +1584,7 @@ function Main() {
                     disabled={poppedOut}
                     title={poppedOut ? 'Video is open in a separate window' : undefined}
                   >
-                    <IconVideo size={15} stroke={2} /> Video Streams
+                    <IconVideo size={15} stroke={2} /> Streams
                   </button>
                 </div>
               ) : (

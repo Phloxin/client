@@ -150,7 +150,8 @@ function createWindow() {
     // Frameless: the renderer draws its own Discord-style title bar (see
     // TitleBar.jsx). Window controls are driven via the window-* IPC below.
     frame: false,
-    ...(process.platform === 'linux' ? { icon } : {}),
+    // Windows + Linux read the taskbar/window icon from here in dev; macOS uses the dock.
+    ...(process.platform !== 'darwin' ? { icon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false

@@ -14,7 +14,8 @@ import {
   IconPhotoUp,
   IconUserShield,
   IconUserX,
-  IconBan
+  IconBan,
+  IconMoodSilence
 } from '@tabler/icons-react'
 import { setClientAudioState, getClientAudioState } from '../lib/soup'
 
@@ -208,7 +209,10 @@ function ClientIndicator({
   }
 
   let statusIcon
-  if (deafened) {
+  if (localMuted) {
+    // We muted this client locally — takes priority over their own voice status.
+    statusIcon = <IconMoodSilence size={18} className="mic-indicator muted" aria-label="Muted by you" />
+  } else if (deafened) {
     statusIcon = <IconHeadphonesOff size={18} className="mic-indicator deafened" aria-label="Deafened" />
   } else if (micMuted) {
     statusIcon = <IconMicrophoneOff size={18} className="mic-indicator muted" aria-label="Muted" />
