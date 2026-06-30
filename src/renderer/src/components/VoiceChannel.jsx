@@ -46,8 +46,12 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     onPoke,
     onKick,
     onBan,
+    onUnban,
     onSetAvatar,
     onShowClientSummary,
+    roles,
+    onAssignRole,
+    onRemoveRole,
     previewing,
     unread,
     animStatus
@@ -427,8 +431,12 @@ const VoiceChannel = forwardRef(function VoiceChannel(
           onPoke={onPoke}
           onKick={onKick}
           onBan={onBan}
+          onUnban={onUnban}
           onSetAvatar={onSetAvatar}
           onShowClientSummary={onShowClientSummary}
+          roles={roles}
+          onAssignRole={onAssignRole}
+          onRemoveRole={onRemoveRole}
         />
       ))}
       {showSourcePicker && (

@@ -61,3 +61,21 @@
   font-size: var(--font-size-sm);
   color: var(--color-text-muted);
 }
+
+/* Assigned server groups, rendered as a wrap of pill chips. */
+.client-summary-roles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.client-summary-role {
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--color-border);
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+}

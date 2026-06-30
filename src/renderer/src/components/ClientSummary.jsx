@@ -4,8 +4,11 @@ import './ClientSummary.css'
 // name lives in the page header; this is the body. For now it's a scaffold —
 // the server groups and activity stats (e.g. last online) get filled in once
 // the server exposes them.
-function ClientSummary({ client }) {
+function ClientSummary({ client, roles = [] }) {
   const initial = client?.name?.charAt(0).toUpperCase() ?? '?'
+  // The roles this client has explicitly been granted (role_ids), resolved to
+  // names. 'everyone' is implicit and not in role_ids, so it won't appear here.
+  const assignedRoles = roles.filter((r) => (client?.role_ids || []).includes(r.id))
 
   return (
     <div className="client-summary">
@@ -22,7 +25,17 @@ function ClientSummary({ client }) {
 
       <section className="client-summary-section">
         <h3 className="client-summary-heading">Server Groups</h3>
-        <p className="client-summary-placeholder">No groups to show yet.</p>
+        {assignedRoles.length > 0 ? (
+          <ul className="client-summary-roles">
+            {assignedRoles.map((r) => (
+              <li key={r.id} className="client-summary-role">
+                {r.name}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="client-summary-placeholder">No groups to show yet.</p>
+        )}
       </section>
 
       <section className="client-summary-section">

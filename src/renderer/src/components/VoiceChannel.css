@@ -195,6 +195,19 @@
   background: var(--color-border);
 }
 
+/* Expanded role picker under the Assign Role item: indented, scrolls if long. */
+.client-role-list {
+  margin-left: var(--spacing-sm);
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.client-role-empty {
+  padding: 6px 4px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
 .client-poke-row {
   display: flex;
   align-items: center;

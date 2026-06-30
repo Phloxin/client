@@ -15,7 +15,9 @@ import {
   IconUserShield,
   IconUserX,
   IconBan,
-  IconMoodSilence
+  IconMoodSilence,
+  IconCheck,
+  IconUserCheck
 } from '@tabler/icons-react'
 import { setClientAudioState, getClientAudioState } from '../lib/soup'
 
@@ -35,8 +37,12 @@ function ClientIndicator({
   onPoke,
   onKick,
   onBan,
+  onUnban,
   onSetAvatar,
-  onShowClientSummary
+  onShowClientSummary,
+  roles = [],
+  onAssignRole,
+  onRemoveRole
 }) {
   const initial = client.name?.charAt(0).toUpperCase() ?? '?'
   const [menuPos, setMenuPos] = useState(null)
@@ -47,6 +53,8 @@ function ClientIndicator({
   // its optional reason, and the ban duration in seconds (0 = permanent).
   const [modAction, setModAction] = useState(null)
   const [modReason, setModReason] = useState('')
+  // True when the role picker is expanded in the context menu.
+  const [roleOpen, setRoleOpen] = useState(false)
   const [banDuration, setBanDuration] = useState(0)
   // True when the duration select is in "Custom…" mode (banDuration comes from a
   // free-form seconds input rather than a preset).
@@ -103,6 +111,7 @@ function ClientIndicator({
       setModReason('')
       setBanDuration(0)
       setCustomDuration(false)
+      setRoleOpen(false)
     }
   }, [menuPos])
 
@@ -117,6 +126,9 @@ function ClientIndicator({
   // session, so it's channel-view only.
   const canModerate = !isSelf
   const canKick = !isSelf && !rosterMode
+  // 'everyone' is implicit (every client has it), so it's never an assignable
+  // option in the role picker.
+  const assignableRoles = roles.filter((r) => r.name?.toLowerCase() !== 'everyone')
 
   const handleContextMenu = (e) => {
     if (!canVolume && !canPoke && !canSetAvatar && !canModerate) return
@@ -389,10 +401,38 @@ function ClientIndicator({
                 </div>
               ) : (
                 <>
-                  <button type="button" className="client-context-menu-item" onClick={() => setMenuPos(null)}>
+                  <button
+                    type="button"
+                    className="client-context-menu-item"
+                    onClick={() => setRoleOpen((v) => !v)}
+                  >
                     <IconUserShield size={16} />
                     Assign Role
                   </button>
+                  {roleOpen && (
+                    <div className="client-role-list">
+                      {assignableRoles.length === 0 ? (
+                        <div className="client-role-empty">No roles</div>
+                      ) : (
+                        assignableRoles.map((role) => {
+                          const has = (client.role_ids || []).includes(role.id)
+                          return (
+                            <button
+                              key={role.id}
+                              type="button"
+                              className="client-context-menu-item"
+                              onClick={() =>
+                                has ? onRemoveRole?.(client.id, role.id) : onAssignRole?.(client.id, role.id)
+                              }
+                            >
+                              <IconCheck size={16} style={{ visibility: has ? 'visible' : 'hidden' }} />
+                              {role.name}
+                            </button>
+                          )
+                        })
+                      )}
+                    </div>
+                  )}
                   {canKick && (
                     <button
                       type="button"
@@ -410,6 +450,17 @@ function ClientIndicator({
                   >
                     <IconBan size={16} />
                     Ban User
+                  </button>
+                  <button
+                    type="button"
+                    className="client-context-menu-item"
+                    onClick={() => {
+                      onUnban?.(client.id)
+                      setMenuPos(null)
+                    }}
+                  >
+                    <IconUserCheck size={16} />
+                    Unban User
                   </button>
                 </>
               )}

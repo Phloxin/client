@@ -48,8 +48,12 @@ function Sidebar({
   onPoke,
   onKick,
   onBan,
+  onUnban,
   onSetAvatar,
   onShowClientSummary,
+  roles,
+  onAssignRole,
+  onRemoveRole,
   previewChannelId,
   unreadChannelIds
 }) {
@@ -278,8 +282,12 @@ function Sidebar({
             onPoke={onPoke}
             onKick={onKick}
             onBan={onBan}
+            onUnban={onUnban}
             onSetAvatar={onSetAvatar}
             onShowClientSummary={onShowClientSummary}
+            roles={roles}
+            onAssignRole={onAssignRole}
+            onRemoveRole={onRemoveRole}
             previewing={previewChannelId === ch.id}
             unread={!!unreadChannelIds?.has(ch.id)}
             onStreamsUpdate={(streams) => {
@@ -322,8 +330,12 @@ function Sidebar({
                   onPoke={onPoke}
                   onKick={onKick}
                   onBan={onBan}
+                  onUnban={onUnban}
                   onSetAvatar={onSetAvatar}
                   onShowClientSummary={onShowClientSummary}
+                  roles={roles}
+                  onAssignRole={onAssignRole}
+                  onRemoveRole={onRemoveRole}
                 />
               )
             })}

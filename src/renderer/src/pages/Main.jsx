@@ -111,6 +111,7 @@ function Main() {
   const [feed, setFeed] = useState([])
   const [viewMode, setViewMode] = useState('log') // 'log' or 'video'
   const [servers, setServers] = useState([])
+  const [roles, setRoles] = useState([])
   const [connectedServer, setConnectedServer] = useState(null)
   const [connectionStatus, setConnectionStatus] = useState('connected')
   // Transient error banner for partial failures (bad requests, permission
@@ -560,6 +561,72 @@ function Main() {
     [client, token, showError]
   )
 
+  // Load the server's role list once per connection (the Assign Role menu reads
+  // it). The server enforces MANAGE_ROLES on assignment; non-admins just see an
+  // error toast, so there's no permission gating here.
+  useEffect(() => {
+    if (DEV_MODE || !token) {
+      setRoles([])
+      return
+    }
+    fetch(`${apiBase()}/server/roles`, { headers: { Authorization: `Bearer ${token}` } })
+      .then((res) => res.json())
+      .then((data) => setRoles(Array.isArray(data) ? data : []))
+      .catch((err) => console.error('Failed to load roles:', err))
+  }, [token])
+
+  // Assign / remove a role. role_ids is updated on success (not optimistically),
+  // so a server rejection — e.g. missing MANAGE_ROLES — doesn't leave a stale
+  // checkmark in the menu. The server may also broadcast ClientModified with
+  // role_ids, which the events handler merges for everyone else.
+  const handleAssignRole = useCallback(
+    async (clientId, roleId) => {
+      const apply = () =>
+        setClients((prev) =>
+          prev.map((c) =>
+            c.id === clientId && !(c.role_ids || []).includes(roleId)
+              ? { ...c, role_ids: [...(c.role_ids || []), roleId] }
+              : c
+          )
+        )
+      if (DEV_MODE) return apply()
+      try {
+        const res = await fetch(`${apiBase()}/server/clients/${clientId}/roles/${roleId}`, {
+          method: 'PUT',
+          headers: { Authorization: `Bearer ${token}` }
+        })
+        await throwIfError(res)
+        apply()
+      } catch (err) {
+        showError(`Failed to assign role: ${err.message}`)
+      }
+    },
+    [token, showError]
+  )
+
+  const handleRemoveRole = useCallback(
+    async (clientId, roleId) => {
+      const apply = () =>
+        setClients((prev) =>
+          prev.map((c) =>
+            c.id === clientId ? { ...c, role_ids: (c.role_ids || []).filter((r) => r !== roleId) } : c
+          )
+        )
+      if (DEV_MODE) return apply()
+      try {
+        const res = await fetch(`${apiBase()}/server/clients/${clientId}/roles/${roleId}`, {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${token}` }
+        })
+        await throwIfError(res)
+        apply()
+      } catch (err) {
+        showError(`Failed to remove role: ${err.message}`)
+      }
+    },
+    [token, showError]
+  )
+
   // durationSeconds 0 = permanent (server default); reason optional.
   const handleBanUser = useCallback(
     async (userId, { durationSeconds = 0, reason } = {}) => {
@@ -578,6 +645,25 @@ function Main() {
       }
     },
     [client, token, showError]
+  )
+
+  // Lift a ban. No self-guard (unbanning yourself is a harmless no-op) and no
+  // local roster change — a banned client isn't connected, so there's nothing to
+  // update here; the server just clears the ban entry.
+  const handleUnbanUser = useCallback(
+    async (userId) => {
+      if (!userId) return
+      try {
+        const res = await fetch(`${apiBase()}/server/clients/${userId}/ban`, {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${token}` }
+        })
+        await throwIfError(res)
+      } catch (err) {
+        showError(`Failed to unban user: ${err.message}`)
+      }
+    },
+    [token, showError]
   )
 
   // Set our own avatar: PATCH /client/self with data-URL image //Update locally -> Server broadcasts ClientModified to others
@@ -1037,6 +1123,7 @@ function Main() {
             if (c.id !== data.id) return c
             const next = { ...c }
             if ('channel_id' in data) next.channel_id = data.channel_id
+            if ('role_ids' in data) next.role_ids = data.role_ids
             if ('avatar' in data) next.avatar = cdnUrl(data.avatar)
             if (data.nickname != null) next.name = data.nickname
             if (data.name != null) next.name = data.name
@@ -1514,8 +1601,12 @@ function Main() {
           onPoke={handlePoke}
           onKick={handleKickUser}
           onBan={handleBanUser}
+          onUnban={handleUnbanUser}
           onSetAvatar={handleSetAvatar}
           onShowClientSummary={handleShowClientSummary}
+          roles={roles}
+          onAssignRole={handleAssignRole}
+          onRemoveRole={handleRemoveRole}
           previewChannelId={previewChannelId}
           unreadChannelIds={unreadChannelIds}
         />
@@ -1611,7 +1702,7 @@ function Main() {
             {!connected ? (
               <IdleAnimation connecting={connecting} />
             ) : summaryClientId != null ? (
-              <ClientSummary client={summaryClient} />
+              <ClientSummary client={summaryClient} roles={roles} />
             ) : previewChannelId != null || viewMode === 'log' ? (
               <ChatPanel
                 feed={feed.filter(
