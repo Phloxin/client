@@ -52,6 +52,8 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     roles,
     onAssignRole,
     onRemoveRole,
+    canKickMembers,
+    canBanMembers,
     previewing,
     unread,
     animStatus
@@ -437,6 +439,8 @@ const VoiceChannel = forwardRef(function VoiceChannel(
           roles={roles}
           onAssignRole={onAssignRole}
           onRemoveRole={onRemoveRole}
+          canKickMembers={canKickMembers}
+          canBanMembers={canBanMembers}
         />
       ))}
       {showSourcePicker && (

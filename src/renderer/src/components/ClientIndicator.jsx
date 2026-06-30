@@ -42,7 +42,10 @@ function ClientIndicator({
   onShowClientSummary,
   roles = [],
   onAssignRole,
-  onRemoveRole
+  onRemoveRole,
+  canKickMembers = false,
+  canBanMembers = false,
+  isBanned = false
 }) {
   const initial = client.name?.charAt(0).toUpperCase() ?? '?'
   const [menuPos, setMenuPos] = useState(null)
@@ -121,17 +124,25 @@ function ClientIndicator({
   const canVolume = !isSelf && !rosterMode
   const canPoke = !isSelf && !!onPoke
   const canSetAvatar = isSelf && !!onSetAvatar
-  // Moderation actions on another user. Roles + ban work offline too, so they
-  // show in both the channel view and the Users roster. Kick only boots a live
-  // session, so it's channel-view only.
-  const canModerate = !isSelf
-  const canKick = !isSelf && !rosterMode
+  // Moderation actions on another user, permission-gated by our own role
+  // permissions (the server enforces them too). Kick only boots a live session,
+  // so it's channel-view only; ban + roles also work from the Users roster.
+  const canKick = !isSelf && !rosterMode && canKickMembers
+  const canBan = !isSelf && canBanMembers
+  const canUnban = !isSelf && canBanMembers && isBanned
+  const canAssignRole = !isSelf
+  // The moderation section shows when any action on another user is available.
+  const canModerate = canAssignRole || canKick || canBan
   // 'everyone' is implicit (every client has it), so it's never an assignable
   // option in the role picker.
   const assignableRoles = roles.filter((r) => r.name?.toLowerCase() !== 'everyone')
 
+  // A banned user's menu collapses to just Unban; otherwise it offers the normal
+  // set. Don't open at all when nothing would be actionable.
+  const canOpenMenu = isBanned ? canUnban : canVolume || canPoke || canSetAvatar || canModerate
+
   const handleContextMenu = (e) => {
-    if (!canVolume && !canPoke && !canSetAvatar && !canModerate) return
+    if (!canOpenMenu) return
     e.preventDefault()
     setMenuPos({ x: e.clientX, y: e.clientY })
   }
@@ -268,6 +279,22 @@ function ClientIndicator({
           onDoubleClick={(e) => e.stopPropagation()}
         >
           <div className="client-context-menu-header">{client.name}</div>
+          {isBanned ? (
+            canUnban && (
+              <button
+                type="button"
+                className="client-context-menu-item"
+                onClick={() => {
+                  onUnban?.(client.id)
+                  setMenuPos(null)
+                }}
+              >
+                <IconUserCheck size={16} />
+                Unban User
+              </button>
+            )
+          ) : (
+            <>
           {canSetAvatar && (
             <>
               <input
@@ -443,27 +470,20 @@ function ClientIndicator({
                       Kick User
                     </button>
                   )}
-                  <button
-                    type="button"
-                    className="client-context-menu-item danger"
-                    onClick={() => setModAction('ban')}
-                  >
-                    <IconBan size={16} />
-                    Ban User
-                  </button>
-                  <button
-                    type="button"
-                    className="client-context-menu-item"
-                    onClick={() => {
-                      onUnban?.(client.id)
-                      setMenuPos(null)
-                    }}
-                  >
-                    <IconUserCheck size={16} />
-                    Unban User
-                  </button>
+                  {canBan && (
+                    <button
+                      type="button"
+                      className="client-context-menu-item danger"
+                      onClick={() => setModAction('ban')}
+                    >
+                      <IconBan size={16} />
+                      Ban User
+                    </button>
+                  )}
                 </>
               )}
+            </>
+          )}
             </>
           )}
         </div>

@@ -45,6 +45,12 @@ const TYPING_DURATION_MS = 10000
 // voice socket re-consuming streams after a reconnect.
 const STREAM_BASELINE_MS = 2000
 
+// Permission bits (u64, mirroring the server's Permissions bitflags). Held as
+// BigInt because ADMINISTRATOR is 1<<62, well past JS's safe-integer range.
+const PERM_KICK_MEMBERS = 1n << 10n
+const PERM_BAN_MEMBERS = 1n << 11n
+const PERM_ADMINISTRATOR = 1n << 62n
+
 // Append an entry to the feed, dropping the oldest entries once the cap is hit.
 function appendFeed(prev, entry) {
   const next = [...prev, entry]
@@ -112,6 +118,7 @@ function Main() {
   const [viewMode, setViewMode] = useState('log') // 'log' or 'video'
   const [servers, setServers] = useState([])
   const [roles, setRoles] = useState([])
+  const [bans, setBans] = useState([])
   const [connectedServer, setConnectedServer] = useState(null)
   const [connectionStatus, setConnectionStatus] = useState('connected')
   // Transient error banner for partial failures (bad requests, permission
@@ -561,9 +568,8 @@ function Main() {
     [client, token, showError]
   )
 
-  // Load the server's role list once per connection (the Assign Role menu reads
-  // it). The server enforces MANAGE_ROLES on assignment; non-admins just see an
-  // error toast, so there's no permission gating here.
+  // Load the server's role list once per connection. It feeds both the Assign
+  // Role menu and our own permission computation (which gates kick/ban below).
   useEffect(() => {
     if (DEV_MODE || !token) {
       setRoles([])
@@ -574,6 +580,56 @@ function Main() {
       .then((data) => setRoles(Array.isArray(data) ? data : []))
       .catch((err) => console.error('Failed to load roles:', err))
   }, [token])
+
+  // The current ban list (BanApiObject[] = { reason, user }). Banned users are
+  // surfaced in the Users roster so they can be unbanned; refreshed after our
+  // own ban/unban actions since those change the list.
+  const refreshBans = useCallback(() => {
+    if (DEV_MODE || !token) {
+      setBans([])
+      return
+    }
+    fetch(`${apiBase()}/server/bans`, { headers: { Authorization: `Bearer ${token}` } })
+      .then((res) => res.json())
+      .then((data) => setBans(Array.isArray(data) ? data : []))
+      .catch((err) => console.error('Failed to load bans:', err))
+  }, [token])
+
+  useEffect(() => {
+    refreshBans()
+  }, [refreshBans])
+
+  // Banned users, shaped like roster clients (resolved avatar) so ClientIndicator
+  // can render them. Marked via the returned id set below.
+  const bannedUsers = useMemo(
+    () => bans.map((b) => ({ ...b.user, avatar: cdnUrl(b.user.avatar) })),
+    [bans]
+  )
+
+  // Our effective permissions: the OR of every role we hold (explicit role_ids
+  // plus the implicit 'everyone' role). ADMINISTRATOR implies all. Computed from
+  // the live roster entry so it tracks role changes via ClientModified.
+  const myPermissions = useMemo(() => {
+    const self = clients.find((c) => c.id === client?.id)
+    const myRoleIds = new Set(self?.role_ids || client?.role_ids || [])
+    let bits = 0n
+    for (const r of roles) {
+      if (r.name?.toLowerCase() === 'everyone' || myRoleIds.has(r.id)) {
+        try {
+          bits |= BigInt(r.permissions ?? 0)
+        } catch {
+          // Ignore a malformed permission string rather than crash the menu.
+        }
+      }
+    }
+    return bits
+  }, [roles, clients, client])
+
+  const isAdmin = (myPermissions & PERM_ADMINISTRATOR) !== 0n
+  // DEV_MODE has no server to enforce or supply roles, so grant moderation there
+  // to keep the menu testable.
+  const canKickMembers = DEV_MODE || isAdmin || (myPermissions & PERM_KICK_MEMBERS) !== 0n
+  const canBanMembers = DEV_MODE || isAdmin || (myPermissions & PERM_BAN_MEMBERS) !== 0n
 
   // Assign / remove a role. role_ids is updated on success (not optimistically),
   // so a server rejection — e.g. missing MANAGE_ROLES — doesn't leave a stale
@@ -640,11 +696,12 @@ function Main() {
           body: JSON.stringify(body)
         })
         await throwIfError(res)
+        refreshBans()
       } catch (err) {
         showError(`Failed to ban user: ${err.message}`)
       }
     },
-    [client, token, showError]
+    [client, token, showError, refreshBans]
   )
 
   // Lift a ban. No self-guard (unbanning yourself is a harmless no-op) and no
@@ -659,11 +716,12 @@ function Main() {
           headers: { Authorization: `Bearer ${token}` }
         })
         await throwIfError(res)
+        refreshBans()
       } catch (err) {
         showError(`Failed to unban user: ${err.message}`)
       }
     },
-    [token, showError]
+    [token, showError, refreshBans]
   )
 
   // Set our own avatar: PATCH /client/self with data-URL image //Update locally -> Server broadcasts ClientModified to others
@@ -1243,6 +1301,24 @@ function Main() {
             expiresAt: Date.now() + TYPING_DURATION_MS
           }
         ])
+      } else if (ev === 'ClientRemoved') {
+        // Authoritative roster removal (leave / kick / ban all emit this). `data`
+        // is the ClientApiObject itself.
+        setClients((prev) => prev.filter((c) => c.id !== data.id))
+      } else if (ev === 'ClientKicked') {
+        // { client, reason }. Drop them from the roster; a kick isn't a ban, so
+        // nothing to add to the ban list.
+        setClients((prev) => prev.filter((c) => c.id !== data.client.id))
+      } else if (ev === 'ClientBanned') {
+        // { client, duration_seconds, reason }. Drop from the roster and record
+        // the ban so they surface in the Users tab (where they can be unbanned).
+        // The event carries the full client, so no /server/bans refetch is needed.
+        setClients((prev) => prev.filter((c) => c.id !== data.client.id))
+        setBans((prev) =>
+          prev.some((b) => b.user.id === data.client.id)
+            ? prev
+            : [...prev, { reason: data.reason ?? null, user: data.client }]
+        )
       } else {
         setFeed((prev) => appendFeed(prev, systemEntry(`Unknown event: ${ev}`)))
       }
@@ -1607,6 +1683,9 @@ function Main() {
           roles={roles}
           onAssignRole={handleAssignRole}
           onRemoveRole={handleRemoveRole}
+          bannedUsers={bannedUsers}
+          canKickMembers={canKickMembers}
+          canBanMembers={canBanMembers}
           previewChannelId={previewChannelId}
           unreadChannelIds={unreadChannelIds}
         />

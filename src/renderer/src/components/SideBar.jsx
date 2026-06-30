@@ -54,6 +54,9 @@ function Sidebar({
   roles,
   onAssignRole,
   onRemoveRole,
+  bannedUsers = [],
+  canKickMembers,
+  canBanMembers,
   previewChannelId,
   unreadChannelIds
 }) {
@@ -288,6 +291,8 @@ function Sidebar({
             roles={roles}
             onAssignRole={onAssignRole}
             onRemoveRole={onRemoveRole}
+            canKickMembers={canKickMembers}
+            canBanMembers={canBanMembers}
             previewing={previewChannelId === ch.id}
             unread={!!unreadChannelIds?.has(ch.id)}
             onStreamsUpdate={(streams) => {
@@ -316,30 +321,41 @@ function Sidebar({
 
       {sidebarView === 'users' && (
         <div className="sidebar-user-list">
-          {[...clients]
-            .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
-            .map((c) => {
-              const isSelf = c.id === self?.id
-              return (
-                <ClientIndicator
-                  key={c.id}
-                  client={c}
-                  isSelf={isSelf}
-                  rosterMode
-                  onOpenDm={onOpenDm}
-                  onPoke={onPoke}
-                  onKick={onKick}
-                  onBan={onBan}
-                  onUnban={onUnban}
-                  onSetAvatar={onSetAvatar}
-                  onShowClientSummary={onShowClientSummary}
-                  roles={roles}
-                  onAssignRole={onAssignRole}
-                  onRemoveRole={onRemoveRole}
-                />
-              )
-            })}
-          {clients.length === 0 && <div className="sidebar-user-empty">No users connected</div>}
+          {(() => {
+            // Connected clients plus any banned users not currently connected.
+            // Banned entries carry isBanned so their menu collapses to Unban.
+            const connectedIds = new Set(clients.map((c) => c.id))
+            const entries = [
+              ...clients.map((c) => ({ client: c, banned: false })),
+              ...bannedUsers
+                .filter((u) => !connectedIds.has(u.id))
+                .map((u) => ({ client: u, banned: true }))
+            ].sort((a, b) => (a.client.name || '').localeCompare(b.client.name || ''))
+            return entries.map(({ client: c, banned }) => (
+              <ClientIndicator
+                key={c.id}
+                client={c}
+                isSelf={c.id === self?.id}
+                rosterMode
+                isBanned={banned}
+                onOpenDm={onOpenDm}
+                onPoke={onPoke}
+                onKick={onKick}
+                onBan={onBan}
+                onUnban={onUnban}
+                onSetAvatar={onSetAvatar}
+                onShowClientSummary={onShowClientSummary}
+                roles={roles}
+                onAssignRole={onAssignRole}
+                onRemoveRole={onRemoveRole}
+                canKickMembers={canKickMembers}
+                canBanMembers={canBanMembers}
+              />
+            ))
+          })()}
+          {clients.length === 0 && bannedUsers.length === 0 && (
+            <div className="sidebar-user-empty">No users connected</div>
+          )}
         </div>
       )}
 
