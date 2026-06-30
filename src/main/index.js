@@ -13,7 +13,10 @@ import { readFileSync, writeFileSync, unlinkSync } from 'fs'
 import http from 'http'
 import https from 'https'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
-import icon from '../../resources/icon.png?asset'
+import iconPng from '../../resources/icon.png?asset'
+import iconIco from '../../build/icon.ico?asset'
+// Windows taskbar/window uses the .ico; other platforms keep the png.
+const icon = process.platform === 'win32' ? iconIco : iconPng
 import { setupGlobalKeybinds, stopGlobalKeybinds } from './keybinds'
 
 // On Linux, safeStorage requires a running secret service (GNOME Keyring / KWallet).
