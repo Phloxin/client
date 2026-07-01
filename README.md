@@ -1,6 +1,13 @@
-# CNaps Buddies and Friends — Client
+# Teamspeak 26 — Desktop Client
 
-A desktop voice/chat client built with Electron + React, connecting to the CNaps backend over HTTP and WebSocket.
+A Discord/TeamSpeak-style desktop client for voice, video/screen-share, and text
+chat. Built with Electron + React, it connects to the CNaps backend over HTTP and
+two WebSockets: one for real-time events, one for voice/video media via a
+[mediasoup](https://mediasoup.org/) SFU.
+
+The window is frameless with a custom title bar, ships nine themes, persists
+logins and saved servers encrypted via the OS keychain, and can target any number
+of saved servers.
 
 ---
 
@@ -8,13 +15,67 @@ A desktop voice/chat client built with Electron + React, connecting to the CNaps
 
 | Layer | Technology |
 |---|---|
-| Desktop shell | Electron |
-| Frontend framework | React |
-| Build tooling | electron-vite + Vite |
-| Routing | React Router (HashRouter) |
-| State management | React Context (AuthContext) |
-| Realtime | WebSocket |
-| Styling | CSS (Discord-inspired dark theme) |
+| Desktop shell | Electron 39 (frameless window, custom title bar) |
+| Frontend framework | React 19 |
+| Build tooling | electron-vite + Vite 7, packaged with electron-builder |
+| Routing | React Router 7 (HashRouter) |
+| State management | React Context (`AuthContext`, `SettingsContext`) + local component state |
+| Realtime events | WebSocket (`/ws`) with heartbeat + session resume |
+| Voice / video | WebSocket (`/voice`) + `mediasoup-client` (WebRTC SFU) |
+| Noise suppression | `@sapphi-red/web-noise-suppressor` (RNNoise WASM) |
+| Global hotkeys | `uiohook-napi` (passive OS-wide key hook) |
+| Chat rendering | `simple-markdown` + `highlight.js` + `unicode-emoji-json` |
+| Icons | `@tabler/icons-react` |
+| Fonts | Self-hosted `@fontsource-variable` (Inter, Open Sans, DM Sans, Roboto, Nunito) |
+| Styling | CSS (theme variables, gradients, animations) |
+
+---
+
+## Features
+
+**Voice**
+- Join a channel to talk over a mediasoup SFU; audio from everyone in the channel mixes through a shared Web Audio graph.
+- RNNoise noise suppression and a volume/noise gate applied to the local mic before publishing.
+- Per-client local volume/mute overrides (right-click a user); remote volumes can be boosted past 100% via GainNodes.
+- Mute / deafen with state broadcast to other clients (`VoiceStateUpdate`).
+- Output-device (sinkId) and master-volume selection.
+- Global, *passive* mute/deafen hotkeys (Discord-style) — the bound key still types normally in other apps.
+
+**Video & screen share**
+- Share a screen or window; a native source picker (with thumbnails) chooses the target.
+- Video grid of all live streams, with a focused/selected stream and per-stream audio focus (only the focused screen's audio plays).
+- Pop the video grid out into its own always-same-process window that reads the live `MediaStream`s off `window.opener`.
+
+**Text chat**
+- Per-channel message feed with markdown, syntax-highlighted code blocks, and emoji (picker + shortcodes).
+- File/image/video attachments (multipart upload), an in-app image viewer, and "download to disk" via a native save dialog.
+- Edit and delete your own messages; `(edited)` marker driven by the server.
+- Scroll-up history pagination (fetches older pages until the channel is exhausted).
+- Typing indicators (throttled outbound, auto-expiring inbound).
+- Link-preview / rich embeds that arrive asynchronously via `MessageUpdated`.
+
+**Direct messages & presence**
+- 1:1 DMs are just `dm`-type channels; open via double-click or "poke".
+- Read-state / unread tracking: a sidebar dot is derived from each channel's `last_message_id` vs. an acknowledged read cursor, synced across sessions.
+- Notification bell (server joins) and a DM inbox that seeds unread DMs on connect.
+
+**Moderation & roles**
+- Kick, ban (timed or permanent), and unban users; banned users surface in the roster for un-banning.
+- Assign/remove roles; effective permissions computed as a BigInt bitflag OR across held roles (`ADMINISTRATOR`, `KICK_MEMBERS`, `BAN_MEMBERS`).
+- Menu actions are gated on the local client's computed permissions.
+
+**Servers & sessions**
+- Manage a list of saved servers (nickname / host / username / password); the list and credentials are persisted **encrypted** via the OS keychain (`safeStorage`).
+- Auto-register on first connect if the account doesn't exist, then log in.
+- Token + client identity persisted encrypted so you stay logged in across restarts.
+- Resilient realtime: heartbeat, exponential backoff with jitter, and session resume that replays missed events; a full connection-lost overlay while reconnecting.
+
+**UI / appearance**
+- Frameless window with a custom Discord-style title bar (minimize/maximize/close over IPC).
+- Nine themes: Classic Dark, Classic Light, Catppuccin Frappé, Catppuccin Mocha, Nord, Dracula, Tokyo Night, Gruvbox, One Dark Pro.
+- Appearance settings: background transparency (Acrylic on Windows 11 / compositor blur on Linux), surface gradients, interface font, and animation toggles.
+- Configurable UI sound effects (join/leave, message, stream start/stop) with per-category toggles.
+- `DEV_MODE` mock data path so the UI runs with no backend.
 
 ---
 
@@ -22,157 +83,210 @@ A desktop voice/chat client built with Electron + React, connecting to the CNaps
 
 ```
 my-app/
+├── build/                          # Packaging resources (icon.ico, entitlements)
 ├── resources/
-│   └── icon.png                  # App icon
+│   └── icon.png                    # App icon (non-Windows)
+├── electron.vite.config.mjs        # electron-vite config (dev /voice ws proxy)
+├── electron-builder.yml            # Win / mac / Linux packaging targets
 ├── src/
 │   ├── main/
-│   │   └── index.js              # Electron main process
+│   │   ├── index.js                # Electron main process (windows, IPC, persistence)
+│   │   └── keybinds.js             # Global passive keyboard hook (uiohook-napi)
 │   ├── preload/
-│   │   └── index.js              # Preload bridge (exposes IPC to renderer)
+│   │   └── index.js                # Context-isolated bridge (exposes window.electron)
 │   └── renderer/
+│       ├── index.html              # Renderer entry + Content-Security-Policy
 │       └── src/
-│           ├── App.jsx           # Root component — sets up React Router routes
-│           ├── App.css           # Global styles
-│           ├── main.jsx          # React entry point — mounts app with providers
-│           ├── assets/
-│           │   ├── main.css      # Base CSS (resets, html/body/root sizing)
-│           │   └── base.css      # CSS variables and font definitions
+│           ├── main.jsx            # React entry — mounts providers, applies saved theme/prefs
+│           ├── App.jsx             # Routes: / , /admin , /settings , /popout
 │           ├── context/
-│           │   └── AuthContext.jsx   # Auth token state shared across all pages/windows
+│           │   ├── AuthContext.jsx     # token + client identity (synced to main process)
+│           │   └── SettingsContext.jsx # mic / sound / appearance / animation settings
+│           ├── hooks/
+│           │   ├── useSoup.js          # Voice/video session lifecycle
+│           │   └── useTheme.js
+│           ├── lib/
+│           │   ├── soup.js             # mediasoup client: transports, produce/consume, RNNoise
+│           │   ├── serverConfig.js     # Active host → apiBase/wsBase/cdnUrl/ICE servers
+│           │   ├── markdown.jsx        # Message markdown renderer
+│           │   ├── emojiData.js        # Emoji dataset/lookup
+│           │   ├── sounds.js           # UI sound effects + categories
+│           │   ├── themeUtils.js       # Theme list + apply/persist
+│           │   ├── uiSettings.js       # Appearance/animation/font application
+│           │   ├── usePillIndicator.js # Sliding tab pill
+│           │   └── mock.js             # DEV_MODE mock channels/clients/streams
+│           ├── pages/
+│           │   ├── Main.jsx            # Primary view: sidebar + chat/video + all realtime wiring
+│           │   ├── Settings.jsx        # In-app settings overlay (appearance/audio/keybinds/notifications)
+│           │   ├── Popout.jsx          # Detached video-grid window
+│           │   └── Admin.jsx           # Legacy standalone admin window (/#/admin)
 │           ├── components/
-│           │   ├── Channel.jsx         # Renders a single channel and its members
-│           │   ├── ClientIndicator.jsx # Renders a single client name under a channel
-│           │   └── LoginScreen.jsx     # Login form UI
-│           └── pages/
-│               ├── Main.jsx      # Primary app view (sidebar + activity log)
-│               └── Admin.jsx     # Admin panel (move users between channels)
+│           │   ├── SideBar.jsx / ServerMenu.jsx     # Channels, roster, server switcher, controls
+│           │   ├── VoiceChannel.jsx / ClientIndicator.jsx
+│           │   ├── ChatPanel.jsx / EmojiPicker.jsx / ImageViewer.jsx
+│           │   ├── VideoGrid.jsx / ScreenSourcePicker.jsx
+│           │   ├── ClientSummary.jsx                # Click a user → profile view
+│           │   ├── AudioSettings.jsx / VolumeGateMeter.jsx / KeybindsSettings.jsx
+│           │   ├── ThemeSwitcher.jsx
+│           │   ├── TitleBar.jsx                     # Custom window controls
+│           │   ├── NotificationBell.jsx / Inbox.jsx # Notifications + DM inbox
+│           │   ├── ConnectionOverlay.jsx            # Reconnecting overlay
+│           │   ├── Toast.jsx                        # Transient error banner
+│           │   ├── IdleAnimation.jsx                # Disconnected/idle view
+│           │   └── ErrorBoundary.jsx
+│           └── styles/                 # base / globals / themes / gradients / animations
 ```
 
 ---
 
-## How It Works
+## Architecture
 
 ### Electron Main Process (`src/main/index.js`)
 
-The main process is the Node.js backbone of the app. It is responsible for:
+The Node.js backbone. Responsibilities:
 
-- Creating the main `BrowserWindow` on launch
-- Storing the auth token in memory so it persists across windows (`authToken` variable)
-- Handling IPC messages from the renderer:
-  - `ping` — test IPC connection
-  - `store-token` — saves the auth token from any window into main process memory
-  - `get-token` — returns the stored token to any window that asks (used on window open)
-  - `admin-log` — forwards a log message to all open windows
-  - `open-admin` — opens the Admin Panel in a second `BrowserWindow` pointed at `/#/admin`
+- **Windows** — creates a frameless main `BrowserWindow` (content-size minimums derived from the sidebar layout), plus the legacy admin window and the video popout (allowed as a same-process child window via `setWindowOpenHandler`).
+- **Custom title bar controls** — `window-minimize` / `window-maximize-toggle` / `window-close` / `window-is-maximized`, resolved from the calling window so any frameless window works.
+- **Encrypted persistence** — auth token + client identity (`auth.json`) and the saved server list with credentials (`servers.json`), both encrypted with `safeStorage` (OS keychain), falling back to plaintext only where encryption is unavailable. On Linux it forces the `basic` password-store so encryption is always available.
+- **Screen capture** — enumerates capturable screens/windows with thumbnails for the renderer's picker, and services `getDisplayMedia` with the chosen source (plus loopback audio).
+- **Window vibrancy** — applies native Acrylic material on Windows 11.
+- **`get-channel-messages`** — history fetch proxy: the endpoint is `GET` but expects a JSON body (`limit`/`before`/`after`/`around`), which the Fetch spec forbids, so the request is made from the main process via `http`/`https` and handed back parsed.
+- **`download-file`** — native save dialog + fetch + write for chat attachments.
+- **Global keybinds** — sets up/tears down the passive OS key hook.
+
+### Global Keybinds (`src/main/keybinds.js`)
+
+Uses `uiohook-napi` to observe every keystroke OS-wide **without consuming it**, so a bound key still types normally elsewhere — this is why Electron's exclusive `globalShortcut` isn't used. The renderer pushes the current bind map and a capture mode; matching key combos fire `keybinds:trigger` back to the renderer (mute/deafen).
 
 ### Preload (`src/preload/index.js`)
 
-Acts as a secure bridge between the Electron main process and the React renderer. Exposes `window.electron.ipcRenderer` so the renderer can send and receive IPC messages without direct access to Node.js APIs.
+Context-isolated bridge exposing `window.electron.ipcRenderer` (from `@electron-toolkit/preload`) so the renderer can do IPC without direct Node access.
 
-### React Entry Point (`src/renderer/src/main.jsx`)
+### React Entry (`src/renderer/src/main.jsx`)
 
-Wraps the entire app in three providers before mounting:
+Applies the saved theme and appearance/animation prefs *before first paint* (to avoid a flash), then mounts:
 
 ```
-<HashRouter>           ← handles client-side routing in Electron
-  <AuthProvider>       ← provides token state to all components
-    <App />
-  </AuthProvider>
-</HashRouter>
+<ErrorBoundary>
+  <HashRouter>            ← client-side routing (files load from disk, no server)
+    <AuthProvider>        ← token + client identity, synced to the main process
+      <SettingsProvider>  ← mic / sound / appearance / animation settings
+        <App />
 ```
-
-`HashRouter` is used instead of `BrowserRouter` because Electron loads files directly from disk — there is no server to handle clean URL paths.
 
 ### Routing (`src/renderer/src/App.jsx`)
-
-Two routes are defined:
 
 | Path | Component | Description |
 |---|---|---|
 | `/` | `Main` | Primary app view |
-| `/admin` | `Admin` | Admin panel (opened in second window) |
+| `/settings` | `Settings` | Settings (also shown as an in-app overlay in Main) |
+| `/popout` | `Popout` | Detached video-grid window |
+| `/admin` | `Admin` | Legacy standalone admin window |
+
+> Moderation now happens inline in the main window (role/kick/ban menus in the roster). The `/admin` route/window is retained but secondary.
 
 ### Auth Context (`src/renderer/src/context/AuthContext.jsx`)
 
-Provides a `token` and `setToken` to any component via the `useAuth()` hook.
-
-On mount it calls `ipcRenderer.invoke('get-token')` to retrieve any token already stored in the main process — this ensures the token persists when the Admin window is closed and reopened.
-
-When `setToken` is called it also sends `store-token` to the main process so the token is available to future windows.
+Provides `token`, `setToken`, `client`, `setClient` via `useAuth()`. On mount it pulls any persisted token/client from the main process (`get-token` / `get-client`), and writes changes back (`store-token` / `store-client`) so they survive restarts and are shared across windows.
 
 ---
 
-## Pages
+## Realtime: Events Socket (`/ws`)
 
-### Main (`src/renderer/src/pages/Main.jsx`)
+Opened from `Main.jsx` after connecting. It uses an op-coded protocol with a
+one-shot handshake, heartbeats, and session resume.
 
-The primary view of the app. On load:
+**Handshake (op 0, IDENTIFY):** sends `{ token }`, or `{ token, resume: { session_id, seq } }` when resuming. The server replies with one of:
 
-1. If no token is present, renders the `LoginScreen` component
-2. Once logged in, fetches channels and clients from the API (with auth header)
-3. Opens a WebSocket connection to receive real-time events
-4. Listens for IPC `log-message` events from the main process
-
-**WebSocket events handled:**
-
-| Event | Action |
+| Reply | Meaning |
 |---|---|
-| `NewUser` | Adds client to state, logs to activity log |
-| `ClientModified` | Updates client's `channel_id` in state, logs move |
+| `Authenticated` | Fresh session — server pushes a `Ready` snapshot next |
+| `Resumed` | Resume accepted — missed events replay in order, then live events continue |
+| `InvalidSession` | Resume refused — drop session, resync, reconnect fresh |
+| `Unauthorized` | Token rejected — stop retrying, return to disconnected |
 
-The sidebar uses the live `clients` state (not the stale fetch data) so it always reflects real-time channel membership.
+**Heartbeat (op 2 → ack op 4):** sent every 10s carrying the last processed
+sequence; an unacknowledged beat marks the connection dead and triggers a
+reconnect (exponential backoff + jitter, capped at 30s).
 
-### Admin (`src/renderer/src/pages/Admin.jsx`)
+**Voice state (op 1):** declarative — every send carries the full desired
+`{ self_mute, self_deaf, channel_id }`, merged from a local ref so a mute toggle
+never drops the channel and a move never resets mute.
 
-Opened as a separate Electron window via the Admin Panel button. Allows:
+**Dispatched events (op 3 / bare `{ ev, data }`):**
 
-- Logging in (if not already authenticated)
-- Selecting a client and a channel and sending a `PATCH /server/client` request to move them
-- Displaying token status
+| Event | Effect |
+|---|---|
+| `Ready` | Authoritative snapshot: channels, clients, read states; seeds unread DMs |
+| `NewUser` / `ClientModified` / `ClientRemoved` | Roster add / merge (channel, role, avatar, name) / remove |
+| `VoiceStateUpdate` | Another client's mute/deafen |
+| `ClientKicked` / `ClientBanned` | Drop from roster (and record ban) |
+| `MessageCreated` / `MessageUpdated` / `MessageDeleted` | Chat feed + `last_message_id` upkeep; embeds arrive via `MessageUpdated` |
+| `ReadStateUpdated` | Read cursor moved (this or another session) |
+| `ChannelCreated` / `ChannelDeleted` | Channel list |
+| `TypingStarted` | Refreshes a client's 10s typing entry |
 
-All requests include the `Authorization: Bearer <token>` header. The token is shared with the main window via the main process.
+Join/leave and stream start/stop play UI chimes, baselined on connect/channel-change so reconnects don't replay as new activity.
+
+## Realtime: Voice Socket (`/voice`)
+
+`lib/soup.js` runs a `mediasoup-client` `Device`: it creates send/receive
+transports, produces the local mic (after the RNNoise + gate chain) and any
+screen/video, and consumes remote producers. The voice socket **can't resume** —
+on drop the server tears down transports, so recovery is a full re-establish
+(re-assert channel, fresh ticket, reconnect, re-publish) with the same
+backoff+jitter policy; remote streams return when the server replays
+`NewProducer`. ICE uses public STUN plus a TURN relay derived from the active
+server's IP (`turn:<host>:3478`).
 
 ---
 
 ## API Endpoints
 
-| Method | Endpoint | Auth Required | Description |
-|---|---|---|---|
-| `POST` | `/login` | No | Returns `{ token }` on success |
-| `GET` | `/server/channel` | Yes | Returns array of channels with client id arrays |
-| `GET` | `/server/client` | Yes | Returns array of all clients with `channel_id` |
-| `PATCH` | `/server/client` | Yes | Moves a client to a channel — body: `{ client_id, channel_id }` |
+Base URL is `http://<host>` for the currently connected server (built at call
+time in `serverConfig.js`). All authenticated requests send
+`Authorization: Bearer <token>`.
 
-All authenticated requests send `Authorization: Bearer <token>` in the request header.
-
-The Vite dev server proxies `/api/*` requests to `http://47.16.222.82:3000` to avoid CORS issues during development.
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/login` | Returns `{ token, client }` |
+| `POST` | `/register` | Self-register (used as fallback when login has no token) |
+| `GET` | `/channels/:id/messages` | Recent history — GET with JSON body (`limit`/`before`/`after`/`around`), routed through the main process |
+| `POST` | `/channels/:id/messages` | Send a message (multipart: `payload_json` + `files[i]`) |
+| `PATCH` | `/channels/:id/messages/:mid` | Edit own message |
+| `DELETE` | `/channels/:id/messages/:mid` | Delete own message |
+| `POST` | `/channels/:id/typing` | Announce typing |
+| `PUT` | `/channels/:id/read-state` | Ack read cursor (`{ last_acknowledged_message_id }`) |
+| `POST` | `/channels/dm` | Get-or-create a DM channel (`{ recipient_ids }`) |
+| `POST` | `/server/channel` | Create a channel (`{ name, user_limit, position }`) |
+| `DELETE` | `/channels/:id` | Delete a channel |
+| `GET` | `/server/roles` | Role list (with permission bitflags) |
+| `GET` | `/server/bans` | Ban list |
+| `PUT`/`DELETE` | `/server/clients/:id/roles/:roleId` | Assign / remove a role |
+| `POST` | `/server/clients/:id/kick` | Kick (`{ reason? }`) |
+| `POST`/`DELETE` | `/server/clients/:id/ban` | Ban (`{ duration_seconds, reason? }`) / unban |
+| `PATCH` | `/client/self` | Update own profile (e.g. `{ avatar }`) |
+| — | `/cdn/...` | Server-relative asset paths, anchored to the active host (`cdnUrl`) |
 
 ---
 
-## WebSocket
-
-Connects to `ws://47.16.222.82:3000/ws` after login. Receives JSON events in the format:
-
-```json
-{ "ev": "EventName", "data": { ... } }
-```
-
-The connection is opened in `Main.jsx`'s `useEffect` and closed on component unmount.
-
----
-
-## IPC Communication
-
-Electron IPC is used to communicate between the main process and renderer windows, and between windows themselves.
+## IPC Channels
 
 | Channel | Direction | Purpose |
 |---|---|---|
-| `ping` | Renderer → Main | Test IPC |
-| `open-admin` | Renderer → Main | Open admin window |
-| `store-token` | Renderer → Main | Save auth token in main process |
-| `get-token` | Renderer → Main (invoke) | Retrieve stored auth token |
-| `admin-log` | Renderer → Main → All Windows | Broadcast log message to all windows |
-| `log-message` | Main → Renderer | Display a message in the activity log |
+| `window-minimize` / `window-maximize-toggle` / `window-close` | Renderer → Main | Custom title bar controls |
+| `window-is-maximized` / `window-maximized-change` | invoke / Main → Renderer | Maximized state for the title bar icon |
+| `store-token` / `get-token` / `store-client` / `get-client` / `clear-auth` | Renderer ↔ Main | Encrypted auth persistence |
+| `get-servers` / `store-servers` | Renderer ↔ Main | Encrypted saved-server list |
+| `get-screen-sources` / `set-screen-source` | Renderer ↔ Main | Screen-share source picker |
+| `get-channel-messages` | Renderer → Main (invoke) | History fetch (GET-with-body proxy) |
+| `download-file` | Renderer → Main (invoke) | Save an attachment via native dialog |
+| `set-window-vibrancy` | Renderer → Main | Toggle Acrylic on Windows 11 |
+| `keybinds:set` / `keybinds:capture-start` / `keybinds:capture-cancel` | Renderer → Main | Push binds / record a new combo |
+| `keybinds:captured` / `keybinds:trigger` | Main → Renderer | Recorded combo / fire a bound action |
+| `theme-changed-ipc` | Renderer → Main → All | Broadcast theme change across windows |
+| `open-admin` | Renderer → Main | Open the legacy admin window |
+| `admin-log` / `log-message` | Renderer → Main → All | Broadcast a log line to all windows |
 
 ---
 
@@ -180,8 +294,8 @@ Electron IPC is used to communicate between the main process and renderer window
 
 ### Prerequisites
 
-- Node.js 22 LTS is recommended.
-- npm
+- Node.js 22–24 (`>=22 <25`)
+- npm >= 10
 
 ### Install
 
@@ -198,13 +312,21 @@ npm run dev
 ### Build
 
 ```bash
-npm run build
+npm run build            # electron-vite build
+npm run build:win        # + electron-builder (NSIS installer)
+npm run build:mac        # + dmg
+npm run build:linux      # + AppImage / snap / deb
 ```
+
+Other scripts: `npm run lint`, `npm run format`, `npm start` (preview a build).
 
 ---
 
-## Environment
+## Notes
 
-The app connects to a backend server at `47.16.222.82:3000`. In development, Vite proxies `/api/*` to that address. The WebSocket connects directly to `ws://47.16.222.82:3000/ws`.
-
-The Content Security Policy in `src/renderer/index.html` is configured to allow connections to this origin.
+- **Frameless window:** the renderer draws its own title bar; window minimums are content-area sizes derived from the sidebar layout so controls never clip.
+- **CSP:** `src/renderer/index.html` restricts sources but allows `http/https/ws/wss` connections (any server host), `blob:`/`data:` media, WASM eval (RNNoise), and YouTube frames for embeds.
+- **Dev proxy:** `electron.vite.config.mjs` proxies the `/voice` WebSocket in dev. The HTTP API and `/ws` are hit directly at the active host.
+- **DEV_MODE** (`lib/mock.js`): renders the full UI with mock channels/clients/streams and no backend.
+</content>
+</invoke>
