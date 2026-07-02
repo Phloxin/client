@@ -29,6 +29,13 @@ import {
 const VoiceChannel = forwardRef(function VoiceChannel(
   {
     channel,
+    draggable,
+    onDragStart,
+    onDragOver,
+    onDrop,
+    onDragEnd,
+    dragging,
+    dropEdge,
     clients,
     token,
     self,
@@ -402,9 +409,14 @@ const VoiceChannel = forwardRef(function VoiceChannel(
 
   return (
     <div
-      className={`channel-item${joined ? ' active' : ''}${previewing ? ' previewing' : ''}`}
+      className={`channel-item${joined ? ' active' : ''}${previewing ? ' previewing' : ''}${dragging ? ' dragging' : ''}${dropEdge ? ` drop-${dropEdge}` : ''}`}
       data-flip-key={channel.id}
       data-anim-status={animStatus}
+      draggable={draggable}
+      onDragStart={onDragStart}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      onDragEnd={onDragEnd}
       onDoubleClick={handleDoubleClick}
     >
       <div

@@ -19,9 +19,36 @@
 }
 
 .channel-item {
+  position: relative;
   margin: 1px var(--spacing-sm);
   border-radius: var(--border-radius-sm);
   cursor: pointer;
+}
+
+/* Drag-to-reorder: the row being dragged dims; a 2px line marks the gap the drop
+   would land in (above for 'before', below for 'after'). */
+.channel-item.dragging {
+  opacity: 0.4;
+}
+
+.channel-item.drop-before::before,
+.channel-item.drop-after::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--color-primary);
+  pointer-events: none;
+}
+
+.channel-item.drop-before::before {
+  top: -2px;
+}
+
+.channel-item.drop-after::after {
+  bottom: -2px;
 }
 
 .channel-row {

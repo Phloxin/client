@@ -916,6 +916,27 @@ function Main() {
     }
   }
 
+  // Move a channel to a new position (drag-to-reorder). The server reindexes the
+  // rest and broadcasts ChannelUpdated for the affected channels, so we don't
+  // mutate locally on success — except in DEV_MODE, which has no server.
+  const handleReorderChannel = async (id, position) => {
+    if (DEV_MODE) {
+      setChannels((prev) => prev.map((ch) => (ch.id === id ? { ...ch, position } : ch)))
+      return
+    }
+
+    try {
+      const res = await fetch(`${apiBase()}/channels/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ position })
+      })
+      await throwIfError(res)
+    } catch (err) {
+      showError(`Failed to reorder channel: ${err.message}`)
+    }
+  }
+
   // Connect to a saved server: point all endpoints at its host, then log in with
   // its stored credentials. Setting the token triggers the data-loading effect.
   const handleConnect = async (server) => {
@@ -1679,6 +1700,7 @@ function Main() {
           onRemoveServer={handleRemoveServer}
           onCreateChannel={handleCreateChannel}
           onDeleteChannel={handleDeleteChannel}
+          onReorderChannel={handleReorderChannel}
           onPreviewChannel={handlePreviewChannel}
           onOpenDm={handleOpenDm}
           onPoke={handlePoke}

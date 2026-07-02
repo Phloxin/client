@@ -43,6 +43,7 @@ function Sidebar({
   onRemoveServer,
   onCreateChannel,
   onDeleteChannel,
+  onReorderChannel,
   onPreviewChannel,
   onOpenDm,
   onPoke,
@@ -132,6 +133,41 @@ function Sidebar({
   // them via FLIP just replays motion on channels that only got reordered. Skip
   // the slide that pass; the new channel's pop-in is the only animation wanted.
   const channelEntering = channelPresence.some((c) => c.status === 'entering')
+
+  // Drag-to-reorder channels. dropTarget marks which gap the dragged channel
+  // would land in ({ id, edge: 'before' | 'after' }); the drop sends the target
+  // position to the server, which reindexes the rest and broadcasts the updates.
+  const [dragId, setDragId] = useState(null)
+  const [dropTarget, setDropTarget] = useState(null)
+
+  const handleChannelDragStart = (id) => (e) => {
+    setDragId(id)
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', String(id)) // Firefox needs data to start a drag
+  }
+  const handleChannelDragOver = (id) => (e) => {
+    if (dragId == null) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'move'
+    const rect = e.currentTarget.getBoundingClientRect()
+    const edge = e.clientY < rect.top + rect.height / 2 ? 'before' : 'after'
+    setDropTarget((prev) => (prev?.id === id && prev.edge === edge ? prev : { id, edge }))
+  }
+  const handleChannelDrop = (e) => {
+    e.preventDefault()
+    if (dragId == null || dropTarget == null || dropTarget.id === dragId) return
+    const target = sortedChannels.find((c) => c.id === dropTarget.id)
+    if (!target) return
+    const targetPos = target.position ?? sortedChannels.indexOf(target)
+    // Land in the gap the indicator showed: before the target keeps its slot,
+    // after the target takes the next one. The server reindexes from there.
+    const position = dropTarget.edge === 'before' ? targetPos : targetPos + 1
+    onReorderChannel?.(dragId, position)
+  }
+  const handleChannelDragEnd = () => {
+    setDragId(null)
+    setDropTarget(null)
+  }
 
   // Single toggle path for mic/sound mute, shared by the control buttons and the
   // global keybind listener. Refs hold the latest value so the listener (bound
@@ -280,6 +316,13 @@ function Sidebar({
             }}
             animStatus={status}
             channel={ch}
+            draggable
+            onDragStart={handleChannelDragStart(ch.id)}
+            onDragOver={handleChannelDragOver(ch.id)}
+            onDrop={handleChannelDrop}
+            onDragEnd={handleChannelDragEnd}
+            dragging={dragId === ch.id}
+            dropEdge={dropTarget?.id === ch.id && dragId !== ch.id ? dropTarget.edge : null}
             clients={clients.filter((c) => c.channel_id === ch.id)}
             token={token}
             self={self}
