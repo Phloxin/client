@@ -82,11 +82,15 @@ function Sidebar({
   const [channelName, setChannelName] = useState('')
   const [channelLimit, setChannelLimit] = useState(0)
   const [channelError, setChannelError] = useState(null)
+  // Position of the channel the create was launched from (via its right-click
+  // "Add Channel"); the new channel is inserted just below it. null = append.
+  const [createAfterPos, setCreateAfterPos] = useState(null)
 
-  const openCreateChannel = () => {
+  const openCreateChannel = (afterPos = null) => {
     setChannelName('')
     setChannelLimit(0)
     setChannelError(null)
+    setCreateAfterPos(typeof afterPos === 'number' ? afterPos : null)
     setShowCreateChannel(true)
   }
 
@@ -96,7 +100,11 @@ function Sidebar({
       setChannelError('Channel name is required.')
       return
     }
-    onCreateChannel?.({ name, user_limit: Math.max(0, Number(channelLimit) || 0) })
+    onCreateChannel?.({
+      name,
+      user_limit: Math.max(0, Number(channelLimit) || 0),
+      afterPosition: createAfterPos
+    })
     setShowCreateChannel(false)
   }
 
@@ -119,6 +127,11 @@ function Sidebar({
     enabled: channelAnimEnabled
   })
   const channelOrderKey = channelPresence.map((c) => c.key).join(',')
+  // When a channel is entering (an insertion), the new row reserves its height
+  // immediately and its neighbours are already at their final spots — so sliding
+  // them via FLIP just replays motion on channels that only got reordered. Skip
+  // the slide that pass; the new channel's pop-in is the only animation wanted.
+  const channelEntering = channelPresence.some((c) => c.status === 'entering')
 
   // Single toggle path for mic/sound mute, shared by the control buttons and the
   // global keybind listener. Refs hold the latest value so the listener (bound
@@ -175,7 +188,7 @@ function Sidebar({
   // Slide channels to their new positions when the order changes.
   useFlip(sidebarRef, [channelOrderKey], {
     selector: '.channel-item[data-flip-key]',
-    enabled: channelAnimEnabled
+    enabled: channelAnimEnabled && !channelEntering
   })
 
   const onMouseDown = useCallback((e) => {
@@ -252,11 +265,6 @@ function Sidebar({
             Users
           </button>
         </div>
-        {sidebarView === 'channels' && (
-          <button className="channel-add-btn" title="Add channel" onClick={openCreateChannel}>
-            <IconPlus size={15} />
-          </button>
-        )}
       </div>
 
       {/* Keep the channel list mounted across view switches. Unmounting it would

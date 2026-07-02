@@ -73,6 +73,9 @@
 }
 
 .client-summary-role {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   padding: 3px 10px;
   border-radius: 999px;
   background: var(--color-border);

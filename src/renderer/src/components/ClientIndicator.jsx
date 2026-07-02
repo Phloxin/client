@@ -20,6 +20,7 @@ import {
   IconUserCheck
 } from '@tabler/icons-react'
 import { setClientAudioState, getClientAudioState } from '../lib/soup'
+import { RoleIcon } from '../lib/roleIcon'
 
 // rosterMode renders a presence-only entry (the sidebar's Users tab): no mic/
 // status indicator and no right-click volume control, since those entries aren't
@@ -133,9 +134,12 @@ function ClientIndicator({
   const canAssignRole = !isSelf
   // The moderation section shows when any action on another user is available.
   const canModerate = canAssignRole || canKick || canBan
-  // 'everyone' is implicit (every client has it), so it's never an assignable
-  // option in the role picker.
-  const assignableRoles = roles.filter((r) => r.name?.toLowerCase() !== 'everyone')
+  // 'everyone' is implicit (every client has it) and 'owner' isn't hand-assigned,
+  // so neither is an assignable option in the role picker.
+  const assignableRoles = roles.filter((r) => {
+    const name = r.name?.toLowerCase() ?? ''
+    return name !== 'everyone' && !name.includes('owner')
+  })
 
   // A banned user's menu collapses to just Unban; otherwise it offers the normal
   // set. Don't open at all when nothing would be actionable.
@@ -453,6 +457,7 @@ function ClientIndicator({
                               }
                             >
                               <IconCheck size={16} style={{ visibility: has ? 'visible' : 'hidden' }} />
+                              <RoleIcon role={role} size={16} />
                               {role.name}
                             </button>
                           )

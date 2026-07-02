@@ -1,4 +1,5 @@
 import './ClientSummary.css'
+import { RoleIcon } from '../lib/roleIcon'
 
 // Profile/summary shown in the main area when a client is single-clicked. The
 // name lives in the page header; this is the body. For now it's a scaffold —
@@ -24,11 +25,12 @@ function ClientSummary({ client, roles = [] }) {
       </div>
 
       <section className="client-summary-section">
-        <h3 className="client-summary-heading">Server Groups</h3>
+        <h3 className="client-summary-heading">Server Roles</h3>
         {assignedRoles.length > 0 ? (
           <ul className="client-summary-roles">
             {assignedRoles.map((r) => (
               <li key={r.id} className="client-summary-role">
+                <RoleIcon role={r} size={14} />
                 {r.name}
               </li>
             ))}

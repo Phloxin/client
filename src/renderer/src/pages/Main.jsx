@@ -864,10 +864,15 @@ function Main() {
 
   // Create a channel on the server. Position is computed to append after the current last channel. 
   //The server also broadcasts ChannelCreated, so the add here is deduped by id in case that broadcast echoes back to us.
-  const handleCreateChannel = async ({ name, user_limit }) => {
+  const handleCreateChannel = async ({ name, user_limit, afterPosition }) => {
     const trimmed = name.trim()
     if (!trimmed) return
-    const position = channels.reduce((max, ch) => Math.max(max, ch.position ?? 0), -1) + 1
+    // Insert just below the channel the create was launched from; otherwise
+    // append after the current last channel. The backend reorders the rest.
+    const position =
+      typeof afterPosition === 'number'
+        ? afterPosition + 1
+        : channels.reduce((max, ch) => Math.max(max, ch.position ?? 0), -1) + 1
 
     if (DEV_MODE) {
       const id = Math.max(0, ...channels.map((c) => c.id)) + 1
@@ -1283,6 +1288,8 @@ function Main() {
         }
       } else if (ev === 'ChannelCreated') {
         setChannels((prev) => (prev.some((ch) => ch.id === data.id) ? prev : [...prev, data]))
+      } else if (ev === 'ChannelUpdated') {
+        setChannels((prev) => prev.map((ch) => (ch.id === data.id ? { ...ch, ...data } : ch)))
       } else if (ev === 'ChannelDeleted') {
         // Tolerate either a full channel object or a bare id.
         const removedId = data !== null && typeof data === 'object' ? data.id : data
