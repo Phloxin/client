@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       description:
-        description: "Release description (optional)"
+        description: 'Release description (optional)'
         required: false
-        default: ""
+        default: ''
 
 permissions:
   contents: write

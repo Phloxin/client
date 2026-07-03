@@ -39,6 +39,7 @@ src/renderer/src/
 All themes define the following variable categories:
 
 #### Colors
+
 - `--color-background` - Primary background
 - `--color-background-soft` - Secondary background
 - `--color-background-mute` - Tertiary background
@@ -57,14 +58,17 @@ All themes define the following variable categories:
 - `--color-border-light` - Light border color
 
 #### Typography
+
 - `--font-family-primary` - Main font family
 - `--font-size-xs` through `--font-size-xl` - Font size scale
 - `--font-weight-regular` through `--font-weight-bold` - Font weights
 
 #### Spacing
+
 - `--spacing-xs` through `--spacing-xl` - Consistent spacing scale
 
 #### Radii
+
 - `--border-radius-sm` - Small border radius
 - `--border-radius-md` - Medium border radius
 
@@ -73,45 +77,47 @@ All themes define the following variable categories:
 ### Using the Hook (React Components)
 
 ```javascript
-import { useTheme } from '../hooks/useTheme';
+import { useTheme } from '../hooks/useTheme'
 
 function MyComponent() {
-  const { theme, availableThemes, setCurrentTheme } = useTheme();
+  const { theme, availableThemes, setCurrentTheme } = useTheme()
 
   return (
     <div>
       <p>Current theme: {theme}</p>
       <select onChange={(e) => setCurrentTheme(e.target.value)}>
-        {availableThemes.map(t => (
-          <option key={t.id} value={t.id}>{t.name}</option>
+        {availableThemes.map((t) => (
+          <option key={t.id} value={t.id}>
+            {t.name}
+          </option>
         ))}
       </select>
     </div>
-  );
+  )
 }
 ```
 
 ### Using the Utility Functions (Vanilla JS)
 
 ```javascript
-import { setTheme, getTheme, initializeTheme } from '../lib/themeUtils';
+import { setTheme, getTheme, initializeTheme } from '../lib/themeUtils'
 
 // Initialize on app start
-initializeTheme();
+initializeTheme()
 
 // Switch theme
-setTheme('nord');
+setTheme('nord')
 
 // Get current theme
-const currentTheme = getTheme();
+const currentTheme = getTheme()
 ```
 
 ### Listening for Theme Changes
 
 ```javascript
 window.addEventListener('theme-changed', (e) => {
-  console.log('Theme changed to:', e.detail.theme);
-});
+  console.log('Theme changed to:', e.detail.theme)
+})
 ```
 
 ## CSS Organization Principles
@@ -119,6 +125,7 @@ window.addEventListener('theme-changed', (e) => {
 ### Global Styles (`globals.css`)
 
 Reserved for styles that are genuinely shared across the entire app with no clear owner:
+
 - Base form elements (select, input)
 - Scrollbar styling
 - Utility classes used everywhere
@@ -129,33 +136,34 @@ Button styles are **not** in globals — each button class is owned by the page 
 
 Each page owns its own layout, sections, buttons, and status elements:
 
-| File | Owns |
-|------|------|
-| `Main.css` | `.layout`, `.sidebar`, `.chat-area`, `.settings-btn`, `.view-toggle-btn` |
-| `Admin.css` | `.admin-layout`, `.admin-section`, `.admin-btn`, `.admin-status` |
-| `Settings.css` | `.settings-layout`, `.settings-section`, `.settings-status` |
+| File           | Owns                                                                     |
+| -------------- | ------------------------------------------------------------------------ |
+| `Main.css`     | `.layout`, `.sidebar`, `.chat-area`, `.settings-btn`, `.view-toggle-btn` |
+| `Admin.css`    | `.admin-layout`, `.admin-section`, `.admin-btn`, `.admin-status`         |
+| `Settings.css` | `.settings-layout`, `.settings-section`, `.settings-status`              |
 
 ### Component Styles (`components/*.css`)
 
 Each component with non-trivial styling has a co-located CSS file:
 
-| File | Owns |
-|------|------|
-| `LoginScreen.css` | `.login-screen`, `.login-box`, `.login-title`, `.admin-section` (login context) |
-| `ThemeSwitcher.css` | `.theme-switcher`, `.theme-options`, `.theme-option` |
-| `VideoGrid.css` | `.video-grid`, `.video-tile` |
-| `VoiceChannel.css` | `.join-btn`, `.leave-btn`, `.share-btn` |
+| File                | Owns                                                                            |
+| ------------------- | ------------------------------------------------------------------------------- |
+| `LoginScreen.css`   | `.login-screen`, `.login-box`, `.login-title`, `.admin-section` (login context) |
+| `ThemeSwitcher.css` | `.theme-switcher`, `.theme-options`, `.theme-option`                            |
+| `VideoGrid.css`     | `.video-grid`, `.video-tile`                                                    |
+| `VoiceChannel.css`  | `.join-btn`, `.leave-btn`, `.share-btn`                                         |
 
 ## Adding New Colors
 
 1. Add the variable to all theme definitions in `themes.css`:
+
    ```css
    --color-new-color: #value;
    ```
 
 2. Add to each theme block:
    ```css
-   [data-theme="catppuccin-frappe"] {
+   [data-theme='catppuccin-frappe'] {
      --color-new-color: #frappe-value;
    }
    ```
@@ -163,8 +171,9 @@ Each component with non-trivial styling has a co-located CSS file:
 ## Adding New Themes
 
 1. Add a new theme block to `themes.css`:
+
    ```css
-   [data-theme="my-theme"] {
+   [data-theme='my-theme'] {
      /* Define all variables */
    }
    ```
@@ -178,7 +187,7 @@ Each component with non-trivial styling has a co-located CSS file:
        name: 'My Theme',
        description: 'Description'
      }
-   ];
+   ]
    ```
 
 ## Best Practices

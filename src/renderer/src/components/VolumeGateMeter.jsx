@@ -19,7 +19,9 @@ function VolumeGateMeter({ threshold, onThresholdChange, micSettings, gateEnable
   const testPlayingRef = useRef(false)
 
   const thresholdRef = useRef(threshold)
-  useEffect(() => { thresholdRef.current = threshold }, [threshold])
+  useEffect(() => {
+    thresholdRef.current = threshold
+  }, [threshold])
 
   const gateEnabledRef = useRef(gateEnabled)
 
@@ -29,8 +31,12 @@ function VolumeGateMeter({ threshold, onThresholdChange, micSettings, gateEnable
     cancelAnimationFrame(testRafRef.current)
     const gain = testGainRef.current
     const source = sourceRef.current
-    try { gain?.disconnect() } catch {}
-    try { source?.disconnect(gain) } catch {}
+    try {
+      gain?.disconnect()
+    } catch {}
+    try {
+      source?.disconnect(gain)
+    } catch {}
     testGainRef.current = null
     testPlayingRef.current = false
     setTestPlaying(false)
@@ -55,7 +61,7 @@ function VolumeGateMeter({ threshold, onThresholdChange, micSettings, gateEnable
     micSettings.deviceId,
     micSettings.echoCancellation,
     micSettings.noiseSuppression,
-    micSettings.autoGainControl,
+    micSettings.autoGainControl
   ])
 
   // ── Initialize audio context + analyser ──────────────────────────
@@ -72,8 +78,8 @@ function VolumeGateMeter({ threshold, onThresholdChange, micSettings, gateEnable
                 : undefined,
             echoCancellation: micSettings.echoCancellation,
             noiseSuppression: micSettings.noiseSuppression,
-            autoGainControl: micSettings.autoGainControl,
-          },
+            autoGainControl: micSettings.autoGainControl
+          }
         })
 
         const node = ctx.createAnalyser()
@@ -96,9 +102,15 @@ function VolumeGateMeter({ threshold, onThresholdChange, micSettings, gateEnable
     return () => {
       cancelAnimationFrame(meterRafRef.current)
       cancelAnimationFrame(testRafRef.current)
-      try { source?.disconnect() } catch {}
-      try { stream?.getTracks().forEach((t) => t.stop()) } catch {}
-      try { ctx?.close() } catch {}
+      try {
+        source?.disconnect()
+      } catch {}
+      try {
+        stream?.getTracks().forEach((t) => t.stop())
+      } catch {}
+      try {
+        ctx?.close()
+      } catch {}
       audioCtxRef.current = null
       streamRef.current = null
       sourceRef.current = null
@@ -107,7 +119,7 @@ function VolumeGateMeter({ threshold, onThresholdChange, micSettings, gateEnable
     micSettings.deviceId,
     micSettings.echoCancellation,
     micSettings.noiseSuppression,
-    micSettings.autoGainControl,
+    micSettings.autoGainControl
   ])
 
   // ── Level-meter polling loop ──────────────────────────────────────
@@ -207,10 +219,7 @@ function VolumeGateMeter({ threshold, onThresholdChange, micSettings, gateEnable
         <div className="vg-marker" style={{ left: `${threshold}%` }} />
       </div>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 }}>
-        <button
-          className="vg-test-btn"
-          onClick={() => (testPlaying ? stopTest() : startTest())}
-        >
+        <button className="vg-test-btn" onClick={() => (testPlaying ? stopTest() : startTest())}>
           {testPlaying ? 'Stop Test' : 'Test Mic'}
         </button>
         {testPlaying && (
@@ -222,7 +231,9 @@ function VolumeGateMeter({ threshold, onThresholdChange, micSettings, gateEnable
                 <span className="vg-status vg-off">Audio filtered</span>
               )
             ) : (
-              <span className="vg-status" style={{ color: 'var(--color-text-secondary)' }}>Gate disabled</span>
+              <span className="vg-status" style={{ color: 'var(--color-text-secondary)' }}>
+                Gate disabled
+              </span>
             )}
           </p>
         )}

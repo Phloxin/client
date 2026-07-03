@@ -1,4 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
+import { motion, AnimatePresence } from 'motion/react'
+import { overlayPop, scrimFade } from '../lib/motionPresets'
 import VoiceChannel from './VoiceChannel'
 import ClientIndicator from './ClientIndicator'
 import ServerMenu from './ServerMenu'
@@ -6,7 +8,7 @@ import { setMicMuted, setSoundMuted } from '../lib/soup'
 import { playUiSound } from '../lib/sounds'
 import { useAnimationCategory } from '../context/SettingsContext'
 import { useAnimatedPresence, useFlip } from '../lib/animation'
-import { usePillIndicator } from '../lib/usePillIndicator'
+import SegmentedTabs from './SegmentedTabs'
 import './SideBar.css'
 import {
   IconSettings,
@@ -75,7 +77,6 @@ function Sidebar({
   // Which list the sidebar body shows: the channel tree or a flat roster of every
   // connected client. Toggled by the segmented control in the section header.
   const [sidebarView, setSidebarView] = useState('channels')
-  const viewPill = usePillIndicator(sidebarView)
 
   // Create-channel modal (opened from the section "+" or a channel's right-click
   // "Add Channel"). user_limit of 0 means unlimited.
@@ -110,15 +111,14 @@ function Sidebar({
   }
 
   const channelAnimEnabled = useAnimationCategory('channelList')
+  const overlayAnim = useAnimationCategory('overlays')
 
   // Memoized so the reference is stable for the presence hook's effect. DMs are
   // channels of type 'dm' — they're opened by double-clicking a user, not listed
   // here, so keep them out of the channel tree.
   const sortedChannels = useMemo(
     () =>
-      channels
-        .filter((c) => c.type !== 'dm')
-        .sort((a, b) => (a.position ?? 0) - (b.position ?? 0)),
+      channels.filter((c) => c.type !== 'dm').sort((a, b) => (a.position ?? 0) - (b.position ?? 0)),
     [channels]
   )
 
@@ -221,6 +221,9 @@ function Sidebar({
   const isDragging = useRef(false)
   const sidebarRef = useRef(null)
 
+  // Self entry from the live roster (has the resolved avatar), for the dock card.
+  const selfAvatar = clients.find((c) => c.id === self?.id)?.avatar
+
   // Slide channels to their new positions when the order changes.
   useFlip(sidebarRef, [channelOrderKey], {
     selector: '.channel-item[data-flip-key]',
@@ -278,29 +281,26 @@ function Sidebar({
       </div>
 
       <div className="channel-section-label">
-        <div className="sidebar-view-tabs" ref={viewPill.barRef}>
-          <span
-            className="pill-indicator"
-            style={viewPill.indicatorStyle}
-            aria-hidden="true"
-          />
+        <SegmentedTabs
+          className="sidebar-view-tabs"
+          ariaLabel="Sidebar view"
+          active={sidebarView}
+          onChange={setSidebarView}
+          tabs={[
+            { id: 'channels', label: 'Channels' },
+            { id: 'users', label: 'Users' }
+          ]}
+        />
+        {connectedServer && (
           <button
             type="button"
-            className={`sidebar-view-tab${sidebarView === 'channels' ? ' active' : ''}`}
-            data-active={sidebarView === 'channels'}
-            onClick={() => setSidebarView('channels')}
+            className="channel-add-btn"
+            title="Add channel"
+            onClick={() => openCreateChannel()}
           >
-            Channels
+            <IconPlus size={16} stroke={2.2} />
           </button>
-          <button
-            type="button"
-            className={`sidebar-view-tab${sidebarView === 'users' ? ' active' : ''}`}
-            data-active={sidebarView === 'users'}
-            onClick={() => setSidebarView('users')}
-          >
-            Users
-          </button>
-        </div>
+        )}
       </div>
 
       {/* Keep the channel list mounted across view switches. Unmounting it would
@@ -410,39 +410,36 @@ function Sidebar({
         </div>
       )}
 
-      <div className="control-rows">
-        <div className="control-row">
-          <button
-            className="control-btn"
-            title={sharing ? 'End Stream' : 'Start Stream'}
-            disabled={!joinedChannelId}
-            onClick={() => channelRefs.current[joinedChannelId]?.toggleShare()}
-          >
-            {sharing ? (
-              <IconScreenShareOff className="control-icon" size={20} />
+      <div className="control-dock">
+        <div className="dock-user">
+          <span className={`dock-avatar${joinedChannelId ? ' in-voice' : ''}`} aria-hidden="true">
+            {selfAvatar ? (
+              <img className="dock-avatar-img" src={selfAvatar} alt="" />
             ) : (
-              <IconScreenShare className="control-icon" size={20} />
+              (self?.name?.charAt(0) ?? '·').toUpperCase()
             )}
-          </button>
-          <button
-            className="control-btn"
-            title="Leave Channel"
-            disabled={!joinedChannelId}
-            onClick={() => channelRefs.current[joinedChannelId]?.leave()}
-          >
-            <IconDoorExit size={20} />
-          </button>
+          </span>
+          <span className="dock-user-text">
+            <span className="dock-user-name">{self?.name ?? 'Not connected'}</span>
+            <span className={`dock-user-status${joinedChannelId ? ' voice' : ''}`}>
+              {joinedChannelId
+                ? (channels.find((c) => c.id === joinedChannelId)?.name ?? 'In voice')
+                : connectedServer
+                  ? 'Online'
+                  : 'Offline'}
+            </span>
+          </span>
         </div>
-        <div className="control-row">
+        <div className="dock-actions">
           <button
             className={`control-btn${micMuted ? ' active' : ''}`}
             title={micMuted ? 'Unmute Microphone' : 'Mute Microphone'}
             onClick={toggleMic}
           >
             {micMuted ? (
-              <IconMicrophoneOff className="control-icon" size={20} />
+              <IconMicrophoneOff className="control-icon" size={18} />
             ) : (
-              <IconMicrophone className="control-icon" size={20} />
+              <IconMicrophone className="control-icon" size={18} />
             )}
           </button>
           <button
@@ -451,10 +448,30 @@ function Sidebar({
             onClick={toggleSound}
           >
             {soundMuted ? (
-              <IconHeadphonesOff className="control-icon" size={20} />
+              <IconHeadphonesOff className="control-icon" size={18} />
             ) : (
-              <IconHeadphones className="control-icon" size={20} />
+              <IconHeadphones className="control-icon" size={18} />
             )}
+          </button>
+          <button
+            className="control-btn"
+            title={sharing ? 'End Stream' : 'Start Stream'}
+            disabled={!joinedChannelId}
+            onClick={() => channelRefs.current[joinedChannelId]?.toggleShare()}
+          >
+            {sharing ? (
+              <IconScreenShareOff className="control-icon" size={18} />
+            ) : (
+              <IconScreenShare className="control-icon" size={18} />
+            )}
+          </button>
+          <button
+            className="control-btn"
+            title="Leave Channel"
+            disabled={!joinedChannelId}
+            onClick={() => channelRefs.current[joinedChannelId]?.leave()}
+          >
+            <IconDoorExit size={18} />
           </button>
           <button
             className="control-btn"
@@ -470,61 +487,71 @@ function Sidebar({
               }
             }}
           >
-            <IconSettings size={20} />
+            <IconSettings size={18} />
           </button>
         </div>
       </div>
       <div className="sidebar-resize-handle" onMouseDown={onMouseDown} />
 
-      {showCreateChannel && (
-        <div className="add-server-overlay" onClick={() => setShowCreateChannel(false)}>
-          <div className="add-server-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="add-server-header">
-              <span className="add-server-title">Add Channel</span>
-              <button className="add-server-close" onClick={() => setShowCreateChannel(false)}>
-                <IconX size={18} />
-              </button>
-            </div>
+      <AnimatePresence>
+        {showCreateChannel && (
+          <motion.div
+            className="add-server-overlay"
+            onClick={() => setShowCreateChannel(false)}
+            {...scrimFade(overlayAnim)}
+          >
+            <motion.div
+              className="add-server-modal"
+              onClick={(e) => e.stopPropagation()}
+              {...overlayPop(overlayAnim)}
+            >
+              <div className="add-server-header">
+                <span className="add-server-title">Add Channel</span>
+                <button className="add-server-close" onClick={() => setShowCreateChannel(false)}>
+                  <IconX size={18} />
+                </button>
+              </div>
 
-            <div className="add-server-body">
-              <label className="add-server-field">
-                <span>Name</span>
-                <input
-                  type="text"
-                  value={channelName}
-                  placeholder="New Channel"
-                  onChange={(e) => setChannelName(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && submitCreateChannel()}
-                  autoFocus
-                />
-              </label>
-              <label className="add-server-field">
-                <span>User limit (0 = unlimited)</span>
-                <input
-                  type="number"
-                  min={0}
-                  value={channelLimit}
-                  onChange={(e) => setChannelLimit(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && submitCreateChannel()}
-                />
-              </label>
-              {channelError && <div className="add-server-error">{channelError}</div>}
-            </div>
+              <div className="add-server-body">
+                <label className="add-server-field">
+                  <span>Name</span>
+                  <input
+                    type="text"
+                    value={channelName}
+                    placeholder="New Channel"
+                    onChange={(e) => setChannelName(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && submitCreateChannel()}
+                    autoFocus
+                  />
+                </label>
+                <label className="add-server-field">
+                  <span>User limit (0 = unlimited)</span>
+                  <input
+                    type="number"
+                    min={0}
+                    value={channelLimit}
+                    onChange={(e) => setChannelLimit(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && submitCreateChannel()}
+                  />
+                </label>
+                {channelError && <div className="add-server-error">{channelError}</div>}
+              </div>
 
-            <div className="add-server-footer">
-              <button
-                className="add-server-btn secondary"
-                onClick={() => setShowCreateChannel(false)}
-              >
-                Cancel
-              </button>
-              <button className="add-server-btn primary" onClick={submitCreateChannel}>
-                Create
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+              <div className="add-server-footer">
+                <button
+                  className="add-server-btn secondary"
+                  onClick={() => setShowCreateChannel(false)}
+                >
+                  Cancel
+                </button>
+                <button className="add-server-btn primary" onClick={submitCreateChannel}>
+                  Create
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </aside>
   )
 }

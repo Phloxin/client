@@ -360,57 +360,60 @@ app.whenReady().then(() => {
   // body ({ limit }), which the renderer's fetch can't send (the Fetch spec
   // forbids a body on GET). Node's http.request has no such restriction, so we
   // make the request here and hand the parsed messages back to the renderer.
-  ipcMain.handle('get-channel-messages', async (_, { url, token, limit, before, after, around }) => {
-    return new Promise((resolve) => {
-      let target
-      try {
-        target = new URL(url)
-      } catch {
-        resolve({ ok: false, error: 'Invalid URL' })
-        return
-      }
-      const lib = target.protocol === 'https:' ? https : http
-      const body = JSON.stringify({
-        limit,
-        ...(before != null ? { before } : {}),
-        ...(after != null ? { after } : {}),
-        ...(around != null ? { around } : {})
-      })
-      const req = lib.request(
-        {
-          hostname: target.hostname,
-          port: target.port,
-          path: target.pathname + target.search,
-          method: 'GET',
-          headers: {
-            'Content-Type': 'application/json',
-            'Content-Length': Buffer.byteLength(body),
-            Authorization: `Bearer ${token}`
-          }
-        },
-        (res) => {
-          let data = ''
-          res.on('data', (chunk) => {
-            data += chunk
-          })
-          res.on('end', () => {
-            if (res.statusCode >= 200 && res.statusCode < 300) {
-              try {
-                resolve({ ok: true, messages: JSON.parse(data) })
-              } catch {
-                resolve({ ok: false, error: 'Invalid response JSON' })
-              }
-            } else {
-              resolve({ ok: false, status: res.statusCode, error: data })
-            }
-          })
+  ipcMain.handle(
+    'get-channel-messages',
+    async (_, { url, token, limit, before, after, around }) => {
+      return new Promise((resolve) => {
+        let target
+        try {
+          target = new URL(url)
+        } catch {
+          resolve({ ok: false, error: 'Invalid URL' })
+          return
         }
-      )
-      req.on('error', (err) => resolve({ ok: false, error: err.message }))
-      req.write(body)
-      req.end()
-    })
-  })
+        const lib = target.protocol === 'https:' ? https : http
+        const body = JSON.stringify({
+          limit,
+          ...(before != null ? { before } : {}),
+          ...(after != null ? { after } : {}),
+          ...(around != null ? { around } : {})
+        })
+        const req = lib.request(
+          {
+            hostname: target.hostname,
+            port: target.port,
+            path: target.pathname + target.search,
+            method: 'GET',
+            headers: {
+              'Content-Type': 'application/json',
+              'Content-Length': Buffer.byteLength(body),
+              Authorization: `Bearer ${token}`
+            }
+          },
+          (res) => {
+            let data = ''
+            res.on('data', (chunk) => {
+              data += chunk
+            })
+            res.on('end', () => {
+              if (res.statusCode >= 200 && res.statusCode < 300) {
+                try {
+                  resolve({ ok: true, messages: JSON.parse(data) })
+                } catch {
+                  resolve({ ok: false, error: 'Invalid response JSON' })
+                }
+              } else {
+                resolve({ ok: false, status: res.statusCode, error: data })
+              }
+            })
+          }
+        )
+        req.on('error', (err) => resolve({ ok: false, error: err.message }))
+        req.write(body)
+        req.end()
+      })
+    }
+  )
 
   // Login on Admin Window — forward log message to all windows
   ipcMain.on('admin-log', (_, message) => {

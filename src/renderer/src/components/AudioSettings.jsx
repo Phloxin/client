@@ -41,7 +41,6 @@ function AudioSettings({ micSettings, updateMicSettings }) {
       </div>
 
       <div className="settings-panel-group">
-
         {/* 1. Microphone Device */}
         <div className="settings-section">
           <label>Input Device</label>
@@ -108,7 +107,8 @@ function AudioSettings({ micSettings, updateMicSettings }) {
           <div className="settings-toggle-copy">
             <label htmlFor="useVolumeGate">Use Voice Gate</label>
             <p className="settings-section-desc">
-              Silences your mic when ambient noise falls below a set level, cutting background sound between words.
+              Silences your mic when ambient noise falls below a set level, cutting background sound
+              between words.
             </p>
           </div>
           <label className="toggle-switch">
@@ -126,7 +126,8 @@ function AudioSettings({ micSettings, updateMicSettings }) {
           <label>Voice Gate Threshold</label>
           <p className="settings-section-desc">
             Click the bar to set the cut-off level. Audio below the marker is filtered out.
-            {!draftSettings.useVolumeGate && ' Enable the volume gate above to apply this during calls.'}
+            {!draftSettings.useVolumeGate &&
+              ' Enable the volume gate above to apply this during calls.'}
           </p>
           <VolumeGateMeter
             gateEnabled={draftSettings.useVolumeGate}
@@ -141,9 +142,10 @@ function AudioSettings({ micSettings, updateMicSettings }) {
           <div className="settings-toggle-copy">
             <label htmlFor="useRnnoise">AI Noise Suppression (Recommended)</label>
             <p className="settings-section-desc">
-              Uses a voice-trained model to strip keyboard/typing sounds and steady background
-              noise while letting your voice through. More effective than basic noise suppression
-              for typing. Enabling this turns off basic Noise Suppression. Pair with a low Voice Gate for the best experience.
+              Uses a voice-trained model to strip keyboard/typing sounds and steady background noise
+              while letting your voice through. More effective than basic noise suppression for
+              typing. Enabling this turns off basic Noise Suppression. Pair with a low Voice Gate
+              for the best experience.
             </p>
           </div>
           <label className="toggle-switch">
@@ -229,7 +231,6 @@ function AudioSettings({ micSettings, updateMicSettings }) {
             <span className="toggle-slider" />
           </label>
         </div>
-
       </div>
 
       <div className="settings-status">

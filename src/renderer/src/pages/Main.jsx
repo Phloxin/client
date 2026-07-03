@@ -1,4 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { motion, AnimatePresence } from 'motion/react'
+import { useAnimationCategory } from '../context/SettingsContext'
+import { overlayPop, scrimFade } from '../lib/motionPresets'
 import './Main.css'
 import '../App.css'
 import { useAuth } from '../context/AuthContext'
@@ -18,7 +21,7 @@ import {
 } from '../lib/soup'
 import { playUiSound } from '../lib/sounds'
 import { setServerHost, apiBase, wsBase, cdnUrl, throwIfError } from '../lib/serverConfig'
-import { usePillIndicator } from '../lib/usePillIndicator'
+import SegmentedTabs from '../components/SegmentedTabs'
 import {
   DEV_MODE,
   MOCK_TOKEN,
@@ -27,7 +30,14 @@ import {
   MOCK_CLIENTS,
   createMockStreams
 } from '../lib/mock'
-import { IconVideo, IconMessage, IconUser, IconUsersGroup, IconX, IconPlugConnected } from '@tabler/icons-react'
+import {
+  IconVideo,
+  IconMessage,
+  IconUser,
+  IconUsersGroup,
+  IconX,
+  IconVolume
+} from '@tabler/icons-react'
 
 const APP_TITLE = 'Teamspeak 26'
 
@@ -109,7 +119,6 @@ function dmOther(channel, selfId) {
 }
 
 function Main() {
-
   //Server Connection State Hooks
   const { token, setToken, client, setClient } = useAuth()
   const [channels, setChannels] = useState([])
@@ -533,7 +542,9 @@ function Main() {
         const formData = new FormData()
         formData.append(
           'payload_json',
-          new Blob([JSON.stringify({ content: text, attachments: [] })], { type: 'application/json' })
+          new Blob([JSON.stringify({ content: text, attachments: [] })], {
+            type: 'application/json'
+          })
         )
         const res = await fetch(`${apiBase()}/channels/${id}/messages`, {
           method: 'POST',
@@ -665,7 +676,9 @@ function Main() {
       const apply = () =>
         setClients((prev) =>
           prev.map((c) =>
-            c.id === clientId ? { ...c, role_ids: (c.role_ids || []).filter((r) => r !== roleId) } : c
+            c.id === clientId
+              ? { ...c, role_ids: (c.role_ids || []).filter((r) => r !== roleId) }
+              : c
           )
         )
       if (DEV_MODE) return apply()
@@ -862,7 +875,7 @@ function Main() {
 
   const handleRemoveServer = (id) => saveServers(servers.filter((s) => s.id !== id))
 
-  // Create a channel on the server. Position is computed to append after the current last channel. 
+  // Create a channel on the server. Position is computed to append after the current last channel.
   //The server also broadcasts ChannelCreated, so the add here is deduped by id in case that broadcast echoes back to us.
   const handleCreateChannel = async ({ name, user_limit, afterPosition }) => {
     const trimmed = name.trim()
@@ -1044,12 +1057,11 @@ function Main() {
     const seedUnreadDms = (chans, reads, clientList) => {
       const self = selfIdRef.current
       const seeded = chans
-        .filter(
-          (c) => c.type === 'dm' && (c.last_message_id ?? null) !== (reads[c.id] ?? null)
-        )
+        .filter((c) => c.type === 'dm' && (c.last_message_id ?? null) !== (reads[c.id] ?? null))
         .map((c) => {
           const o = dmOther(c, self)
-          const name = o.name || clientList.find((cl) => cl.id === o.id)?.name || c.name || 'Someone'
+          const name =
+            o.name || clientList.find((cl) => cl.id === o.id)?.name || c.name || 'Someone'
           return {
             id: `unread-${c.id}`,
             channelId: c.id,
@@ -1060,7 +1072,10 @@ function Main() {
         })
       if (!seeded.length) return
       const seededChannels = new Set(seeded.map((s) => s.channelId))
-      setDmNotifications((prev) => [...seeded, ...prev.filter((p) => !seededChannels.has(p.channelId))])
+      setDmNotifications((prev) => [
+        ...seeded,
+        ...prev.filter((p) => !seededChannels.has(p.channelId))
+      ])
     }
 
     // Reconnect bookkeeping. `closedByUs` suppresses reconnects on intentional
@@ -1193,7 +1208,11 @@ function Main() {
         const now = Date.now()
         setNotifications((prev) =>
           [
-            { id: `join-${data.id}-${now}`, message: `${data.name || 'Someone'} joined the server.`, timestamp: now },
+            {
+              id: `join-${data.id}-${now}`,
+              message: `${data.name || 'Someone'} joined the server.`,
+              timestamp: now
+            },
             ...prev
           ].slice(0, 50)
         )
@@ -1625,27 +1644,18 @@ function Main() {
   }
 
   const [showSettings, setShowSettings] = useState(false)
-  // Keeps the settings modal mounted through its close animation before it
-  // actually unmounts (must match the CSS animation duration).
-  const [settingsClosing, setSettingsClosing] = useState(false)
-
-  const openSettings = () => {
-    setSettingsClosing(false)
-    setShowSettings(true)
-  }
-  const closeSettings = () => {
-    setSettingsClosing(true)
-    setTimeout(() => {
-      setShowSettings(false)
-      setSettingsClosing(false)
-    }, 180)
-  }
+  // Exit animation is handled by AnimatePresence in the JSX below, so open/
+  // close are plain state flips — closing never blocks on a timer.
+  const openSettings = () => setShowSettings(true)
+  const closeSettings = () => setShowSettings(false)
+  const overlayAnim = useAnimationCategory('overlays')
 
   const connected = !!token
   const titleText = connectedServer ? `${APP_TITLE} — ${connectedServer.nickname}` : APP_TITLE
 
-  // Sliding pill for the Chat / Video Streams tabs.
-  const viewPill = usePillIndicator(viewMode)
+  // Canvas header title: the joined voice channel, or the server when lurking.
+  const joinedChannel = channels.find((c) => c.id === selfChannelId)
+  const joinedChannelUserCount = clients.filter((c) => c.channel_id === selfChannelId).length
 
   // Names of other clients typing in the channel we're viewing (self excluded).
   const typingUsers = typingEntries
@@ -1666,7 +1676,8 @@ function Main() {
   }
 
   // The client whose summary is open (single-click), or null.
-  const summaryClient = summaryClientId != null ? clients.find((c) => c.id === summaryClientId) : null
+  const summaryClient =
+    summaryClientId != null ? clients.find((c) => c.id === summaryClientId) : null
 
   return (
     <div className="app-shell">
@@ -1761,35 +1772,48 @@ function Main() {
                   </button>
                 </>
               ) : connected ? (
-                <div className="view-tabs-bar" ref={viewPill.barRef}>
-                  <span
-                    className="pill-indicator"
-                    style={viewPill.indicatorStyle}
-                    aria-hidden="true"
+                <>
+                  <div className="chat-title">
+                    <span className="chat-title-icon">
+                      {joinedChannel ? (
+                        <IconVolume size={17} stroke={2} />
+                      ) : (
+                        <IconUsersGroup size={17} stroke={2} />
+                      )}
+                    </span>
+                    <span className="chat-title-text">
+                      <span className="chat-title-name">
+                        {joinedChannel?.name ?? connectedServer?.nickname ?? 'Connected'}
+                      </span>
+                      <span className="chat-title-sub">
+                        {joinedChannel
+                          ? `${joinedChannelUserCount} in voice`
+                          : 'Not in a voice channel'}
+                      </span>
+                    </span>
+                  </div>
+                  <SegmentedTabs
+                    ariaLabel="Main view"
+                    active={viewMode}
+                    onChange={setViewMode}
+                    tabs={[
+                      {
+                        id: 'log',
+                        label: 'Chat',
+                        icon: <IconMessage size={15} stroke={2} />
+                      },
+                      {
+                        id: 'video',
+                        label: 'Streams',
+                        icon: <IconVideo size={15} stroke={2} />,
+                        disabled: poppedOut,
+                        title: poppedOut ? 'Video is open in a separate window' : undefined
+                      }
+                    ]}
                   />
-                  <button
-                    type="button"
-                    className={`view-tab${viewMode === 'log' ? ' active' : ''}`}
-                    data-active={viewMode === 'log'}
-                    onClick={() => setViewMode('log')}
-                  >
-                    <IconMessage size={15} stroke={2} /> Chat
-                  </button>
-                  <button
-                    type="button"
-                    className={`view-tab${viewMode === 'video' ? ' active' : ''}`}
-                    data-active={viewMode === 'video'}
-                    onClick={() => setViewMode('video')}
-                    disabled={poppedOut}
-                    title={poppedOut ? 'Video is open in a separate window' : undefined}
-                  >
-                    <IconVideo size={15} stroke={2} /> Streams
-                  </button>
-                </div>
+                </>
               ) : (
-                <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  
-                </span>
+                <span aria-hidden="true" />
               )}
             </div>
           </div>
@@ -1826,7 +1850,9 @@ function Main() {
                 disabled={activeChatChannelId == null}
                 channelKey={activeChatChannelId}
                 onLoadOlder={loadOlderMessages}
-                hasMoreOlder={activeChatChannelId != null && !exhaustedChannels.has(activeChatChannelId)}
+                hasMoreOlder={
+                  activeChatChannelId != null && !exhaustedChannels.has(activeChatChannelId)
+                }
               />
             ) : (
               <VideoGrid
@@ -1845,19 +1871,30 @@ function Main() {
             )}
           </div>
         </main>
-        {showSettings && (
-          <div
-            className={`settings-overlay${settingsClosing ? ' closing' : ''}`}
-            onClick={closeSettings}
-          >
-            <div className="settings-modal" onClick={(e) => e.stopPropagation()}>
-              <button className="settings-close-btn" onClick={closeSettings}>
-                ×
-              </button>
-              <Settings />
-            </div>
-          </div>
-        )}
+        <AnimatePresence>
+          {showSettings && (
+            <motion.div
+              className="settings-overlay"
+              onClick={closeSettings}
+              {...scrimFade(overlayAnim)}
+            >
+              <motion.div
+                className="settings-modal"
+                onClick={(e) => e.stopPropagation()}
+                {...overlayPop(overlayAnim)}
+              >
+                <button
+                  className="settings-close-btn"
+                  onClick={closeSettings}
+                  title="Close settings"
+                >
+                  <IconX size={18} />
+                </button>
+                <Settings />
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
       {connected && connectionStatus === 'reconnecting' && (
         <ConnectionOverlay onAbort={handleDisconnect} />

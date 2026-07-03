@@ -70,7 +70,9 @@ function KeybindsSettings() {
                 className={`keybind-capture${capturing === a.id ? ' capturing' : ''}`}
                 onClick={() => (capturing === a.id ? cancelCapture() : startCapture(a.id))}
               >
-                {capturing === a.id ? 'Press keys… (Esc to cancel)' : keybindSettings[a.id] || 'Unassigned'}
+                {capturing === a.id
+                  ? 'Press keys… (Esc to cancel)'
+                  : keybindSettings[a.id] || 'Unassigned'}
               </button>
               {keybindSettings[a.id] && (
                 <button

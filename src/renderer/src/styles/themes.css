@@ -1,273 +1,189 @@
-/* Theme System - CSS Variables for Catppuccin and alternatives */
+/* ============================================================================
+   THEME CATALOG — the "Console" design language.
+
+   Every theme maps the same semantic zones:
+
+     --color-background       window chrome: backdrop, sidebar rail, title bar
+     --color-background-soft  the elevated content canvas (chat / streams panel)
+     --color-background-mute  recessed wells: inputs, tab tracks, code blocks
+     --color-surface          raised interactive surfaces: buttons, cards, hover
+
+   Dark themes: canvas sits LIGHTER than the chrome so the single floating
+   panel reads as the lit surface. Light themes invert the values, not the
+   semantics. --shadow-tint is an RGB triplet consumed by base.css shadows.
+   ============================================================================ */
 
 /* ============================================================================
-   CLASSIC DARK (Default Theme)
+   STUDIO — default. Ink-blue console chrome, radio-dial amber signal.
    ============================================================================ */
-html[data-theme="classic-dark"],
-body[data-theme="classic-dark"] {
-  /* Primary Colors */
-  --color-background: #1e1e1e;
-  --color-background-soft: #252526;
-  --color-background-mute: #1a1a1a;
-  --color-surface: #3c3c3c;
+html[data-theme='studio'],
+body[data-theme='studio'] {
+  --color-background: #0f1317;
+  --color-background-soft: #171d23;
+  --color-background-mute: #0a0d10;
+  --color-surface: #242c35;
 
-  /* Text Colors */
-  --color-text: #d4d4d4;
-  --color-text-secondary: #bbbbbb;
-  --color-text-tertiary: #999999;
-  --color-text-muted: rgba(212, 212, 212, 0.4);
+  --color-text: #e9edf1;
+  --color-text-secondary: #a6b1bc;
+  --color-text-tertiary: #78848f;
+  --color-text-muted: rgba(233, 237, 241, 0.42);
 
-  /* Accent Colors */
-  --color-primary: #0e90d2;
-  --color-primary-hover: #1ba0e2;
-  --color-success: #4caf50;
-  --color-success-hover: #66bb6a;
-  --color-danger: #f44336;
-  --color-warning: #ff9800;
+  /* Amber signal accent — the app's identity color. */
+  --color-primary: #f0a63c;
+  --color-primary-hover: #ffbd62;
+  --color-accent-contrast: #1d1304;
+  --color-success: #5cc172;
+  --color-success-hover: #74d489;
+  --color-danger: #e5545a;
+  --color-warning: #e0803a;
 
-  /* Border Colors */
-  --color-border: #3a3a3a;
-  --color-border-light: #505050;
+  --color-border: #262e37;
+  --color-border-light: #37414d;
+
+  --shadow-tint: 4 6 10;
 }
 
 /* ============================================================================
-   CLASSIC LIGHT
+   DAYLIGHT — light. Cool paper, ink text, deepened amber signal.
    ============================================================================ */
-html[data-theme="classic-light"],
-body[data-theme="classic-light"] {
-  /* Primary Colors — layered cool-gray surfaces for clear separation
-     without the muddy mid-grays */
-  --color-background: #ffffff;
-  --color-background-soft: #cacaca;
-  --color-background-mute: #aaaaaa;
-  --color-surface: #b3bac2;
+html[data-theme='daylight'],
+body[data-theme='daylight'] {
+  --color-background: #e7eaee;
+  --color-background-soft: #fbfcfd;
+  --color-background-mute: #dde2e8;
+  --color-surface: #eef1f4;
 
-  /* Text Colors — deepened for stronger contrast on light surfaces */
-  --color-text: #0a0d11;
-  --color-text-secondary: #0d1116;
-  --color-text-tertiary: #303031;
-  --color-text-muted: rgb(31, 32, 32);
+  --color-text: #1a232c;
+  --color-text-secondary: #46525e;
+  --color-text-tertiary: #6a7684;
+  --color-text-muted: rgba(26, 35, 44, 0.45);
 
-  /* Accent Colors — toned to a shared saturation so they read as a set */
-  --color-primary: #1c7ed6;
-  --color-primary-hover: #1971c2;
-  --color-success: #2f9e44;
-  --color-success-hover: #2b8a3e;
-  --color-danger: #e03131;
-  --color-warning: #e8830c;
+  --color-primary: #b26e0e;
+  --color-primary-hover: #96590a;
+  --color-accent-contrast: #fffaf2;
+  --color-success: #2e8f4b;
+  --color-success-hover: #257a3f;
+  --color-danger: #cf3138;
+  --color-warning: #b45d18;
 
-  /* Border Colors */
-  --color-border: #dde2e8;
-  --color-border-light: #c7ced6;
+  --color-border: #cfd6dd;
+  --color-border-light: #b8c1ca;
+
+  --shadow-tint: 42 52 64;
 }
 
 /* ============================================================================
-   CATPPUCCIN FRAPPE
+   MIDNIGHT — OLED near-black, electric violet.
    ============================================================================ */
-html[data-theme="catppuccin-frappe"],
-body[data-theme="catppuccin-frappe"] {
-  /* Primary Colors */
-  --color-background: #303446;
-  --color-background-soft: #292c3c;
-  --color-background-mute: #1e1f22;
-  --color-surface: #51576d;
-  
-  /* Text Colors */
-  --color-text: #c6d0f5;
-  --color-text-secondary: #a5adce;
-  --color-text-tertiary: rgba(235, 235, 245, 0.6);
-  --color-text-muted: rgba(235, 235, 245, 0.38);
-  
-  /* Accent Colors — Mauve is Catppuccin's signature accent */
-  --color-primary: #ca9ee6;
-  --color-primary-hover: #d8b2ee;
-  --color-success: #a6d189;
-  --color-success-hover: #8ac07e;
-  --color-danger: #e78284;
-  --color-warning: #e5c890;
-  
-  /* Border Colors */
-  --color-border: #414559;
-  --color-border-light: #51576d;
+html[data-theme='midnight'],
+body[data-theme='midnight'] {
+  --color-background: #060609;
+  --color-background-soft: #0e0f16;
+  --color-background-mute: #030304;
+  --color-surface: #1c1e2b;
+
+  --color-text: #e3e5f2;
+  --color-text-secondary: #9fa3bd;
+  --color-text-tertiary: #737791;
+  --color-text-muted: rgba(227, 229, 242, 0.4);
+
+  --color-primary: #a78bfa;
+  --color-primary-hover: #c1adff;
+  --color-accent-contrast: #140d29;
+  --color-success: #4ade80;
+  --color-success-hover: #6ded9e;
+  --color-danger: #f4565e;
+  --color-warning: #e8a33c;
+
+  --color-border: #1b1d29;
+  --color-border-light: #2d3040;
+
+  --shadow-tint: 0 0 0;
 }
 
 /* ============================================================================
-   CATPPUCCIN MOCHA (Darker Alternative)
+   AURORA — arctic slate, glacial teal.
    ============================================================================ */
-html[data-theme="catppuccin-mocha"],
-body[data-theme="catppuccin-mocha"] {
-  /* Primary Colors */
-  --color-background: #1e1e2e;
-  --color-background-soft: #181825;
-  --color-background-mute: #11111b;
-  --color-surface: #45475a;
-  
-  /* Text Colors */
-  --color-text: #cdd6f4;
-  --color-text-secondary: #bac2de;
-  --color-text-tertiary: #a6adc8;
-  --color-text-muted: rgba(205, 214, 244, 0.5);
-  
-  /* Accent Colors — Mauve is Catppuccin's signature accent */
-  --color-primary: #cba6f7;
-  --color-primary-hover: #d8bafa;
-  --color-success: #a6e3a1;
-  --color-success-hover: #94e2d5;
-  --color-danger: #f38ba8;
-  --color-warning: #f9e2af;
-  
-  /* Border Colors */
-  --color-border: #31304d;
-  --color-border-light: #45475a;
-}
+html[data-theme='aurora'],
+body[data-theme='aurora'] {
+  --color-background: #20252e;
+  --color-background-soft: #2a303c;
+  --color-background-mute: #181c23;
+  --color-surface: #3a4250;
 
-/* ============================================================================
-   NORD (Cool Polar Theme)
-   ============================================================================ */
-html[data-theme="nord"],
-body[data-theme="nord"] {
-  /* Primary Colors */
-  --color-background: #2e3440;
-  --color-background-soft: #282e37;
-  --color-background-mute: #21252d;
-  --color-surface: #434c5e;
-  
-  /* Text Colors */
-  --color-text: #eceff4;
-  --color-text-secondary: #d8dee9;
-  --color-text-tertiary: #c3cedd;
-  --color-text-muted: rgba(236, 239, 244, 0.6);
-  
-  /* Accent Colors */
-  --color-primary: #88c0d0;
-  --color-primary-hover: #81a1c1;
+  --color-text: #e9eef5;
+  --color-text-secondary: #aeb9c7;
+  --color-text-tertiary: #8493a4;
+  --color-text-muted: rgba(233, 238, 245, 0.42);
+
+  --color-primary: #7dd3e0;
+  --color-primary-hover: #9fe4ee;
+  --color-accent-contrast: #0c1e22;
   --color-success: #a3be8c;
-  --color-success-hover: #8fbcbb;
-  --color-danger: #bf616a;
+  --color-success-hover: #b8d0a3;
+  --color-danger: #d9646e;
   --color-warning: #ebcb8b;
-  
-  /* Border Colors */
-  --color-border: #3b4252;
-  --color-border-light: #434c5e;
+
+  --color-border: #333b47;
+  --color-border-light: #46505f;
+
+  --shadow-tint: 8 11 16;
 }
 
 /* ============================================================================
-   DRACULA (Vibrant Dark Theme)
+   MOCHA — warm cozy dark, soft mauve.
    ============================================================================ */
-html[data-theme="dracula"],
-body[data-theme="dracula"] {
-  /* Primary Colors */
-  --color-background: #282a36;
-  --color-background-soft: #21222c;
-  --color-background-mute: #1a1b26;
-  --color-surface: #44475a;
-  
-  /* Text Colors */
-  --color-text: #f8f8f2;
-  --color-text-secondary: #e3e3e8;
-  --color-text-tertiary: #d3d3d8;
-  --color-text-muted: rgba(248, 248, 242, 0.6);
-  
-  /* Accent Colors — Purple is Dracula's iconic accent */
-  --color-primary: #ff79c6;
-  --color-primary-hover: #cda9fb;
-  --color-success: #50fa7b;
-  --color-success-hover: #6bff8f;
-  --color-danger: #ff5555;
-  --color-warning: #f1fa8c;
-  
-  /* Border Colors */
-  --color-border: #3b3d54;
-  --color-border-light: #44475a;
+html[data-theme='mocha'],
+body[data-theme='mocha'] {
+  --color-background: #16161f;
+  --color-background-soft: #1e1e2e;
+  --color-background-mute: #101018;
+  --color-surface: #313244;
+
+  --color-text: #cdd6f4;
+  --color-text-secondary: #a6adc8;
+  --color-text-tertiary: #7f849c;
+  --color-text-muted: rgba(205, 214, 244, 0.42);
+
+  --color-primary: #cba6f7;
+  --color-primary-hover: #dcc2fb;
+  --color-accent-contrast: #1e1030;
+  --color-success: #a6e3a1;
+  --color-success-hover: #bdedb9;
+  --color-danger: #f38ba8;
+  --color-warning: #fab387;
+
+  --color-border: #292a3c;
+  --color-border-light: #3b3d54;
+
+  --shadow-tint: 6 6 12;
 }
 
 /* ============================================================================
-   TOKYO NIGHT (Deep Navy Dark Theme)
+   TERRA — earthy analog warmth, burnt orange.
    ============================================================================ */
-html[data-theme="tokyo-night"],
-body[data-theme="tokyo-night"] {
-  /* Primary Colors */
-  --color-background: #1a1b2e;
-  --color-background-soft: #16213e;
-  --color-background-mute: #0f3460;
-  --color-surface: #2a2b3d;
+html[data-theme='terra'],
+body[data-theme='terra'] {
+  --color-background: #1c1916;
+  --color-background-soft: #262220;
+  --color-background-mute: #141210;
+  --color-surface: #383029;
 
-  /* Text Colors */
-  --color-text: #c0caf5;
-  --color-text-secondary: #a9b1d6;
-  --color-text-tertiary: #9aa5ce;
-  --color-text-muted: rgba(169, 177, 214, 0.5);
+  --color-text: #ecdfc9;
+  --color-text-secondary: #c0b198;
+  --color-text-tertiary: #998b74;
+  --color-text-muted: rgba(236, 223, 201, 0.4);
 
-  /* Accent Colors */
-  --color-primary: #7aa2f7;
-  --color-primary-hover: #89b4fa;
-  --color-success: #9ece6a;
-  --color-success-hover: #b9f27c;
-  --color-danger: #f7768e;
-  --color-warning: #e0af68;
+  --color-primary: #e8833a;
+  --color-primary-hover: #f89c58;
+  --color-accent-contrast: #241203;
+  --color-success: #a9b665;
+  --color-success-hover: #bfca80;
+  --color-danger: #ea6962;
+  --color-warning: #d8a657;
 
-  /* Border Colors */
-  --color-border: #292e42;
-  --color-border-light: #3b4261;
-}
+  --color-border: #322c26;
+  --color-border-light: #463e35;
 
-/* ============================================================================
-   GRUVBOX DARK
-   ============================================================================ */
-html[data-theme="gruvbox"],
-body[data-theme="gruvbox"] {
-  /* Primary Colors */
-  --color-background: #282828;
-  --color-background-soft: #32302f;
-  --color-background-mute: #1d2021;
-  --color-surface: #504945;
-
-  /* Text Colors */
-  --color-text: #ebdbb2;
-  --color-text-secondary: #d5c4a1;
-  --color-text-tertiary: #bdae93;
-  --color-text-muted: rgba(235, 219, 178, 0.4);
-
-  /* Accent Colors — warm orange is Gruvbox's signature (kept distinct from the
-     red danger color) */
-  --color-primary: #fe8019;
-  --color-primary-hover: #ff9642;
-  --color-success: #b8bb26;
-  --color-success-hover: #98971a;
-  --color-danger: #fb4934;
-  --color-warning: #fabd2f;
-
-  /* Border Colors */
-  --color-border: #3c3836;
-  --color-border-light: #504945;
-}
-
-/* ============================================================================
-   ONE DARK PRO (Atom-Inspired Theme)
-   ============================================================================ */
-html[data-theme="one-dark-pro"],
-body[data-theme="one-dark-pro"] {
-  /* Primary Colors */
-  --color-background: #282c34;
-  --color-background-soft: #21252b;
-  --color-background-mute: #181a1f;
-  --color-surface: #2c313c;
-
-  /* Text Colors */
-  --color-text: #abb2bf;
-  --color-text-secondary: #9da5b4;
-  --color-text-tertiary: #8b93a2;
-  --color-text-muted: rgba(171, 178, 191, 0.5);
-
-  /* Accent Colors */
-  --color-primary: #61afef;
-  --color-primary-hover: #7bbfff;
-  --color-success: #98c379;
-  --color-success-hover: #aed494;
-  --color-danger: #e06c75;
-  --color-warning: #e5c07b;
-
-  /* Border Colors */
-  --color-border: #3e4451;
-  --color-border-light: #4b5263;
+  --shadow-tint: 8 6 3;
 }

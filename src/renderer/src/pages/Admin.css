@@ -45,7 +45,9 @@
   font-size: var(--font-size-md);
   font-family: var(--font-family-primary);
   cursor: pointer;
-  transition: border-color 0.15s, background-color 0.15s;
+  transition:
+    border-color 0.15s,
+    background-color 0.15s;
 }
 
 .admin-section select:hover {

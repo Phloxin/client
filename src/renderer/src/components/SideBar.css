@@ -1,154 +1,89 @@
 /* ============================================================================
-   SIDEBAR STYLES
+   SIDEBAR — flush chrome rail (no card): lives directly on the app backdrop.
+   The floating control dock at the bottom is the rail's one raised element.
    ============================================================================ */
 
 .sidebar {
   width: 240px;
-  background: var(--gradient-surface);
+  background: transparent;
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
-  border-radius: 10px;
   position: relative;
   user-select: none;
+  padding: 0 2px 0 6px;
 }
 
-html[data-transparency="true"] .sidebar {
-  background: color-mix(in srgb, var(--color-background-soft) var(--transparency-opacity, 85%), transparent);
-}
-
+/* Server header row — hosts the ServerMenu trigger. */
 .server-header {
-  height: 45px;
-  padding: 14px var(--spacing-lg) 12px;
+  flex-shrink: 0;
+  padding: 2px 4px 10px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  background: var(--gradient-header);
-  border-radius: 10px;
-}
-
-html[data-transparency="true"] .server-header {
-  background: color-mix(in srgb, var(--color-background-mute) var(--transparency-opacity, 85%), transparent);
-}
-
-.server-name {
-  font-weight: var(--font-weight-semibold);
-  font-size: var(--font-size-md);
-  color: var(--color-text);
-  letter-spacing: 0.01em;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  min-width: 0;
-}
-
-.server-status {
-  outline: none;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--color-success);
-  flex-shrink: 0;
 }
 
 .channel-section-label {
-  padding: var(--spacing-md) 14px var(--spacing-xs);
-  font-size: var(--font-size-xs);
-  font-weight: var(--font-weight-bold);
-  text-transform: uppercase;
-  letter-spacing: 0.09em;
-  color: var(--color-text-muted);
+  padding: 0 4px 10px;
   display: flex;
   align-items: center;
   gap: var(--spacing-sm);
 }
 
-/* Segmented Channels / Users switch that replaces the static section label.
-   Mirrors the chat-area view tabs (.view-tabs-bar in Main.css) but sized for the
-   narrow sidebar. The sliding pill is positioned inline by usePillIndicator. */
 .sidebar-view-tabs {
-  position: relative;       /* positioning context for the sliding pill */
-  display: flex;
-  background: var(--color-background);
-  border-radius: 999px;
-  padding: 3px;
-  gap: 2px;
+  flex: 1;
 }
 
-.sidebar-view-tab {
-  outline: none;
-  position: relative;       /* sit above the sliding pill */
-  z-index: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 4px 12px;
-  border: none;
-  border-radius: 999px;
-  background: transparent;
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-xs);
-  font-weight: var(--font-weight-semibold);
-  text-transform: none;
-  letter-spacing: 0.02em;
-  cursor: pointer;
-  transition: color 0.15s ease;
-}
-
-.sidebar-view-tab:hover:not(.active),
-.sidebar-view-tab.active {
-  color: var(--color-text);
-}
-
-/* Pill background; the active tab only changes its text color. */
-.sidebar-view-tabs .pill-indicator {
-  position: absolute;
-  left: 0;
-  top: 0;
-  z-index: 0;
-  border-radius: 999px;
-  background: var(--color-background-soft);
-  pointer-events: none;
+.sidebar-view-tabs .seg-tab {
+  flex: 1;
 }
 
 .channel-add-btn {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
+  width: 28px;
+  height: 28px;
   flex-shrink: 0;
-  /* Push to the far right now that the section label is a left-aligned toggle. */
-  margin-left: auto;
   padding: 0;
-  border: none;
-  border-radius: var(--border-radius-sm);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
   background: transparent;
-  color: var(--color-text-muted);
+  color: var(--color-text-tertiary);
   cursor: pointer;
-  transition: background 0.12s ease, color 0.12s ease, transform 0.12s ease;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease,
+    transform 0.12s ease;
+}
+
+.channel-add-btn:hover {
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.channel-add-btn:active {
+  transform: scale(0.9);
 }
 
 /* Wrapper that keeps the channel list mounted while the Users view is showing,
-   preserving the live voice session. Scrolls independently so a long channel
-   list never pushes the control rows off the bottom; .hidden collapses it. */
+   preserving the live voice session. Scrolls independently. */
 .sidebar-channel-list {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
+  padding: 0 2px 8px 0;
 }
 
 .sidebar-channel-list.hidden {
   display: none;
 }
 
-/* Flat client roster shown in "Users" view. Scrolls independently so a long
-   roster never pushes the control rows off the bottom of the sidebar. */
+/* Flat client roster shown in "Users" view. */
 .sidebar-user-list {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding: var(--spacing-xs) var(--spacing-sm);
+  padding: 0 4px 8px 2px;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -161,32 +96,97 @@ html[data-transparency="true"] .server-header {
   text-align: center;
 }
 
-.channel-add-btn:hover {
-  background: var(--color-border);
-  color: var(--color-text);
-}
+/* ============================================================================
+   CONTROL DOCK — floating capsule: self user card + action strip.
+   ============================================================================ */
 
-.channel-add-btn:active {
-  transform: scale(0.9);
-}
-
-.control-rows {
-  margin-top: auto;
-  padding: var(--spacing-sm);
-  border-radius: 10px;
+.control-dock {
+  margin: auto 4px 10px 2px;
+  flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--spacing-sm);
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
   background: var(--gradient-footer);
+  box-shadow: var(--shadow-2);
 }
 
-html[data-transparency="true"] .control-rows {
-  background: color-mix(in srgb, var(--color-background-mute) var(--transparency-opacity, 85%), transparent);
+html[data-transparency='true'] .control-dock {
+  background: color-mix(
+    in srgb,
+    var(--color-background-mute) var(--transparency-opacity, 85%),
+    transparent
+  );
 }
 
-.control-row {
+.dock-user {
   display: flex;
-  gap: var(--spacing-xs);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 2px 2px 0;
+}
+
+.dock-avatar {
+  position: relative;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--color-primary) 18%, transparent);
+  color: var(--color-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: var(--font-weight-bold);
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+.dock-avatar.in-voice {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-success) 70%, transparent);
+}
+
+.dock-avatar-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.dock-user-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.dock-user-name {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text);
+  line-height: 1.3;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.dock-user-status {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-tertiary);
+  line-height: 1.3;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.dock-user-status.voice {
+  color: var(--color-success);
+}
+
+.dock-actions {
+  display: flex;
+  gap: 4px;
 }
 
 .control-btn {
@@ -194,18 +194,20 @@ html[data-transparency="true"] .control-rows {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--color-background-soft);
+  background: transparent;
   color: var(--color-text-secondary);
-  border-radius: var(--border-radius-sm);
-  padding: 7px;
+  border-radius: var(--radius-sm);
+  padding: 7px 0;
   cursor: pointer;
-  transition: background 0.15s, color 0.15s, border-color 0.15s, transform 0.12s ease;
+  transition:
+    background 0.15s,
+    color 0.15s,
+    transform 0.12s ease;
 }
 
 .control-btn:hover:not(:disabled) {
-  background: var(--color-border);
+  background: var(--color-surface);
   color: var(--color-text);
-  border-color: var(--color-border-light);
   transform: translateY(-1px);
 }
 
@@ -215,7 +217,7 @@ html[data-transparency="true"] .control-rows {
 }
 
 .control-btn:disabled {
-  opacity: 0.4;
+  opacity: 0.35;
   cursor: not-allowed;
 }
 
@@ -227,9 +229,17 @@ html[data-transparency="true"] .control-rows {
 }
 
 @keyframes control-icon-pop {
-  0%   { transform: scale(0.6); opacity: 0.4; }
-  60%  { transform: scale(1.12); }
-  100% { transform: scale(1); opacity: 1; }
+  0% {
+    transform: scale(0.6);
+    opacity: 0.4;
+  }
+  60% {
+    transform: scale(1.12);
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -243,13 +253,12 @@ html[data-transparency="true"] .control-rows {
 }
 
 .control-btn.active {
-  background: color-mix(in srgb, var(--color-danger) 18%, transparent);
+  background: color-mix(in srgb, var(--color-danger) 16%, transparent);
   color: var(--color-danger);
-  border-color: color-mix(in srgb, var(--color-danger) 35%, transparent);
 }
 
 .control-btn.active:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--color-danger) 28%, transparent);
+  background: color-mix(in srgb, var(--color-danger) 26%, transparent);
   color: var(--color-danger);
 }
 
@@ -260,10 +269,8 @@ html[data-transparency="true"] .control-rows {
 .sidebar-resize-handle {
   position: absolute;
   top: 0;
-  /* Center the handle within the layout gap between the sidebar and the chat
-     area (gap = --spacing-sm), rather than on the sidebar's edge. Offset is
-     -(width + gap) / 2 so the indicator line lands in the middle of the gap. */
-  right: calc(-1 * (10px + var(--spacing-sm)) / 2);
+  /* Center the handle within the layout gap between the rail and the canvas. */
+  right: calc(-1 * (10px + 6px) / 2);
   width: 10px;
   height: 100%;
   cursor: col-resize;
@@ -288,28 +295,49 @@ html[data-transparency="true"] .control-rows {
   background: var(--color-primary);
 }
 
+/* ============================================================================
+   CLIENT ROWS (used in channel trees and the Users roster)
+   avatar (speaking ring) · name · streaming/status icons on the right
+   ============================================================================ */
+
 .client-indicator {
-  margin-top: 3px;
-  margin-bottom: 3px;
   display: flex;
   align-items: center;
-  gap: var(--spacing-sm);
-  font-size: var(--font-size-md);
-  /* Tighten the text line box so the name sits on the same optical center as
-     the icons/avatar (the global 1.6 line-height pushes it visually low). */
+  gap: 8px;
+  font-size: var(--font-size-base);
   line-height: 1;
-  color: var(--color-text);
-  padding: 8px var(--spacing-xs) 8px 18px;
+  color: var(--color-text-secondary);
+  padding: 5px 8px 5px 26px;
+  margin: 1px 0;
   overflow: hidden;
   white-space: nowrap;
-  text-overflow: ellipsis;
   min-width: 0;
   position: relative;
-  border-radius: var(--border-radius-sm);
-  transition: background 0.12s, color 0.12s;
+  border-radius: var(--radius-sm);
+  transition:
+    background 0.12s,
+    color 0.12s;
 }
 
 .client-indicator:hover {
-  background: var(--color-border);
+  background: color-mix(in srgb, var(--color-surface) 65%, transparent);
   color: var(--color-text);
+}
+
+.client-name {
+  /* flex:1 pushes the trailing streaming/status icons to the row's right edge */
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Speaking: an accent ring around the avatar (plus the mic icon lighting up). */
+.client-indicator.speaking .client-avatar {
+  box-shadow: 0 0 0 2px var(--color-success);
+}
+
+/* Roster rows sit flush (no channel indent). */
+.sidebar-user-list .client-indicator {
+  padding-left: 8px;
 }

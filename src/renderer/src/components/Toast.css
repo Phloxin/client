@@ -1,10 +1,14 @@
 /* Error toast: drops down from the center of the title bar. Anchored to
    .app-shell (position: relative); sits above the title bar's drag region so
-   it stays clickable. */
+   it stays clickable. Entrance/exit springs are driven by Motion, so this
+   file only positions and paints it. */
 .toast {
   position: absolute;
-  top: var(--title-bar-height, 32px);
-  left: 50%;
+  top: calc(var(--title-bar-height, 40px) + 6px);
+  left: 0;
+  right: 0;
+  margin: 0 auto;
+  width: fit-content;
   z-index: 1000;
   -webkit-app-region: no-drag;
 
@@ -12,19 +16,16 @@
   align-items: center;
   gap: 8px;
   max-width: min(520px, 80vw);
-  padding: 8px 14px;
-  border: 1px solid color-mix(in srgb, var(--color-danger, #e5484d) 60%, transparent);
-  border-radius: 8px;
-  background: var(--color-danger, #e5484d);
+  padding: 9px 14px;
+  border: 1px solid color-mix(in srgb, var(--color-danger) 60%, transparent);
+  border-radius: var(--radius-md);
+  background: var(--color-danger);
   color: #fff;
-  font-size: var(--font-size-sm, 13px);
-  font-weight: var(--font-weight-medium, 500);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
   text-align: left;
   cursor: pointer;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
-
-  transform: translate(-50%, -8px);
-  animation: toast-drop 0.22s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+  box-shadow: var(--shadow-3);
 }
 
 .toast:hover {
@@ -39,15 +40,4 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-@keyframes toast-drop {
-  from {
-    transform: translate(-50%, calc(-100% - var(--title-bar-height, 32px)));
-    opacity: 0;
-  }
-  to {
-    transform: translate(-50%, 8px);
-    opacity: 1;
-  }
 }

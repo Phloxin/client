@@ -50,7 +50,9 @@ for (const cat of SOUND_CATEGORIES) {
 // which mirrors persisted prefs into this module the same way it pushes output
 // device/volume into soup.js).
 let enabledCategories = {}
-SOUND_CATEGORIES.forEach((c) => { enabledCategories[c.id] = true })
+SOUND_CATEGORIES.forEach((c) => {
+  enabledCategories[c.id] = true
+})
 
 export function setSoundCategoriesEnabled(map) {
   enabledCategories = { ...enabledCategories, ...map }

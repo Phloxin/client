@@ -10,9 +10,13 @@ import {
   IconPencil,
   IconTrash
 } from '@tabler/icons-react'
+import { motion, AnimatePresence } from 'motion/react'
 import ImageViewer from './ImageViewer'
 import EmojiPicker from './EmojiPicker'
 import { renderMarkdown } from '../lib/markdown'
+import { useAnimationCategory } from '../context/SettingsContext'
+import { useAnimatedPresence } from '../lib/animation'
+import { menuPop, overlayPop, scrimFade } from '../lib/motionPresets'
 import './ChatPanel.css'
 
 // The message box grows with its content up to this many lines, then scrolls.
@@ -150,7 +154,12 @@ function MessageEmbed({ embed, onImageClick }) {
     <div className="chat-embed">
       {embed.title &&
         (embed.url ? (
-          <a href={embed.url} target="_blank" rel="noreferrer noopener" className="chat-embed-title">
+          <a
+            href={embed.url}
+            target="_blank"
+            rel="noreferrer noopener"
+            className="chat-embed-title"
+          >
             {embed.title}
           </a>
         ) : (
@@ -169,7 +178,12 @@ function MessageEmbed({ embed, onImageClick }) {
             />
           </div>
         ) : (
-          <button type="button" className="chat-embed-play" onClick={() => setPlaying(true)} title="Play">
+          <button
+            type="button"
+            className="chat-embed-play"
+            onClick={() => setPlaying(true)}
+            title="Play"
+          >
             {poster && <img src={poster} alt={embed.title || ''} className="chat-embed-media" />}
             <span className="chat-embed-play-icon" aria-hidden="true">
               <span className="chat-embed-play-badge">
@@ -216,6 +230,15 @@ function ChatPanel({
 }) {
   const [text, setText] = useState('')
   const [attachments, setAttachments] = useState([])
+  const overlayAnim = useAnimationCategory('overlays')
+  // New rows slide in (tagged 'entering' by the presence hook) when the
+  // Messages animation category is on; the actual keyframes live in
+  // styles/animations.css behind data-anim-messages.
+  const msgAnim = useAnimationCategory('messages')
+  const feedPresence = useAnimatedPresence(feed, (e) => e.id, {
+    enabled: msgAnim,
+    enterDuration: 260
+  })
   const [showEmoji, setShowEmoji] = useState(false)
   const [dragging, setDragging] = useState(false)
   const [viewerImage, setViewerImage] = useState(null)
@@ -452,12 +475,14 @@ function ChatPanel({
         </div>
       )}
       <div className="chat-messages" ref={listRef} onScroll={handleScroll}>
-        {feed.map((entry, i) => {
-          const prev = feed[i - 1]
+        {feedPresence.map(({ item: entry, status }, i) => {
+          const prev = feedPresence[i - 1]?.item
           // A divider marking the start of a new calendar day.
           const dayDivider =
             entry.ts &&
-            (!prev || !prev.ts || new Date(prev.ts).toDateString() !== new Date(entry.ts).toDateString()) ? (
+            (!prev ||
+              !prev.ts ||
+              new Date(prev.ts).toDateString() !== new Date(entry.ts).toDateString()) ? (
               <div key={`day-${entry.id}`} className="chat-day-divider">
                 <span>{formatDateLabel(entry.ts)}</span>
               </div>
@@ -465,7 +490,7 @@ function ChatPanel({
 
           if (entry.type === 'system') {
             return (
-              <div key={entry.id}>
+              <div key={entry.id} data-anim-status={status}>
                 {dayDivider}
                 <div className="chat-system-entry">{entry.text}</div>
               </div>
@@ -496,92 +521,90 @@ function ChatPanel({
           const canManage = isOwn && !disabled && !isEditing
           const edited = !!entry.editedTs && !isEditing
           return (
-            <div key={entry.id}>
+            <div key={entry.id} data-anim-status={status}>
               {dayDivider}
               <div className={`chat-message${grouped ? ' grouped' : ''}`}>
-              {grouped ? (
-                <span className="chat-avatar-spacer" aria-hidden="true" />
-              ) : (
-                <span className="chat-avatar" aria-hidden="true">
-                  {resolveAvatar(entry) ? (
-                    <img className="chat-avatar-img" src={resolveAvatar(entry)} alt="" />
-                  ) : (
-                    resolveName(entry).charAt(0).toUpperCase()
-                  )}
-                </span>
-              )}
-              {canManage && (
-                <div className="chat-message-actions">
-                  <button
-                    type="button"
-                    className="chat-message-action"
-                    title="Edit"
-                    onClick={() => setEditingId(entry.id)}
-                  >
-                    <IconPencil size={15} />
-                  </button>
-                  <button
-                    type="button"
-                    className="chat-message-action chat-message-action-danger"
-                    title="Delete"
-                    onClick={() => setPendingDeleteId(entry.id)}
-                  >
-                    <IconTrash size={15} />
-                  </button>
-                </div>
-              )}
-              <div className="chat-message-body">
-                {!grouped && (
-                  <div className="chat-message-header">
-                    <span className="chat-message-author">{resolveName(entry)}</span>
-                    <span className="chat-message-time">{formatTime(entry.ts)}</span>
-                    {edited && <span className="chat-message-edited">(edited)</span>}
-                  </div>
-                )}
-                {isEditing ? (
-                  <MessageEditor
-                    initialText={entry.text || ''}
-                    onSave={(content) => {
-                      onEditMessage?.(entry.id, content)
-                      setEditingId(null)
-                    }}
-                    onCancel={() => setEditingId(null)}
-                  />
+                {grouped ? (
+                  <span className="chat-avatar-spacer" aria-hidden="true" />
                 ) : (
-                  entry.text && (
-                    <MessageText text={entry.text} />
-                  )
+                  <span className="chat-avatar" aria-hidden="true">
+                    {resolveAvatar(entry) ? (
+                      <img className="chat-avatar-img" src={resolveAvatar(entry)} alt="" />
+                    ) : (
+                      resolveName(entry).charAt(0).toUpperCase()
+                    )}
+                  </span>
                 )}
-                {grouped && edited && (
-                  <span className="chat-message-edited chat-message-edited-inline">(edited)</span>
-                )}
-                {visibleAttachments.length > 0 && (
-                  <div className="chat-message-attachments">
-                    {visibleAttachments.map((a) => (
-                      <div key={a.id} className="chat-attachment">
-                        {a.kind === 'image' ? (
-                          <img
-                            src={a.url}
-                            alt={a.name}
-                            className="chat-attachment-image"
-                            onClick={() => setViewerImage({ url: a.url, name: a.name })}
-                          />
-                        ) : a.kind === 'video' ? (
-                          <video src={a.url} controls />
-                        ) : (
-                          <div className="chat-attachment-file">
-                            <IconFileText size={18} />
-                            <span>{a.name}</span>
-                          </div>
-                        )}
-                      </div>
-                    ))}
+                {canManage && (
+                  <div className="chat-message-actions">
+                    <button
+                      type="button"
+                      className="chat-message-action"
+                      title="Edit"
+                      onClick={() => setEditingId(entry.id)}
+                    >
+                      <IconPencil size={15} />
+                    </button>
+                    <button
+                      type="button"
+                      className="chat-message-action chat-message-action-danger"
+                      title="Delete"
+                      onClick={() => setPendingDeleteId(entry.id)}
+                    >
+                      <IconTrash size={15} />
+                    </button>
                   </div>
                 )}
-                {(entry.embeds || []).map((embed, idx) => (
-                  <MessageEmbed key={idx} embed={embed} onImageClick={setViewerImage} />
-                ))}
-              </div>
+                <div className="chat-message-body">
+                  {!grouped && (
+                    <div className="chat-message-header">
+                      <span className="chat-message-author">{resolveName(entry)}</span>
+                      <span className="chat-message-time">{formatTime(entry.ts)}</span>
+                      {edited && <span className="chat-message-edited">(edited)</span>}
+                    </div>
+                  )}
+                  {isEditing ? (
+                    <MessageEditor
+                      initialText={entry.text || ''}
+                      onSave={(content) => {
+                        onEditMessage?.(entry.id, content)
+                        setEditingId(null)
+                      }}
+                      onCancel={() => setEditingId(null)}
+                    />
+                  ) : (
+                    entry.text && <MessageText text={entry.text} />
+                  )}
+                  {grouped && edited && (
+                    <span className="chat-message-edited chat-message-edited-inline">(edited)</span>
+                  )}
+                  {visibleAttachments.length > 0 && (
+                    <div className="chat-message-attachments">
+                      {visibleAttachments.map((a) => (
+                        <div key={a.id} className="chat-attachment">
+                          {a.kind === 'image' ? (
+                            <img
+                              src={a.url}
+                              alt={a.name}
+                              className="chat-attachment-image"
+                              onClick={() => setViewerImage({ url: a.url, name: a.name })}
+                            />
+                          ) : a.kind === 'video' ? (
+                            <video src={a.url} controls />
+                          ) : (
+                            <div className="chat-attachment-file">
+                              <IconFileText size={18} />
+                              <span>{a.name}</span>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {(entry.embeds || []).map((embed, idx) => (
+                    <MessageEmbed key={idx} embed={embed} onImageClick={setViewerImage} />
+                  ))}
+                </div>
               </div>
             </div>
           )
@@ -613,16 +636,28 @@ function ChatPanel({
         </div>
       )}
 
-      {typingUsers.length > 0 && (
-        <div className="chat-typing-indicator">
-          <span className="chat-typing-dots" aria-hidden="true">
-            <span />
-            <span />
-            <span />
-          </span>
-          <span className="chat-typing-text">{formatTyping(typingUsers)}</span>
-        </div>
-      )}
+      <AnimatePresence>
+        {typingUsers.length > 0 && (
+          <motion.div
+            className="chat-typing-indicator"
+            {...(overlayAnim
+              ? {
+                  initial: { opacity: 0, y: 4 },
+                  animate: { opacity: 1, y: 0 },
+                  exit: { opacity: 0, y: 4 },
+                  transition: { duration: 0.15, ease: 'easeOut' }
+                }
+              : { initial: false })}
+          >
+            <span className="chat-typing-dots" aria-hidden="true">
+              <span />
+              <span />
+              <span />
+            </span>
+            <span className="chat-typing-text">{formatTyping(typingUsers)}</span>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <div className="chat-input-bar">
         <input
@@ -665,7 +700,13 @@ function ChatPanel({
           >
             <IconMoodSmile size={20} />
           </button>
-          {showEmoji && <EmojiPicker onSelect={insertEmoji} />}
+          <AnimatePresence>
+            {showEmoji && (
+              <motion.div className="chat-emoji-pop" {...menuPop(overlayAnim)}>
+                <EmojiPicker onSelect={insertEmoji} />
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
         <button
           type="button"
@@ -674,7 +715,7 @@ function ChatPanel({
           disabled={disabled || (!text.trim() && !attachments.length)}
           onClick={handleSend}
         >
-          <IconSend size={20} stroke={2.5}/>
+          <IconSend size={20} stroke={2.5} />
         </button>
       </div>
 
@@ -686,42 +727,46 @@ function ChatPanel({
         />
       )}
 
-      {pendingDeleteId != null && (
-        <div
-          className="chat-confirm-overlay"
-          onClick={() => setPendingDeleteId(null)}
-          role="presentation"
-        >
-          <div
-            className="chat-confirm-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="chat-confirm-title"
-            onClick={(e) => e.stopPropagation()}
+      <AnimatePresence>
+        {pendingDeleteId != null && (
+          <motion.div
+            className="chat-confirm-overlay"
+            onClick={() => setPendingDeleteId(null)}
+            role="presentation"
+            {...scrimFade(overlayAnim)}
           >
-            <div className="chat-confirm-body">
-              Are you sure you want to delete this message? This cannot be undone.
-            </div>
-            <div className="chat-confirm-footer">
-              <button
-                type="button"
-                className="chat-confirm-btn secondary"
-                onClick={() => setPendingDeleteId(null)}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="chat-confirm-btn danger"
-                onClick={confirmDelete}
-                autoFocus
-              >
-                Delete
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+            <motion.div
+              className="chat-confirm-modal"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="chat-confirm-title"
+              onClick={(e) => e.stopPropagation()}
+              {...overlayPop(overlayAnim)}
+            >
+              <div className="chat-confirm-body">
+                Are you sure you want to delete this message? This cannot be undone.
+              </div>
+              <div className="chat-confirm-footer">
+                <button
+                  type="button"
+                  className="chat-confirm-btn secondary"
+                  onClick={() => setPendingDeleteId(null)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="chat-confirm-btn danger"
+                  onClick={confirmDelete}
+                  autoFocus
+                >
+                  Delete
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   )
 }

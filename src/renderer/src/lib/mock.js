@@ -12,14 +12,14 @@ export const MOCK_CLIENT = {
 export const MOCK_CHANNELS = [
   { id: 1, name: 'Voice Channel 1', clients: [1, 2] },
   { id: 2, name: 'Voice Channel 2', clients: [] },
-  { id: 3, name: 'Voice Channel 3', clients: [3] },
+  { id: 3, name: 'Voice Channel 3', clients: [3] }
 ]
 
 export const MOCK_CLIENTS = [
   { id: 1, name: 'DevUser', channel_id: 1 },
   { id: 2, name: 'Chris', channel_id: 1 },
   { id: 3, name: 'John', channel_id: 3 },
-  { id: 4, name: 'Tim', channel_id: null },
+  { id: 4, name: 'Tim', channel_id: null }
 ]
 
 // ─── Mock Video Streams ─────────────────────────────────────────
@@ -29,7 +29,7 @@ export const MOCK_CLIENTS = [
 const MOCK_STREAM_DEFS = [
   { consumerId: 'mock-1', clientId: 2, fallbackLabel: 'Chris', color: '#2563eb' },
   { consumerId: 'mock-2', clientId: 3, fallbackLabel: 'John', color: '#059669' },
-  { consumerId: 'mock-3', clientId: 1, fallbackLabel: 'DevUser', color: '#d97706', isSelf: true },
+  { consumerId: 'mock-3', clientId: 1, fallbackLabel: 'DevUser', color: '#d97706', isSelf: true }
 ]
 
 // Build the mock streams. Each returned object matches the shape the SFU

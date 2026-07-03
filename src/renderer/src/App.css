@@ -14,9 +14,11 @@ body {
   font-family: var(--font-family-primary);
   height: 100vh;
   overflow: hidden;
-  transition: background-color 0.2s, color 0.2s;
+  transition:
+    background-color 0.2s,
+    color 0.2s;
 }
 
-html[data-transparency="true"] body {
+html[data-transparency='true'] body {
   background: transparent;
 }

@@ -42,7 +42,11 @@ function ReconnectAnimation() {
 
   // Single-line child so JSX can't inject whitespace nodes that would offset the
   // grid (the <pre> preserves all whitespace).
-  return <pre className="connection-overlay-art" aria-hidden="true">{rows.join('\n')}</pre>
+  return (
+    <pre className="connection-overlay-art" aria-hidden="true">
+      {rows.join('\n')}
+    </pre>
+  )
 }
 
 // Full-app overlay shown while the events socket is down and retrying. Opaque

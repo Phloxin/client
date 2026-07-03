@@ -6,8 +6,16 @@
 // `id` is what's persisted; the Settings dropdown is built from this list.
 export const UI_FONTS = [
   { id: 'inter', label: 'Inter', stack: "'Inter Variable', Inter, system-ui, sans-serif" },
-  { id: 'open-sans', label: 'Open Sans', stack: "'Open Sans Variable', 'Open Sans', system-ui, sans-serif" },
-  { id: 'dm-sans', label: 'DM Sans', stack: "'DM Sans Variable', 'DM Sans', system-ui, sans-serif" },
+  {
+    id: 'open-sans',
+    label: 'Open Sans',
+    stack: "'Open Sans Variable', 'Open Sans', system-ui, sans-serif"
+  },
+  {
+    id: 'dm-sans',
+    label: 'DM Sans',
+    stack: "'DM Sans Variable', 'DM Sans', system-ui, sans-serif"
+  },
   { id: 'roboto', label: 'Roboto', stack: "'Roboto Variable', Roboto, system-ui, sans-serif" },
   { id: 'nunito', label: 'Nunito', stack: "'Nunito Variable', Nunito, system-ui, sans-serif" }
 ]
@@ -46,11 +54,14 @@ export function applyAnimationSettings({
   enabled = true,
   channelSwitch = 'fade',
   userJoin = 'pop',
-  channelList = 'pop'
+  channelList = 'pop',
+  overlays = 'on',
+  messages = 'slide'
 }) {
   const html = document.documentElement
   // An attribute is present only when animations are on and the category isn't
-  // 'off', so the stylesheet can key purely off its value.
+  // 'off', so the stylesheet can key purely off its value. (Motion-driven
+  // categories read the same settings through useAnimationCategory instead.)
   const apply = (attr, value) =>
     enabled && value && value !== 'off'
       ? html.setAttribute(attr, value)
@@ -58,4 +69,6 @@ export function applyAnimationSettings({
   apply('data-anim-channel-switch', channelSwitch)
   apply('data-anim-user-join', userJoin)
   apply('data-anim-channel-list', channelList)
+  apply('data-anim-overlays', overlays)
+  apply('data-anim-messages', messages)
 }

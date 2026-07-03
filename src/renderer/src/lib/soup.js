@@ -162,10 +162,10 @@ async function openSocket(token) {
     // Handle server-initiated events BEFORE pending handlers
     if (message.type === 'NewProducer') {
       const { id, kind, client_id, produced_type } = message.data
-        if (localProducerIds.has(id)) {
-          console.log('[Soup] Skipping own producer:', id)
-          return
-        }
+      if (localProducerIds.has(id)) {
+        console.log('[Soup] Skipping own producer:', id)
+        return
+      }
       console.log(`[Soup] New producer: ${id} (${kind}, ${produced_type})`)
       activeCallbacks.onNewProducer?.({ producerId: id, kind })
       consumeProducer(id, kind, activeCallbacks.onVideoStream, client_id, produced_type)
@@ -346,7 +346,7 @@ function getRnnoiseBinary() {
   if (!rnnoiseBinaryPromise) {
     rnnoiseBinaryPromise = loadRnnoise({
       url: rnnoiseWasmPath,
-      simdUrl: rnnoiseSimdWasmPath,
+      simdUrl: rnnoiseSimdWasmPath
     }).catch((err) => {
       // Don't cache a failed load - allow a later retry.
       rnnoiseBinaryPromise = null
@@ -404,7 +404,10 @@ async function buildAudioProcessor(stream, micSettings) {
       const average = dataArray.reduce((a, b) => a + b) / dataArray.length
       const normalized = (average / 255) * 100
       // If audio is below threshold, mute; otherwise pass through
-      gate.gain.setValueAtTime(normalized >= micSettings.volumeGateThreshold ? 1 : 0, audioContext.currentTime)
+      gate.gain.setValueAtTime(
+        normalized >= micSettings.volumeGateThreshold ? 1 : 0,
+        audioContext.currentTime
+      )
       rafId = requestAnimationFrame(checkLevel)
     }
     checkLevel()
@@ -415,9 +418,15 @@ async function buildAudioProcessor(stream, micSettings) {
 
   const stop = () => {
     if (rafId) cancelAnimationFrame(rafId)
-    try { rnnoiseNode?.destroy() } catch {}
-    try { source.disconnect() } catch {}
-    try { audioContext.close() } catch {}
+    try {
+      rnnoiseNode?.destroy()
+    } catch {}
+    try {
+      source.disconnect()
+    } catch {}
+    try {
+      audioContext.close()
+    } catch {}
   }
 
   return { stream: destination.stream, stop }
@@ -468,7 +477,9 @@ export function createSpeakingDetector(stream, onChange, { threshold = 8, holdMs
   return () => {
     cancelAnimationFrame(rafId)
     if (speaking) onChange(false)
-    try { source.disconnect() } catch {}
+    try {
+      source.disconnect()
+    } catch {}
     // close() rejects (async) if the context is already closed — e.g. this
     // cleanup runs twice during teardown. Skip when closed and swallow the
     // rejection so it never surfaces as an uncaught promise error.
@@ -482,7 +493,7 @@ function mapTransportParams(params) {
     id: params.id,
     iceParameters: params.ice_parameters,
     iceCandidates: params.ice_candidates,
-    dtlsParameters: params.dtls_parameters,
+    dtlsParameters: params.dtls_parameters
   }
 }
 
@@ -525,14 +536,17 @@ export async function publish(micSettings, onStream) {
   try {
     stream = await navigator.mediaDevices.getUserMedia({
       audio: {
-        deviceId: micSettings.deviceId && micSettings.deviceId !== 'default' ? { exact: micSettings.deviceId } : undefined,
+        deviceId:
+          micSettings.deviceId && micSettings.deviceId !== 'default'
+            ? { exact: micSettings.deviceId }
+            : undefined,
         echoCancellation: micSettings.echoCancellation,
         // RNNoise replaces the browser suppressor - never run both (they're
         // mutually exclusive in the UI; this guards against any stale state).
         noiseSuppression: micSettings.useRnnoise ? false : micSettings.noiseSuppression,
         autoGainControl: micSettings.autoGainControl,
         sampleRate: micSettings.sampleRate,
-        channelCount: micSettings.channelCount,
+        channelCount: micSettings.channelCount
       }
     })
   } catch (err) {
@@ -563,7 +577,7 @@ export async function publish(micSettings, onStream) {
         opusStereo: micSettings.channelCount === 2,
         opusMaxPlaybackRate: micSettings.sampleRate,
         opusDtx: true,
-        opusFec: true,
+        opusFec: true
       },
       appData: { produced: 'Audio' }
     })
@@ -590,14 +604,17 @@ export async function republish(micSettings, onStream) {
   try {
     stream = await navigator.mediaDevices.getUserMedia({
       audio: {
-        deviceId: micSettings.deviceId && micSettings.deviceId !== 'default' ? { exact: micSettings.deviceId } : undefined,
+        deviceId:
+          micSettings.deviceId && micSettings.deviceId !== 'default'
+            ? { exact: micSettings.deviceId }
+            : undefined,
         echoCancellation: micSettings.echoCancellation,
         // RNNoise replaces the browser suppressor - never run both (they're
         // mutually exclusive in the UI; this guards against any stale state).
         noiseSuppression: micSettings.useRnnoise ? false : micSettings.noiseSuppression,
         autoGainControl: micSettings.autoGainControl,
         sampleRate: micSettings.sampleRate,
-        channelCount: micSettings.channelCount,
+        channelCount: micSettings.channelCount
       }
     })
   } catch (err) {
@@ -632,7 +649,7 @@ export async function republish(micSettings, onStream) {
           opusStereo: micSettings.channelCount === 2,
           opusMaxPlaybackRate: micSettings.sampleRate,
           opusDtx: true,
-          opusFec: true,
+          opusFec: true
         },
         appData: { produced: 'Audio' }
       })
@@ -721,7 +738,7 @@ export async function shareScreen({ fps = 30, width = 1920, height = 1080, audio
       track: audioTrack,
       codecOptions: {
         opusDtx: true,
-        opusFec: true,
+        opusFec: true
       },
       appData: { produced: 'ScreenShareAudio' }
     })
@@ -862,13 +879,18 @@ export async function consumeProducer(producerId, kind, onStream, clientId, prod
     id: consumerParams.id,
     producerId: consumerParams.producer_id,
     kind: consumerParams.kind,
-    rtpParameters: consumerParams.rtp_parameters,
+    rtpParameters: consumerParams.rtp_parameters
   })
 
   const stream = new MediaStream([consumer.track])
 
   // log track state
-  console.log('[Soup] Consumer track state:', consumer.track.readyState, 'muted:', consumer.track.muted)
+  console.log(
+    '[Soup] Consumer track state:',
+    consumer.track.readyState,
+    'muted:',
+    consumer.track.muted
+  )
 
   // Audio must play immediately, so resume it on the server right away. Video
   // instead starts *paused*: streams default to stopped, and the grid opts in
@@ -918,8 +940,12 @@ export async function consumeProducer(producerId, kind, onStream, clientId, prod
     }
 
     cleanup = () => {
-      try { srcNode.disconnect() } catch {}
-      try { gainNode.disconnect() } catch {}
+      try {
+        srcNode.disconnect()
+      } catch {}
+      try {
+        gainNode.disconnect()
+      } catch {}
       audioEl.pause()
       audioEl.srcObject = null
       audioEl.remove()
@@ -943,7 +969,14 @@ export async function consumeProducer(producerId, kind, onStream, clientId, prod
   }
 
   remoteConsumers.set(producerId, {
-    consumer, consumerId: consumer.id, kind, clientId, producedType, cleanup, audioEl, gain: gainNode,
+    consumer,
+    consumerId: consumer.id,
+    kind,
+    clientId,
+    producedType,
+    cleanup,
+    audioEl,
+    gain: gainNode,
     // Video is consumed paused above, so seed its bookkeeping as hidden/paused
     // — setVideoStreamRoles() will resume it only when a view role asks for it.
     ...(kind === 'video' ? { serverPaused: true, viewRole: 'hidden' } : {})
@@ -976,7 +1009,7 @@ const VIEW_LAYERS = {
   // mid spatial layer at full fps — better than a carousel thumbnail, cheaper
   // than the focused stream.
   grid: { spatialLayer: 1, temporalLayer: 2 },
-  thumbnail: { spatialLayer: 1, temporalLayer: 0 },
+  thumbnail: { spatialLayer: 1, temporalLayer: 0 }
 }
 
 // Ask the server to forward only the given SVC layers for this consumer.
@@ -988,7 +1021,7 @@ function setConsumerPreferredLayers(entry, { spatialLayer, temporalLayer }) {
   send('SetConsumerPreferredLayers', {
     id: entry.consumerId,
     spatial_layer: spatialLayer,
-    temporal_layer: temporalLayer,
+    temporal_layer: temporalLayer
   }).catch((err) => console.warn('[Soup] SetConsumerPreferredLayers failed:', err))
 }
 
@@ -997,8 +1030,9 @@ function setConsumerPreferredLayers(entry, { spatialLayer, temporalLayer }) {
 function pauseVideoConsumer(entry) {
   if (entry.serverPaused === true) return
   entry.serverPaused = true
-  send('PauseConsumer', { id: entry.consumerId })
-    .catch((err) => console.warn('[Soup] PauseConsumer failed:', err))
+  send('PauseConsumer', { id: entry.consumerId }).catch((err) =>
+    console.warn('[Soup] PauseConsumer failed:', err)
+  )
 }
 
 function resumeVideoConsumer(entry) {
@@ -1006,8 +1040,9 @@ function resumeVideoConsumer(entry) {
   // only ever needed to undo a pause — i.e. when serverPaused is true.
   if (entry.serverPaused !== true) return
   entry.serverPaused = false
-  send('ResumeConsumer', { id: entry.consumerId })
-    .catch((err) => console.warn('[Soup] ResumeConsumer failed:', err))
+  send('ResumeConsumer', { id: entry.consumerId }).catch((err) =>
+    console.warn('[Soup] ResumeConsumer failed:', err)
+  )
 }
 
 // Apply the UI's current view to every remote video consumer:
@@ -1023,11 +1058,14 @@ export function setVideoStreamRoles({ focusedConsumerId = null, visibleConsumerI
 
     // Visible streams are 'grid' tiles when nothing is focused (they fill the
     // area), or small carousel 'thumbnail's when a stream is focused.
-    const role = entry.consumerId === focusedConsumerId
-      ? 'focused'
-      : visible.has(entry.consumerId)
-        ? (focusedConsumerId == null ? 'grid' : 'thumbnail')
-        : 'hidden'
+    const role =
+      entry.consumerId === focusedConsumerId
+        ? 'focused'
+        : visible.has(entry.consumerId)
+          ? focusedConsumerId == null
+            ? 'grid'
+            : 'thumbnail'
+          : 'hidden'
 
     if (entry.viewRole === role) continue
     entry.viewRole = role
@@ -1074,9 +1112,7 @@ export function rebindCallbacks(newCallbacks) {
 // Pauses/resumes local audio producers so other clients stop receiving them.
 export function setMicMuted(muted) {
   micMuted = muted
-  producers
-    .filter((p) => p.kind === 'audio')
-    .forEach((p) => (muted ? p.pause() : p.resume()))
+  producers.filter((p) => p.kind === 'audio').forEach((p) => (muted ? p.pause() : p.resume()))
 }
 
 // Lazily create (and resume) the shared playback AudioContext. Created on the
@@ -1098,7 +1134,9 @@ function getPlaybackContext() {
 function applyOutputDeviceToContext() {
   if (playbackContext && typeof playbackContext.setSinkId === 'function') {
     const sinkId = outputDeviceId === 'default' ? '' : outputDeviceId
-    playbackContext.setSinkId(sinkId).catch((err) => console.error('[Soup] context setSinkId failed:', err))
+    playbackContext
+      .setSinkId(sinkId)
+      .catch((err) => console.error('[Soup] context setSinkId failed:', err))
   }
 }
 
@@ -1157,7 +1195,7 @@ export function setClientAudioState(clientId, { volume, muted } = {}) {
   const current = clientAudioOverrides.get(clientId) || { volume: 1, muted: false }
   clientAudioOverrides.set(clientId, {
     volume: volume != null ? volume : current.volume,
-    muted: muted != null ? muted : current.muted,
+    muted: muted != null ? muted : current.muted
   })
   applyAllAudioState()
 }
@@ -1189,7 +1227,10 @@ async function logVideoStatsOnce() {
     }
     for (const s of report.values()) {
       if (s.type !== 'inbound-rtp' || s.bytesReceived == null) continue
-      const prev = videoStatsLast.get(entry.consumerId) || { bytes: s.bytesReceived, ts: s.timestamp }
+      const prev = videoStatsLast.get(entry.consumerId) || {
+        bytes: s.bytesReceived,
+        ts: s.timestamp
+      }
       const dt = s.timestamp - prev.ts // ms
       // (bytes * 8) bits over dt ms = kbits/s = kbps
       const kbps = dt > 0 ? (8 * (s.bytesReceived - prev.bytes)) / dt : 0

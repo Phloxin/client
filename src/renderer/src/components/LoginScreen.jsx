@@ -1,6 +1,13 @@
 import './LoginScreen.css'
 
-function LoginScreen({ username, password, onUsernameChange, onPasswordChange, onLogin, loginError }) {
+function LoginScreen({
+  username,
+  password,
+  onUsernameChange,
+  onPasswordChange,
+  onLogin,
+  loginError
+}) {
   return (
     <div className="login-screen">
       <div className="login-box">
@@ -25,8 +32,14 @@ function LoginScreen({ username, password, onUsernameChange, onPasswordChange, o
             onKeyDown={(e) => e.key === 'Enter' && onLogin()}
           />
         </div>
-        <button className="login-btn" onClick={onLogin}>Login</button>
-        {loginError && <div className="admin-status" style={{ color: '#ed4245' }}>{loginError}</div>}
+        <button className="login-btn" onClick={onLogin}>
+          Login
+        </button>
+        {loginError && (
+          <div className="admin-status" style={{ color: '#ed4245' }}>
+            {loginError}
+          </div>
+        )}
       </div>
     </div>
   )

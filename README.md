@@ -13,40 +13,43 @@ of saved servers.
 
 ## Tech Stack
 
-| Layer | Technology |
-|---|---|
-| Desktop shell | Electron 39 (frameless window, custom title bar) |
-| Frontend framework | React 19 |
-| Build tooling | electron-vite + Vite 7, packaged with electron-builder |
-| Routing | React Router 7 (HashRouter) |
-| State management | React Context (`AuthContext`, `SettingsContext`) + local component state |
-| Realtime events | WebSocket (`/ws`) with heartbeat + session resume |
-| Voice / video | WebSocket (`/voice`) + `mediasoup-client` (WebRTC SFU) |
-| Noise suppression | `@sapphi-red/web-noise-suppressor` (RNNoise WASM) |
-| Global hotkeys | `uiohook-napi` (passive OS-wide key hook) |
-| Chat rendering | `simple-markdown` + `highlight.js` + `unicode-emoji-json` |
-| Icons | `@tabler/icons-react` |
-| Fonts | Self-hosted `@fontsource-variable` (Inter, Open Sans, DM Sans, Roboto, Nunito) |
-| Styling | CSS (theme variables, gradients, animations) |
+| Layer              | Technology                                                                     |
+| ------------------ | ------------------------------------------------------------------------------ |
+| Desktop shell      | Electron 39 (frameless window, custom title bar)                               |
+| Frontend framework | React 19                                                                       |
+| Build tooling      | electron-vite + Vite 7, packaged with electron-builder                         |
+| Routing            | React Router 7 (HashRouter)                                                    |
+| State management   | React Context (`AuthContext`, `SettingsContext`) + local component state       |
+| Realtime events    | WebSocket (`/ws`) with heartbeat + session resume                              |
+| Voice / video      | WebSocket (`/voice`) + `mediasoup-client` (WebRTC SFU)                         |
+| Noise suppression  | `@sapphi-red/web-noise-suppressor` (RNNoise WASM)                              |
+| Global hotkeys     | `uiohook-napi` (passive OS-wide key hook)                                      |
+| Chat rendering     | `simple-markdown` + `highlight.js` + `unicode-emoji-json`                      |
+| Icons              | `@tabler/icons-react`                                                          |
+| Fonts              | Self-hosted `@fontsource-variable` (Inter, Open Sans, DM Sans, Roboto, Nunito) |
+| Styling            | CSS (theme variables, gradients, animations)                                   |
 
 ---
 
 ## Features
 
 **Voice**
+
 - Join a channel to talk over a mediasoup SFU; audio from everyone in the channel mixes through a shared Web Audio graph.
 - RNNoise noise suppression and a volume/noise gate applied to the local mic before publishing.
 - Per-client local volume/mute overrides (right-click a user); remote volumes can be boosted past 100% via GainNodes.
 - Mute / deafen with state broadcast to other clients (`VoiceStateUpdate`).
 - Output-device (sinkId) and master-volume selection.
-- Global, *passive* mute/deafen hotkeys (Discord-style) — the bound key still types normally in other apps.
+- Global, _passive_ mute/deafen hotkeys (Discord-style) — the bound key still types normally in other apps.
 
 **Video & screen share**
+
 - Share a screen or window; a native source picker (with thumbnails) chooses the target.
 - Video grid of all live streams, with a focused/selected stream and per-stream audio focus (only the focused screen's audio plays).
 - Pop the video grid out into its own always-same-process window that reads the live `MediaStream`s off `window.opener`.
 
 **Text chat**
+
 - Per-channel message feed with markdown, syntax-highlighted code blocks, and emoji (picker + shortcodes).
 - File/image/video attachments (multipart upload), an in-app image viewer, and "download to disk" via a native save dialog.
 - Edit and delete your own messages; `(edited)` marker driven by the server.
@@ -55,22 +58,26 @@ of saved servers.
 - Link-preview / rich embeds that arrive asynchronously via `MessageUpdated`.
 
 **Direct messages & presence**
+
 - 1:1 DMs are just `dm`-type channels; open via double-click or "poke".
 - Read-state / unread tracking: a sidebar dot is derived from each channel's `last_message_id` vs. an acknowledged read cursor, synced across sessions.
 - Notification bell (server joins) and a DM inbox that seeds unread DMs on connect.
 
 **Moderation & roles**
+
 - Kick, ban (timed or permanent), and unban users; banned users surface in the roster for un-banning.
 - Assign/remove roles; effective permissions computed as a BigInt bitflag OR across held roles (`ADMINISTRATOR`, `KICK_MEMBERS`, `BAN_MEMBERS`).
 - Menu actions are gated on the local client's computed permissions.
 
 **Servers & sessions**
+
 - Manage a list of saved servers (nickname / host / username / password); the list and credentials are persisted **encrypted** via the OS keychain (`safeStorage`).
 - Auto-register on first connect if the account doesn't exist, then log in.
 - Token + client identity persisted encrypted so you stay logged in across restarts.
 - Resilient realtime: heartbeat, exponential backoff with jitter, and session resume that replays missed events; a full connection-lost overlay while reconnecting.
 
 **UI / appearance**
+
 - Frameless window with a custom Discord-style title bar (minimize/maximize/close over IPC).
 - Nine themes: Classic Dark, Classic Light, Catppuccin Frappé, Catppuccin Mocha, Nord, Dracula, Tokyo Night, Gruvbox, One Dark Pro.
 - Appearance settings: background transparency (Acrylic on Windows 11 / compositor blur on Linux), surface gradients, interface font, and animation toggles.
@@ -164,7 +171,7 @@ Context-isolated bridge exposing `window.electron.ipcRenderer` (from `@electron-
 
 ### React Entry (`src/renderer/src/main.jsx`)
 
-Applies the saved theme and appearance/animation prefs *before first paint* (to avoid a flash), then mounts:
+Applies the saved theme and appearance/animation prefs _before first paint_ (to avoid a flash), then mounts:
 
 ```
 <ErrorBoundary>
@@ -176,12 +183,12 @@ Applies the saved theme and appearance/animation prefs *before first paint* (to 
 
 ### Routing (`src/renderer/src/App.jsx`)
 
-| Path | Component | Description |
-|---|---|---|
-| `/` | `Main` | Primary app view |
+| Path        | Component  | Description                                        |
+| ----------- | ---------- | -------------------------------------------------- |
+| `/`         | `Main`     | Primary app view                                   |
 | `/settings` | `Settings` | Settings (also shown as an in-app overlay in Main) |
-| `/popout` | `Popout` | Detached video-grid window |
-| `/admin` | `Admin` | Legacy standalone admin window |
+| `/popout`   | `Popout`   | Detached video-grid window                         |
+| `/admin`    | `Admin`    | Legacy standalone admin window                     |
 
 > Moderation now happens inline in the main window (role/kick/ban menus in the roster). The `/admin` route/window is retained but secondary.
 
@@ -198,12 +205,12 @@ one-shot handshake, heartbeats, and session resume.
 
 **Handshake (op 0, IDENTIFY):** sends `{ token }`, or `{ token, resume: { session_id, seq } }` when resuming. The server replies with one of:
 
-| Reply | Meaning |
-|---|---|
-| `Authenticated` | Fresh session — server pushes a `Ready` snapshot next |
-| `Resumed` | Resume accepted — missed events replay in order, then live events continue |
-| `InvalidSession` | Resume refused — drop session, resync, reconnect fresh |
-| `Unauthorized` | Token rejected — stop retrying, return to disconnected |
+| Reply            | Meaning                                                                    |
+| ---------------- | -------------------------------------------------------------------------- |
+| `Authenticated`  | Fresh session — server pushes a `Ready` snapshot next                      |
+| `Resumed`        | Resume accepted — missed events replay in order, then live events continue |
+| `InvalidSession` | Resume refused — drop session, resync, reconnect fresh                     |
+| `Unauthorized`   | Token rejected — stop retrying, return to disconnected                     |
 
 **Heartbeat (op 2 → ack op 4):** sent every 10s carrying the last processed
 sequence; an unacknowledged beat marks the connection dead and triggers a
@@ -215,16 +222,16 @@ never drops the channel and a move never resets mute.
 
 **Dispatched events (op 3 / bare `{ ev, data }`):**
 
-| Event | Effect |
-|---|---|
-| `Ready` | Authoritative snapshot: channels, clients, read states; seeds unread DMs |
-| `NewUser` / `ClientModified` / `ClientRemoved` | Roster add / merge (channel, role, avatar, name) / remove |
-| `VoiceStateUpdate` | Another client's mute/deafen |
-| `ClientKicked` / `ClientBanned` | Drop from roster (and record ban) |
+| Event                                                  | Effect                                                                   |
+| ------------------------------------------------------ | ------------------------------------------------------------------------ |
+| `Ready`                                                | Authoritative snapshot: channels, clients, read states; seeds unread DMs |
+| `NewUser` / `ClientModified` / `ClientRemoved`         | Roster add / merge (channel, role, avatar, name) / remove                |
+| `VoiceStateUpdate`                                     | Another client's mute/deafen                                             |
+| `ClientKicked` / `ClientBanned`                        | Drop from roster (and record ban)                                        |
 | `MessageCreated` / `MessageUpdated` / `MessageDeleted` | Chat feed + `last_message_id` upkeep; embeds arrive via `MessageUpdated` |
-| `ReadStateUpdated` | Read cursor moved (this or another session) |
-| `ChannelCreated` / `ChannelDeleted` | Channel list |
-| `TypingStarted` | Refreshes a client's 10s typing entry |
+| `ReadStateUpdated`                                     | Read cursor moved (this or another session)                              |
+| `ChannelCreated` / `ChannelDeleted`                    | Channel list                                                             |
+| `TypingStarted`                                        | Refreshes a client's 10s typing entry                                    |
 
 Join/leave and stream start/stop play UI chimes, baselined on connect/channel-change so reconnects don't replay as new activity.
 
@@ -247,46 +254,46 @@ Base URL is `http://<host>` for the currently connected server (built at call
 time in `serverConfig.js`). All authenticated requests send
 `Authorization: Bearer <token>`.
 
-| Method | Endpoint | Description |
-|---|---|---|
-| `POST` | `/login` | Returns `{ token, client }` |
-| `POST` | `/register` | Self-register (used as fallback when login has no token) |
-| `GET` | `/channels/:id/messages` | Recent history — GET with JSON body (`limit`/`before`/`after`/`around`), routed through the main process |
-| `POST` | `/channels/:id/messages` | Send a message (multipart: `payload_json` + `files[i]`) |
-| `PATCH` | `/channels/:id/messages/:mid` | Edit own message |
-| `DELETE` | `/channels/:id/messages/:mid` | Delete own message |
-| `POST` | `/channels/:id/typing` | Announce typing |
-| `PUT` | `/channels/:id/read-state` | Ack read cursor (`{ last_acknowledged_message_id }`) |
-| `POST` | `/channels/dm` | Get-or-create a DM channel (`{ recipient_ids }`) |
-| `POST` | `/server/channel` | Create a channel (`{ name, user_limit, position }`) |
-| `DELETE` | `/channels/:id` | Delete a channel |
-| `GET` | `/server/roles` | Role list (with permission bitflags) |
-| `GET` | `/server/bans` | Ban list |
-| `PUT`/`DELETE` | `/server/clients/:id/roles/:roleId` | Assign / remove a role |
-| `POST` | `/server/clients/:id/kick` | Kick (`{ reason? }`) |
-| `POST`/`DELETE` | `/server/clients/:id/ban` | Ban (`{ duration_seconds, reason? }`) / unban |
-| `PATCH` | `/client/self` | Update own profile (e.g. `{ avatar }`) |
-| — | `/cdn/...` | Server-relative asset paths, anchored to the active host (`cdnUrl`) |
+| Method          | Endpoint                            | Description                                                                                              |
+| --------------- | ----------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `POST`          | `/login`                            | Returns `{ token, client }`                                                                              |
+| `POST`          | `/register`                         | Self-register (used as fallback when login has no token)                                                 |
+| `GET`           | `/channels/:id/messages`            | Recent history — GET with JSON body (`limit`/`before`/`after`/`around`), routed through the main process |
+| `POST`          | `/channels/:id/messages`            | Send a message (multipart: `payload_json` + `files[i]`)                                                  |
+| `PATCH`         | `/channels/:id/messages/:mid`       | Edit own message                                                                                         |
+| `DELETE`        | `/channels/:id/messages/:mid`       | Delete own message                                                                                       |
+| `POST`          | `/channels/:id/typing`              | Announce typing                                                                                          |
+| `PUT`           | `/channels/:id/read-state`          | Ack read cursor (`{ last_acknowledged_message_id }`)                                                     |
+| `POST`          | `/channels/dm`                      | Get-or-create a DM channel (`{ recipient_ids }`)                                                         |
+| `POST`          | `/server/channel`                   | Create a channel (`{ name, user_limit, position }`)                                                      |
+| `DELETE`        | `/channels/:id`                     | Delete a channel                                                                                         |
+| `GET`           | `/server/roles`                     | Role list (with permission bitflags)                                                                     |
+| `GET`           | `/server/bans`                      | Ban list                                                                                                 |
+| `PUT`/`DELETE`  | `/server/clients/:id/roles/:roleId` | Assign / remove a role                                                                                   |
+| `POST`          | `/server/clients/:id/kick`          | Kick (`{ reason? }`)                                                                                     |
+| `POST`/`DELETE` | `/server/clients/:id/ban`           | Ban (`{ duration_seconds, reason? }`) / unban                                                            |
+| `PATCH`         | `/client/self`                      | Update own profile (e.g. `{ avatar }`)                                                                   |
+| —               | `/cdn/...`                          | Server-relative asset paths, anchored to the active host (`cdnUrl`)                                      |
 
 ---
 
 ## IPC Channels
 
-| Channel | Direction | Purpose |
-|---|---|---|
-| `window-minimize` / `window-maximize-toggle` / `window-close` | Renderer → Main | Custom title bar controls |
-| `window-is-maximized` / `window-maximized-change` | invoke / Main → Renderer | Maximized state for the title bar icon |
-| `store-token` / `get-token` / `store-client` / `get-client` / `clear-auth` | Renderer ↔ Main | Encrypted auth persistence |
-| `get-servers` / `store-servers` | Renderer ↔ Main | Encrypted saved-server list |
-| `get-screen-sources` / `set-screen-source` | Renderer ↔ Main | Screen-share source picker |
-| `get-channel-messages` | Renderer → Main (invoke) | History fetch (GET-with-body proxy) |
-| `download-file` | Renderer → Main (invoke) | Save an attachment via native dialog |
-| `set-window-vibrancy` | Renderer → Main | Toggle Acrylic on Windows 11 |
-| `keybinds:set` / `keybinds:capture-start` / `keybinds:capture-cancel` | Renderer → Main | Push binds / record a new combo |
-| `keybinds:captured` / `keybinds:trigger` | Main → Renderer | Recorded combo / fire a bound action |
-| `theme-changed-ipc` | Renderer → Main → All | Broadcast theme change across windows |
-| `open-admin` | Renderer → Main | Open the legacy admin window |
-| `admin-log` / `log-message` | Renderer → Main → All | Broadcast a log line to all windows |
+| Channel                                                                    | Direction                | Purpose                                |
+| -------------------------------------------------------------------------- | ------------------------ | -------------------------------------- |
+| `window-minimize` / `window-maximize-toggle` / `window-close`              | Renderer → Main          | Custom title bar controls              |
+| `window-is-maximized` / `window-maximized-change`                          | invoke / Main → Renderer | Maximized state for the title bar icon |
+| `store-token` / `get-token` / `store-client` / `get-client` / `clear-auth` | Renderer ↔ Main          | Encrypted auth persistence             |
+| `get-servers` / `store-servers`                                            | Renderer ↔ Main          | Encrypted saved-server list            |
+| `get-screen-sources` / `set-screen-source`                                 | Renderer ↔ Main          | Screen-share source picker             |
+| `get-channel-messages`                                                     | Renderer → Main (invoke) | History fetch (GET-with-body proxy)    |
+| `download-file`                                                            | Renderer → Main (invoke) | Save an attachment via native dialog   |
+| `set-window-vibrancy`                                                      | Renderer → Main          | Toggle Acrylic on Windows 11           |
+| `keybinds:set` / `keybinds:capture-start` / `keybinds:capture-cancel`      | Renderer → Main          | Push binds / record a new combo        |
+| `keybinds:captured` / `keybinds:trigger`                                   | Main → Renderer          | Recorded combo / fire a bound action   |
+| `theme-changed-ipc`                                                        | Renderer → Main → All    | Broadcast theme change across windows  |
+| `open-admin`                                                               | Renderer → Main          | Open the legacy admin window           |
+| `admin-log` / `log-message`                                                | Renderer → Main → All    | Broadcast a log line to all windows    |
 
 ---
 
@@ -328,5 +335,5 @@ Other scripts: `npm run lint`, `npm run format`, `npm start` (preview a build).
 - **CSP:** `src/renderer/index.html` restricts sources but allows `http/https/ws/wss` connections (any server host), `blob:`/`data:` media, WASM eval (RNNoise), and YouTube frames for embeds.
 - **Dev proxy:** `electron.vite.config.mjs` proxies the `/voice` WebSocket in dev. The HTTP API and `/ws` are hit directly at the active host.
 - **DEV_MODE** (`lib/mock.js`): renders the full UI with mock channels/clients/streams and no backend.
-</content>
-</invoke>
+  </content>
+  </invoke>

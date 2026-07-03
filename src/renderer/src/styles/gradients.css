@@ -96,7 +96,7 @@
    redefining the tokens here reverts the whole app to flat fills in one place —
    no per-surface CSS needs to know about the toggle. Driven by the
    `gradientsEnabled` appearance setting via uiSettings.applyAppearanceSettings. */
-html[data-gradients="off"] {
+html[data-gradients='off'] {
   --gradient-app: var(--color-background);
   --gradient-surface: var(--color-background-soft);
   --gradient-header: var(--color-background-mute);

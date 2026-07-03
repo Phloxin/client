@@ -1,57 +1,53 @@
-import { IconChevronDown } from '@tabler/icons-react';
-import { useTheme } from '../hooks/useTheme';
-import './ThemeSwitcher.css';
+import { IconCheck } from '@tabler/icons-react'
+import { useTheme } from '../hooks/useTheme'
+import './ThemeSwitcher.css'
 
-/**
- * ThemeSwitcher Component
- * 
- * Demonstrates how to use the theme system in a React component.
- * Can be integrated into settings or admin pages.
- */
+// Theme picker: a grid of miniature window previews built from each theme's
+// swatch colors ([chrome, canvas, accent]). Selection applies instantly,
+// persists, and broadcasts to other windows (see lib/themeUtils).
 export function ThemeSwitcher() {
-  const { theme, availableThemes, setCurrentTheme, currentThemeInfo } = useTheme();
+  const { theme, availableThemes, setCurrentTheme } = useTheme()
 
   return (
     <div className="theme-switcher">
-      <details className="theme-switcher-collapse">
-        <summary className="theme-switcher-header">
-          <div className="theme-switcher-title-row">
-            <h3>Theme</h3>
-            <IconChevronDown size={20} stroke={2} className="theme-switcher-chevron" />
-          </div>
-          <p className="theme-switcher-description">
-            Choose your preferred color theme
-          </p>
-        </summary>
-
-        <div className="theme-options">
-          {availableThemes.map((t) => (
+      <div className="theme-grid" role="radiogroup" aria-label="App theme">
+        {availableThemes.map((t) => {
+          const [chrome, canvas, accent] = t.swatch
+          const active = theme === t.id
+          return (
             <button
               key={t.id}
-              className={`theme-option ${theme === t.id ? 'active' : ''}`}
+              type="button"
+              role="radio"
+              aria-checked={active}
+              className={`theme-card${active ? ' active' : ''}`}
               onClick={() => setCurrentTheme(t.id)}
               title={t.description}
             >
-              <span className="theme-option-info">
-                <span className="theme-option-name">{t.name}</span>
-                <span className="theme-option-desc">{t.description}</span>
+              <span className="theme-card-preview" style={{ background: chrome }}>
+                <span className="theme-card-canvas" style={{ background: canvas }}>
+                  <span className="theme-card-accent" style={{ background: accent }} />
+                  <span className="theme-card-line" style={{ background: accent, opacity: 0.35 }} />
+                  <span
+                    className="theme-card-line short"
+                    style={{ background: accent, opacity: 0.2 }}
+                  />
+                </span>
               </span>
-              {theme === t.id && <span className="theme-option-check">✓</span>}
+              <span className="theme-card-meta">
+                <span className="theme-card-name">{t.name}</span>
+                {active && (
+                  <span className="theme-card-check" aria-hidden="true">
+                    <IconCheck size={13} stroke={3} />
+                  </span>
+                )}
+              </span>
             </button>
-          ))}
-        </div>
-      </details>
-
-      <div className="theme-switcher-info">
-        <p>
-          Current theme: <strong>{currentThemeInfo?.name}</strong>
-        </p>
-        <p className="text-muted">
-          Your preference will be saved automatically.
-        </p>
+          )
+        })}
       </div>
     </div>
-  );
+  )
 }
 
-export default ThemeSwitcher;
+export default ThemeSwitcher

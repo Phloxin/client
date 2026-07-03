@@ -64,16 +64,16 @@ html[data-anim-user-join='pop'] .client-indicator[data-anim-status='entering'] {
   }
   60% {
     opacity: 1;
-    max-height: 36px;
-    margin-top: 3px;
-    margin-bottom: 3px;
+    max-height: 32px;
+    margin-top: 1px;
+    margin-bottom: 1px;
     padding-top: 5px;
     padding-bottom: 5px;
   }
   to {
     opacity: 1;
     transform: scale(1);
-    max-height: 36px;
+    max-height: 32px;
   }
 }
 
@@ -100,12 +100,31 @@ html[data-anim-channel-list='pop'] .channel-item[data-anim-status='entering'] {
   }
 }
 
+/* ── New chat messages ────────────────────────────────────────────────────────
+   Rows tagged 'entering' by ChatPanel's presence hook slide up and settle. */
+
+html[data-anim-messages='slide'] .chat-messages > [data-anim-status='entering'] {
+  animation: animMessageIn 240ms cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+
+@keyframes animMessageIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 /* Respect the OS "reduce motion" setting as a hard safety net, even if the user
    explicitly enabled animations. The hooks also short-circuit in this case. */
 @media (prefers-reduced-motion: reduce) {
   .chat-switch-region,
   .client-indicator,
-  .channel-item {
+  .channel-item,
+  .chat-messages > [data-anim-status='entering'] {
     animation: none !important;
   }
 }

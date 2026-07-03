@@ -238,9 +238,13 @@ function ClientIndicator({
   let statusIcon
   if (localMuted) {
     // We muted this client locally — takes priority over their own voice status.
-    statusIcon = <IconMoodSilence size={18} className="mic-indicator muted" aria-label="Muted by you" />
+    statusIcon = (
+      <IconMoodSilence size={18} className="mic-indicator muted" aria-label="Muted by you" />
+    )
   } else if (deafened) {
-    statusIcon = <IconHeadphonesOff size={18} className="mic-indicator deafened" aria-label="Deafened" />
+    statusIcon = (
+      <IconHeadphonesOff size={18} className="mic-indicator deafened" aria-label="Deafened" />
+    )
   } else if (micMuted) {
     statusIcon = <IconMicrophoneOff size={18} className="mic-indicator muted" aria-label="Muted" />
   } else if (visualSpeaking) {
@@ -250,30 +254,31 @@ function ClientIndicator({
     statusIcon = <IconMicrophone size={18} className="mic-indicator" aria-label="Not speaking" />
   }
 
-  const VolumeIcon = localMuted || volume === 0
-    ? IconVolumeOff
-    : volume < 50 ? IconVolume4 : volume <= 99 ? IconVolume2 : IconVolume
+  const VolumeIcon =
+    localMuted || volume === 0
+      ? IconVolumeOff
+      : volume < 50
+        ? IconVolume4
+        : volume <= 99
+          ? IconVolume2
+          : IconVolume
 
   return (
     <div
-      className="client-indicator"
+      className={`client-indicator${visualSpeaking && !rosterMode ? ' speaking' : ''}`}
       data-anim-status={animStatus}
       onContextMenu={handleContextMenu}
       onClick={handleClick}
       onDoubleClick={handleDoubleClick}
     >
-      {!rosterMode && statusIcon}
       <span className="client-avatar" aria-hidden="true">
-        {client.avatar ? (
-          <img className="client-avatar-img" src={client.avatar} alt="" />
-        ) : (
-          initial
-        )}
+        {client.avatar ? <img className="client-avatar-img" src={client.avatar} alt="" /> : initial}
       </span>
-      {client.name}
+      <span className="client-name">{client.name}</span>
       {streaming && (
         <IconVideoFilled size={15} className="client-streaming-icon" aria-label="Streaming" />
       )}
+      {!rosterMode && statusIcon}
       {menuPos && (
         <div
           className="client-context-menu"
@@ -299,196 +304,216 @@ function ClientIndicator({
             )
           ) : (
             <>
-          {canSetAvatar && (
-            <>
-              <input
-                ref={avatarInputRef}
-                type="file"
-                accept="image/*"
-                style={{ display: 'none' }}
-                onChange={handleAvatarFile}
-              />
-              <button
-                type="button"
-                className="client-context-menu-item"
-                onClick={() => avatarInputRef.current?.click()}
-              >
-                <IconPhotoUp size={16} />
-                Set avatar
-              </button>
-            </>
-          )}
-          {canVolume && (
-            <div className="client-context-menu-row">
-              <button
-                type="button"
-                className="client-volume-btn"
-                onClick={toggleLocalMute}
-                title={localMuted ? 'Unmute for me' : 'Mute for me'}
-              >
-                <VolumeIcon size={16} />
-              </button>
-              <div className="client-volume-slider-wrap">
-                <span className="client-volume-center-tick" aria-hidden="true" />
-                <input
-                  type="range"
-                  className="client-volume-slider"
-                  min={0}
-                  max={200}
-                  value={localMuted ? 0 : volume}
-                  onChange={handleVolumeChange}
-                  onDoubleClick={resetVolume}
-                  title="Volume — 100% is normal, drag right to boost (double-click to reset)"
-                />
-              </div>
-              <span className="client-volume-value">{localMuted ? 0 : volume}%</span>
-            </div>
-          )}
-          {canPoke &&
-            (pokeOpen ? (
-              <div className="client-poke-row">
-                <input
-                  className="client-poke-input"
-                  value={pokeText}
-                  autoFocus
-                  placeholder="Add a message (optional)"
-                  onChange={(e) => setPokeText(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault()
-                      submitPoke()
-                    } else if (e.key === 'Escape') {
-                      setPokeOpen(false)
-                    }
-                  }}
-                />
-                <button type="button" className="client-poke-send" onClick={submitPoke} title="Send poke">
-                  <IconHandFinger size={16} />
-                </button>
-              </div>
-            ) : (
-              <button type="button" className="client-context-menu-item" onClick={() => setPokeOpen(true)}>
-                <IconHandFinger size={16} />
-                Poke
-              </button>
-            ))}
-          {canModerate && (
-            <>
-              <div className="client-context-menu-divider" aria-hidden="true" />
-              {modAction ? (
-                <div className="client-mod-composer">
-                  <input
-                    className="client-poke-input"
-                    value={modReason}
-                    autoFocus
-                    placeholder={`${modAction === 'ban' ? 'Ban' : 'Kick'} reason (optional)`}
-                    onChange={(e) => setModReason(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault()
-                        submitMod()
-                      } else if (e.key === 'Escape') {
-                        setModAction(null)
-                      }
-                    }}
-                  />
-                  {modAction === 'ban' && (
-                    <>
-                      <select
-                        className="client-mod-duration"
-                        value={customDuration ? 'custom' : banDuration}
-                        onChange={(e) => {
-                          if (e.target.value === 'custom') {
-                            setCustomDuration(true)
-                          } else {
-                            setCustomDuration(false)
-                            setBanDuration(Number(e.target.value))
-                          }
-                        }}
-                      >
-                        <option value={0}>Permanent</option>
-                        <option value={3600}>1 hour</option>
-                        <option value={86400}>1 day</option>
-                        <option value={604800}>1 week</option>
-                        <option value={2592000}>30 days</option>
-                        <option value="custom">Custom…</option>
-                      </select>
-                      {customDuration && (
-                        <input
-                          type="number"
-                          min={0}
-                          className="client-mod-duration"
-                          value={banDuration}
-                          placeholder="Seconds"
-                          onChange={(e) => setBanDuration(Math.max(0, Number(e.target.value) || 0))}
-                        />
-                      )}
-                    </>
-                  )}
-                  <button type="button" className="client-context-menu-item danger" onClick={submitMod}>
-                    {modAction === 'ban' ? <IconBan size={16} /> : <IconUserX size={16} />}
-                    Confirm {modAction === 'ban' ? 'Ban' : 'Kick'}
-                  </button>
-                </div>
-              ) : (
+              {canSetAvatar && (
                 <>
+                  <input
+                    ref={avatarInputRef}
+                    type="file"
+                    accept="image/*"
+                    style={{ display: 'none' }}
+                    onChange={handleAvatarFile}
+                  />
                   <button
                     type="button"
                     className="client-context-menu-item"
-                    onClick={() => setRoleOpen((v) => !v)}
+                    onClick={() => avatarInputRef.current?.click()}
                   >
-                    <IconUserShield size={16} />
-                    Assign Role
+                    <IconPhotoUp size={16} />
+                    Set avatar
                   </button>
-                  {roleOpen && (
-                    <div className="client-role-list">
-                      {assignableRoles.length === 0 ? (
-                        <div className="client-role-empty">No roles</div>
-                      ) : (
-                        assignableRoles.map((role) => {
-                          const has = (client.role_ids || []).includes(role.id)
-                          return (
-                            <button
-                              key={role.id}
-                              type="button"
-                              className="client-context-menu-item"
-                              onClick={() =>
-                                has ? onRemoveRole?.(client.id, role.id) : onAssignRole?.(client.id, role.id)
+                </>
+              )}
+              {canVolume && (
+                <div className="client-context-menu-row">
+                  <button
+                    type="button"
+                    className="client-volume-btn"
+                    onClick={toggleLocalMute}
+                    title={localMuted ? 'Unmute for me' : 'Mute for me'}
+                  >
+                    <VolumeIcon size={16} />
+                  </button>
+                  <div className="client-volume-slider-wrap">
+                    <span className="client-volume-center-tick" aria-hidden="true" />
+                    <input
+                      type="range"
+                      className="client-volume-slider"
+                      min={0}
+                      max={200}
+                      value={localMuted ? 0 : volume}
+                      onChange={handleVolumeChange}
+                      onDoubleClick={resetVolume}
+                      title="Volume — 100% is normal, drag right to boost (double-click to reset)"
+                    />
+                  </div>
+                  <span className="client-volume-value">{localMuted ? 0 : volume}%</span>
+                </div>
+              )}
+              {canPoke &&
+                (pokeOpen ? (
+                  <div className="client-poke-row">
+                    <input
+                      className="client-poke-input"
+                      value={pokeText}
+                      autoFocus
+                      placeholder="Add a message (optional)"
+                      onChange={(e) => setPokeText(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault()
+                          submitPoke()
+                        } else if (e.key === 'Escape') {
+                          setPokeOpen(false)
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="client-poke-send"
+                      onClick={submitPoke}
+                      title="Send poke"
+                    >
+                      <IconHandFinger size={16} />
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    className="client-context-menu-item"
+                    onClick={() => setPokeOpen(true)}
+                  >
+                    <IconHandFinger size={16} />
+                    Poke
+                  </button>
+                ))}
+              {canModerate && (
+                <>
+                  <div className="client-context-menu-divider" aria-hidden="true" />
+                  {modAction ? (
+                    <div className="client-mod-composer">
+                      <input
+                        className="client-poke-input"
+                        value={modReason}
+                        autoFocus
+                        placeholder={`${modAction === 'ban' ? 'Ban' : 'Kick'} reason (optional)`}
+                        onChange={(e) => setModReason(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault()
+                            submitMod()
+                          } else if (e.key === 'Escape') {
+                            setModAction(null)
+                          }
+                        }}
+                      />
+                      {modAction === 'ban' && (
+                        <>
+                          <select
+                            className="client-mod-duration"
+                            value={customDuration ? 'custom' : banDuration}
+                            onChange={(e) => {
+                              if (e.target.value === 'custom') {
+                                setCustomDuration(true)
+                              } else {
+                                setCustomDuration(false)
+                                setBanDuration(Number(e.target.value))
                               }
-                            >
-                              <IconCheck size={16} style={{ visibility: has ? 'visible' : 'hidden' }} />
-                              <RoleIcon role={role} size={16} />
-                              {role.name}
-                            </button>
-                          )
-                        })
+                            }}
+                          >
+                            <option value={0}>Permanent</option>
+                            <option value={3600}>1 hour</option>
+                            <option value={86400}>1 day</option>
+                            <option value={604800}>1 week</option>
+                            <option value={2592000}>30 days</option>
+                            <option value="custom">Custom…</option>
+                          </select>
+                          {customDuration && (
+                            <input
+                              type="number"
+                              min={0}
+                              className="client-mod-duration"
+                              value={banDuration}
+                              placeholder="Seconds"
+                              onChange={(e) =>
+                                setBanDuration(Math.max(0, Number(e.target.value) || 0))
+                              }
+                            />
+                          )}
+                        </>
                       )}
+                      <button
+                        type="button"
+                        className="client-context-menu-item danger"
+                        onClick={submitMod}
+                      >
+                        {modAction === 'ban' ? <IconBan size={16} /> : <IconUserX size={16} />}
+                        Confirm {modAction === 'ban' ? 'Ban' : 'Kick'}
+                      </button>
                     </div>
-                  )}
-                  {canKick && (
-                    <button
-                      type="button"
-                      className="client-context-menu-item danger"
-                      onClick={() => setModAction('kick')}
-                    >
-                      <IconUserX size={16} />
-                      Kick User
-                    </button>
-                  )}
-                  {canBan && (
-                    <button
-                      type="button"
-                      className="client-context-menu-item danger"
-                      onClick={() => setModAction('ban')}
-                    >
-                      <IconBan size={16} />
-                      Ban User
-                    </button>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        className="client-context-menu-item"
+                        onClick={() => setRoleOpen((v) => !v)}
+                      >
+                        <IconUserShield size={16} />
+                        Assign Role
+                      </button>
+                      {roleOpen && (
+                        <div className="client-role-list">
+                          {assignableRoles.length === 0 ? (
+                            <div className="client-role-empty">No roles</div>
+                          ) : (
+                            assignableRoles.map((role) => {
+                              const has = (client.role_ids || []).includes(role.id)
+                              return (
+                                <button
+                                  key={role.id}
+                                  type="button"
+                                  className="client-context-menu-item"
+                                  onClick={() =>
+                                    has
+                                      ? onRemoveRole?.(client.id, role.id)
+                                      : onAssignRole?.(client.id, role.id)
+                                  }
+                                >
+                                  <IconCheck
+                                    size={16}
+                                    style={{ visibility: has ? 'visible' : 'hidden' }}
+                                  />
+                                  <RoleIcon role={role} size={16} />
+                                  {role.name}
+                                </button>
+                              )
+                            })
+                          )}
+                        </div>
+                      )}
+                      {canKick && (
+                        <button
+                          type="button"
+                          className="client-context-menu-item danger"
+                          onClick={() => setModAction('kick')}
+                        >
+                          <IconUserX size={16} />
+                          Kick User
+                        </button>
+                      )}
+                      {canBan && (
+                        <button
+                          type="button"
+                          className="client-context-menu-item danger"
+                          onClick={() => setModAction('ban')}
+                        >
+                          <IconBan size={16} />
+                          Ban User
+                        </button>
+                      )}
+                    </>
                   )}
                 </>
               )}
-            </>
-          )}
             </>
           )}
         </div>

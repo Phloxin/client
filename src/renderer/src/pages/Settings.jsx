@@ -86,6 +86,13 @@ function Settings() {
                 </div>
               </div>
 
+              <div className="theme-switcher-header">
+                <h3>Theme</h3>
+                <p className="theme-switcher-description">
+                  Applies instantly and syncs across all app windows.
+                </p>
+              </div>
+
               <ThemeSwitcher />
 
               <div className="theme-switcher-header">
@@ -190,7 +197,8 @@ function Settings() {
                     value={appearanceSettings.fontFamily}
                     onChange={(e) => updateAppearanceSettings({ fontFamily: e.target.value })}
                     style={{
-                      fontFamily: UI_FONTS.find((f) => f.id === appearanceSettings.fontFamily)?.stack
+                      fontFamily: UI_FONTS.find((f) => f.id === appearanceSettings.fontFamily)
+                        ?.stack
                     }}
                   >
                     {UI_FONTS.map((f) => (
@@ -207,7 +215,8 @@ function Settings() {
                   <div className="settings-toggle-copy">
                     <label htmlFor="animations-toggle">Animations</label>
                     <p className="settings-section-desc">
-                      Subtle motion for loading/joining channels and switching between channel views.
+                      Subtle motion for loading/joining channels and switching between channel
+                      views.
                     </p>
                   </div>
                   <label className="toggle-switch">
@@ -256,6 +265,30 @@ function Settings() {
                         onChange={(e) => updateAnimationSettings({ channelList: e.target.value })}
                       >
                         <option value="pop">Pop</option>
+                        <option value="off">Off</option>
+                      </select>
+                    </div>
+
+                    <div className="settings-section">
+                      <label htmlFor="anim-messages">New Messages</label>
+                      <select
+                        id="anim-messages"
+                        value={animationSettings.messages}
+                        onChange={(e) => updateAnimationSettings({ messages: e.target.value })}
+                      >
+                        <option value="slide">Slide</option>
+                        <option value="off">Off</option>
+                      </select>
+                    </div>
+
+                    <div className="settings-section">
+                      <label htmlFor="anim-overlays">Menus &amp; Dialogs</label>
+                      <select
+                        id="anim-overlays"
+                        value={animationSettings.overlays}
+                        onChange={(e) => updateAnimationSettings({ overlays: e.target.value })}
+                      >
+                        <option value="on">On</option>
                         <option value="off">Off</option>
                       </select>
                     </div>

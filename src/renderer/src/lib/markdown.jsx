@@ -36,10 +36,22 @@ import 'highlight.js/styles/github-dark.css'
 // Register a focused language set (each also registers its own aliases, e.g.
 // js → javascript, py → python, sh → bash, html → xml).
 for (const [name, lang] of [
-  ['javascript', javascript], ['typescript', typescript], ['python', python],
-  ['json', json], ['bash', bash], ['css', css], ['xml', xml], ['rust', rust],
-  ['go', go], ['java', java], ['c', c], ['cpp', cpp], ['csharp', csharp],
-  ['sql', sql], ['markdown', mdLang], ['yaml', yaml]
+  ['javascript', javascript],
+  ['typescript', typescript],
+  ['python', python],
+  ['json', json],
+  ['bash', bash],
+  ['css', css],
+  ['xml', xml],
+  ['rust', rust],
+  ['go', go],
+  ['java', java],
+  ['c', c],
+  ['cpp', cpp],
+  ['csharp', csharp],
+  ['sql', sql],
+  ['markdown', mdLang],
+  ['yaml', yaml]
 ]) {
   hljs.registerLanguage(name, lang)
 }
@@ -92,7 +104,10 @@ function CodeBlock({ code, lang }) {
       {highlighted != null ? (
         // Safe: hljs.highlight HTML-escapes `code`; only its own <span> wrappers
         // are added.
-        <code className={`hljs language-${lang}`} dangerouslySetInnerHTML={{ __html: highlighted }} />
+        <code
+          className={`hljs language-${lang}`}
+          dangerouslySetInnerHTML={{ __html: highlighted }}
+        />
       ) : (
         <code className="hljs">{code}</code>
       )}
@@ -119,7 +134,11 @@ function renderNode(node, key) {
     case 'del':
       return <del key={key}>{renderNodes(node.content)}</del>
     case 'inlineCode':
-      return <code key={key} className="chat-inline-code">{node.content}</code>
+      return (
+        <code key={key} className="chat-inline-code">
+          {node.content}
+        </code>
+      )
     case 'br':
       return <br key={key} />
     case 'newline':

@@ -13,7 +13,7 @@
   position: absolute;
   inset: 0;
   margin: 0;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--font-family-mono);
   font-size: 13px;
   line-height: 1.15;
   white-space: pre;

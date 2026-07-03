@@ -51,7 +51,9 @@ const DEFAULT_ANIMATIONS = {
   enabled: true,
   channelSwitch: 'fade', // 'fade' | 'slide' | 'off'
   userJoin: 'pop', // 'pop' | 'off'
-  channelList: 'pop' // 'pop' | 'off'
+  channelList: 'pop', // 'pop' | 'off'
+  overlays: 'on', // modals, menus, toasts — 'on' | 'off'
+  messages: 'slide' // new chat messages — 'slide' | 'off'
 }
 
 // 'slide' was retired for user-join / channel-list (only 'pop' read well there);

@@ -1,28 +1,21 @@
-.channel-row {
-  padding: 6px var(--spacing-sm);
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-sm);
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-md);
-  border-radius: var(--border-radius-sm);
-  transition: background 0.12s, color 0.12s;
-  min-width: 0;
-}
-
-.channel-name {
-  flex: 1;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  min-width: 0;
-}
+/* ============================================================================
+   VOICE CHANNEL ROWS — sidebar channel modules + nested client rows.
+   Joined channel = accent-tinted module with a glowing left rail.
+   ============================================================================ */
 
 .channel-item {
   position: relative;
-  margin: 1px var(--spacing-sm);
-  border-radius: var(--border-radius-sm);
+  margin: 2px 4px 2px 0;
+  border-radius: var(--radius-md);
   cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+/* The joined channel becomes a raised module holding its member rows. */
+.channel-item.active {
+  background: color-mix(in srgb, var(--color-surface) 55%, transparent);
+  box-shadow: inset 0 0 0 1px var(--hairline);
+  padding-bottom: 4px;
 }
 
 /* Drag-to-reorder: the row being dragged dims; a 2px line marks the gap the drop
@@ -41,6 +34,7 @@
   border-radius: 1px;
   background: var(--color-primary);
   pointer-events: none;
+  z-index: 2;
 }
 
 .channel-item.drop-before::before {
@@ -52,42 +46,53 @@
 }
 
 .channel-row {
-  margin-top: 3px;
-  margin-bottom: 3px;
-  padding: 6px var(--spacing-sm);
+  position: relative;
+  padding: 7px 8px;
   display: flex;
   align-items: center;
-  gap: var(--spacing-sm);
+  gap: 8px;
   color: var(--color-text-secondary);
-  font-size: var(--font-size-md);
-  border-radius: var(--border-radius-sm);
-  transition: background 0.12s, color 0.12s;
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-medium);
+  border-radius: var(--radius-md);
+  transition:
+    background 0.12s,
+    color 0.12s;
+  min-width: 0;
 }
 
 .channel-row:hover {
-  background: var(--color-border);
+  background: color-mix(in srgb, var(--color-surface) 65%, transparent);
   color: var(--color-text);
 }
 
+/* Joined channel header row: accent text + glowing signal rail on the left. */
 .channel-item.active .channel-row {
-  background: color-mix(in srgb, var(--color-primary) 15%, transparent);
+  background: transparent;
   color: var(--color-text);
 }
 
-/* Channel whose chat is being peeked into (single-clicked, not joined). A left
-   accent bar distinguishes it from the joined channel's filled highlight. */
+.channel-item.active .channel-row::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--color-primary);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--color-primary) 70%, transparent);
+}
+
+.channel-item.active .channel-row > svg {
+  color: var(--color-primary);
+}
+
+/* Channel whose chat is being peeked into (single-clicked, not joined). */
 .channel-item.previewing .channel-row {
-  background: var(--color-border);
+  background: color-mix(in srgb, var(--color-surface) 65%, transparent);
   color: var(--color-text);
   box-shadow: inset 2px 0 0 var(--color-primary);
-}
-
-.channel-icon {
-  font-size: 15px;
-  width: 18px;
-  text-align: center;
-  flex-shrink: 0;
-  color: inherit;
 }
 
 .channel-name {
@@ -98,27 +103,43 @@
   min-width: 0;
 }
 
-/* Unread-messages dot, pinned to the right of the channel name (the name's
-   flex:1 pushes it to the row's trailing edge). */
+/* Unread-messages dot, pinned to the right of the channel name. */
 .channel-unread-dot {
   flex-shrink: 0;
   color: var(--color-primary);
 }
 
-/* ── Channel right-click menu (add / delete) ─────────────────────────────── */
+.channel-error {
+  color: var(--color-danger);
+  font-size: var(--font-size-xs);
+  padding: 0 8px 4px 26px;
+}
 
-.channel-context-menu {
+/* ── Floating context menus (channel + client) ───────────────────────────────
+   Shared look: elevated panel on the soft surface with a hairline + deep
+   shadow, matching the canvas language. */
+
+.channel-context-menu,
+.client-context-menu {
   position: fixed;
   z-index: 1000;
-  background: var(--color-background-mute);
-  border: 1px solid var(--color-border);
-  border-radius: var(--border-radius-sm);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  background: var(--color-background-soft);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-3);
   padding: var(--spacing-xs);
-  min-width: 170px;
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+
+.channel-context-menu {
+  min-width: 180px;
+}
+
+.client-context-menu {
+  min-width: 230px;
+  padding: var(--spacing-sm);
 }
 
 .channel-context-item {
@@ -127,7 +148,7 @@
   gap: var(--spacing-sm);
   padding: 7px 10px;
   border: none;
-  border-radius: var(--border-radius-sm);
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--color-text-secondary);
   font-size: var(--font-size-sm);
@@ -135,11 +156,13 @@
   font-family: var(--font-family-primary);
   text-align: left;
   cursor: pointer;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
 }
 
 .channel-context-item:hover {
-  background: var(--color-border);
+  background: var(--color-surface);
   color: var(--color-text);
 }
 
@@ -152,26 +175,13 @@
   color: var(--color-danger);
 }
 
-/* ── Per-client right-click controls ─────────────────────────────────────── */
-
-.client-context-menu {
-  position: fixed;
-  z-index: 1000;
-  background: var(--color-background-mute);
-  border: 1px solid var(--color-border);
-  border-radius: var(--border-radius-sm);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
-  padding: var(--spacing-sm);
-  min-width: 220px;
-}
-
 .client-context-menu-header {
   font-size: var(--font-size-sm);
   font-weight: var(--font-weight-semibold);
   color: var(--color-text);
   padding: 2px 4px 8px;
   margin-bottom: 8px;
-  border-bottom: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--hairline);
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -183,17 +193,16 @@
   gap: var(--spacing-sm);
 }
 
-/* A full-width action entry (e.g. Poke). Sits below the volume row when both
-   are shown, so give it a little breathing room. */
+/* A full-width action entry (e.g. Poke). */
 .client-context-menu-item {
   display: flex;
   align-items: center;
   gap: var(--spacing-sm);
   width: 100%;
   margin-top: var(--spacing-xs);
-  padding: 6px 4px;
+  padding: 6px 6px;
   border: none;
-  border-radius: var(--border-radius-sm);
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--color-text-secondary);
   font-size: var(--font-size-sm);
@@ -202,7 +211,7 @@
 }
 
 .client-context-menu-item:hover {
-  background: var(--color-border);
+  background: var(--color-surface);
   color: var(--color-text);
 }
 
@@ -219,7 +228,7 @@
 .client-context-menu-divider {
   height: 1px;
   margin: var(--spacing-sm) 0 2px;
-  background: var(--color-border);
+  background: var(--hairline);
 }
 
 /* Expanded role picker under the Assign Role item: indented, scrolls if long. */
@@ -246,10 +255,11 @@
   flex: 1;
   min-width: 0;
   padding: 6px 8px;
-  border: 1px solid var(--color-border);
-  border-radius: var(--border-radius-sm);
-  background: var(--color-background);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--color-background-mute);
   color: var(--color-text);
+  font-family: var(--font-family-primary);
   font-size: var(--font-size-sm);
   outline: none;
 }
@@ -267,18 +277,17 @@
   flex-shrink: 0;
   padding: 0;
   border: none;
-  border-radius: var(--border-radius-sm);
+  border-radius: var(--radius-sm);
   background: var(--color-primary);
-  color: #fff;
+  color: var(--color-accent-contrast);
   cursor: pointer;
 }
 
 .client-poke-send:hover {
-  filter: brightness(1.1);
+  background: var(--color-primary-hover);
 }
 
-/* Kick/ban composer: reason input, optional duration select, confirm button
-   stacked. The confirm button reuses .client-context-menu-item.danger. */
+/* Kick/ban composer: reason input, optional duration select, confirm button. */
 .client-mod-composer {
   display: flex;
   flex-direction: column;
@@ -294,10 +303,11 @@
 .client-mod-duration {
   width: 100%;
   padding: 6px 8px;
-  border: 1px solid var(--color-border);
-  border-radius: var(--border-radius-sm);
-  background: var(--color-background);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--color-background-mute);
   color: var(--color-text);
+  font-family: var(--font-family-primary);
   font-size: var(--font-size-sm);
   outline: none;
   cursor: pointer;
@@ -316,15 +326,17 @@
   flex-shrink: 0;
   padding: 0;
   border: none;
-  border-radius: var(--border-radius-sm);
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--color-text-secondary);
   cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
 }
 
 .client-volume-btn:hover {
-  background: var(--color-border);
+  background: var(--color-surface);
   color: var(--color-text);
 }
 
@@ -388,9 +400,11 @@
   cursor: pointer;
 }
 
+/* ── Client row status icons ─────────────────────────────────────────────── */
+
 .mic-indicator {
   flex-shrink: 0;
-  color: var(--color-border-light);
+  color: color-mix(in srgb, var(--color-text-tertiary) 55%, transparent);
   transition: color 0.1s ease;
 }
 
@@ -399,7 +413,7 @@
 }
 
 .mic-indicator.speaking-fade {
-  color: var(--color-border-light);
+  color: color-mix(in srgb, var(--color-text-tertiary) 55%, transparent);
   transition: color 0.4s ease;
 }
 
@@ -409,18 +423,19 @@
 }
 
 .client-avatar {
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
   border-radius: 50%;
-  background: color-mix(in srgb, var(--color-primary) 20%, transparent);
+  background: color-mix(in srgb, var(--color-primary) 18%, transparent);
   color: var(--color-primary);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: var(--font-weight-bold);
   flex-shrink: 0;
   overflow: hidden;
+  transition: box-shadow 0.12s ease;
 }
 
 .client-avatar-img {
@@ -429,10 +444,8 @@
   object-fit: cover;
 }
 
-/* Shown only while the client is streaming. Pinned to the far right and left
-   uncolored so it inherits currentColor — i.e. the same color as the client's
-   name (including the hover shift). */
+/* Shown only while the client is streaming; inherits the row's text color. */
 .client-streaming-icon {
-  margin-left: auto;
   flex-shrink: 0;
+  color: var(--color-primary);
 }

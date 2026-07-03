@@ -12,7 +12,7 @@ const GROUP_ICONS = {
   activities: '⚽',
   objects: '💡',
   symbols: '❤️',
-  flags: '🏁',
+  flags: '🏁'
 }
 
 // Windows' system emoji font can't render regional-indicator country flags or
@@ -42,7 +42,7 @@ export const EMOJI_GROUPS = groups.map((group) => {
     slug: group.slug,
     name: group.name,
     icon: GROUP_ICONS[group.slug] || emojis[0]?.emoji,
-    emojis: emojis.map((e) => ({ emoji: e.emoji, name: e.name, slug: e.slug })),
+    emojis: emojis.map((e) => ({ emoji: e.emoji, name: e.name, slug: e.slug }))
   }
 })
 

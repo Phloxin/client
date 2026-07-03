@@ -15,16 +15,7 @@ import { useAnimatedPresence } from '../lib/animation'
 import ClientIndicator from './ClientIndicator'
 import ScreenSourcePicker from './ScreenSourcePicker'
 import './VoiceChannel.css'
-import {
-  IconVolume,
-  IconCircle,
-  IconCircleFilled,
-  IconLock,
-  IconLockOpen,
-  IconPlus,
-  IconTrash,
-  IconPointFilled
-} from '@tabler/icons-react'
+import { IconVolume, IconVolume3, IconPlus, IconTrash, IconPointFilled } from '@tabler/icons-react'
 
 const VoiceChannel = forwardRef(function VoiceChannel(
   {
@@ -424,13 +415,13 @@ const VoiceChannel = forwardRef(function VoiceChannel(
         onClick={() => onPreviewChannel?.(channel.id)}
         onContextMenu={handleContextMenu}
       >
-        {joined ? <IconVolume size={20} /> : <IconCircle size={20} />}
+        {joined ? <IconVolume size={17} stroke={2} /> : <IconVolume3 size={17} stroke={2} />}
         <span className="channel-name">{channel.name}</span>
         {unread && (
           <IconPointFilled className="channel-unread-dot" size={12} aria-label="Unread messages" />
         )}
       </div>
-      {error && <div style={{ color: '#ed4245', fontSize: 11, paddingLeft: 16 }}>{error}</div>}
+      {error && <div className="channel-error">{error}</div>}
       {clientPresence.map(({ key, item: c, status }) => (
         <ClientIndicator
           key={key}
