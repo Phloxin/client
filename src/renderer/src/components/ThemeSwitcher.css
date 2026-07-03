@@ -4,6 +4,44 @@
   width: 100%;
 }
 
+/* Collapsible header. The native disclosure triangle is replaced by our own
+   chevron that rotates with [open]. */
+.theme-switcher-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  margin-bottom: var(--spacing-md);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.theme-switcher-summary::-webkit-details-marker {
+  display: none;
+}
+
+.theme-switcher-title {
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text);
+}
+
+.theme-switcher-current {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-tertiary);
+  margin-left: auto;
+}
+
+.theme-switcher-chevron {
+  color: var(--color-text-tertiary);
+  transition: transform 0.15s ease;
+}
+
+.theme-switcher[open] .theme-switcher-chevron {
+  transform: rotate(180deg);
+}
+
 .theme-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));

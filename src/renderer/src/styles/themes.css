@@ -187,3 +187,119 @@ body[data-theme='terra'] {
 
   --shadow-tint: 8 6 3;
 }
+
+/* ============================================================================
+   FRAPPÉ — Catppuccin Frappé, muted dusk with mauve.
+   ============================================================================ */
+html[data-theme='frappe'],
+body[data-theme='frappe'] {
+  --color-background: #292c3c;
+  --color-background-soft: #303446;
+  --color-background-mute: #232634;
+  --color-surface: #414559;
+
+  --color-text: #c6d0f5;
+  --color-text-secondary: #a5adce;
+  --color-text-tertiary: #838ba7;
+  --color-text-muted: rgba(198, 208, 245, 0.42);
+
+  --color-primary: #ca9ee6;
+  --color-primary-hover: #d7b4ee;
+  --color-accent-contrast: #1c1526;
+  --color-success: #a6d189;
+  --color-success-hover: #bade9f;
+  --color-danger: #e78284;
+  --color-warning: #ef9f76;
+
+  --color-border: #2b2e3e;
+  --color-border-light: #414559;
+
+  --shadow-tint: 10 11 18;
+}
+
+/* ============================================================================
+   DRACULA — classic dark with vivid purple.
+   ============================================================================ */
+html[data-theme='dracula'],
+body[data-theme='dracula'] {
+  --color-background: #21222c;
+  --color-background-soft: #282a36;
+  --color-background-mute: #191a21;
+  --color-surface: #44475a;
+
+  --color-text: #f8f8f2;
+  --color-text-secondary: #c8cae0;
+  --color-text-tertiary: #6272a4;
+  --color-text-muted: rgba(248, 248, 242, 0.4);
+
+  --color-primary: #bd93f9;
+  --color-primary-hover: #cbabfb;
+  --color-accent-contrast: #1a1129;
+  --color-success: #50fa7b;
+  --color-success-hover: #6ffb92;
+  --color-danger: #ff5555;
+  --color-warning: #ffb86c;
+
+  --color-border: #2b2d3a;
+  --color-border-light: #44475a;
+
+  --shadow-tint: 6 6 10;
+}
+
+/* ============================================================================
+   ROSÉ PINE — soho vibes, muted rose and iris.
+   ============================================================================ */
+html[data-theme='rose-pine'],
+body[data-theme='rose-pine'] {
+  --color-background: #191724;
+  --color-background-soft: #1f1d2e;
+  --color-background-mute: #15131f;
+  --color-surface: #26233a;
+
+  --color-text: #e0def4;
+  --color-text-secondary: #908caa;
+  --color-text-tertiary: #6e6a86;
+  --color-text-muted: rgba(224, 222, 244, 0.42);
+
+  --color-primary: #c4a7e7;
+  --color-primary-hover: #d3bcef;
+  --color-accent-contrast: #1a1226;
+  --color-success: #9ccfd8;
+  --color-success-hover: #b3dce3;
+  --color-danger: #eb6f92;
+  --color-warning: #f6c177;
+
+  --color-border: #211f30;
+  --color-border-light: #33304a;
+
+  --shadow-tint: 6 5 12;
+}
+
+/* ============================================================================
+   GRUVBOX — retro warm dark, golden yellow.
+   ============================================================================ */
+html[data-theme='gruvbox'],
+body[data-theme='gruvbox'] {
+  --color-background: #1d2021;
+  --color-background-soft: #282828;
+  --color-background-mute: #171818;
+  --color-surface: #3c3836;
+
+  --color-text: #ebdbb2;
+  --color-text-secondary: #d5c4a1;
+  --color-text-tertiary: #a89984;
+  --color-text-muted: rgba(235, 219, 178, 0.42);
+
+  --color-primary: #fabd2f;
+  --color-primary-hover: #ffd152;
+  --color-accent-contrast: #241c02;
+  --color-success: #b8bb26;
+  --color-success-hover: #cdd23a;
+  --color-danger: #fb4934;
+  --color-warning: #fe8019;
+
+  --color-border: #292827;
+  --color-border-light: #3c3836;
+
+  --shadow-tint: 3 3 3;
+}

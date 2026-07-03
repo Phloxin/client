@@ -83,13 +83,6 @@ function Settings() {
                 </div>
               </div>
 
-              <div className="theme-switcher-header">
-                <h3>Theme</h3>
-                <p className="theme-switcher-description">
-                  Applies instantly and syncs across all app windows.
-                </p>
-              </div>
-
               <ThemeSwitcher />
 
               <div className="theme-switcher-header">

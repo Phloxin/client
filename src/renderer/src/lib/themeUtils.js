@@ -48,6 +48,30 @@ export const AVAILABLE_THEMES = [
     name: 'Terra',
     description: 'Earthy analog warmth with burnt orange',
     swatch: ['#1c1916', '#262220', '#e8833a']
+  },
+  {
+    id: 'frappe',
+    name: 'Frappé',
+    description: 'Catppuccin Frappé — muted dusk with mauve',
+    swatch: ['#292c3c', '#303446', '#ca9ee6']
+  },
+  {
+    id: 'dracula',
+    name: 'Dracula',
+    description: 'Classic Dracula dark with vivid purple',
+    swatch: ['#21222c', '#282a36', '#bd93f9']
+  },
+  {
+    id: 'rose-pine',
+    name: 'Rosé Pine',
+    description: 'Soho vibes — muted rose and iris',
+    swatch: ['#191724', '#1f1d2e', '#c4a7e7']
+  },
+  {
+    id: 'gruvbox',
+    name: 'Gruvbox',
+    description: 'Retro warm dark with golden yellow',
+    swatch: ['#1d2021', '#282828', '#fabd2f']
   }
 ]
 
@@ -56,12 +80,10 @@ export const AVAILABLE_THEMES = [
 const LEGACY_THEME_MAP = {
   'classic-dark': 'studio',
   'classic-light': 'daylight',
-  'catppuccin-frappe': 'mocha',
+  'catppuccin-frappe': 'frappe',
   'catppuccin-mocha': 'mocha',
   nord: 'aurora',
-  dracula: 'midnight',
   'tokyo-night': 'midnight',
-  gruvbox: 'terra',
   'one-dark-pro': 'studio'
 }
 
