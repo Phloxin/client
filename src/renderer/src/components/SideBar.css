@@ -130,11 +130,12 @@ html[data-transparency="true"] .server-header {
 }
 
 /* Wrapper that keeps the channel list mounted while the Users view is showing,
-   preserving the live voice session. display:contents leaves the channels as
-   direct flex children of the sidebar (identical layout to before); .hidden
-   collapses the whole subtree. */
+   preserving the live voice session. Scrolls independently so a long channel
+   list never pushes the control rows off the bottom; .hidden collapses it. */
 .sidebar-channel-list {
-  display: contents;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .sidebar-channel-list.hidden {
