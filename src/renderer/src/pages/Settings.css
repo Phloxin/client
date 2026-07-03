@@ -85,7 +85,9 @@
 
 .settings-menu {
   flex-shrink: 0;
-  width: 224px;
+  /* Track the modal width so the rail compresses as the window shrinks,
+     handing the extra room to the content panel. Floor keeps titles legible. */
+  width: clamp(140px, 24%, 224px);
   padding: 12px;
   display: flex;
   flex-direction: column;
@@ -151,6 +153,9 @@
   font-size: var(--font-size-base);
   font-weight: var(--font-weight-semibold);
   line-height: 1.3;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .settings-menu-desc {

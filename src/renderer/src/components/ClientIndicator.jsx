@@ -271,6 +271,7 @@ function ClientIndicator({
       onClick={handleClick}
       onDoubleClick={handleDoubleClick}
     >
+      {!rosterMode && statusIcon}
       <span className="client-avatar" aria-hidden="true">
         {client.avatar ? <img className="client-avatar-img" src={client.avatar} alt="" /> : initial}
       </span>
@@ -278,7 +279,6 @@ function ClientIndicator({
       {streaming && (
         <IconVideoFilled size={15} className="client-streaming-icon" aria-label="Streaming" />
       )}
-      {!rosterMode && statusIcon}
       {menuPos && (
         <div
           className="client-context-menu"

@@ -67,10 +67,7 @@ function Settings() {
                 <span className="settings-menu-icon">
                   <SectionIcon size={20} stroke={2} />
                 </span>
-                <span className="settings-menu-copy">
-                  <span className="settings-menu-title">{section.title}</span>
-                  <span className="settings-menu-desc">{section.description}</span>
-                </span>
+                <span className="settings-menu-title">{section.title}</span>
               </button>
             )
           })}

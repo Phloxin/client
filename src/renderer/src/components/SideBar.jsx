@@ -221,9 +221,6 @@ function Sidebar({
   const isDragging = useRef(false)
   const sidebarRef = useRef(null)
 
-  // Self entry from the live roster (has the resolved avatar), for the dock card.
-  const selfAvatar = clients.find((c) => c.id === self?.id)?.avatar
-
   // Slide channels to their new positions when the order changes.
   useFlip(sidebarRef, [channelOrderKey], {
     selector: '.channel-item[data-flip-key]',
@@ -411,25 +408,6 @@ function Sidebar({
       )}
 
       <div className="control-dock">
-        <div className="dock-user">
-          <span className={`dock-avatar${joinedChannelId ? ' in-voice' : ''}`} aria-hidden="true">
-            {selfAvatar ? (
-              <img className="dock-avatar-img" src={selfAvatar} alt="" />
-            ) : (
-              (self?.name?.charAt(0) ?? '·').toUpperCase()
-            )}
-          </span>
-          <span className="dock-user-text">
-            <span className="dock-user-name">{self?.name ?? 'Not connected'}</span>
-            <span className={`dock-user-status${joinedChannelId ? ' voice' : ''}`}>
-              {joinedChannelId
-                ? (channels.find((c) => c.id === joinedChannelId)?.name ?? 'In voice')
-                : connectedServer
-                  ? 'Online'
-                  : 'Offline'}
-            </span>
-          </span>
-        </div>
         <div className="dock-actions">
           <button
             className={`control-btn${micMuted ? ' active' : ''}`}
