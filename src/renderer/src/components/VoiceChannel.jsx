@@ -412,15 +412,15 @@ const VoiceChannel = forwardRef(function VoiceChannel(
       className={`channel-item${joined ? ' active' : ''}${previewing ? ' previewing' : ''}${dragging ? ' dragging' : ''}${dropEdge ? ` drop-${dropEdge}` : ''}`}
       data-flip-key={channel.id}
       data-anim-status={animStatus}
-      draggable={draggable}
-      onDragStart={onDragStart}
       onDragOver={onDragOver}
       onDrop={onDrop}
-      onDragEnd={onDragEnd}
       onDoubleClick={handleDoubleClick}
     >
       <div
         className="channel-row"
+        draggable={draggable}
+        onDragStart={onDragStart}
+        onDragEnd={onDragEnd}
         onClick={() => onPreviewChannel?.(channel.id)}
         onContextMenu={handleContextMenu}
       >
