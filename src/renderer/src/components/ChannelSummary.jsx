@@ -67,7 +67,7 @@ function DescriptionEditor({ initialText, onSave, onCancel }) {
 // Channel details shown in the main area when "Channel Details" is picked from a
 // channel's right-click menu. Reuses the ClientSummary.css layout so the two
 // summary views match. The description is editable (hover → pencil).
-function ChannelSummary({ channel, memberCount = 0 }) {
+function ChannelSummary({ channel, memberCount = 0, onSaveDescription }) {
   const limit = channel?.user_limit || 0
   const [editing, setEditing] = useState(false)
   // Local copy so an edit shows immediately. Seeded from props; the view is keyed
@@ -77,8 +77,7 @@ function ChannelSummary({ channel, memberCount = 0 }) {
   const saveDescription = (text) => {
     setDescription(text)
     setEditing(false)
-    // ponytail: local-only for now — PATCH the channel description to the backend
-    // here once the endpoint exists (channel?.id, text).
+    if (channel?.id != null) onSaveDescription?.(channel.id, text)
   }
 
   return (

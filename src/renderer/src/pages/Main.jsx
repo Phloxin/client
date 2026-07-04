@@ -973,6 +973,27 @@ function Main() {
     }
   }
 
+  // Set a channel's description (edited from the Channel Details view). Like
+  // reorder, the server broadcasts ChannelUpdated, so we don't mutate locally on
+  // success — except in DEV_MODE, which has no server.
+  const handleSetChannelDescription = async (id, description) => {
+    if (DEV_MODE) {
+      setChannels((prev) => prev.map((ch) => (ch.id === id ? { ...ch, description } : ch)))
+      return
+    }
+
+    try {
+      const res = await fetch(`${apiBase()}/channels/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ description })
+      })
+      await throwIfError(res)
+    } catch (err) {
+      showError(`Failed to update channel description: ${err.message}`)
+    }
+  }
+
   // Move another client into a channel (drag their entry onto a channel header).
   // The server enforces permissions and broadcasts ClientModified, so we don't
   // mutate locally on success — except in DEV_MODE, which has no server.
@@ -1287,6 +1308,14 @@ function Main() {
             return next
           })
         )
+
+        // A forced move (a moderator's PATCH /client) changes our channel without
+        // us sending a VoiceStateUpdate, so sync the declarative voice-state ref.
+        // Otherwise the next mute/deafen merges our stale channel_id and yanks us
+        // back to the channel we were moved out of.
+        if (data.id === selfIdRef.current && 'channel_id' in data) {
+          voiceStateRef.current = { ...voiceStateRef.current, channel_id: data.channel_id }
+        }
 
         // Join/leave chimes. For ourselves: a move into a channel is a "join",
         // dropping out (channel_id null) is a "leave" — but only when the channel
@@ -1916,7 +1945,11 @@ function Main() {
             {!connected ? (
               <IdleAnimation connecting={connecting} />
             ) : summaryChannelId != null ? (
-              <ChannelSummary channel={summaryChannel} memberCount={summaryChannelMemberCount} />
+              <ChannelSummary
+                channel={summaryChannel}
+                memberCount={summaryChannelMemberCount}
+                onSaveDescription={handleSetChannelDescription}
+              />
             ) : summaryClientId != null ? (
               <ClientSummary client={summaryClient} roles={roles} />
             ) : previewChannelId != null || viewMode === 'log' ? (

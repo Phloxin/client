@@ -220,6 +220,23 @@ function Sidebar({
     onStatusChange?.(micMuted, soundMuted)
   }, [micMuted, soundMuted])
 
+  // The channel the server says we're in (authoritative roster) can diverge from
+  // the channel our live voice session is joined to when a moderator moves us
+  // (PATCH /client). When that happens, adopt the new channel so our session and
+  // the joined/active UI follow the move. Self-initiated joins/switches route
+  // joinedChannelId through null first, so this never fires for those.
+  const selfServerChannelId = clients.find((c) => c.id === self?.id)?.channel_id ?? null
+  useEffect(() => {
+    if (joinedChannelId == null || selfServerChannelId === joinedChannelId) return
+    if (selfServerChannelId == null) {
+      // Moved out of every channel — leave voice locally.
+      channelRefs.current[joinedChannelId]?.leave()
+      return
+    }
+    channelRefs.current[joinedChannelId]?.deactivate()
+    channelRefs.current[selfServerChannelId]?.adopt()
+  }, [selfServerChannelId, joinedChannelId])
+
   const isDragging = useRef(false)
   const sidebarRef = useRef(null)
 

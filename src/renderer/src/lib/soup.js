@@ -19,6 +19,15 @@ let currentChannel = null
 // Stop function for the active local audio processing chain (RNNoise / volume
 // gate). Tears down its AudioContext and analysis loop; null when no chain is active.
 let audioProcessorStop = null
+// Self speaking detector, owned here rather than by a channel component so it
+// survives ownership changes: a moderator move rebinds onClientSpeaking to the new
+// channel, and the detector reports our own speaking through that live callback.
+let selfSpeakingStop = null
+let localClientId = null
+// Set while a publish() is mid-flight so a concurrent caller joins the same
+// promise instead of allocating a second producer transport (the server rejects a
+// duplicate). Both the reset-driven republish and an adopt() can race here.
+let publishInFlight = null
 // The RNNoise WASM binary, fetched once and reused across AudioContexts.
 let rnnoiseBinaryPromise = null
 let subscribePromise = null
@@ -192,10 +201,12 @@ async function openSocket(token) {
       return
     }
 
-    // Server is moving us to a different channel — transports must be
-    // torn down and re-established, but the websocket stays open.
-    if (message.type === 'TransportsDisconnected') {
-      console.log('[Soup] Transports disconnected, resetting media state')
+    // Server is moving us to a different channel — transports must be torn down
+    // and re-established, but the websocket stays open. TransportsDisconnected is
+    // the self-initiated switch signal; MediaStateReset is the same thing when a
+    // moderator moves us (PATCH /client). Both re-establish via the callback.
+    if (message.type === 'TransportsDisconnected' || message.type === 'MediaStateReset') {
+      console.log(`[Soup] ${message.type}, resetting media state`)
       resetMediaState()
       activeCallbacks.onTransportsDisconnected?.()
       return
@@ -487,6 +498,22 @@ export function createSpeakingDetector(stream, onChange, { threshold = 8, holdMs
   }
 }
 
+// Identify the local client so the soup-owned self speaking detector can report
+// our own speaking state through onClientSpeaking, the same path remote peers use.
+export function setLocalClientId(id) {
+  localClientId = id
+}
+
+// (Re)start the self speaking detector on the current local audio stream. It
+// reports through the live onClientSpeaking callback, so speaking always lands on
+// whichever channel currently owns the session (rebound on switch/adopt).
+function startSelfSpeakingDetector(stream) {
+  selfSpeakingStop?.()
+  selfSpeakingStop = createSpeakingDetector(stream, (isSpeaking) => {
+    if (localClientId != null) activeCallbacks.onClientSpeaking?.(localClientId, isSpeaking)
+  })
+}
+
 // ─── Map snake_case transport params to mediasoup camelCase ───────
 function mapTransportParams(params) {
   return {
@@ -498,7 +525,21 @@ function mapTransportParams(params) {
 }
 
 // ─── Publish: send local audio ───────────────────────────────────
+// Single-flight: a forced-move MediaStateReset (re-establish via the previously
+// joined channel) and the adopt() of the new channel can both call this at once.
+// Allocating two producer transports makes the server error out, so a second
+// concurrent caller joins the in-flight promise, and a call while already
+// published is a no-op.
 export async function publish(micSettings, onStream) {
+  if (producerTransport) return
+  if (publishInFlight) return publishInFlight
+  publishInFlight = doPublish(micSettings, onStream).finally(() => {
+    publishInFlight = null
+  })
+  return publishInFlight
+}
+
+async function doPublish(micSettings, onStream) {
   if (!device) await loadDevice()
 
   const rawParams = await send('CreateProducerTransport')
@@ -568,6 +609,7 @@ export async function publish(micSettings, onStream) {
   }
 
   onStream?.(processedStream)
+  startSelfSpeakingDetector(processedStream)
 
   for (const track of processedStream.getTracks()) {
     const producer = await producerTransport.produce({
@@ -635,6 +677,7 @@ export async function republish(micSettings, onStream) {
   }
 
   onStream?.(processedStream)
+  startSelfSpeakingDetector(processedStream)
 
   const newTracks = processedStream.getTracks()
 
@@ -1081,6 +1124,8 @@ export function setVideoStreamRoles({ focusedConsumerId = null, visibleConsumerI
 
 // ─── Reset all media state ───────────────────────────────────────
 export function resetMediaState() {
+  selfSpeakingStop?.()
+  selfSpeakingStop = null
   producerTransport?.close()
   producerTransport = null
   consumerTransport?.close()

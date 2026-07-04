@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useLayoutEffect, memo } from 'react'
 import {
   IconPaperclip,
   IconMoodSmile,
-  IconSend,
+  IconSend2,
   IconX,
   IconFileText,
   IconPhotoVideo,
@@ -715,7 +715,7 @@ function ChatPanel({
           disabled={disabled || (!text.trim() && !attachments.length)}
           onClick={handleSend}
         >
-          <IconSend size={20} stroke={2.5} />
+          <IconSend2 size={20} stroke={2.5} />
         </button>
       </div>
 

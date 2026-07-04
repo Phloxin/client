@@ -8,7 +8,7 @@ import {
   shareCamera,
   stopScreenShare,
   rebindCallbacks,
-  createSpeakingDetector
+  setLocalClientId
 } from '../lib/soup'
 import { useSettings, useAnimationCategory } from '../context/SettingsContext'
 import { useAnimatedPresence } from '../lib/animation'
@@ -87,7 +87,6 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   })
 
   const joinedRef = useRef(false)
-  const localSpeakingCleanupRef = useRef(null)
   const menuRef = useRef(null)
   // Latest mic settings, read by the (re)publish path so a background reconnect
   // re-publishes with current settings rather than those captured at join time.
@@ -100,6 +99,11 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   useEffect(() => {
     micSettingsRef.current = micSettings
   }, [micSettings])
+  // Tell soup our client id so its self speaking detector can report our own
+  // speaking through onClientSpeaking (which rebinds to the channel we're in).
+  useEffect(() => {
+    setLocalClientId(self?.id)
+  }, [self?.id])
 
   // Let the sidebar know when this channel becomes the joined/sharing one
   useEffect(() => {
@@ -149,20 +153,13 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     })
   }
 
-  const startLocalSpeakingDetector = (stream) => {
-    localSpeakingCleanupRef.current?.()
-    localSpeakingCleanupRef.current = createSpeakingDetector(stream, (isSpeaking) => {
-      handleClientSpeaking(self.id, isSpeaking)
-    })
-  }
-
   // Publish (or, on a reconnect, re-publish) the local mic with current settings.
+  // publish() is single-flight in soup, so an adopt() racing the reset-driven
+  // republish can't allocate a duplicate producer transport. The self speaking
+  // detector is started inside soup off the published stream.
   const publishMic = async () => {
     try {
-      await publish(micSettingsRef.current, (stream) => {
-        console.log('[VoiceChannel] Local stream ready')
-        startLocalSpeakingDetector(stream)
-      })
+      await publish(micSettingsRef.current)
     } catch (err) {
       console.error('[VoiceChannel] Publish failed:', err)
       setError(err.message)
@@ -191,30 +188,27 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     setSharing(false)
     setVideoStreams([])
     setSpeakingClients({})
-    localSpeakingCleanupRef.current?.()
-    localSpeakingCleanupRef.current = null
     if (onStreamsUpdate) onStreamsUpdate([])
   }
 
   // Republish audio whenever mic settings change while in a channel
   useEffect(() => {
     if (!joinedRef.current) return
-    republish(micSettings, startLocalSpeakingDetector).catch((err) => {
+    republish(micSettings).catch((err) => {
       console.error('[VoiceChannel] Republish failed:', err)
       setError(err.message)
     })
   }, [micSettings])
 
-  // Unmount cleanup. Always stop the local speaking detector. Additionally, if
-  // this channel is being deleted out from under us *while we're joined to it*,
-  // tear down the shared (singleton) voice session and clear the sidebar's
+  // Unmount cleanup. If this channel is being deleted out from under us *while
+  // we're joined to it*, tear down the shared (singleton) voice session and clear
+  // the sidebar's
   // joined bookkeeping. Otherwise the soup connection is left orphaned — its
   // callbacks point at this dead component and `joinedChannelId` still names the
   // gone channel — so the next channel the user joins takes the "switch" path on
   // a broken session and can't transmit audio or leave.
   useEffect(
     () => () => {
-      localSpeakingCleanupRef.current?.()
       if (joinedRef.current) {
         disconnect()
         onJoinedChange?.(channel.id, false)
@@ -279,8 +273,6 @@ const VoiceChannel = forwardRef(function VoiceChannel(
           setSharing(false)
           setVideoStreams([])
           setSpeakingClients({})
-          localSpeakingCleanupRef.current?.()
-          localSpeakingCleanupRef.current = null
           if (onStreamsUpdate) onStreamsUpdate([])
         },
         onReconnecting: handleReconnecting,
@@ -326,6 +318,29 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     }
   }
 
+  // Take ownership of the live voice session after the server moved us into this
+  // channel (a moderator's PATCH /client). Unlike switchTo we don't PATCH — the
+  // server already moved us — we only repoint the shared session's callbacks here,
+  // mark ourselves joined, and re-establish media. The server's MediaStateReset
+  // may land before or after we adopt; publish() is single-flight, so calling it
+  // here can't collide with a reset-driven republish. onClientSpeaking is rebound
+  // to us, so soup's self speaking detector now reports to this channel.
+  const adopt = async () => {
+    rebindCallbacks({
+      onConnect: handleConnectEstablished,
+      onReconnecting: handleReconnecting,
+      onReconnectRejoin: () => patchChannel(channel.id),
+      onVideoStream: handleVideoStream,
+      onClientSpeaking: handleClientSpeaking,
+      onConsumerClosed: handleConsumerClosed,
+      onTransportsDisconnected: handleConnectEstablished
+    })
+    setError(null)
+    setConnecting(false)
+    setJoined(true)
+    await publishMic()
+  }
+
   // Stop being the active channel locally, without disconnecting the
   // websocket (used when switching to a different channel).
   const deactivate = () => {
@@ -333,8 +348,6 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     setSharing(false)
     setVideoStreams([])
     setSpeakingClients({})
-    localSpeakingCleanupRef.current?.()
-    localSpeakingCleanupRef.current = null
     if (onStreamsUpdate) onStreamsUpdate([])
   }
 
@@ -344,8 +357,6 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     setSharing(false)
     setVideoStreams([])
     setSpeakingClients({})
-    localSpeakingCleanupRef.current?.()
-    localSpeakingCleanupRef.current = null
     if (onStreamsUpdate) onStreamsUpdate([])
     // Tell the server we're leaving all channels (channel_id: null).
     onSelfChannelChange?.(null)
@@ -420,6 +431,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     leave: handleLeave,
     toggleShare: handleScreenShare,
     switchTo,
+    adopt,
     deactivate
   }))
 
