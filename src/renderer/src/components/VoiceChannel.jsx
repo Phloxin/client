@@ -15,7 +15,14 @@ import { useAnimatedPresence } from '../lib/animation'
 import ClientIndicator from './ClientIndicator'
 import ScreenSourcePicker from './ScreenSourcePicker'
 import './VoiceChannel.css'
-import { IconVolume, IconVolume3, IconPlus, IconTrash, IconPointFilled } from '@tabler/icons-react'
+import {
+  IconVolume,
+  IconVolume3,
+  IconPlus,
+  IconTrash,
+  IconPointFilled,
+  IconInfoCircle
+} from '@tabler/icons-react'
 
 const VoiceChannel = forwardRef(function VoiceChannel(
   {
@@ -39,6 +46,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     onRequestJoin,
     onDeleteChannel,
     onRequestCreateChannel,
+    onShowChannelSummary,
     onPreviewChannel,
     onOpenDm,
     onPoke,
@@ -459,6 +467,16 @@ const VoiceChannel = forwardRef(function VoiceChannel(
           ref={menuRef}
           style={{ top: menuPos.y, left: menuPos.x }}
         >
+          <button
+            type="button"
+            className="channel-context-item"
+            onClick={() => {
+              setMenuPos(null)
+              onShowChannelSummary?.(channel.id)
+            }}
+          >
+            <IconInfoCircle size={16} /> Channel Details
+          </button>
           <button
             type="button"
             className="channel-context-item"

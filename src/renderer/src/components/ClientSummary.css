@@ -62,6 +62,80 @@
   color: var(--color-text-muted);
 }
 
+.client-summary-value {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--color-text);
+}
+
+/* Editable heading (e.g. Description): the pencil reveals on hover, mirroring the
+   hover-to-edit affordance on chat messages. */
+.client-summary-heading-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.client-summary-edit-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  border: none;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 0.12s ease,
+    color 0.12s ease,
+    background 0.12s ease;
+}
+
+.client-summary-section:hover .client-summary-edit-btn,
+.client-summary-edit-btn:focus-visible {
+  opacity: 1;
+}
+
+.client-summary-edit-btn:hover {
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.client-summary-edit-input {
+  width: 100%;
+  resize: none;
+  padding: 8px 10px;
+  border: 1px solid var(--color-primary);
+  border-radius: var(--radius-sm);
+  background: var(--color-background-mute);
+  color: var(--color-text);
+  font-family: var(--font-family-primary);
+  font-size: var(--font-size-sm);
+  line-height: 1.45;
+}
+
+.client-summary-edit-hint {
+  margin-top: 3px;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+
+.client-summary-edit-hint button {
+  border: none;
+  background: none;
+  padding: 0;
+  font-size: inherit;
+  font-family: inherit;
+  color: var(--color-primary);
+  cursor: pointer;
+}
+
+.client-summary-edit-hint button:hover {
+  text-decoration: underline;
+}
+
 /* Assigned server groups, rendered as a wrap of pill chips. */
 .client-summary-roles {
   display: flex;

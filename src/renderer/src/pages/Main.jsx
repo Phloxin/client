@@ -9,6 +9,7 @@ import SideBar from '../components/SideBar'
 import VideoGrid from '../components/VideoGrid'
 import ChatPanel from '../components/ChatPanel'
 import ClientSummary from '../components/ClientSummary'
+import ChannelSummary from '../components/ChannelSummary'
 import TitleBar from '../components/TitleBar'
 import ConnectionOverlay from '../components/ConnectionOverlay'
 import Toast from '../components/Toast'
@@ -303,6 +304,10 @@ function Main() {
   // client). Mutually exclusive with the chat preview. Null when not viewing one.
   const [summaryClientId, setSummaryClientId] = useState(null)
 
+  // A channel whose details we're viewing in the main area (right-click → Channel
+  // Details). Mutually exclusive with the chat preview and client summary.
+  const [summaryChannelId, setSummaryChannelId] = useState(null)
+
   // The channel the local client currently has joined (chat is scoped to it)
   const selfChannelId = clients.find((c) => c.id === client?.id)?.channel_id ?? null
 
@@ -416,13 +421,23 @@ function Main() {
   // in just returns to the normal view. Closes any open client summary.
   const handlePreviewChannel = (channelId) => {
     setSummaryClientId(null)
+    setSummaryChannelId(null)
     setPreviewChannelId(channelId === selfChannelId ? null : channelId)
   }
 
   // Single-click a client: show their summary/profile in the main area.
   const handleShowClientSummary = (userId) => {
     setPreviewChannelId(null)
+    setSummaryChannelId(null)
     setSummaryClientId(userId)
+  }
+
+  // Right-click a channel → Channel Details: show the channel summary in the main
+  // area. Mutually exclusive with the chat preview and client summary.
+  const handleShowChannelSummary = (channelId) => {
+    setPreviewChannelId(null)
+    setSummaryClientId(null)
+    setSummaryChannelId(channelId)
   }
 
   // Open the DM an inbox alert points at: by sender id when known (resolves the
@@ -432,6 +447,7 @@ function Main() {
       handleOpenDm(n.authorId)
     } else if (n.channelId != null) {
       setSummaryClientId(null)
+      setSummaryChannelId(null)
       setPreviewChannelId(n.channelId)
     }
   }
@@ -443,6 +459,13 @@ function Main() {
       setSummaryClientId(null)
     }
   }, [summaryClientId, clients])
+
+  // Close the channel summary if the channel is deleted out from under us.
+  useEffect(() => {
+    if (summaryChannelId != null && !channels.some((c) => c.id === summaryChannelId)) {
+      setSummaryChannelId(null)
+    }
+  }, [summaryChannelId, channels])
 
   // Get-or-create the 1:1 DM channel with another user and make it known to
   // `channels`, returning its id. Shared by handleOpenDm (peek) and handlePoke
@@ -1679,6 +1702,13 @@ function Main() {
   const summaryClient =
     summaryClientId != null ? clients.find((c) => c.id === summaryClientId) : null
 
+  // The channel whose details are open (right-click → Channel Details), or null,
+  // plus its current member count for the "#joined / limit" line.
+  const summaryChannel =
+    summaryChannelId != null ? channels.find((c) => c.id === summaryChannelId) : null
+  const summaryChannelMemberCount =
+    summaryChannel != null ? clients.filter((c) => c.channel_id === summaryChannel.id).length : 0
+
   return (
     <div className="app-shell">
       <Toast message={toastError} onDismiss={dismissError} />
@@ -1713,6 +1743,7 @@ function Main() {
           onDeleteChannel={handleDeleteChannel}
           onReorderChannel={handleReorderChannel}
           onPreviewChannel={handlePreviewChannel}
+          onShowChannelSummary={handleShowChannelSummary}
           onOpenDm={handleOpenDm}
           onPoke={handlePoke}
           onKick={handleKickUser}
@@ -1733,7 +1764,24 @@ function Main() {
         <main className="chat-area">
           <div className="chat-header">
             <div className="header-content">
-              {summaryClientId != null ? (
+              {summaryChannelId != null ? (
+                // Viewing a channel's details: its name and a close button back to
+                // the normal view.
+                <>
+                  <span className="view-preview-title">
+                    <IconVolume size={18} stroke={2} />
+                    {summaryChannel?.name ?? 'Channel'}
+                  </span>
+                  <button
+                    type="button"
+                    className="view-preview-close"
+                    onClick={() => setSummaryChannelId(null)}
+                    title="Close"
+                  >
+                    <IconX size={18} />
+                  </button>
+                </>
+              ) : summaryClientId != null ? (
                 // Viewing a client's summary/profile: just their name and a close
                 // button back to the normal view.
                 <>
@@ -1824,15 +1872,19 @@ function Main() {
             key={
               !connected
                 ? 'disconnected'
-                : summaryClientId != null
-                  ? `summary-${summaryClientId}`
-                  : previewChannelId != null
-                    ? `preview-${previewChannelId}`
-                    : viewMode
+                : summaryChannelId != null
+                  ? `channel-summary-${summaryChannelId}`
+                  : summaryClientId != null
+                    ? `summary-${summaryClientId}`
+                    : previewChannelId != null
+                      ? `preview-${previewChannelId}`
+                      : viewMode
             }
           >
             {!connected ? (
               <IdleAnimation connecting={connecting} />
+            ) : summaryChannelId != null ? (
+              <ChannelSummary channel={summaryChannel} memberCount={summaryChannelMemberCount} />
             ) : summaryClientId != null ? (
               <ClientSummary client={summaryClient} roles={roles} />
             ) : previewChannelId != null || viewMode === 'log' ? (
