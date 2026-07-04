@@ -973,6 +973,37 @@ function Main() {
     }
   }
 
+  // Move another client into a channel (drag their entry onto a channel header).
+  // The server enforces permissions and broadcasts ClientModified, so we don't
+  // mutate locally on success — except in DEV_MODE, which has no server.
+  const handleMoveClientToChannel = useCallback(
+    async (userId, channelId) => {
+      if (userId == null) return
+      // No-op if they're already there.
+      const current = clients.find((c) => String(c.id) === String(userId))
+      if (current && current.channel_id === channelId) return
+
+      if (DEV_MODE) {
+        setClients((prev) =>
+          prev.map((c) => (String(c.id) === String(userId) ? { ...c, channel_id: channelId } : c))
+        )
+        return
+      }
+
+      try {
+        const res = await fetch(`${apiBase()}/client/${userId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ channel_id: channelId })
+        })
+        await throwIfError(res)
+      } catch (err) {
+        showError(`Failed to move user: ${err.message}`)
+      }
+    },
+    [clients, token, showError]
+  )
+
   // Connect to a saved server: point all endpoints at its host, then log in with
   // its stored credentials. Setting the token triggers the data-loading effect.
   const handleConnect = async (server) => {
@@ -1742,6 +1773,7 @@ function Main() {
           onCreateChannel={handleCreateChannel}
           onDeleteChannel={handleDeleteChannel}
           onReorderChannel={handleReorderChannel}
+          onMoveClient={handleMoveClientToChannel}
           onPreviewChannel={handlePreviewChannel}
           onShowChannelSummary={handleShowChannelSummary}
           onOpenDm={handleOpenDm}

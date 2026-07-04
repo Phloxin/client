@@ -66,6 +66,13 @@
   color: var(--color-text);
 }
 
+/* Dragging a client entry over this header (drop to move them into the channel). */
+.channel-row.client-drop-target {
+  background: color-mix(in srgb, var(--color-primary) 22%, transparent);
+  color: var(--color-text);
+  box-shadow: inset 0 0 0 1px var(--color-primary);
+}
+
 /* Joined channel header row: accent text + glowing signal rail on the left. */
 .channel-item.active .channel-row {
   background: transparent;

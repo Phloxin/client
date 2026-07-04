@@ -46,6 +46,7 @@ function Sidebar({
   onCreateChannel,
   onDeleteChannel,
   onReorderChannel,
+  onMoveClient,
   onPreviewChannel,
   onShowChannelSummary,
   onOpenDm,
@@ -330,6 +331,7 @@ function Sidebar({
             onDeleteChannel={onDeleteChannel}
             onRequestCreateChannel={openCreateChannel}
             onShowChannelSummary={onShowChannelSummary}
+            onMoveClient={onMoveClient}
             onPreviewChannel={onPreviewChannel}
             onOpenDm={onOpenDm}
             onPoke={onPoke}

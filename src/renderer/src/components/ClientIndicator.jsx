@@ -34,6 +34,7 @@ function ClientIndicator({
   streaming,
   animStatus,
   rosterMode,
+  draggableToChannel,
   onOpenDm,
   onPoke,
   onKick,
@@ -220,6 +221,15 @@ function ClientIndicator({
     onOpenDm(client.id)
   }
 
+  // Drag this entry onto a channel header to move the client there. The id rides
+  // a custom MIME type the channel header keys off (see VoiceChannel). Disabled
+  // for ourselves — self joins a channel via double-click, not a server move.
+  const canDragToChannel = draggableToChannel && !isSelf && !rosterMode
+  const handleDragStart = (e) => {
+    e.dataTransfer.setData('application/x-client-id', String(client.id))
+    e.dataTransfer.effectAllowed = 'move'
+  }
+
   const toggleLocalMute = () => setLocalMuted((prev) => !prev)
 
   const handleVolumeChange = (e) => {
@@ -267,6 +277,8 @@ function ClientIndicator({
     <div
       className="client-indicator"
       data-anim-status={animStatus}
+      draggable={canDragToChannel}
+      onDragStart={canDragToChannel ? handleDragStart : undefined}
       onContextMenu={handleContextMenu}
       onClick={handleClick}
       onDoubleClick={handleDoubleClick}

@@ -47,6 +47,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     onDeleteChannel,
     onRequestCreateChannel,
     onShowChannelSummary,
+    onMoveClient,
     onPreviewChannel,
     onOpenDm,
     onPoke,
@@ -75,6 +76,9 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   const [speakingClients, setSpeakingClients] = useState({})
   // Right-click context menu position ({x, y}) or null when closed.
   const [menuPos, setMenuPos] = useState(null)
+  // True while a client entry is being dragged over this channel's header (drop
+  // to move them here). Distinct from channel drag-to-reorder.
+  const [clientDropActive, setClientDropActive] = useState(false)
   const { micSettings } = useSettings()
 
   const clientAnimEnabled = useAnimationCategory('userJoin')
@@ -118,6 +122,24 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   const handleContextMenu = (e) => {
     e.preventDefault()
     setMenuPos({ x: e.clientX, y: e.clientY })
+  }
+
+  // Client entries carry their id under a custom MIME type so this only reacts to
+  // a client drag, never the channel-reorder drag (which uses text/plain).
+  const CLIENT_DND_TYPE = 'application/x-client-id'
+  const handleClientDragOver = (e) => {
+    if (!onMoveClient || !e.dataTransfer.types.includes(CLIENT_DND_TYPE)) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'move'
+    if (!clientDropActive) setClientDropActive(true)
+  }
+  const handleClientDrop = (e) => {
+    if (!onMoveClient || !e.dataTransfer.types.includes(CLIENT_DND_TYPE)) return
+    e.preventDefault()
+    e.stopPropagation()
+    setClientDropActive(false)
+    const clientId = e.dataTransfer.getData(CLIENT_DND_TYPE)
+    if (clientId) onMoveClient(clientId, channel.id)
   }
 
   const handleClientSpeaking = (clientId, isSpeaking) => {
@@ -416,10 +438,13 @@ const VoiceChannel = forwardRef(function VoiceChannel(
       onDoubleClick={handleDoubleClick}
     >
       <div
-        className="channel-row"
+        className={`channel-row${clientDropActive ? ' client-drop-target' : ''}`}
         draggable={draggable}
         onDragStart={onDragStart}
         onDragEnd={onDragEnd}
+        onDragOver={handleClientDragOver}
+        onDragLeave={() => setClientDropActive(false)}
+        onDrop={handleClientDrop}
         onClick={() => onPreviewChannel?.(channel.id)}
         onContextMenu={handleContextMenu}
       >
@@ -440,6 +465,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
           deafened={c.id === self?.id ? deafened : !!c.self_deaf}
           isSelf={c.id === self?.id}
           streaming={streamingClientIds.has(c.id)}
+          draggableToChannel={!!onMoveClient}
           onOpenDm={onOpenDm}
           onPoke={onPoke}
           onKick={onKick}
