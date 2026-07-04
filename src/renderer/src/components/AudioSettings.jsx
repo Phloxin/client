@@ -233,12 +233,14 @@ function AudioSettings({ micSettings, updateMicSettings }) {
         </div>
       </div>
 
-      <div className="settings-status">
-        <span>{isDirty ? 'You have unsaved changes' : 'Settings saved'}</span>
-        <button className="settings-apply-btn" onClick={handleApply} disabled={!isDirty}>
-          Apply
-        </button>
-      </div>
+      {isDirty && (
+        <div className="settings-status">
+          <span>You have unsaved changes</span>
+          <button className="settings-apply-btn" onClick={handleApply}>
+            Apply
+          </button>
+        </div>
+      )}
     </div>
   )
 }

@@ -415,6 +415,10 @@
 }
 
 .settings-status {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--spacing-sm);
   font-size: var(--font-size-sm);
   color: var(--color-text-tertiary);
 }

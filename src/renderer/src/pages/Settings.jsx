@@ -179,6 +179,27 @@ function Settings() {
                   </label>
                 </div>
 
+                <div className="settings-section settings-toggle-row">
+                  <div className="settings-toggle-copy">
+                    <label htmlFor="shadows-toggle">Shadows</label>
+                    <p className="settings-section-desc">
+                      Add soft drop shadows to raised surfaces like panels, popovers, and dialogs
+                      for a sense of depth. Turn off for a flatter look.
+                    </p>
+                  </div>
+                  <label className="toggle-switch">
+                    <input
+                      type="checkbox"
+                      id="shadows-toggle"
+                      checked={appearanceSettings.shadowsEnabled}
+                      onChange={(e) =>
+                        updateAppearanceSettings({ shadowsEnabled: e.target.checked })
+                      }
+                    />
+                    <span className="toggle-slider" />
+                  </label>
+                </div>
+
                 <div className="settings-section">
                   <label htmlFor="interface-font">Interface Font</label>
                   <p className="settings-section-desc">The typeface used across the app.</p>

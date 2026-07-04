@@ -265,7 +265,7 @@ function ClientIndicator({
 
   return (
     <div
-      className={`client-indicator${visualSpeaking && !rosterMode ? ' speaking' : ''}`}
+      className="client-indicator"
       data-anim-status={animStatus}
       onContextMenu={handleContextMenu}
       onClick={handleClick}

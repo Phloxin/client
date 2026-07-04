@@ -50,6 +50,16 @@
   --ring-color: color-mix(in srgb, var(--color-primary) 75%, var(--color-text));
 }
 
+/* Shadows off: flatten the elevation tokens so every surface that consumes them
+   drops its drop shadow in one place. Focus rings and glows use their own
+   box-shadows and are intentionally unaffected. Driven by the `shadowsEnabled`
+   appearance setting via uiSettings.applyAppearanceSettings. */
+html[data-shadows='off'] {
+  --shadow-1: none;
+  --shadow-2: none;
+  --shadow-3: none;
+}
+
 /* ============================================================================
    RESET & BASE STYLES
    ============================================================================ */

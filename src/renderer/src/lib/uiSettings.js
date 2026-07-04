@@ -25,6 +25,7 @@ export function applyAppearanceSettings({
   transparencyBlur = 20,
   transparencyOpacity = 85,
   gradientsEnabled = true,
+  shadowsEnabled = true,
   fontFamily = 'inter'
 }) {
   const html = document.documentElement
@@ -47,6 +48,14 @@ export function applyAppearanceSettings({
     html.removeAttribute('data-gradients')
   } else {
     html.setAttribute('data-gradients', 'off')
+  }
+
+  // Same shape as gradients: flag the document only when shadows are off so
+  // base.css can flatten the elevation tokens.
+  if (shadowsEnabled) {
+    html.removeAttribute('data-shadows')
+  } else {
+    html.setAttribute('data-shadows', 'off')
   }
 }
 

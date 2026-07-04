@@ -37,6 +37,7 @@ const DEFAULT_APPEARANCE = {
   transparencyBlur: 20,
   transparencyOpacity: 85,
   gradientsEnabled: true,
+  shadowsEnabled: true,
   fontFamily: 'inter'
 }
 
