@@ -91,41 +91,60 @@ export function useAnimatedPresence(items, getKey, { enabled = true, enterDurati
   return rendered
 }
 
-// FLIP reorder: slide each `data-flip-key` element in `containerRef` from its
-// previous position to its new one (via the Web Animations API, which leaves CSS
-// enter/leave keyframes alone). Trigger by passing the order signal in `deps`.
-export function useFlip(
+// Block shift for list reorders/insertions. Unlike classic per-row FLIP — where
+// each row measures and animates independently and can drift out of step (the
+// "shuffling through each other" look) — this measures ONE displaced row's
+// vertical delta and plays the exact same translateY on every displaced row, so
+// they move as a single block. Valid because a single move/insert displaces all
+// affected rows by the same distance (the moved/added row's outer height). Rows
+// tagged data-anim-status="entering" (the popping moved/added row) are excluded.
+// Fires only when `signal` (the order key) changes, but re-measures row
+// positions on EVERY commit — rows also move for unrelated reasons (a channel
+// growing as users join it), and animating a reorder from stale positions is
+// exactly the out-of-sync jump this replaces.
+export function useBlockShift(
   containerRef,
-  deps,
+  signal,
   { selector = '[data-flip-key]', enabled = true, duration = 260 } = {}
 ) {
-  const prevRects = useRef(new Map())
+  const prevTops = useRef(new Map())
+  const prevSignal = useRef(signal)
 
   useLayoutEffect(() => {
     const container = containerRef.current
     if (!container) return
 
-    const allowMotion = enabled && !prefersReducedMotion()
-    const map = new Map()
+    const nodes = [...container.querySelectorAll(selector)]
+    const prev = prevTops.current
+    const tops = new Map(
+      nodes.map((n) => [n.getAttribute('data-flip-key'), n.getBoundingClientRect().top])
+    )
+    prevTops.current = tops
 
-    container.querySelectorAll(selector).forEach((node) => {
-      const key = node.getAttribute('data-flip-key')
-      const rect = node.getBoundingClientRect()
-      const old = prevRects.current.get(key)
-      map.set(key, rect)
+    const signalChanged = prevSignal.current !== signal
+    prevSignal.current = signal
+    if (!signalChanged || !enabled || prefersReducedMotion()) return
 
-      if (!allowMotion || !old) return
-      const dx = old.left - rect.left
-      const dy = old.top - rect.top
-      if (dx || dy) {
-        node.animate(
-          [{ transform: `translate(${dx}px, ${dy}px)` }, { transform: 'translate(0, 0)' }],
-          { duration, easing: 'cubic-bezier(0.2, 0.7, 0.2, 1)' }
-        )
-      }
+    // Rows that changed vertical position this commit, minus the popping row.
+    const displaced = nodes.filter((n) => {
+      if (n.getAttribute('data-anim-status') === 'entering') return false
+      const key = n.getAttribute('data-flip-key')
+      const old = prev.get(key)
+      return old != null && Math.abs(old - tops.get(key)) > 0.5
     })
+    if (displaced.length === 0) return
 
-    prevRects.current = map
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, deps)
+    // One shared delta from the first displaced row; identical keyframes/timing
+    // on every row = perfectly synchronized block movement. (If two channels
+    // were somehow moved in the same commit the deltas could differ per row —
+    // rare enough that uniform motion is the better trade.)
+    const k0 = displaced[0].getAttribute('data-flip-key')
+    const dy = prev.get(k0) - tops.get(k0)
+    for (const node of displaced) {
+      node.animate(
+        [{ transform: `translateY(${dy}px)` }, { transform: 'translateY(0)' }],
+        { duration, easing: 'cubic-bezier(0.2, 0.7, 0.2, 1)' }
+      )
+    }
+  }) // no dep array: measure every commit, animate only on a signal change
 }

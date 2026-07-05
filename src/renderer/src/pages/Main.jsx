@@ -1235,6 +1235,31 @@ function Main() {
       }
     }
 
+    // A create/reorder makes the server broadcast one ChannelCreated/Updated per
+    // affected channel, each in its own ws message — and each message is its own
+    // task, so React commits them separately and the sidebar's reorder animation
+    // plays as several out-of-sync partial moves. Coalesce the burst into one
+    // setChannels so a whole reorder lands in a single commit (= one animation).
+    let pendingChannelUpserts = new Map()
+    let channelFlushTimer = null
+    const queueChannelUpsert = (data) => {
+      pendingChannelUpserts.set(data.id, { ...pendingChannelUpserts.get(data.id), ...data })
+      clearTimeout(channelFlushTimer)
+      // ponytail: 30ms debounce window; if server bursts ever span longer, batch server-side instead
+      channelFlushTimer = setTimeout(() => {
+        const pending = pendingChannelUpserts
+        pendingChannelUpserts = new Map()
+        setChannels((prev) => {
+          const merged = prev.map((ch) =>
+            pending.has(ch.id) ? { ...ch, ...pending.get(ch.id) } : ch
+          )
+          const existing = new Set(prev.map((ch) => ch.id))
+          const added = [...pending.values()].filter((ch) => !existing.has(ch.id))
+          return added.length ? [...merged, ...added] : merged
+        })
+      }, 150)
+    }
+
     // Apply a dispatched event to local state.
     const handleEvent = (ev, data) => {
       // Initial snapshot pushed by the server right after a fresh, non-resuming
@@ -1409,10 +1434,8 @@ function Main() {
             )
           )
         }
-      } else if (ev === 'ChannelCreated') {
-        setChannels((prev) => (prev.some((ch) => ch.id === data.id) ? prev : [...prev, data]))
-      } else if (ev === 'ChannelUpdated') {
-        setChannels((prev) => prev.map((ch) => (ch.id === data.id ? { ...ch, ...data } : ch)))
+      } else if (ev === 'ChannelCreated' || ev === 'ChannelUpdated') {
+        queueChannelUpsert(data)
       } else if (ev === 'ChannelDeleted') {
         // Tolerate either a full channel object or a bare id.
         const removedId = data !== null && typeof data === 'object' ? data.id : data
@@ -1554,6 +1577,7 @@ function Main() {
     return () => {
       closedByUs = true
       if (reconnectTimer) clearTimeout(reconnectTimer)
+      clearTimeout(channelFlushTimer)
       clearHeartbeat()
       if (ws) ws.close()
       eventsWsRef.current = null

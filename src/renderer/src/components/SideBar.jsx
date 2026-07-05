@@ -7,7 +7,7 @@ import ServerMenu from './ServerMenu'
 import { setMicMuted, setSoundMuted } from '../lib/soup'
 import { playUiSound } from '../lib/sounds'
 import { useAnimationCategory } from '../context/SettingsContext'
-import { useAnimatedPresence, useFlip } from '../lib/animation'
+import { useAnimatedPresence, useBlockShift } from '../lib/animation'
 import SegmentedTabs from './SegmentedTabs'
 import './SideBar.css'
 import {
@@ -130,11 +130,43 @@ function Sidebar({
     enabled: channelAnimEnabled
   })
   const channelOrderKey = channelPresence.map((c) => c.key).join(',')
-  // When a channel is entering (an insertion), the new row reserves its height
-  // immediately and its neighbours are already at their final spots — so sliding
-  // them via FLIP just replays motion on channels that only got reordered. Skip
-  // the slide that pass; the new channel's pop-in is the only animation wanted.
-  const channelEntering = channelPresence.some((c) => c.status === 'entering')
+
+  // A reordered channel keeps its key, so useAnimatedPresence won't re-tag it
+  // 'entering' — detect the move ourselves by diffing the render order against
+  // the previous one, purely from the channel state the server broadcast. The
+  // animation is therefore identical whether we dragged the channel or a remote
+  // client did: the moved row replays the pop-in at its new slot, and useBlockShift
+  // (which skips 'entering' rows) slides only the displaced siblings. Detection
+  // happens during render (render-phase setState) so the tag lands in the same
+  // commit as the new order — the pop never plays at the old position.
+  const [movedChannelId, setMovedChannelId] = useState(null)
+  const prevOrderRef = useRef(null)
+  const orderKeys = channelPresence.map((c) => c.key)
+  if (prevOrderRef.current == null) {
+    prevOrderRef.current = orderKeys
+  } else if (prevOrderRef.current.join(',') !== channelOrderKey) {
+    const prev = prevOrderRef.current
+    prevOrderRef.current = orderKeys
+    // Same set of keys in a different order = a reorder (adds/removes are
+    // handled by the presence hook). The moved channel is the one whose removal
+    // makes both sequences identical. An adjacent swap is ambiguous (either row
+    // qualifies) — the first match pops, the other slides; both look clean.
+    const sameSet = prev.length === orderKeys.length && prev.every((k) => orderKeys.includes(k))
+    if (channelAnimEnabled && sameSet) {
+      const moved = orderKeys.find((x) => {
+        const a = prev.filter((k) => k !== x)
+        const b = orderKeys.filter((k) => k !== x)
+        return a.every((k, i) => k === b[i])
+      })
+      if (moved != null) setMovedChannelId(moved)
+    }
+  }
+  // Demote once the pop has played (mirrors useAnimatedPresence's enter window).
+  useEffect(() => {
+    if (movedChannelId == null) return
+    const t = setTimeout(() => setMovedChannelId(null), 320)
+    return () => clearTimeout(t)
+  }, [movedChannelId])
 
   // Drag-to-reorder channels. dropTarget marks which gap the dragged channel
   // would land in ({ id, edge: 'before' | 'after' }); the drop sends the target
@@ -147,23 +179,41 @@ function Sidebar({
     e.dataTransfer.effectAllowed = 'move'
     e.dataTransfer.setData('text/plain', String(id)) // Firefox needs data to start a drag
   }
+
+  // The absolute 0-based slot the dragged channel would land in for a hover over
+  // `targetId`'s `edge` — this is exactly the `position` the server's MoveTo wants
+  // (it shifts the affected siblings by ±1 to open that slot). Returns null when
+  // the drop wouldn't move it: the two gaps touching the dragged channel resolve
+  // to its current slot, so no indicator is shown there.
+  const dropPositionFor = (targetId, edge) => {
+    if (dragId == null) return null
+    const dragIndex = sortedChannels.findIndex((c) => c.id === dragId)
+    const targetIndex = sortedChannels.findIndex((c) => c.id === targetId)
+    if (dragIndex === -1 || targetIndex === -1) return null
+    let position = edge === 'before' ? targetIndex : targetIndex + 1
+    // Dropping below the dragged channel's own row: that row vacates, so every slot
+    // past it shifts up one.
+    if (dragIndex < position) position -= 1
+    return position === dragIndex ? null : position
+  }
+
   const handleChannelDragOver = (id) => (e) => {
     if (dragId == null) return
     e.preventDefault()
     e.dataTransfer.dropEffect = 'move'
     const rect = e.currentTarget.getBoundingClientRect()
     const edge = e.clientY < rect.top + rect.height / 2 ? 'before' : 'after'
-    setDropTarget((prev) => (prev?.id === id && prev.edge === edge ? prev : { id, edge }))
+    // Suppress the indicator on no-op gaps (adjacent to the dragged channel).
+    const next = dropPositionFor(id, edge) == null ? null : { id, edge }
+    setDropTarget((prev) =>
+      prev?.id === next?.id && prev?.edge === next?.edge ? prev : next
+    )
   }
   const handleChannelDrop = (e) => {
     e.preventDefault()
-    if (dragId == null || dropTarget == null || dropTarget.id === dragId) return
-    const target = sortedChannels.find((c) => c.id === dropTarget.id)
-    if (!target) return
-    const targetPos = target.position ?? sortedChannels.indexOf(target)
-    // Land in the gap the indicator showed: before the target keeps its slot,
-    // after the target takes the next one. The server reindexes from there.
-    const position = dropTarget.edge === 'before' ? targetPos : targetPos + 1
+    if (dragId == null || dropTarget == null) return
+    const position = dropPositionFor(dropTarget.id, dropTarget.edge)
+    if (position == null) return
     onReorderChannel?.(dragId, position)
   }
   const handleChannelDragEnd = () => {
@@ -240,10 +290,13 @@ function Sidebar({
   const isDragging = useRef(false)
   const sidebarRef = useRef(null)
 
-  // Slide channels to their new positions when the order changes.
-  useFlip(sidebarRef, [channelOrderKey], {
+  // Slide displaced channels to their new positions as one synchronized block
+  // when the order changes (a move's shifted siblings, or the rows below an
+  // insertion). The moved/added row itself is skipped ('entering' pops instead),
+  // so rows never slide through one another.
+  useBlockShift(sidebarRef, channelOrderKey, {
     selector: '.channel-item[data-flip-key]',
-    enabled: channelAnimEnabled && !channelEntering
+    enabled: channelAnimEnabled
   })
 
   const onMouseDown = useCallback((e) => {
@@ -330,7 +383,7 @@ function Sidebar({
             ref={(el) => {
               channelRefs.current[ch.id] = el
             }}
-            animStatus={status}
+            animStatus={movedChannelId === ch.id ? 'entering' : status}
             channel={ch}
             draggable
             onDragStart={handleChannelDragStart(ch.id)}
