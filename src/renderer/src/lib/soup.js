@@ -681,6 +681,15 @@ export async function republish(micSettings, onStream) {
 
   const newTracks = processedStream.getTracks()
 
+  // The socket can drop while we were awaiting getUserMedia / the audio
+  // processor above; onclose then runs resetMediaState(), closing the transport
+  // and the producers we captured. Bail rather than produce/replaceTrack on a
+  // corpse (InvalidStateError: closed) — the reconnect path re-publishes fresh.
+  if (!producerTransport || producerTransport.closed) {
+    stopAudioProcessor()
+    return
+  }
+
   if (audioProducers.length === 0) {
     // No existing producer to reuse (first publish hasn't happened yet) -
     // produce fresh, mirroring publish().
@@ -712,7 +721,7 @@ export async function republish(micSettings, onStream) {
   for (let i = 0; i < audioProducers.length; i++) {
     const producer = audioProducers[i]
     const track = newTracks[i]
-    if (!track) continue
+    if (!track || producer.closed) continue
 
     await producer.replaceTrack({ track })
 

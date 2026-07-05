@@ -43,8 +43,8 @@ function Admin() {
         ...(token ? { Authorization: `Bearer ${token}` } : {})
       },
       body: JSON.stringify({
-        client_id: parseInt(selectedClient),
-        channel_id: parseInt(selectedChannel)
+        client_id: selectedClient,
+        channel_id: selectedChannel
       })
     })
       .then(() => setStatus('Moved successfully'))

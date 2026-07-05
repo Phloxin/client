@@ -1,4 +1,3 @@
-import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { HashRouter } from 'react-router-dom'
 import { AuthProvider } from './context/AuthContext'
@@ -31,16 +30,16 @@ const applySaved = (key, apply) => {
 applySaved('appearanceSettings', applyAppearanceSettings)
 applySaved('animationSettings', applyAnimationSettings)
 
+// StrictMode intentionally left off: its dev-only double-render made dev diverge
+// from production (it double-invokes renders/effects, which prod never does).
 createRoot(document.getElementById('root')).render(
-  <StrictMode>
-    <ErrorBoundary>
-      <HashRouter>
-        <AuthProvider>
-          <SettingsProvider>
-            <App />
-          </SettingsProvider>
-        </AuthProvider>
-      </HashRouter>
-    </ErrorBoundary>
-  </StrictMode>
+  <ErrorBoundary>
+    <HashRouter>
+      <AuthProvider>
+        <SettingsProvider>
+          <App />
+        </SettingsProvider>
+      </AuthProvider>
+    </HashRouter>
+  </ErrorBoundary>
 )
