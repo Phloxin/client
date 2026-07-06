@@ -1224,7 +1224,7 @@ function applyAllAudioState() {
     let gain
     if (entry.producedType === 'ScreenShareAudio') {
       // Only the focused stream's screen-share audio should be audible.
-      const audible = entry.clientId === focusedClientId && !(soundMuted || focusedMuted)
+      const audible = entry.clientId === focusedClientId && !focusedMuted
       gain = audible ? focusedVolume * masterVolume : 0
     } else {
       const override = clientAudioOverrides.get(entry.clientId)
