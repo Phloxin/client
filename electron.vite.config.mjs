@@ -13,15 +13,6 @@ export default defineConfig({
         '@renderer': resolve('src/renderer/src')
       }
     },
-    plugins: [react()],
-    server: {
-      proxy: {
-        '/voice': {
-          target: 'ws://47.16.222.82:3000',
-          changeOrigin: true,
-          ws: true
-        }
-      }
-    }
+    plugins: [react()]
   }
 })

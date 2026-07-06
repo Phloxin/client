@@ -10,14 +10,14 @@ export function setServerHost(host) {
   currentHost = host
 }
 
-// HTTP API base, e.g. http://1.2.3.4:3000
+// HTTP API base, e.g. https://1.2.3.4:3000
 export function apiBase() {
-  return `http://${currentHost}`
+  return `https://${currentHost}`
 }
 
-// WebSocket base, e.g. ws://1.2.3.4:3000 (append /ws or /voice)
+// WebSocket base, e.g. wss://1.2.3.4:3000 (append /ws or /voice)
 export function wsBase() {
-  return `ws://${currentHost}`
+  return `wss://${currentHost}`
 }
 
 // Throw on a failed API response, preferring the server's human-readable

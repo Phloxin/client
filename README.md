@@ -93,7 +93,7 @@ my-app/
 ├── build/                          # Packaging resources (icon.ico, entitlements)
 ├── resources/
 │   └── icon.png                    # App icon (non-Windows)
-├── electron.vite.config.mjs        # electron-vite config (dev /voice ws proxy)
+├── electron.vite.config.mjs        # electron-vite config
 ├── electron-builder.yml            # Win / mac / Linux packaging targets
 ├── src/
 │   ├── main/
@@ -333,7 +333,6 @@ Other scripts: `npm run lint`, `npm run format`, `npm start` (preview a build).
 
 - **Frameless window:** the renderer draws its own title bar; window minimums are content-area sizes derived from the sidebar layout so controls never clip.
 - **CSP:** `src/renderer/index.html` restricts sources but allows `http/https/ws/wss` connections (any server host), `blob:`/`data:` media, WASM eval (RNNoise), and YouTube frames for embeds.
-- **Dev proxy:** `electron.vite.config.mjs` proxies the `/voice` WebSocket in dev. The HTTP API and `/ws` are hit directly at the active host.
 - **DEV_MODE** (`lib/mock.js`): renders the full UI with mock channels/clients/streams and no backend.
   </content>
   </invoke>

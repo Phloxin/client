@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import './Admin.css'
 import { useAuth } from '../context/AuthContext'
 
-const API_BASE_URL = 'http://47.16.222.82:3000'
+const API_BASE_URL = 'https://47.16.222.82:3000'
 
 function Admin() {
   const { token, setToken } = useAuth()
