@@ -61,6 +61,23 @@ function installAppDeps() {
   )
 }
 
+// Build the Rust N-API screenshare-audio addon (native/audio-capture). N-API is
+// ABI-stable, so unlike uiohook-napi it does not need an Electron-specific
+// rebuild - one cargo build serves both dev (system Node) and Electron.
+function buildNativeAddon() {
+  const cargoCheck = spawnSync('cargo', ['--version'], { stdio: 'ignore', shell: process.platform === 'win32' })
+  if (cargoCheck.error || cargoCheck.status !== 0) {
+    console.warn(
+      '[postinstall] cargo not found - skipping native/audio-capture build. ' +
+        'Screenshare audio capture will be unavailable; install Rust (https://rustup.rs) and re-run npm install.'
+    )
+    return
+  }
+
+  const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm'
+  run(npmCmd, ['--prefix', 'native/audio-capture', 'run', 'build'], 'audio-capture native build')
+}
+
 function repairElectronInstall() {
   console.warn(
     `[postinstall] Electron was left in a partial install state under Node ${process.versions.node}. Retrying the Electron binary install with Node 22.`
@@ -89,6 +106,7 @@ function repairElectronInstall() {
 
 try {
   installAppDeps()
+  buildNativeAddon()
 
   if (!hasCompleteElectronInstall()) {
     repairElectronInstall()

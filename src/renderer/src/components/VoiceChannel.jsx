@@ -233,6 +233,14 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     })
   }
 
+  // Native audio capture died mid-share; the video share continues.
+  const handleScreenAudioError = (message) => {
+    setError(
+      `Screen share audio stopped (${message}). Video is still sharing - ` +
+        `restart the share to retry audio, or pick "Entire system" audio if it keeps failing.`
+    )
+  }
+
   const handleVideoStream = ({ stream, kind, consumerId, clientId }) => {
     // Don't bake in the client's name here - the clients list for this
     // channel may not have caught up with this client's channel move yet.
@@ -313,7 +321,8 @@ const VoiceChannel = forwardRef(function VoiceChannel(
       onVideoStream: handleVideoStream,
       onClientSpeaking: handleClientSpeaking,
       onConsumerClosed: handleConsumerClosed,
-      onTransportsDisconnected: handleConnectEstablished
+      onTransportsDisconnected: handleConnectEstablished,
+      onScreenAudioError: handleScreenAudioError
     })
 
     try {
@@ -339,7 +348,8 @@ const VoiceChannel = forwardRef(function VoiceChannel(
       onVideoStream: handleVideoStream,
       onClientSpeaking: handleClientSpeaking,
       onConsumerClosed: handleConsumerClosed,
-      onTransportsDisconnected: handleConnectEstablished
+      onTransportsDisconnected: handleConnectEstablished,
+      onScreenAudioError: handleScreenAudioError
     })
     setError(null)
     setConnecting(false)
@@ -387,8 +397,11 @@ const VoiceChannel = forwardRef(function VoiceChannel(
         // hand-off, and no audio/fps/resolution settings.
         screen = await shareCamera(sourceId)
       } else {
-        // Tell the main process which source the display-media handler should use
-        window.electron.ipcRenderer.send('set-screen-source', sourceId)
+        // Tell the main process which source and audio mode the display-media
+        // handler should use. sourceId is null on Wayland, where the OS portal
+        // does the picking when getDisplayMedia runs.
+        window.electron.ipcRenderer.send('set-screen-audio-mode', options.audioMode ?? 'none')
+        window.electron.ipcRenderer.send('set-screen-source', sourceId ?? null)
         screen = await shareScreen(options)
       }
       if (screen?.stream) {

@@ -1,10 +1,17 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { motion } from 'motion/react'
 import { useAnimationCategory } from '../context/SettingsContext'
 import { overlayPop } from '../lib/motionPresets'
 import SegmentedTabs from './SegmentedTabs'
 import './ScreenSourcePicker.css'
-import { IconDeviceDesktop, IconAppWindow, IconLoader2, IconCamera } from '@tabler/icons-react'
+import {
+  IconDeviceDesktop,
+  IconAppWindow,
+  IconLoader2,
+  IconCamera,
+  IconScreenShare
+} from '@tabler/icons-react'
+import { getScreenAudioCapabilities, listScreenAudioApps } from '../lib/screenAudio'
 
 const RESOLUTIONS = [
   { label: '720p', width: 1280, height: 720 },
@@ -15,8 +22,58 @@ const RESOLUTIONS = [
   // { label: '4K',    width: 3840, height: 2160 },
 ]
 
+// Audio-source choices for a share, gated on what the native capture backend
+// can do. Order matters: the first entry is the default for that tab.
+function audioOptionsFor(tab, caps) {
+  if (!caps || caps.backend === 'none') {
+    // No native backend: only Chromium's whole-system loopback or nothing.
+    return [
+      { value: 'system-legacy', label: 'Entire system' },
+      { value: 'none', label: 'No audio' }
+    ]
+  }
+  const isWindows = caps.platform === 'win32'
+  const appOption = {
+    value: 'app',
+    label: isWindows ? "This window's app only" : 'Specific apps…'
+  }
+  const options = []
+  if (tab === 'windows') {
+    if (caps.perApp) options.push(appOption)
+    if (caps.excludeSelf)
+      options.push({ value: 'system-exclude-self', label: 'System (minus this app)' })
+  } else {
+    if (caps.excludeSelf)
+      options.push({ value: 'system-exclude-self', label: 'System (minus this app)' })
+    // Per-app selection with a screen share is meaningful on Linux, where
+    // audio apps are picked independently of the video source.
+    if (caps.perApp && !isWindows) options.push(appOption)
+  }
+  if (caps.system) options.push({ value: 'system', label: 'Entire system' })
+  options.push({
+    value: 'system-legacy',
+    label: caps.system ? 'Entire system (legacy)' : 'Entire system'
+  })
+  options.push({ value: 'none', label: 'No audio' })
+  return options
+}
+
+// Preselect audio apps whose name plausibly matches the shared window's title.
+function matchAppsToWindow(apps, windowName) {
+  if (!windowName) return []
+  const title = windowName.toLowerCase()
+  return apps
+    .filter((app) => {
+      const name = app.name?.toLowerCase()
+      if (!name) return false
+      return title.includes(name) || name.includes(title)
+    })
+    .map((app) => app.id)
+}
+
 // Modal that lists capturable screens/windows (fetched from the main process)
-// and lets the user pick which one to share.
+// and lets the user pick which one to share. On Wayland the OS portal picks
+// the video source instead, so only audio/quality options are shown there.
 function ScreenSourcePicker({ onSelect, onCancel }) {
   const [sources, setSources] = useState(null)
   const [cameras, setCameras] = useState(null)
@@ -25,10 +82,39 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
   const [activeTab, setActiveTab] = useState('screens')
   const [fps, setFps] = useState(30)
   const [resolution, setResolution] = useState('1080p')
-  const [audio, setAudio] = useState(true)
+  // Bias the encoder toward sharp frames ('detail', for text/UI) or smooth
+  // motion ('motion', for video-heavy shares). Threaded to soup as optimizeFor.
+  const [optimizeFor, setOptimizeFor] = useState('detail')
+  const [caps, setCaps] = useState(null)
+  const [audioMode, setAudioMode] = useState(null)
+  const [apps, setApps] = useState(null)
+  const [selectedApps, setSelectedApps] = useState(() => new Set())
   const overlayAnim = useAnimationCategory('overlays')
 
+  const isWayland = caps?.wayland === true
+  // null caps = still loading; treat as non-Wayland until known.
+  const capsLoaded = caps !== null
+
   useEffect(() => {
+    let cancelled = false
+    getScreenAudioCapabilities()
+      .then((result) => {
+        if (!cancelled) setCaps(result)
+      })
+      .catch(() => {
+        if (!cancelled)
+          setCaps({ backend: 'none', perApp: false, excludeSelf: false, system: false })
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  // Enumerate screens/windows for the source grid. Skipped on Wayland, where
+  // enumeration itself would pop the OS portal dialog - the portal picks the
+  // source when the share actually starts.
+  useEffect(() => {
+    if (!capsLoaded || isWayland) return
     let cancelled = false
     window.electron.ipcRenderer
       .invoke('get-screen-sources')
@@ -48,7 +134,7 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [capsLoaded, isWayland])
 
   // Enumerate connected webcams for the Devices tab. Labels are only populated
   // once camera permission has been granted; fall back to a generic name.
@@ -71,6 +157,48 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
   const screens = sources?.filter((s) => s.isScreen) ?? []
   const windows = sources?.filter((s) => !s.isScreen) ?? []
 
+  const audioOptions = useMemo(
+    () => audioOptionsFor(activeTab === 'windows' ? 'windows' : 'screens', caps),
+    [activeTab, caps]
+  )
+  // Default mode follows the tab until the user explicitly picks one that the
+  // current tab also offers.
+  const effectiveAudioMode = audioOptions.some((o) => o.value === audioMode)
+    ? audioMode
+    : audioOptions[0].value
+
+  const needsAppList = effectiveAudioMode === 'app' && caps?.platform !== 'win32'
+
+  // Load the audio-app list when per-app mode gets selected (Linux). A stale
+  // list may show briefly on re-entry; it's replaced when the fetch resolves.
+  useEffect(() => {
+    if (!needsAppList) return
+    let cancelled = false
+    listScreenAudioApps()
+      .then((result) => {
+        if (cancelled) return
+        setApps(result)
+        const windowName = sources?.find((s) => s.id === selectedId)?.name
+        setSelectedApps(new Set(matchAppsToWindow(result, windowName)))
+      })
+      .catch(() => {
+        if (!cancelled) setApps([])
+      })
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [needsAppList])
+
+  const toggleApp = (id) => {
+    setSelectedApps((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
   // Switch tabs and move the selection to that tab's first item, so the
   // selected source always matches what's visible.
   const switchTab = (tab) => {
@@ -80,14 +208,34 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
     else setSelectedId(cameras?.[0]?.deviceId ?? null)
   }
 
-  const confirm = () => {
-    if (!selectedId) return
+  const shareDisabled =
+    activeTab === 'devices'
+      ? !selectedId
+      : (!isWayland && !selectedId) || (needsAppList && (apps === null || selectedApps.size === 0))
+
+  const confirmWith = (id) => {
     if (activeTab === 'devices') {
-      onSelect(selectedId, { isCamera: true })
+      if (id) onSelect(id, { isCamera: true })
       return
     }
     const res = RESOLUTIONS.find((r) => r.label === resolution)
-    onSelect(selectedId, { fps, audio, width: res.width, height: res.height })
+    let audioTargets = null
+    if (effectiveAudioMode === 'app') {
+      audioTargets = caps?.platform === 'win32' ? [id] : [...selectedApps]
+    }
+    onSelect(id, {
+      fps,
+      width: res.width,
+      height: res.height,
+      audioMode: effectiveAudioMode,
+      audioTargets,
+      optimizeFor
+    })
+  }
+
+  const confirm = () => {
+    if (shareDisabled) return
+    confirmWith(isWayland && activeTab !== 'devices' ? null : selectedId)
   }
 
   const renderSource = (source) => (
@@ -96,7 +244,7 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
       type="button"
       className={`source-card${selectedId === source.id ? ' selected' : ''}`}
       onClick={() => setSelectedId(source.id)}
-      onDoubleClick={() => onSelect(source.id)}
+      onDoubleClick={() => confirmWith(source.id)}
     >
       <div className="source-thumb">
         <img src={source.thumbnail} alt={source.name} />
@@ -125,6 +273,13 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
     </button>
   )
 
+  const sourceTabs = isWayland
+    ? [{ id: 'screens', label: 'Screen / Window', icon: <IconDeviceDesktop size={15} /> }]
+    : [
+        { id: 'screens', label: 'Screens', icon: <IconDeviceDesktop size={15} /> },
+        { id: 'windows', label: 'Windows', icon: <IconAppWindow size={15} /> }
+      ]
+
   return (
     <div className="source-picker-overlay" onClick={onCancel}>
       <motion.div
@@ -135,11 +290,10 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
         <div className="source-picker-tabs">
           <SegmentedTabs
             ariaLabel="Capture source type"
-            active={activeTab}
+            active={activeTab === 'windows' && isWayland ? 'screens' : activeTab}
             onChange={switchTab}
             tabs={[
-              { id: 'screens', label: 'Screens', icon: <IconDeviceDesktop size={15} /> },
-              { id: 'windows', label: 'Windows', icon: <IconAppWindow size={15} /> },
+              ...sourceTabs,
               { id: 'devices', label: 'Devices', icon: <IconCamera size={15} /> }
             ]}
           />
@@ -159,6 +313,11 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
             ) : (
               <div className="source-picker-loading">No cameras found</div>
             )
+          ) : isWayland ? (
+            <div className="picker-portal-note">
+              <IconScreenShare size={40} />
+              <p>Your desktop will ask which screen or window to share when the stream starts.</p>
+            </div>
           ) : !sources && !error ? (
             <div className="source-picker-loading">
               <IconLoader2 size={32} className="spin" />
@@ -171,6 +330,35 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
           ) : (
             <div className="source-picker-loading">No {activeTab} found</div>
           )}
+
+          {activeTab !== 'devices' && needsAppList && (
+            <div className="picker-app-list">
+              <div className="picker-app-list-title">Share audio from:</div>
+              {apps === null ? (
+                <div className="source-picker-loading">
+                  <IconLoader2 size={20} className="spin" />
+                  Finding apps playing audio…
+                </div>
+              ) : apps.length === 0 ? (
+                <div className="picker-app-list-empty">
+                  No apps are playing audio right now. Start playback and reopen this picker, or
+                  choose a different audio source.
+                </div>
+              ) : (
+                apps.map((app) => (
+                  <label key={app.id} className="picker-app-item">
+                    <input
+                      type="checkbox"
+                      checked={selectedApps.has(app.id)}
+                      onChange={() => toggleApp(app.id)}
+                    />
+                    <span className="picker-app-name">{app.name}</span>
+                    {app.binary && <span className="picker-app-binary">{app.binary}</span>}
+                  </label>
+                ))
+              )}
+            </div>
+          )}
         </div>
 
         <div className="source-picker-footer">
@@ -182,14 +370,17 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
             <div className="picker-quality">
               <div className="picker-quality-group">
                 <span className="picker-quality-label">Audio</span>
-                <label className="toggle-switch">
-                  <input
-                    type="checkbox"
-                    checked={audio}
-                    onChange={(e) => setAudio(e.target.checked)}
-                  />
-                  <span className="toggle-slider" />
-                </label>
+                <select
+                  className="picker-audio-select"
+                  value={effectiveAudioMode}
+                  onChange={(e) => setAudioMode(e.target.value)}
+                >
+                  {audioOptions.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
               </div>
 
               <div className="picker-quality-group">
@@ -223,6 +414,25 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
                   ))}
                 </div>
               </div>
+
+              <div className="picker-quality-group">
+                <span className="picker-quality-label">Optimize</span>
+                <div className="picker-segment">
+                  {[
+                    { value: 'detail', label: 'Detail' },
+                    { value: 'motion', label: 'Motion' }
+                  ].map(({ value, label }) => (
+                    <button
+                      key={value}
+                      type="button"
+                      className={`picker-segment-btn${optimizeFor === value ? ' active' : ''}`}
+                      onClick={() => setOptimizeFor(value)}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
           )}
 
@@ -234,7 +444,7 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
               type="button"
               className="picker-btn primary"
               onClick={confirm}
-              disabled={!selectedId}
+              disabled={shareDisabled}
             >
               Share
             </button>

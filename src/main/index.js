@@ -18,6 +18,7 @@ import iconIco from '../../build/icon.ico?asset'
 // Windows taskbar/window uses the .ico; other platforms keep the png.
 const icon = process.platform === 'win32' ? iconIco : iconPng
 import { setupGlobalKeybinds, stopGlobalKeybinds } from './keybinds'
+import { setupAudioCapture, stopAudioCaptureHost } from './audioCapture'
 
 // On Linux, safeStorage requires a running secret service (GNOME Keyring / KWallet).
 // If neither is available, isEncryptionAvailable() returns false and the server list
@@ -25,6 +26,47 @@ import { setupGlobalKeybinds, stopGlobalKeybinds } from './keybinds'
 // so encryption is always available as a fallback.
 if (process.platform === 'linux') {
   app.commandLine.appendSwitch('password-store', 'basic')
+}
+
+// Chromium feature flags are accumulated here because appendSwitch OVERWRITES
+// a previously-set 'enable-features' value - every feature must go through a
+// single comma-joined switch.
+const enableFeatures = []
+
+// On Wayland, window/screen enumeration and capture must go through
+// xdg-desktop-portal + PipeWire; without this flag getDisplayMedia can only
+// see X11/XWayland surfaces. The portal presents its own picker dialog when
+// capture starts (see the display-media handler below).
+const isWayland = process.platform === 'linux' && process.env.XDG_SESSION_TYPE === 'wayland'
+if (isWayland) {
+  enableFeatures.push('WebRTCPipeWireCapturer')
+}
+
+// Opt-in hardware video accel experiment (VOIP_HW_ACCEL=1): offloads VP9/AV1
+// decode - and encode where the driver supports it - to VA-API/GPU instead of
+// libvpx/libaom software paths, the dominant CPU cost while screensharing.
+// Gated because it is driver-dependent (black frames / silent SW fallback on
+// bad stacks). Verify with chrome://gpu and getStats() encoderImplementation/
+// decoderImplementation. Escalations for stubborn drivers (add to the list
+// manually when testing): VaapiIgnoreDriverChecks, VaapiOnNvidiaGPUs.
+if (process.platform === 'linux' && process.env.VOIP_HW_ACCEL) {
+  enableFeatures.push(
+    'VaapiVideoDecoder',
+    'AcceleratedVideoDecodeLinuxGL',
+    'AcceleratedVideoEncoder'
+  )
+  app.commandLine.appendSwitch('ignore-gpu-blocklist')
+}
+
+// Windows capture note: modern Chromium may already default to Windows
+// Graphics Capture (WGC) for window shares. Before adding any WGC feature
+// flags here, verify the exact feature names against a Windows Electron
+// binary (`strings electron.exe | findstr /i wgc`) and test occluded-window
+// capture - names cannot be verified from a Linux checkout and must not be
+// guessed.
+
+if (enableFeatures.length > 0) {
+  app.commandLine.appendSwitch('enable-features', enableFeatures.join(','))
 }
 
 // Store auth token in main process so it persists across windows
@@ -157,7 +199,10 @@ function createWindow() {
     ...(process.platform !== 'darwin' ? { icon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
-      sandbox: false
+      sandbox: false,
+      // Live calls run 25Hz timer loops (volume gate, speaking detection) that
+      // Chromium would throttle to ~1Hz while the window is hidden/minimized.
+      backgroundThrottling: false
     }
   })
 
@@ -190,7 +235,10 @@ function createWindow() {
           backgroundColor: '#1e1e1e',
           webPreferences: {
             preload: join(__dirname, '../preload/index.js'),
-            sandbox: false
+            sandbox: false,
+            // Same as the main window: keep call timers at full rate while
+            // the popout is hidden behind other windows.
+            backgroundThrottling: false
           }
         }
       }
@@ -225,6 +273,13 @@ app.whenReady().then(() => {
   // The source the renderer's picker selected for the next screen-share
   // request. Read by the display-media handler below when getDisplayMedia runs.
   let selectedScreenSourceId = null
+  // Where the next share's audio comes from. Only 'system-legacy' uses
+  // Chromium's whole-system loopback; every other mode gets audio from the
+  // native audio-capture pipeline (or none), so the display stream is video-only.
+  let selectedAudioMode = 'none'
+  // Sources from the picker's last enumeration, so the display-media handler
+  // doesn't have to re-enumerate every window just to find the chosen one.
+  let cachedScreenSources = []
 
   // Return the list of capturable screens/windows (with thumbnails) so the
   // renderer can show its own source picker.
@@ -234,6 +289,7 @@ app.whenReady().then(() => {
       thumbnailSize: { width: 320, height: 180 },
       fetchWindowIcons: true
     })
+    cachedScreenSources = sources
     return sources.map((source) => ({
       id: source.id,
       name: source.name,
@@ -248,13 +304,32 @@ app.whenReady().then(() => {
     selectedScreenSourceId = sourceId
   })
 
+  // Remember the audio mode for the upcoming share (see soup.js shareScreen).
+  ipcMain.on('set-screen-audio-mode', (_, mode) => {
+    selectedAudioMode = typeof mode === 'string' ? mode : 'none'
+  })
+
   // Enable screen capture via getDisplayMedia in renderer. Honors the source
-  // chosen via the picker, falling back to the first available source.
+  // chosen via the picker; on Wayland the enumeration below opens the OS
+  // portal dialog, which does the picking itself.
   session.defaultSession.setDisplayMediaRequestHandler((request, callback) => {
-    desktopCapturer.getSources({ types: ['screen', 'window'] }).then((sources) => {
-      const chosen = sources.find((s) => s.id === selectedScreenSourceId) || sources[0]
-      callback({ video: chosen, audio: 'loopback' })
-    })
+    const audio = selectedAudioMode === 'system-legacy' ? 'loopback' : false
+
+    const cached = cachedScreenSources.find((s) => s.id === selectedScreenSourceId)
+    if (cached && !isWayland) {
+      callback({ video: cached, audio })
+      return
+    }
+    desktopCapturer
+      .getSources({ types: ['screen', 'window'] })
+      .then((sources) => {
+        const chosen = sources.find((s) => s.id === selectedScreenSourceId) || sources[0]
+        callback({ video: chosen, audio })
+      })
+      .catch((err) => {
+        console.error('[Main] display-media source enumeration failed:', err)
+        callback({})
+      })
   })
 
   // IPC test
@@ -461,6 +536,9 @@ app.whenReady().then(() => {
   // OS-wide passive keybinds for mute/deafen (see keybinds.js).
   setupGlobalKeybinds()
 
+  // Native per-app screenshare audio capture (audiocapture:* IPC).
+  setupAudioCapture()
+
   app.on('activate', function () {
     // On macOS it's common to re-create a window in the app when the
     // dock icon is clicked and there are no other windows open.
@@ -480,6 +558,9 @@ app.on('window-all-closed', () => {
 // Tear down the global keyboard hook so the native listener thread doesn't
 // linger past quit.
 app.on('will-quit', stopGlobalKeybinds)
+
+// Stop native capture threads and their utility process with the app.
+app.on('will-quit', stopAudioCaptureHost)
 
 // In this file you can include the rest of your app's specific main process
 // code. You can also put them in separate files and require them here.
