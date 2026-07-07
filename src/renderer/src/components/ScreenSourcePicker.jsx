@@ -331,6 +331,14 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
             <div className="source-picker-loading">No {activeTab} found</div>
           )}
 
+          {activeTab !== 'devices' && capsLoaded && caps.backend === 'none' && (
+            <div className="picker-audio-warning" title={caps.reason || undefined}>
+              Per-app audio filtering is unavailable on this machine
+              {caps.reason ? ` (${caps.reason})` : ''} — &quot;Entire system&quot; captures all
+              system audio.
+            </div>
+          )}
+
           {activeTab !== 'devices' && needsAppList && (
             <div className="picker-app-list">
               <div className="picker-app-list-title">Share audio from:</div>

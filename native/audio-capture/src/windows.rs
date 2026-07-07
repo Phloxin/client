@@ -212,22 +212,25 @@ fn init_com() {
 pub fn capabilities() -> Capabilities {
   // Throwaway activation against our own (silent) process: proves the
   // process-loopback virtual device exists on this Windows build.
-  let available = thread::spawn(|| {
+  let probe = thread::spawn(|| {
     init_com();
     activate_process_loopback(
       unsafe { GetCurrentProcessId() },
       PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE,
     )
-    .is_ok()
+    .map(|_| ())
   })
   .join()
-  .unwrap_or(false);
+  .unwrap_or_else(|_| Err("capability probe thread panicked".into()));
 
+  let reason = probe.err();
+  let available = reason.is_none();
   Capabilities {
     backend: if available { "wasapi-process-loopback".into() } else { "none".into() },
     per_app: available,
     exclude_self: available,
     system: available,
+    reason,
   }
 }
 

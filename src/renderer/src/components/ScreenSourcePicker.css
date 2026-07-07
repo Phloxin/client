@@ -353,3 +353,14 @@
   text-align: center;
   padding: 0 32px;
 }
+
+/* ─── Native-capture-unavailable warning ────────────────────────── */
+.picker-audio-warning {
+  margin-top: 10px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  background: color-mix(in srgb, #e5a50a 12%, transparent);
+  border: 1px solid color-mix(in srgb, #e5a50a 35%, transparent);
+}

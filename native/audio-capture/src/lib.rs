@@ -33,6 +33,8 @@ pub struct Capabilities {
   pub exclude_self: bool,
   /// Can capture plain system-wide audio through this addon
   pub system: bool,
+  /// When backend is 'none': why the capability probe failed
+  pub reason: Option<String>,
 }
 
 #[napi(object)]
@@ -70,6 +72,7 @@ pub fn capabilities() -> Capabilities {
       per_app: false,
       exclude_self: false,
       system: false,
+      reason: Some("unsupported platform".into()),
     }
   }
 }

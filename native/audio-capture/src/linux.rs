@@ -142,12 +142,14 @@ fn roundtrip(mainloop: &pw::main_loop::MainLoopRc, core: &pw::core::CoreRc) {
 }
 
 pub fn capabilities() -> Capabilities {
-  let available = connect().is_ok();
+  let reason = connect().err().map(|e| format!("PipeWire connect failed: {e}"));
+  let available = reason.is_none();
   Capabilities {
     backend: if available { "pipewire".into() } else { "none".into() },
     per_app: available,
     exclude_self: available,
     system: available,
+    reason,
   }
 }
 

@@ -76,7 +76,13 @@ function ensureHost() {
 
   capabilitiesPromise = hostRequest('init', 'capabilities').catch((err) => {
     console.error('[audioCapture] host init failed:', err.message)
-    return { backend: 'none', perApp: false, excludeSelf: false, system: false }
+    return {
+      backend: 'none',
+      perApp: false,
+      excludeSelf: false,
+      system: false,
+      reason: err.message
+    }
   })
   return capabilitiesPromise
 }
@@ -89,13 +95,17 @@ export function setupAudioCapture() {
   ipcMain.handle('audiocapture:get-capabilities', async () => {
     try {
       const caps = await ensureHost()
+      if (caps.backend === 'none' && caps.reason) {
+        console.warn('[audioCapture] native capture unavailable:', caps.reason)
+      }
       return { ...caps, wayland: isWayland, platform: process.platform }
-    } catch {
+    } catch (err) {
       return {
         backend: 'none',
         perApp: false,
         excludeSelf: false,
         system: false,
+        reason: err?.message ?? 'audio capture host unavailable',
         wayland: isWayland,
         platform: process.platform
       }

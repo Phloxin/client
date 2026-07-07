@@ -102,7 +102,12 @@ export async function stopScreenAudio() {
 }
 
 export function getScreenAudioCapabilities() {
-  return window.api.screenAudio.getCapabilities()
+  return window.api.screenAudio.getCapabilities().then((caps) => {
+    if (caps?.backend === 'none' && caps?.reason) {
+      console.warn('[ScreenAudio] native capture unavailable:', caps.reason)
+    }
+    return caps
+  })
 }
 
 export function listScreenAudioApps() {

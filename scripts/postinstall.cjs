@@ -37,11 +37,12 @@ function hasCompleteElectronInstall() {
   return fs.readFileSync(markerFile, 'utf8').trim() === executablePath
 }
 
-function run(command, args, label) {
+function run(command, args, label, options = {}) {
   const result = spawnSync(command, args, {
     cwd: projectRoot,
     env: process.env,
-    stdio: 'inherit'
+    stdio: 'inherit',
+    ...options
   })
 
   if (result.error) {
@@ -65,7 +66,10 @@ function installAppDeps() {
 // ABI-stable, so unlike uiohook-napi it does not need an Electron-specific
 // rebuild - one cargo build serves both dev (system Node) and Electron.
 function buildNativeAddon() {
-  const cargoCheck = spawnSync('cargo', ['--version'], { stdio: 'ignore', shell: process.platform === 'win32' })
+  const cargoCheck = spawnSync('cargo', ['--version'], {
+    stdio: 'ignore',
+    shell: process.platform === 'win32'
+  })
   if (cargoCheck.error || cargoCheck.status !== 0) {
     console.warn(
       '[postinstall] cargo not found - skipping native/audio-capture build. ' +
@@ -74,8 +78,19 @@ function buildNativeAddon() {
     return
   }
 
-  const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm'
-  run(npmCmd, ['--prefix', 'native/audio-capture', 'run', 'build'], 'audio-capture native build')
+  try {
+    // npm is npm.cmd on Windows; batch files must be spawned through a shell
+    // (Node >= 18.20 rejects them with EINVAL otherwise).
+    run('npm', ['--prefix', 'native/audio-capture', 'run', 'build'], 'audio-capture native build', {
+      shell: process.platform === 'win32'
+    })
+  } catch (error) {
+    console.warn(
+      `[postinstall] native/audio-capture build failed: ${error.message}. ` +
+        'Screenshare audio filtering will be unavailable until "npm run build:native" succeeds ' +
+        '(needs the Rust toolchain; on Windows also the MSVC build tools).'
+    )
+  }
 }
 
 function repairElectronInstall() {
