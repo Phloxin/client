@@ -53,6 +53,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     onPoke,
     onKick,
     onKickFromChannel,
+    onGag,
     onBan,
     onUnban,
     onSetAvatar,
@@ -62,6 +63,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     onRemoveRole,
     canKickMembers,
     canBanMembers,
+    canMuteMembers,
     previewing,
     unread,
     animStatus,
@@ -487,6 +489,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
           onPoke={onPoke}
           onKick={onKick}
           onKickFromChannel={onKickFromChannel}
+          onGag={onGag}
           onBan={onBan}
           onUnban={onUnban}
           onSetAvatar={onSetAvatar}
@@ -496,6 +499,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
           onRemoveRole={onRemoveRole}
           canKickMembers={canKickMembers}
           canBanMembers={canBanMembers}
+          canMuteMembers={canMuteMembers}
         />
       ))}
       {showSourcePicker && (

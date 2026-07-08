@@ -58,6 +58,7 @@ const STREAM_BASELINE_MS = 2000
 
 // Permission bits (u64, mirroring the server's Permissions bitflags). Held as
 // BigInt because ADMINISTRATOR is 1<<62, well past JS's safe-integer range.
+const PERM_MUTE_MEMBERS = 1n << 9n
 const PERM_KICK_MEMBERS = 1n << 10n
 const PERM_BAN_MEMBERS = 1n << 11n
 const PERM_MANAGE_CHANNELS = 1n << 5n
@@ -119,6 +120,21 @@ function dmOther(channel, selfId) {
     if (id !== selfId) return { id, name: r && typeof r === 'object' ? r.name : undefined }
   }
   return { id: undefined, name: undefined }
+}
+
+// Normalize a ClientApiObject's voice fields for the roster. Self toggles stay
+// `self_mute`/`self_deaf`; the server-forced pair (`muted`/`deaf` — a moderator
+// gag / server deafen) becomes `server_mute`/`server_deaf`, so `server_mute`
+// alone means "gagged". Also resolves the avatar URL.
+function normalizeClientVoice(c) {
+  return {
+    ...c,
+    avatar: cdnUrl(c.avatar),
+    self_mute: !!c.self_mute,
+    self_deaf: !!c.self_deaf,
+    server_mute: !!c.muted,
+    server_deaf: !!c.deaf
+  }
 }
 
 function Main() {
@@ -666,6 +682,7 @@ function Main() {
   // to keep the menu testable.
   const canKickMembers = DEV_MODE || isAdmin || (myPermissions & PERM_KICK_MEMBERS) !== 0n
   const canBanMembers = DEV_MODE || isAdmin || (myPermissions & PERM_BAN_MEMBERS) !== 0n
+  const canMuteMembers = DEV_MODE || isAdmin || (myPermissions & PERM_MUTE_MEMBERS) !== 0n
   // Editing a channel's permission overwrites needs MANAGE_CHANNELS or
   // MANAGE_ROLES (or admin). The server is authoritative; this only gates the UI.
   const canManageChannels =
@@ -1099,6 +1116,31 @@ function Main() {
     [handleMoveClientToChannel]
   )
 
+  // Gag / ungag a client: server-wide mute (PATCH /client { mute }) so they can't
+  // speak in any channel. The server broadcasts VoiceStateUpdate with the new
+  // server_mute, so we don't mutate locally on success — except in DEV_MODE.
+  const handleGagUser = useCallback(
+    async (userId, gag) => {
+      if (DEV_MODE) {
+        setClients((prev) =>
+          prev.map((c) => (String(c.id) === String(userId) ? { ...c, server_mute: gag } : c))
+        )
+        return
+      }
+      try {
+        const res = await fetch(`${apiBase()}/client/${userId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ mute: gag })
+        })
+        await throwIfError(res)
+      } catch (err) {
+        showError(`Failed to ${gag ? 'gag' : 'ungag'} user: ${err.message}`)
+      }
+    },
+    [token, showError]
+  )
+
   // Connect to a saved server: point all endpoints at its host, then log in with
   // its stored credentials. Setting the token triggers the data-loading effect.
   const handleConnect = async (server) => {
@@ -1341,16 +1383,11 @@ function Main() {
       // is the websocket's equivalent of the old REST baseline fetch.
       if (ev === 'Ready') {
         setChannels(data.channels)
-        // ClientApiObject uses `muted`/`deaf`; the rest of the UI uses
-        // `self_mute`/`self_deaf` - normalize on the way in.
-        setClients(
-          data.clients.map((c) => ({
-            ...c,
-            avatar: cdnUrl(c.avatar),
-            self_mute: c.muted,
-            self_deaf: c.deaf
-          }))
-        )
+        // Voice state splits into self toggles (`self_mute`/`self_deaf`) and
+        // server-forced state (`muted`/`deaf`, i.e. a moderator gag / server
+        // deafen). Normalize the server-forced pair to `server_mute`/`server_deaf`
+        // so `server_mute` alone means "gagged".
+        setClients(data.clients.map(normalizeClientVoice))
         // Seed read cursors (one entry per visible channel).
         const reads = {}
         for (const rs of data.read_states || []) {
@@ -1362,22 +1399,29 @@ function Main() {
         return
       }
 
-      // Audio status update (mic mute / deafen) broadcast from another client
+      // Voice state update broadcast for a client: self toggles + server-forced
+      // gag/deafen. Authoritative source for all mute/deafen state (ClientModified
+      // no longer carries it).
       if (ev === 'VoiceStateUpdate') {
-        const { client_id, muted, deaf } = data
+        const { client_id, muted, deaf, self_mute, self_deaf } = data
         setClients((prev) =>
-          prev.map((c) => (c.id === client_id ? { ...c, self_mute: muted, self_deaf: deaf } : c))
+          prev.map((c) =>
+            c.id === client_id
+              ? {
+                  ...c,
+                  self_mute: !!self_mute,
+                  self_deaf: !!self_deaf,
+                  server_mute: !!muted,
+                  server_deaf: !!deaf
+                }
+              : c
+          )
         )
         return
       }
 
       if (ev === 'NewUser') {
-        const entry = {
-          ...data,
-          avatar: cdnUrl(data.avatar),
-          self_mute: data.muted,
-          self_deaf: data.deaf
-        }
+        const entry = normalizeClientVoice(data)
         // Upsert by id: a kicked client is kept in the roster (kick = disconnect,
         // not removal), so should the server ever re-announce one on rejoin, we
         // replace the stale entry rather than adding a duplicate.
@@ -1919,6 +1963,7 @@ function Main() {
           onPoke={handlePoke}
           onKick={handleKickUser}
           onKickFromChannel={handleKickFromChannel}
+          onGag={handleGagUser}
           onBan={handleBanUser}
           onError={showError}
           onUnban={handleUnbanUser}
@@ -1930,6 +1975,7 @@ function Main() {
           bannedUsers={bannedUsers}
           canKickMembers={canKickMembers}
           canBanMembers={canBanMembers}
+          canMuteMembers={canMuteMembers}
           previewChannelId={previewChannelId}
           unreadChannelIds={unreadChannelIds}
         />

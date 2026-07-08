@@ -53,6 +53,7 @@ function Sidebar({
   onPoke,
   onKick,
   onKickFromChannel,
+  onGag,
   onBan,
   onUnban,
   onError,
@@ -64,6 +65,7 @@ function Sidebar({
   bannedUsers = [],
   canKickMembers,
   canBanMembers,
+  canMuteMembers,
   previewChannelId,
   unreadChannelIds
 }) {
@@ -409,6 +411,7 @@ function Sidebar({
             onPoke={onPoke}
             onKick={onKick}
             onKickFromChannel={onKickFromChannel}
+            onGag={onGag}
             onBan={onBan}
             onUnban={onUnban}
             onSetAvatar={onSetAvatar}
@@ -418,6 +421,7 @@ function Sidebar({
             onRemoveRole={onRemoveRole}
             canKickMembers={canKickMembers}
             canBanMembers={canBanMembers}
+            canMuteMembers={canMuteMembers}
             previewing={previewChannelId === ch.id}
             unread={!!unreadChannelIds?.has(ch.id)}
             onError={onError}
@@ -467,6 +471,7 @@ function Sidebar({
                 onOpenDm={onOpenDm}
                 onPoke={onPoke}
                 onKick={onKick}
+                onGag={onGag}
                 onBan={onBan}
                 onUnban={onUnban}
                 onSetAvatar={onSetAvatar}
@@ -476,6 +481,7 @@ function Sidebar({
                 onRemoveRole={onRemoveRole}
                 canKickMembers={canKickMembers}
                 canBanMembers={canBanMembers}
+                canMuteMembers={canMuteMembers}
               />
             ))
           })()}

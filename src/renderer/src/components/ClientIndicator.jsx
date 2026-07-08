@@ -40,6 +40,7 @@ function ClientIndicator({
   onPoke,
   onKick,
   onKickFromChannel,
+  onGag,
   onBan,
   onUnban,
   onSetAvatar,
@@ -49,6 +50,7 @@ function ClientIndicator({
   onRemoveRole,
   canKickMembers = false,
   canBanMembers = false,
+  canMuteMembers = false,
   isBanned = false
 }) {
   const initial = client.name?.charAt(0).toUpperCase() ?? '?'
@@ -139,9 +141,13 @@ function ClientIndicator({
   const canKickFromChannel = !isSelf && !rosterMode && !!onKickFromChannel && client.channel_id != null
   const canBan = !isSelf && canBanMembers
   const canUnban = !isSelf && canBanMembers && isBanned
+  // Gag = server-wide mute (PATCH /client { mute }), gated on MUTE_MEMBERS. Works
+  // from channel view and the roster, like ban.
+  const gagged = !!client.server_mute
+  const canGag = !isSelf && !!onGag && canMuteMembers
   const canAssignRole = !isSelf
   // The moderation section shows when any action on another user is available.
-  const canModerate = canAssignRole || canKick || canKickFromChannel || canBan
+  const canModerate = canAssignRole || canKick || canKickFromChannel || canGag || canBan
   // 'everyone' is implicit (every client has it) and 'owner' isn't hand-assigned,
   // so neither is an assignable option in the role picker.
   const assignableRoles = roles.filter((r) => {
@@ -253,10 +259,15 @@ function ClientIndicator({
   }
 
   let statusIcon
-  if (localMuted) {
+  if (gagged) {
+    // Server-wide gag (moderator mute) — outranks every other voice status.
+    statusIcon = (
+      <IconMoodSilence size={18} className="mic-indicator muted" aria-label="Gagged" />
+    )
+  } else if (localMuted) {
     // We muted this client locally — takes priority over their own voice status.
     statusIcon = (
-      <IconMoodSilence size={18} className="mic-indicator muted" aria-label="Muted by you" />
+      <IconVolumeOff size={18} className="mic-indicator muted" aria-label="Muted by you" />
     )
   } else if (deafened) {
     statusIcon = (
@@ -520,6 +531,19 @@ function ClientIndicator({
                         >
                           <IconDoorExit size={16} />
                           Kick From Channel
+                        </button>
+                      )}
+                      {canGag && (
+                        <button
+                          type="button"
+                          className="client-context-menu-item danger"
+                          onClick={() => {
+                            onGag?.(client.id, !gagged)
+                            setMenuPos(null)
+                          }}
+                        >
+                          <IconMoodSilence size={16} />
+                          {gagged ? 'Ungag' : 'Gag'}
                         </button>
                       )}
                       {canKick && (
