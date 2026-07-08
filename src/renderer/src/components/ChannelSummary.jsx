@@ -1,6 +1,7 @@
 import { useState, useRef, useLayoutEffect } from 'react'
 import './ClientSummary.css'
 import { IconVolume, IconPencil } from '@tabler/icons-react'
+import ChannelPermissions from './ChannelPermissions'
 
 // Inline editor for the channel description. Mirrors ChatPanel's MessageEditor:
 // auto-grows, Enter saves, Shift+Enter newlines, Escape cancels. Empty is allowed
@@ -67,7 +68,16 @@ function DescriptionEditor({ initialText, onSave, onCancel }) {
 // Channel details shown in the main area when "Channel Details" is picked from a
 // channel's right-click menu. Reuses the ClientSummary.css layout so the two
 // summary views match. The description is editable (hover → pencil).
-function ChannelSummary({ channel, memberCount = 0, onSaveDescription }) {
+function ChannelSummary({
+  channel,
+  memberCount = 0,
+  onSaveDescription,
+  roles,
+  clients,
+  canManagePermissions,
+  onSetOverwrite,
+  onDeleteOverwrite
+}) {
   const limit = channel?.user_limit || 0
   const [editing, setEditing] = useState(false)
   // Local copy so an edit shows immediately. Seeded from props; the view is keyed
@@ -122,6 +132,15 @@ function ChannelSummary({ channel, memberCount = 0, onSaveDescription }) {
           {memberCount} / {limit === 0 ? '∞' : limit}
         </p>
       </section>
+
+      <ChannelPermissions
+        channel={channel}
+        roles={roles}
+        clients={clients}
+        canManage={canManagePermissions}
+        onSet={onSetOverwrite}
+        onDelete={onDeleteOverwrite}
+      />
     </div>
   )
 }

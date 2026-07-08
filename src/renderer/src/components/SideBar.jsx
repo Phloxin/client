@@ -52,6 +52,7 @@ function Sidebar({
   onOpenDm,
   onPoke,
   onKick,
+  onKickFromChannel,
   onBan,
   onUnban,
   onSetAvatar,
@@ -406,6 +407,7 @@ function Sidebar({
             onOpenDm={onOpenDm}
             onPoke={onPoke}
             onKick={onKick}
+            onKickFromChannel={onKickFromChannel}
             onBan={onBan}
             onUnban={onUnban}
             onSetAvatar={onSetAvatar}

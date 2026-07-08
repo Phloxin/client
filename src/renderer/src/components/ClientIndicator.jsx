@@ -14,6 +14,7 @@ import {
   IconPhotoUp,
   IconUserShield,
   IconUserX,
+  IconDoorExit,
   IconBan,
   IconMoodSilence,
   IconCheck,
@@ -38,6 +39,7 @@ function ClientIndicator({
   onOpenDm,
   onPoke,
   onKick,
+  onKickFromChannel,
   onBan,
   onUnban,
   onSetAvatar,
@@ -130,11 +132,16 @@ function ClientIndicator({
   // permissions (the server enforces them too). Kick only boots a live session,
   // so it's channel-view only; ban + roles also work from the Users roster.
   const canKick = !isSelf && !rosterMode && canKickMembers
+  // Kick from channel just clears their channel (PATCH channel_id: null) — a much
+  // lighter action than a server kick, so it's not gated on canKickMembers; the
+  // server enforces MOVE_MEMBERS (incl. per-channel overwrites). Channel-view only
+  // and only when they're actually in a channel.
+  const canKickFromChannel = !isSelf && !rosterMode && !!onKickFromChannel && client.channel_id != null
   const canBan = !isSelf && canBanMembers
   const canUnban = !isSelf && canBanMembers && isBanned
   const canAssignRole = !isSelf
   // The moderation section shows when any action on another user is available.
-  const canModerate = canAssignRole || canKick || canBan
+  const canModerate = canAssignRole || canKick || canKickFromChannel || canBan
   // 'everyone' is implicit (every client has it) and 'owner' isn't hand-assigned,
   // so neither is an assignable option in the role picker.
   const assignableRoles = roles.filter((r) => {
@@ -502,6 +509,19 @@ function ClientIndicator({
                           )}
                         </div>
                       )}
+                      {canKickFromChannel && (
+                        <button
+                          type="button"
+                          className="client-context-menu-item danger"
+                          onClick={() => {
+                            onKickFromChannel?.(client.id)
+                            setMenuPos(null)
+                          }}
+                        >
+                          <IconDoorExit size={16} />
+                          Kick From Channel
+                        </button>
+                      )}
                       {canKick && (
                         <button
                           type="button"
@@ -509,7 +529,7 @@ function ClientIndicator({
                           onClick={() => setModAction('kick')}
                         >
                           <IconUserX size={16} />
-                          Kick User
+                          Kick From Server
                         </button>
                       )}
                       {canBan && (

@@ -60,6 +60,8 @@ const STREAM_BASELINE_MS = 2000
 // BigInt because ADMINISTRATOR is 1<<62, well past JS's safe-integer range.
 const PERM_KICK_MEMBERS = 1n << 10n
 const PERM_BAN_MEMBERS = 1n << 11n
+const PERM_MANAGE_CHANNELS = 1n << 5n
+const PERM_MANAGE_ROLES = 1n << 12n
 const PERM_ADMINISTRATOR = 1n << 62n
 
 // Append an entry to the feed, dropping the oldest entries once the cap is hit.
@@ -664,6 +666,12 @@ function Main() {
   // to keep the menu testable.
   const canKickMembers = DEV_MODE || isAdmin || (myPermissions & PERM_KICK_MEMBERS) !== 0n
   const canBanMembers = DEV_MODE || isAdmin || (myPermissions & PERM_BAN_MEMBERS) !== 0n
+  // Editing a channel's permission overwrites needs MANAGE_CHANNELS or
+  // MANAGE_ROLES (or admin). The server is authoritative; this only gates the UI.
+  const canManageChannels =
+    DEV_MODE ||
+    isAdmin ||
+    (myPermissions & (PERM_MANAGE_CHANNELS | PERM_MANAGE_ROLES)) !== 0n
 
   // Assign / remove a role. role_ids is updated on success (not optimistically),
   // so a server rejection — e.g. missing MANAGE_ROLES — doesn't leave a stale
@@ -994,6 +1002,65 @@ function Main() {
     }
   }
 
+  // Upsert a channel permission overwrite for a role or user (allow/deny are
+  // decimal bitfield strings). Like description/reorder, the server broadcasts
+  // ChannelUpdated with the new overwrites, so we don't mutate locally
+  // on success — except in DEV_MODE, which has no server.
+  const handleSetChannelOverwrite = async (channelId, targetId, targetType, allow, deny) => {
+    const overwrite = { id: String(targetId), type: targetType, allow, deny }
+    if (DEV_MODE) {
+      setChannels((prev) =>
+        prev.map((ch) => {
+          if (ch.id !== channelId) return ch
+          const rest = (ch.overwrites || []).filter(
+            (o) => !(o.type === targetType && String(o.id) === String(targetId))
+          )
+          return { ...ch, overwrites: [...rest, overwrite] }
+        })
+      )
+      return
+    }
+
+    try {
+      const res = await fetch(`${apiBase()}/channels/${channelId}/permissions/${targetId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ type: targetType, allow, deny })
+      })
+      await throwIfError(res)
+    } catch (err) {
+      showError(`Failed to update channel permissions: ${err.message}`)
+    }
+  }
+
+  const handleDeleteChannelOverwrite = async (channelId, targetId) => {
+    if (DEV_MODE) {
+      setChannels((prev) =>
+        prev.map((ch) =>
+          ch.id === channelId
+            ? {
+                ...ch,
+                overwrites: (ch.overwrites || []).filter(
+                  (o) => String(o.id) !== String(targetId)
+                )
+              }
+            : ch
+        )
+      )
+      return
+    }
+
+    try {
+      const res = await fetch(`${apiBase()}/channels/${channelId}/permissions/${targetId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` }
+      })
+      await throwIfError(res)
+    } catch (err) {
+      showError(`Failed to remove channel permission: ${err.message}`)
+    }
+  }
+
   // Move another client into a channel (drag their entry onto a channel header).
   // The server enforces permissions and broadcasts ClientModified, so we don't
   // mutate locally on success — except in DEV_MODE, which has no server.
@@ -1023,6 +1090,13 @@ function Main() {
       }
     },
     [clients, token, showError]
+  )
+
+  // Kick a client out of their voice channel (without disconnecting them from the
+  // server): clear their channel via the same PATCH the move uses, channel_id null.
+  const handleKickFromChannel = useCallback(
+    (userId) => handleMoveClientToChannel(userId, null),
+    [handleMoveClientToChannel]
   )
 
   // Connect to a saved server: point all endpoints at its host, then log in with
@@ -1298,10 +1372,20 @@ function Main() {
       }
 
       if (ev === 'NewUser') {
-        setClients((prev) => [
-          ...prev,
-          { ...data, avatar: cdnUrl(data.avatar), self_mute: data.muted, self_deaf: data.deaf }
-        ])
+        const entry = {
+          ...data,
+          avatar: cdnUrl(data.avatar),
+          self_mute: data.muted,
+          self_deaf: data.deaf
+        }
+        // Upsert by id: a kicked client is kept in the roster (kick = disconnect,
+        // not removal), so should the server ever re-announce one on rejoin, we
+        // replace the stale entry rather than adding a duplicate.
+        setClients((prev) =>
+          prev.some((c) => c.id === entry.id)
+            ? prev.map((c) => (c.id === entry.id ? entry : c))
+            : [...prev, entry]
+        )
         // Surface lobby arrivals in the bell — NewUser fires when someone joins
         // the server (Ready already seeded everyone present at connect), so this
         // catches people lurking before they enter any channel.
@@ -1459,9 +1543,11 @@ function Main() {
         // is the ClientApiObject itself.
         setClients((prev) => prev.filter((c) => c.id !== data.id))
       } else if (ev === 'ClientKicked') {
-        // { client, reason }. Drop them from the roster; a kick isn't a ban, so
-        // nothing to add to the ban list.
-        setClients((prev) => prev.filter((c) => c.id !== data.client.id))
+        // { client, reason }. A kick only disconnects the client — they stay a
+        // server member and may rejoin — so we deliberately DON'T prune the
+        // roster here. Pruning would desync: the server still considers them a
+        // member and so never re-announces them (NewUser) on rejoin, leaving them
+        // invisible to everyone else. Ban is different (see ClientBanned).
       } else if (ev === 'ClientBanned') {
         // { client, duration_seconds, reason }. Drop from the roster and record
         // the ban so they surface in the Users tab (where they can be unbanned).
@@ -1832,6 +1918,7 @@ function Main() {
           onOpenDm={handleOpenDm}
           onPoke={handlePoke}
           onKick={handleKickUser}
+          onKickFromChannel={handleKickFromChannel}
           onBan={handleBanUser}
           onUnban={handleUnbanUser}
           onSetAvatar={handleSetAvatar}
@@ -1973,6 +2060,11 @@ function Main() {
                 channel={summaryChannel}
                 memberCount={summaryChannelMemberCount}
                 onSaveDescription={handleSetChannelDescription}
+                roles={roles}
+                clients={clients}
+                canManagePermissions={canManageChannels}
+                onSetOverwrite={handleSetChannelOverwrite}
+                onDeleteOverwrite={handleDeleteChannelOverwrite}
               />
             ) : summaryClientId != null ? (
               <ClientSummary client={summaryClient} roles={roles} />
