@@ -236,8 +236,10 @@ function ClientIndicator({
 
   // Drag this entry onto a channel header to move the client there. The id rides
   // a custom MIME type the channel header keys off (see VoiceChannel). Disabled
-  // for ourselves — self joins a channel via double-click, not a server move.
-  const canDragToChannel = draggableToChannel && !isSelf && !rosterMode
+  // for ourselves — self joins a channel via double-click, not a server move — and
+  // while the context menu is open, so dragging its volume slider doesn't also
+  // start a client move (the menu is a child of this draggable element).
+  const canDragToChannel = draggableToChannel && !isSelf && !rosterMode && !menuPos
   const handleDragStart = (e) => {
     e.dataTransfer.setData('application/x-client-id', String(client.id))
     e.dataTransfer.effectAllowed = 'move'
