@@ -1920,6 +1920,7 @@ function Main() {
           onKick={handleKickUser}
           onKickFromChannel={handleKickFromChannel}
           onBan={handleBanUser}
+          onError={showError}
           onUnban={handleUnbanUser}
           onSetAvatar={handleSetAvatar}
           onShowClientSummary={handleShowClientSummary}

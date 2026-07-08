@@ -64,7 +64,8 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     canBanMembers,
     previewing,
     unread,
-    animStatus
+    animStatus,
+    onError
   },
   ref
 ) {
@@ -413,7 +414,10 @@ const VoiceChannel = forwardRef(function VoiceChannel(
       setSharing(true)
     } catch (err) {
       console.error('[VoiceChannel] Screen share failed:', err)
-      setError(err.message)
+      // Surface as a toast (e.g. "Missing required permission" when STREAM is
+      // denied in this channel); fall back to the inline banner if no toast hook.
+      if (onError) onError(`Couldn't start stream: ${err.message}`)
+      else setError(err.message)
     }
   }
 

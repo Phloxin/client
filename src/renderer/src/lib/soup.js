@@ -89,7 +89,16 @@ function send(type, data = null) {
       reject(new Error(`Voice socket not open (cannot send ${type})`))
       return
     }
-    pendingHandlers.push(resolve)
+    // Reject on a server UserError (e.g. a Produce refused for a missing STREAM
+    // permission) instead of resolving it — otherwise callers proceed on a
+    // response with no payload (undefined id) and start a phantom local-only
+    // producer. Shape is the externally-tagged { UserError: "..." }.
+    pendingHandlers.push((message) => {
+      const userError =
+        message?.UserError ?? (message?.type === 'UserError' ? message.data : null)
+      if (userError != null) reject(new Error(typeof userError === 'string' ? userError : 'Request failed'))
+      else resolve(message)
+    })
     const message = data ? { type, data } : { type }
     ws.send(JSON.stringify(message))
     console.log(`[Soup] Sent: ${type}`, message)
@@ -212,10 +221,10 @@ async function openSocket(token) {
       return
     }
 
-    // Route response to pending handler
+    // Route response to pending handler (resolves, or rejects on a UserError)
     if (pendingHandlers.length > 0) {
-      const resolve = pendingHandlers.shift()
-      resolve(message)
+      const handler = pendingHandlers.shift()
+      handler(message)
       return
     }
 
@@ -766,18 +775,25 @@ export async function shareScreen({ fps = 30, width = 1920, height = 1080, audio
   const track = stream.getVideoTracks()[0]
   track.contentHint = 'detail'
 
-  screenProducer = await producerTransport.produce({
-    track,
-    // AV1 SVC: one efficient upload carrying 3 spatial × 3 temporal layers, so
-    // the server can forward a cheap layer to thumbnails / a full layer to the
-    // focused viewer (see setVideoStreamRoles). '_KEY' shares the keyframe across
-    // spatial layers for cleaner layer switching.
-    encodings: [{ maxBitrate: 15000000, scalabilityMode: 'L3T3_KEY' }],
-    codecOptions: {
-      videoGoogleStartBitrate: 8000
-    },
-    appData: { produced: 'ScreenShare' }
-  })
+  try {
+    screenProducer = await producerTransport.produce({
+      track,
+      // AV1 SVC: one efficient upload carrying 3 spatial × 3 temporal layers, so
+      // the server can forward a cheap layer to thumbnails / a full layer to the
+      // focused viewer (see setVideoStreamRoles). '_KEY' shares the keyframe across
+      // spatial layers for cleaner layer switching.
+      encodings: [{ maxBitrate: 15000000, scalabilityMode: 'L3T3_KEY' }],
+      codecOptions: {
+        videoGoogleStartBitrate: 8000
+      },
+      appData: { produced: 'ScreenShare' }
+    })
+  } catch (err) {
+    // Produce refused (e.g. no STREAM permission in this channel). Release the
+    // capture so we don't leave the OS screen-share running with no producer.
+    stream.getTracks().forEach((t) => t.stop())
+    throw err
+  }
 
   localProducerIds.add(screenProducer.id)
   console.log(`[Soup] Screen sharing [id:${screenProducer.id}]`)
@@ -828,15 +844,21 @@ export async function shareCamera(deviceId) {
   const track = stream.getVideoTracks()[0]
   track.contentHint = 'motion'
 
-  screenProducer = await producerTransport.produce({
-    track,
-    // AV1 SVC layers — see the note in shareScreen().
-    encodings: [{ maxBitrate: 15000000, scalabilityMode: 'L3T3_KEY' }],
-    codecOptions: {
-      videoGoogleStartBitrate: 8000
-    },
-    appData: { produced: 'ScreenShare' }
-  })
+  try {
+    screenProducer = await producerTransport.produce({
+      track,
+      // AV1 SVC layers — see the note in shareScreen().
+      encodings: [{ maxBitrate: 15000000, scalabilityMode: 'L3T3_KEY' }],
+      codecOptions: {
+        videoGoogleStartBitrate: 8000
+      },
+      appData: { produced: 'ScreenShare' }
+    })
+  } catch (err) {
+    // Produce refused (e.g. no STREAM permission) — release the camera capture.
+    stream.getTracks().forEach((t) => t.stop())
+    throw err
+  }
 
   localProducerIds.add(screenProducer.id)
   console.log(`[Soup] Camera sharing [id:${screenProducer.id}]`)

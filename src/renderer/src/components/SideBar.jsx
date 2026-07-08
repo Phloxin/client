@@ -55,6 +55,7 @@ function Sidebar({
   onKickFromChannel,
   onBan,
   onUnban,
+  onError,
   onSetAvatar,
   onShowClientSummary,
   roles,
@@ -419,6 +420,7 @@ function Sidebar({
             canBanMembers={canBanMembers}
             previewing={previewChannelId === ch.id}
             unread={!!unreadChannelIds?.has(ch.id)}
+            onError={onError}
             onStreamsUpdate={(streams) => {
               onStreamsUpdate(ch.id, streams)
             }}
