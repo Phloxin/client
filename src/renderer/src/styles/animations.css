@@ -15,11 +15,16 @@
   flex-direction: column;
 }
 
-html[data-anim-channel-switch='fade'] .chat-switch-region {
+/* For chat views only the message list animates — the composer/input bar stays
+   put across chat switches instead of re-entering with the content. Every other
+   view (video grid, summaries, idle) still animates as a whole. */
+html[data-anim-channel-switch='fade'] .chat-switch-region > :not(.chat-panel),
+html[data-anim-channel-switch='fade'] .chat-switch-region .chat-messages {
   animation: animSwitchFade 200ms ease;
 }
 
-html[data-anim-channel-switch='slide'] .chat-switch-region {
+html[data-anim-channel-switch='slide'] .chat-switch-region > :not(.chat-panel),
+html[data-anim-channel-switch='slide'] .chat-switch-region .chat-messages {
   animation: animSwitchSlide 240ms cubic-bezier(0.2, 0.7, 0.2, 1);
 }
 
