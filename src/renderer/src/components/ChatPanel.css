@@ -44,6 +44,42 @@
   flex-direction: column;
 }
 
+/* Jump-to-bottom pill: sticks to the scrollport's bottom edge while scrolled
+   up (it's the scroller's last flex child, so sticky needs no offset math). */
+.chat-jump-pill {
+  position: sticky;
+  bottom: 10px;
+  align-self: center;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 999px;
+  background: var(--color-background-soft);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  font-family: var(--font-family-primary);
+  box-shadow: var(--shadow-2);
+  cursor: pointer;
+  z-index: 4;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
+}
+
+.chat-jump-pill:hover {
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.chat-jump-pill.has-new {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: var(--color-accent-contrast);
+}
+
 /* System notices: quiet centered service lines. */
 .chat-system-entry {
   text-align: center;
@@ -777,8 +813,9 @@ a.chat-embed-title:hover {
   padding: 0;
   border: none;
   border-radius: var(--radius-md);
-  background: var(--gradient-primary);
-  color: var(--color-accent-contrast);
+  /* Reversed scheme: accent lives in the filled glyph, button blends into the bar. */
+  background: transparent;
+  color: var(--color-primary);
   cursor: pointer;
   transition:
     background 0.15s ease,
@@ -787,7 +824,7 @@ a.chat-embed-title:hover {
 }
 
 .chat-send-btn:hover:not(:disabled) {
-  background: var(--gradient-primary-hover);
+  background: color-mix(in srgb, var(--color-primary) 14%, transparent);
   transform: translateY(-1px);
 }
 

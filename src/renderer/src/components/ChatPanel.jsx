@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useLayoutEffect, memo } from 'react'
 import {
   IconPaperclip,
   IconMoodSmile,
-  IconSend2,
+  IconSendFilled,
   IconX,
   IconFileText,
   IconPhotoVideo,
@@ -10,7 +10,8 @@ import {
   IconPencil,
   IconTrash,
   IconCopy,
-  IconPhoto
+  IconPhoto,
+  IconArrowDown
 } from '@tabler/icons-react'
 import { motion, AnimatePresence } from 'motion/react'
 import ImageViewer from './ImageViewer'
@@ -48,6 +49,36 @@ function formatDateLabel(ts) {
   if (d.toDateString() === today.toDateString()) return 'Today'
   if (d.toDateString() === yesterday.toDateString()) return 'Yesterday'
   return d.toLocaleDateString([], { month: 'long', day: 'numeric', year: 'numeric' })
+}
+
+// Formatting hotkeys for the composer and message editor: wrap (or unwrap) the
+// selection in a markdown marker. Returns true when the key was handled.
+// execCommand is deprecated but is the only route that keeps the native undo
+// stack intact for a React-controlled textarea.
+const FORMAT_MARKERS = { b: '**', i: '*', u: '__', e: '`' }
+function handleFormatHotkey(e, el) {
+  if (!(e.ctrlKey || e.metaKey) || e.altKey || !el) return false
+  const key = e.key.toLowerCase()
+  const marker = e.shiftKey ? (key === 'x' ? '~~' : null) : FORMAT_MARKERS[key]
+  if (!marker) return false
+  e.preventDefault()
+  const start = el.selectionStart
+  const end = el.selectionEnd
+  const selected = el.value.slice(start, end)
+  const wrapped =
+    el.value.slice(start - marker.length, start) === marker &&
+    el.value.slice(end, end + marker.length) === marker
+  if (wrapped) {
+    // Already wrapped → toggle off: reselect including the markers, replace
+    // with the bare text, and restore the selection.
+    el.setSelectionRange(start - marker.length, end + marker.length)
+    document.execCommand('insertText', false, selected)
+    el.setSelectionRange(start - marker.length, end - marker.length)
+  } else {
+    document.execCommand('insertText', false, marker + selected + marker)
+    el.setSelectionRange(start + marker.length, end + marker.length)
+  }
+  return true
 }
 
 // Renders a message body as Discord-style markdown (links, bold/italic, inline
@@ -89,6 +120,7 @@ function MessageEditor({ initialText, onSave, onCancel }) {
   }
 
   const handleKeyDown = (e) => {
+    if (handleFormatHotkey(e, ref.current)) return
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       submit()
@@ -271,6 +303,11 @@ function ChatPanel({
   const [pendingDeleteId, setPendingDeleteId] = useState(null)
   // Right-click menu on own messages: { id, x, y } while open, else null.
   const [msgMenu, setMsgMenu] = useState(null)
+  // Jump-to-bottom pill: shown when scrolled away from the bottom; switches to
+  // "New messages" when something arrived below the viewport in the meantime.
+  const [scrolledUp, setScrolledUp] = useState(false)
+  const [newBelow, setNewBelow] = useState(false)
+  const lastMsgIdRef = useRef(null)
   const msgMenuRef = useRef(null)
   const fileInputRef = useRef(null)
   const emojiRef = useRef(null)
@@ -293,16 +330,23 @@ function ChatPanel({
     const el = listRef.current
     if (!el) return
     const prev = metricsRef.current
+    const lastId = feed[feed.length - 1]?.id
     if (channelKeyRef.current !== channelKey) {
       channelKeyRef.current = channelKey
       prependingRef.current = false
       el.scrollTop = el.scrollHeight
+      setScrolledUp(false)
+      setNewBelow(false)
     } else if (prependingRef.current) {
       prependingRef.current = false
       el.scrollTop = el.scrollHeight - prev.scrollHeight + prev.scrollTop
     } else if (prev.scrollHeight - prev.scrollTop - prev.clientHeight < 80) {
       el.scrollTop = el.scrollHeight
+    } else if (lastId != null && lastId !== lastMsgIdRef.current) {
+      // A new bottom message landed while we're scrolled up reading history.
+      setNewBelow(true)
     }
+    lastMsgIdRef.current = lastId
     metricsRef.current = {
       scrollTop: el.scrollTop,
       scrollHeight: el.scrollHeight,
@@ -320,6 +364,9 @@ function ChatPanel({
       scrollHeight: el.scrollHeight,
       clientHeight: el.clientHeight
     }
+    const away = el.scrollHeight - el.scrollTop - el.clientHeight > 160
+    setScrolledUp(away)
+    if (!away) setNewBelow(false)
     if (el.scrollTop < 80 && hasMoreOlder && !prependingRef.current && onLoadOlder) {
       prependingRef.current = true
       Promise.resolve(onLoadOlder()).then((added) => {
@@ -442,6 +489,7 @@ function ChatPanel({
   }
 
   const handleKeyDown = (e) => {
+    if (handleFormatHotkey(e, inputRef.current)) return
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       handleSend()
@@ -653,6 +701,22 @@ function ChatPanel({
             </div>
           )
         })}
+        {scrolledUp && (
+          <button
+            type="button"
+            className={`chat-jump-pill${newBelow ? ' has-new' : ''}`}
+            onClick={() => {
+              listRef.current?.scrollTo({
+                top: listRef.current.scrollHeight,
+                behavior: 'smooth'
+              })
+              setNewBelow(false)
+            }}
+          >
+            <IconArrowDown size={14} stroke={2.5} />
+            {newBelow ? 'New messages' : 'Jump to latest'}
+          </button>
+        )}
       </div>
 
       {!!attachments.length && (
@@ -759,7 +823,7 @@ function ChatPanel({
           disabled={disabled || (!text.trim() && !attachments.length)}
           onClick={handleSend}
         >
-          <IconSend2 size={20} stroke={2.5} />
+          <IconSendFilled size={20} />
         </button>
       </div>
 
