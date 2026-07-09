@@ -280,19 +280,26 @@ html[data-transparency='true'] .control-dock {
 .sidebar-resize-handle::after {
   content: '';
   position: absolute;
-  top: 0;
+  /* Match the straight run of the chat canvas's left edge: its rounded corners
+     (--radius-xl) curve away at the top and bottom, so inset the line to stop
+     where the curve starts. The full-height hit area is unaffected. */
+  top: var(--radius-xl);
   left: 50%;
   transform: translateX(-50%);
-  width: 2px;
-  height: 100%;
+  width: 3px;
+  height: calc(100% - 2 * var(--radius-xl));
   background: transparent;
   border-radius: 2px;
-  transition: background 0.15s;
+  /* No fade, and own compositor layer: the line moves with every drag mousemove
+     over a strip nothing else repaints, so a mid-fade dirty-rect miss leaves
+     ghost pixels behind (worse on the frameless/acrylic window). */
+  will-change: transform;
 }
 
 .sidebar-resize-handle:hover::after,
 .sidebar-resize-handle:active::after {
   background: var(--color-primary);
+  opacity: 75%;
 }
 
 /* ============================================================================
