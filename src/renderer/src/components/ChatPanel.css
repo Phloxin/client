@@ -81,7 +81,6 @@
 
 /* Message row: full-bleed hover wash, avatar gutter, floating action chips. */
 .chat-message {
-  position: relative;
   display: flex;
   gap: 14px;
   padding: 3px 24px;
@@ -205,51 +204,11 @@
   margin-left: 6px;
 }
 
-/* Hover actions: a floating chip group at the row's top-right. */
-.chat-message-actions {
-  position: absolute;
-  top: -14px;
-  right: 24px;
-  display: none;
-  gap: 2px;
-  padding: 3px;
-  background: var(--color-background-soft);
-  border: 1px solid var(--hairline-strong);
-  border-radius: var(--radius-sm);
-  box-shadow: var(--shadow-2);
-  z-index: 5;
-}
-
-.chat-message:hover .chat-message-actions,
-.chat-message-actions:focus-within {
-  display: flex;
-}
-
-.chat-message-action {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  padding: 0;
-  border: none;
-  border-radius: var(--radius-xs);
-  background: transparent;
-  color: var(--color-text-tertiary);
-  cursor: pointer;
-  transition:
-    background 0.12s ease,
-    color 0.12s ease;
-}
-
-.chat-message-action:hover {
-  background: var(--color-surface);
-  color: var(--color-text);
-}
-
-.chat-message-action-danger:hover {
-  background: color-mix(in srgb, var(--color-danger) 15%, transparent);
-  color: var(--color-danger);
+/* Right-click menu on own messages. Shell/item styling comes from the shared
+   client-context-menu classes (VoiceChannel.css); just size it for two items. */
+.client-context-menu.chat-message-menu {
+  min-width: 170px;
+  padding: var(--spacing-xs);
 }
 
 /* ── Delete confirmation dialog ────────────────────────────────────────── */

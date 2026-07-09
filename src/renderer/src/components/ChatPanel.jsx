@@ -8,7 +8,9 @@ import {
   IconPhotoVideo,
   IconPlayerPlayFilled,
   IconPencil,
-  IconTrash
+  IconTrash,
+  IconCopy,
+  IconPhoto
 } from '@tabler/icons-react'
 import { motion, AnimatePresence } from 'motion/react'
 import ImageViewer from './ImageViewer'
@@ -206,6 +208,24 @@ function MessageEmbed({ embed, onImageClick }) {
   )
 }
 
+// Copy an image to the clipboard. The clipboard only accepts PNG, so anything
+// else is re-encoded through a canvas first.
+async function copyImageToClipboard(url) {
+  try {
+    const blob = await fetch(url).then((r) => r.blob())
+    let png = blob
+    if (blob.type !== 'image/png') {
+      const bitmap = await createImageBitmap(blob)
+      const canvas = new OffscreenCanvas(bitmap.width, bitmap.height)
+      canvas.getContext('2d').drawImage(bitmap, 0, 0)
+      png = await canvas.convertToBlob({ type: 'image/png' })
+    }
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': png })])
+  } catch (err) {
+    console.error('Copy image failed:', err)
+  }
+}
+
 // "Alice is typing", "Alice and Bob are typing", etc.
 function formatTyping(names) {
   if (names.length === 1) return `${names[0]} is typing`
@@ -249,6 +269,9 @@ function ChatPanel({
   const [editingId, setEditingId] = useState(null)
   // Id of the message pending a delete confirmation (drives the in-app dialog).
   const [pendingDeleteId, setPendingDeleteId] = useState(null)
+  // Right-click menu on own messages: { id, x, y } while open, else null.
+  const [msgMenu, setMsgMenu] = useState(null)
+  const msgMenuRef = useRef(null)
   const fileInputRef = useRef(null)
   const emojiRef = useRef(null)
   const listRef = useRef(null)
@@ -333,6 +356,16 @@ function ChatPanel({
     document.addEventListener('mousedown', close)
     return () => document.removeEventListener('mousedown', close)
   }, [showEmoji])
+
+  // Close the message context menu on outside click.
+  useEffect(() => {
+    if (!msgMenu) return
+    const close = (e) => {
+      if (msgMenuRef.current && !msgMenuRef.current.contains(e.target)) setMsgMenu(null)
+    }
+    document.addEventListener('mousedown', close)
+    return () => document.removeEventListener('mousedown', close)
+  }, [msgMenu])
 
   // Release object URLs for any attachments still pending on unmount
   useEffect(() => () => attachments.forEach((a) => URL.revokeObjectURL(a.url)), [])
@@ -528,10 +561,33 @@ function ChatPanel({
           const isOwn = selfId != null && entry.authorId === selfId
           const canManage = isOwn && !disabled && !isEditing
           const edited = !!entry.editedTs && !isEditing
+          // First image in the message (attachment, else embed image) for Copy Image.
+          const imageUrl =
+            visibleAttachments.find((a) => a.kind === 'image')?.url ||
+            (entry.embeds || []).map((em) => (em.image || em.thumbnail)?.url).find(Boolean) ||
+            null
+          const hasMenu = canManage || entry.text || imageUrl
           return (
             <div key={entry.id} data-anim-status={status}>
               {dayDivider}
-              <div className={`chat-message${grouped ? ' grouped' : ''}`}>
+              <div
+                className={`chat-message${grouped ? ' grouped' : ''}`}
+                onContextMenu={
+                  hasMenu
+                    ? (e) => {
+                        e.preventDefault()
+                        setMsgMenu({
+                          id: entry.id,
+                          x: e.clientX,
+                          y: e.clientY,
+                          text: entry.text || null,
+                          imageUrl,
+                          canManage
+                        })
+                      }
+                    : undefined
+                }
+              >
                 {grouped ? (
                   <span className="chat-avatar-spacer" aria-hidden="true" />
                 ) : (
@@ -542,26 +598,6 @@ function ChatPanel({
                       resolveName(entry).charAt(0).toUpperCase()
                     )}
                   </span>
-                )}
-                {canManage && (
-                  <div className="chat-message-actions">
-                    <button
-                      type="button"
-                      className="chat-message-action"
-                      title="Edit"
-                      onClick={() => setEditingId(entry.id)}
-                    >
-                      <IconPencil size={15} />
-                    </button>
-                    <button
-                      type="button"
-                      className="chat-message-action chat-message-action-danger"
-                      title="Delete"
-                      onClick={() => setPendingDeleteId(entry.id)}
-                    >
-                      <IconTrash size={15} />
-                    </button>
-                  </div>
                 )}
                 <div className="chat-message-body">
                   {!grouped && (
@@ -726,6 +762,70 @@ function ChatPanel({
           <IconSend2 size={20} stroke={2.5} />
         </button>
       </div>
+
+      {msgMenu && (
+        <div
+          className="client-context-menu chat-message-menu"
+          ref={msgMenuRef}
+          style={{ top: msgMenu.y, left: msgMenu.x }}
+        >
+          {msgMenu.text && (
+            <button
+              type="button"
+              className="client-context-menu-item"
+              onClick={() => {
+                navigator.clipboard.writeText(msgMenu.text)
+                setMsgMenu(null)
+              }}
+            >
+              <IconCopy size={16} />
+              Copy Message
+            </button>
+          )}
+          {msgMenu.imageUrl && (
+            <button
+              type="button"
+              className="client-context-menu-item"
+              onClick={() => {
+                copyImageToClipboard(msgMenu.imageUrl)
+                setMsgMenu(null)
+              }}
+            >
+              <IconPhoto size={16} />
+              Copy Image
+            </button>
+          )}
+          {msgMenu.canManage && (
+            <>
+              {(msgMenu.text || msgMenu.imageUrl) && (
+                <div className="client-context-menu-divider" aria-hidden="true" />
+              )}
+              <button
+                type="button"
+                className="client-context-menu-item"
+                onClick={() => {
+                  setEditingId(msgMenu.id)
+                  setMsgMenu(null)
+                }}
+              >
+                <IconPencil size={16} />
+                Edit Message
+              </button>
+              <button
+                type="button"
+                className="client-context-menu-item danger"
+                onClick={() => {
+                  setPendingDeleteId(msgMenu.id)
+                  setMsgMenu(null)
+                }}
+              >
+                <IconTrash size={16} />
+                Delete Message
+              </button>
+            </>
+          )}
+        </div>
+      )}
 
       {viewerImage && (
         <ImageViewer
