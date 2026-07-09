@@ -29,6 +29,11 @@ const MAX_INPUT_LINES = 10
 // one header (avatar + name + time), like Discord.
 const GROUP_WINDOW_MS = 7 * 60 * 1000
 
+// Unsent composer text per channel, so a draft survives switching chats (the
+// panel remounts per channel). ponytail: in-memory only — gone on app restart;
+// move to localStorage if drafts should survive relaunches.
+const drafts = new Map()
+
 function attachmentKind(file) {
   if (file.type.startsWith('image/')) return 'image'
   if (file.type.startsWith('video/')) return 'video'
@@ -280,8 +285,21 @@ function ChatPanel({
   onLoadOlder,
   hasMoreOlder = false
 }) {
-  const [text, setText] = useState('')
+  const [text, setText] = useState(() => drafts.get(channelKey) || '')
   const [attachments, setAttachments] = useState([])
+
+  // Swap the composer over to the new channel's draft when channelKey changes
+  // without a remount (in-render state adjustment, per React docs).
+  const [draftKey, setDraftKey] = useState(channelKey)
+  if (draftKey !== channelKey) {
+    setDraftKey(channelKey)
+    setText(drafts.get(channelKey) || '')
+  }
+
+  const updateText = (value) => {
+    setText(value)
+    drafts.set(channelKey, value)
+  }
   // Compact display drops the avatar and shows a name/time header on every
   // message (no grouping), for a tighter single-line-per-message list.
   const compact = useSettings().appearanceSettings.messageDisplay === 'compact'
@@ -451,7 +469,7 @@ function ChatPanel({
   }
 
   const insertEmoji = (emoji) => {
-    setText((prev) => prev + emoji)
+    updateText(text + emoji)
     inputRef.current?.focus()
   }
 
@@ -484,6 +502,7 @@ function ChatPanel({
     if (!trimmed && !attachments.length) return
     onSend?.(trimmed, attachments)
     setText('')
+    drafts.delete(channelKey)
     setAttachments([])
     setShowEmoji(false)
   }
@@ -791,7 +810,7 @@ function ChatPanel({
           placeholder={disabled ? 'Join a channel to chat' : 'Message...'}
           value={text}
           onChange={(e) => {
-            setText(e.target.value)
+            updateText(e.target.value)
             if (e.target.value) onTyping?.()
           }}
           onKeyDown={handleKeyDown}
