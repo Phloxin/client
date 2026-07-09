@@ -38,7 +38,9 @@ const DEFAULT_APPEARANCE = {
   transparencyOpacity: 85,
   gradientsEnabled: true,
   shadowsEnabled: true,
-  fontFamily: 'inter'
+  fontFamily: 'inter',
+  // 'cozy' = avatar + name + time + message (default); 'compact' = name + time + message, no avatar.
+  messageDisplay: 'cozy'
 }
 
 // No shortcuts assigned by default; a value is a combo string like "Ctrl+Shift+M".

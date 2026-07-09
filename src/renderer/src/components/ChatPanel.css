@@ -103,6 +103,44 @@
   flex-shrink: 0;
 }
 
+/* Compact display: no avatar, tighter rows, message inline to the right of the
+   name/time. Every message keeps its own header (grouping is off in this mode). */
+.chat-messages.compact .chat-avatar,
+.chat-messages.compact .chat-avatar-spacer {
+  display: none;
+}
+
+.chat-messages.compact .chat-message {
+  gap: 0;
+  margin-top: 2px;
+  padding-top: 1px;
+  padding-bottom: 1px;
+}
+
+/* Body flows as a wrapping row: header, then message text beside it. */
+.chat-messages.compact .chat-message-body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 8px;
+}
+
+.chat-messages.compact .chat-message-header {
+  margin-bottom: 0;
+}
+
+.chat-messages.compact .chat-message-text {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+/* Attachments, embeds and the inline editor drop below the header line. */
+.chat-messages.compact .chat-message-attachments,
+.chat-messages.compact .chat-embed,
+.chat-messages.compact .chat-message-edit {
+  flex-basis: 100%;
+}
+
 .chat-avatar {
   width: 36px;
   height: 36px;

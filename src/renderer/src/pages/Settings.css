@@ -533,3 +533,92 @@
 .vg-test-btn:hover {
   background: var(--color-border-light);
 }
+
+/* ── Message display picker — two mini chat-feed previews ─────────────────
+   Card shell/selection styling reuses .theme-card from ThemeSwitcher.css. */
+
+.message-display-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(150px, 220px));
+  gap: var(--spacing-md);
+  margin-top: var(--spacing-sm);
+}
+
+.message-display-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: 72px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(128, 128, 128, 0.25);
+  background: var(--color-background-soft);
+  overflow: hidden;
+}
+
+/* Cozy row: avatar spans both lines; name+time on top, text underneath. */
+.message-display-row {
+  display: grid;
+  grid-template-areas:
+    'avatar name time .'
+    'avatar text text text';
+  grid-template-columns: auto auto auto 1fr;
+  align-items: center;
+  column-gap: 6px;
+  row-gap: 5px;
+}
+
+.message-display-avatar {
+  grid-area: avatar;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  margin-right: 3px;
+  background: color-mix(in srgb, var(--color-primary) 35%, transparent);
+}
+
+.message-display-name {
+  grid-area: name;
+  width: 28px;
+  height: 5px;
+  border-radius: 2px;
+  background: var(--color-primary);
+  opacity: 0.75;
+}
+
+.message-display-time {
+  grid-area: time;
+  width: 16px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--color-text-muted);
+  opacity: 0.5;
+}
+
+.message-display-text {
+  grid-area: text;
+  width: 70%;
+  height: 5px;
+  border-radius: 2px;
+  background: var(--color-text-tertiary);
+  opacity: 0.55;
+}
+
+/* Compact: no avatar, everything on one line, text fills the remainder. */
+.message-display-preview.compact .message-display-row {
+  grid-template-areas: 'name time text';
+  grid-template-columns: auto auto 1fr;
+}
+
+.message-display-preview.compact .message-display-avatar {
+  display: none;
+}
+
+.message-display-preview.compact .message-display-text {
+  width: 85%;
+}
+
+.message-display-preview.compact {
+  justify-content: center;
+  gap: 12px;
+}

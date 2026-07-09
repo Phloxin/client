@@ -1,5 +1,11 @@
 import { useState } from 'react'
-import { IconPalette, IconMicrophone, IconBellRinging, IconKeyboard } from '@tabler/icons-react'
+import {
+  IconPalette,
+  IconMicrophone,
+  IconBellRinging,
+  IconKeyboard,
+  IconCheck
+} from '@tabler/icons-react'
 import { useSettings } from '../context/SettingsContext'
 import { ThemeSwitcher } from '../components/ThemeSwitcher'
 import AudioSettings from '../components/AudioSettings'
@@ -218,6 +224,58 @@ function Settings() {
                       </option>
                     ))}
                   </select>
+                </div>
+
+                <div className="settings-section">
+                  <label>Message Display</label>
+                  <p className="settings-section-desc">
+                    Cozy shows an avatar beside each message. Compact drops the avatar for a tighter
+                    list of name, time, and message.
+                  </p>
+                  <div
+                    className="message-display-grid"
+                    role="radiogroup"
+                    aria-label="Message display"
+                  >
+                    {[
+                      { id: 'cozy', label: 'Cozy' },
+                      { id: 'compact', label: 'Compact' }
+                    ].map((mode) => {
+                      const active = appearanceSettings.messageDisplay === mode.id
+                      return (
+                        <button
+                          key={mode.id}
+                          type="button"
+                          role="radio"
+                          aria-checked={active}
+                          className={`theme-card${active ? ' active' : ''}`}
+                          onClick={() => updateAppearanceSettings({ messageDisplay: mode.id })}
+                        >
+                          <span
+                            className={`message-display-preview ${mode.id}`}
+                            aria-hidden="true"
+                          >
+                            {[0, 1].map((row) => (
+                              <span key={row} className="message-display-row">
+                                <span className="message-display-avatar" />
+                                <span className="message-display-name" />
+                                <span className="message-display-time" />
+                                <span className="message-display-text" />
+                              </span>
+                            ))}
+                          </span>
+                          <span className="theme-card-meta">
+                            <span className="theme-card-name">{mode.label}</span>
+                            {active && (
+                              <span className="theme-card-check" aria-hidden="true">
+                                <IconCheck size={13} stroke={3} />
+                              </span>
+                            )}
+                          </span>
+                        </button>
+                      )
+                    })}
+                  </div>
                 </div>
               </div>
 

@@ -14,7 +14,7 @@ import { motion, AnimatePresence } from 'motion/react'
 import ImageViewer from './ImageViewer'
 import EmojiPicker from './EmojiPicker'
 import { renderMarkdown } from '../lib/markdown'
-import { useAnimationCategory } from '../context/SettingsContext'
+import { useAnimationCategory, useSettings } from '../context/SettingsContext'
 import { useAnimatedPresence } from '../lib/animation'
 import { menuPop, overlayPop, scrimFade } from '../lib/motionPresets'
 import './ChatPanel.css'
@@ -230,6 +230,9 @@ function ChatPanel({
 }) {
   const [text, setText] = useState('')
   const [attachments, setAttachments] = useState([])
+  // Compact display drops the avatar and shows a name/time header on every
+  // message (no grouping), for a tighter single-line-per-message list.
+  const compact = useSettings().appearanceSettings.messageDisplay === 'compact'
   const overlayAnim = useAnimationCategory('overlays')
   // New rows slide in (tagged 'entering' by the presence hook) when the
   // Messages animation category is on; the actual keyframes live in
@@ -474,7 +477,11 @@ function ChatPanel({
           <div className="chat-drop-overlay-inner">Drop files to attach</div>
         </div>
       )}
-      <div className="chat-messages" ref={listRef} onScroll={handleScroll}>
+      <div
+        className={`chat-messages${compact ? ' compact' : ''}`}
+        ref={listRef}
+        onScroll={handleScroll}
+      >
         {feedPresence.map(({ item: entry, status }, i) => {
           const prev = feedPresence[i - 1]?.item
           // A divider marking the start of a new calendar day.
@@ -500,6 +507,7 @@ function ChatPanel({
           // window, and not split by a system notice or day divider): only the
           // first shows the avatar + author + time; the rest are bare lines.
           const grouped =
+            !compact &&
             !dayDivider &&
             prev &&
             prev.type === 'message' &&
