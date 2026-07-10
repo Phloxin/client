@@ -55,22 +55,22 @@ function Admin() {
     fetch(`${API_BASE_URL}/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password })
+      body: JSON.stringify({ username, password, device_name: 'CNaps Admin' })
     })
       .then((res) => res.json())
       .then((data) => {
-        if (data.token) {
-          console.log('Auth token:', data.token)
-          setToken(data.token)
+        if (data.access_token) {
+          console.log('Auth token:', data.access_token)
+          setToken(data.access_token)
           setLoginStatus('Login successful')
-          window.electron.ipcRenderer.send('admin-log', `Admin logged in — token: ${data.token}`)
+          window.electron.ipcRenderer.send('admin-log', `Admin logged in — token: ${data.access_token}`)
 
           Promise.all([
             fetch(`${API_BASE_URL}/server/channel`, {
-              headers: { Authorization: `Bearer ${data.token}` }
+              headers: { Authorization: `Bearer ${data.access_token}` }
             }).then((res) => res.json()),
             fetch(`${API_BASE_URL}/server/client`, {
-              headers: { Authorization: `Bearer ${data.token}` }
+              headers: { Authorization: `Bearer ${data.access_token}` }
             }).then((res) => res.json())
           ]).then(([channelData, clientData]) => {
             setChannels(channelData)

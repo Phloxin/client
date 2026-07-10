@@ -139,7 +139,16 @@ function normalizeClientVoice(c) {
 
 function Main() {
   //Server Connection State Hooks
-  const { token, setToken, client, setClient } = useAuth()
+  const {
+    token,
+    setToken,
+    setRefreshToken,
+    setAccessExpiresAt,
+    setRefreshExpiresAt,
+    setSession,
+    client,
+    setClient
+  } = useAuth()
   const [channels, setChannels] = useState([])
   const [clients, setClients] = useState([])
   const [feed, setFeed] = useState([])
@@ -1183,29 +1192,41 @@ function Main() {
     setServerHost(server.host)
     setConnecting(true)
 
-    const credentials = JSON.stringify({ username: server.username, password: server.password })
+    const credentials = {
+      username: server.username,
+      password: server.password,
+      device_name: 'CNaps Desktop'
+    }
     const login = () =>
       fetch(`${apiBase()}/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: credentials
-      }).then((res) => res.json())
+        body: JSON.stringify(credentials)
+      }).then(async (res) => ({ response: res, data: await res.json().catch(() => ({})) }))
 
     try {
-      let data = await login()
-      // No token usually means the account doesn't exist yet (we're moving to
-      // DB-backed users). Self-register with the saved credentials, then retry the login once.
-      if (!data.token) {
-        await fetch(`${apiBase()}/register`, {
+      let result = await login()
+      let data = result.data
+      // Preserve the existing first-connect experience: an unauthorized login
+      // may be a first-time account, so try registration and then retry login.
+      if (result.response.status === 401) {
+        const registerResponse = await fetch(`${apiBase()}/register`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: credentials
+          body: JSON.stringify(credentials)
         })
-        data = await login()
+        if (registerResponse.ok) {
+          result = await login()
+          data = result.data
+        }
       }
 
-      if (data.token) {
-        setToken(data.token)
+      if (result.response.ok && data.access_token) {
+        setToken(data.access_token)
+        setRefreshToken(data.refresh_token)
+        setAccessExpiresAt(data.access_expires_at)
+        setRefreshExpiresAt(data.refresh_expires_at)
+        setSession(data.session)
         setClient(data.client)
         setConnectedServer(server)
       } else {
@@ -1231,6 +1252,10 @@ function Main() {
     setPoppedOut(false)
     disconnectVoice()
     setToken(null)
+    setRefreshToken(null)
+    setAccessExpiresAt(null)
+    setRefreshExpiresAt(null)
+    setSession(null)
     setClient(null)
     setChannels([])
     setClients([])
@@ -1242,7 +1267,14 @@ function Main() {
     setSummaryClientId(null)
     setReadStates({})
     setConnectionStatus('connected')
-  }, [setToken, setClient])
+  }, [
+    setToken,
+    setRefreshToken,
+    setAccessExpiresAt,
+    setRefreshExpiresAt,
+    setSession,
+    setClient
+  ])
 
   // Fetch channels/clients and set up WebSocket + IPC listeners on mount
   useEffect(() => {
