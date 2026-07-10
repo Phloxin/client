@@ -331,12 +331,81 @@ html[data-transparency='true'] .control-dock {
   color: var(--color-text);
 }
 
+/* Row layout: name, group tags, spacer, group badges, streaming icon. The
+   spacer (flex-grow) pushes the badges/streaming icon to the right edge; under
+   pressure the shrink factors give way in order: tags (10000) collapse first,
+   then badges (50, whose icons fold into a "+N" counter — see ClientIndicator),
+   and the name (1) truncates last. */
 .client-name {
-  /* flex:1 pushes the trailing streaming/status icons to the row's right edge */
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.client-tags {
+  flex: 0 10000 auto;
+  min-width: 0;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Rounded group-name pill, a compact take on the summary page's role chips.
+   Under pressure a chip compresses gradually (its text ellipsizes) all the way
+   to zero width — no floor, so it never freezes mid-collapse and steals shrink
+   from its left neighbor. ClientIndicator hides it once it's too narrow to
+   read, before it degrades into a pill sliver. */
+.client-tag {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  /* block-ish box, not flex: text-overflow only ellipsizes inline content */
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--hairline);
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.client-row-spacer {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.client-badges {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  flex: 0 50 auto;
+  min-width: 22px; /* room for the "+N" counter when every icon is folded */
+  overflow: hidden;
+}
+
+.client-badge {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.client-badge-img {
+  width: 16px;
+  height: 16px;
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+}
+
+.client-badge-counter {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--color-text-secondary);
 }
 
 /* Roster rows sit flush (no channel indent). */

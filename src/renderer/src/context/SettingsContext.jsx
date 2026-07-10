@@ -40,7 +40,10 @@ const DEFAULT_APPEARANCE = {
   shadowsEnabled: true,
   fontFamily: 'inter',
   // 'cozy' = avatar + name + time + message (default); 'compact' = name + time + message, no avatar.
-  messageDisplay: 'cozy'
+  messageDisplay: 'cozy',
+  // Server-group decorations on client rows (tag pills / icon badges).
+  showGroupTags: true,
+  showGroupIcons: true
 }
 
 // No shortcuts assigned by default; a value is a combo string like "Ctrl+Shift+M".

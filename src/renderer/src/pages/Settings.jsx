@@ -206,6 +206,47 @@ function Settings() {
                   </label>
                 </div>
 
+                <div className="settings-section settings-toggle-row">
+                  <div className="settings-toggle-copy">
+                    <label htmlFor="group-tags-toggle">Server Group Tags</label>
+                    <p className="settings-section-desc">
+                      Show each user&apos;s server group names as small pills next to their name in
+                      channel and user lists.
+                    </p>
+                  </div>
+                  <label className="toggle-switch">
+                    <input
+                      type="checkbox"
+                      id="group-tags-toggle"
+                      checked={appearanceSettings.showGroupTags}
+                      onChange={(e) =>
+                        updateAppearanceSettings({ showGroupTags: e.target.checked })
+                      }
+                    />
+                    <span className="toggle-slider" />
+                  </label>
+                </div>
+
+                <div className="settings-section settings-toggle-row">
+                  <div className="settings-toggle-copy">
+                    <label htmlFor="group-icons-toggle">Server Group Icons</label>
+                    <p className="settings-section-desc">
+                      Show server group icon badges on the right side of client rows.
+                    </p>
+                  </div>
+                  <label className="toggle-switch">
+                    <input
+                      type="checkbox"
+                      id="group-icons-toggle"
+                      checked={appearanceSettings.showGroupIcons}
+                      onChange={(e) =>
+                        updateAppearanceSettings({ showGroupIcons: e.target.checked })
+                      }
+                    />
+                    <span className="toggle-slider" />
+                  </label>
+                </div>
+
                 <div className="settings-section">
                   <label htmlFor="interface-font">Interface Font</label>
                   <p className="settings-section-desc">The typeface used across the app.</p>

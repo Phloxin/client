@@ -26,6 +26,7 @@ import {
 import { setClientAudioState, getClientAudioState } from '../lib/soup'
 import { fileToAvatarDataUrl } from '../lib/avatarFile'
 import { RoleIcon } from '../lib/roleIcon'
+import { useSettings } from '../context/SettingsContext'
 
 // rosterMode renders a presence-only entry (the sidebar's Users tab): no mic/
 // status indicator and no right-click volume control, since those entries aren't
@@ -101,6 +102,132 @@ function ClientIndicator({
   const initialAudioState = getClientAudioState(client.id)
   const [volume, setVolume] = useState(Math.round(initialAudioState.volume * 100))
   const [localMuted, setLocalMuted] = useState(initialAudioState.muted)
+
+  // TeamSpeak-style group decorations: tag names after the client name, icon
+  // badges right-aligned. When the row runs out of space the tags give way
+  // first (pure CSS — huge flex-shrink), then badges collapse into a "+N"
+  // counter via the measurement ratchet below. Either decoration can be
+  // toggled off in Settings → Appearance.
+  const { appearanceSettings } = useSettings()
+  const showTags = appearanceSettings.showGroupTags
+  const showIcons = appearanceSettings.showGroupIcons
+  const groups = (client.vanity_ids || [])
+    .map((id) => vanity.find((v) => v.id === id))
+    .filter(Boolean)
+  const badgesRef = useRef(null)
+  const spacerRef = useRef(null)
+  const tagsRef = useRef(null)
+  const [visibleBadges, setVisibleBadges] = useState(groups.length)
+  const shownBadges = Math.min(visibleBadges, groups.length)
+  const hiddenBadges = groups.length - shownBadges
+
+  // Ratchet: badge content overflowing its box → hide one more icon; enough
+  // free space in the spacer for another icon (with hysteresis so grow/shrink
+  // can't ping-pong at the boundary) → bring one back. Re-runs via the
+  // ResizeObserver as the row or its content resizes, converging in a step or
+  // two per change.
+  const groupCount = groups.length
+  useEffect(() => {
+    const badges = badgesRef.current
+    const spacer = spacerRef.current
+    if (!badges || !spacer || groupCount === 0) return
+    const BADGE_W = 20 // 16px badge + 4px gap
+    const check = () => {
+      // The box is justify-content: flex-end, so a squeezed box clips content
+      // off its LEFT edge — which scrollWidth never reports (it only counts
+      // end-side overflow). Detect clipping geometrically: is the first
+      // badge's left edge outside the box?
+      const first = badges.firstElementChild
+      const clipped =
+        first && first.getBoundingClientRect().left < badges.getBoundingClientRect().left - 1
+      if (clipped) {
+        setVisibleBadges((v) => Math.max(0, Math.min(v, groupCount) - 1))
+      } else if (spacer.clientWidth >= BADGE_W + 8) {
+        setVisibleBadges((v) => (v < groupCount ? v + 1 : v))
+      }
+    }
+    // No initial check() needed: observe() fires the callback once on its own.
+    const ro = new ResizeObserver(check)
+    ro.observe(badges)
+    ro.observe(spacer)
+    return () => ro.disconnect()
+  }, [groupCount, showIcons])
+
+  // Chips compress strictly right-to-left. Flex shrink alone can't do this —
+  // it distributes deficit proportionally, and even a sub-pixel loss on the
+  // left chip flips its ellipsis on — so the observer assigns shrink itself:
+  // only the rightmost visible chip may compress (ellipsizing via CSS, no
+  // floor); chips left of it are frozen at natural width. Once the active chip
+  // is squeezed below readability (and actually truncated — a naturally short
+  // chip stays) or clipped by the container, it's hidden AND hard-collapsed to
+  // zero width. The collapse matters: a merely-invisible chip still in the
+  // flex math re-expands the moment the next chip starts sharing the deficit,
+  // and the two flicker in a loop. A hidden chip returns once the spacer has
+  // room for a readable sliver of it (it re-enters ellipsized and expands
+  // gradually with further widening — the collapse in reverse), gated on the
+  // icon badges having already unfolded so restore order mirrors collapse
+  // order. Everything is written to the DOM directly — no re-renders.
+  useEffect(() => {
+    const el = tagsRef.current
+    const spacer = spacerRef.current
+    if (!el || !spacer || groupCount === 0) return
+    const MIN_READABLE = 30
+    const SLACK = 12
+    const setCollapsed = (chip, hidden) => {
+      chip.style.visibility = hidden ? 'hidden' : ''
+      chip.style.maxWidth = hidden ? '0px' : ''
+      chip.style.paddingLeft = hidden ? '0' : ''
+      chip.style.paddingRight = hidden ? '0' : ''
+      chip.style.borderWidth = hidden ? '0' : ''
+      // Cancel the container gap the zero-width chip would still leave.
+      chip.style.marginLeft = hidden ? '-4px' : ''
+    }
+    const update = () => {
+      const box = el.getBoundingClientRect()
+      const chips = [...el.children]
+      const isHidden = (c) => c.style.visibility === 'hidden'
+      // Record natural widths while untruncated — the refit threshold later.
+      for (const chip of chips) {
+        if (!isHidden(chip) && chip.scrollWidth <= chip.clientWidth) {
+          chip.dataset.naturalWidth = chip.getBoundingClientRect().width
+        }
+      }
+      let hidOne = false
+      for (const chip of chips) {
+        if (isHidden(chip)) continue
+        const r = chip.getBoundingClientRect()
+        const squeezedOut = r.width < MIN_READABLE && chip.scrollWidth > chip.clientWidth
+        if (squeezedOut || r.right > box.right + 0.5) {
+          setCollapsed(chip, true)
+          hidOne = true
+        }
+      }
+      // Un-hide the leftmost hidden chip (hiding eats the list right-to-left,
+      // so that's the most recently hidden one) when there's comfortably room.
+      if (!hidOne) {
+        const firstHidden = chips.find(isHidden)
+        const badgesFolded = badgesRef.current?.querySelector('.client-badge-counter')
+        if (firstHidden && !badgesFolded) {
+          const natural =
+            Number(firstHidden.dataset.naturalWidth) || firstHidden.scrollWidth + 16
+          // Whichever is smaller: the whole chip (short names return whole) or
+          // a readable ellipsized sliver. Kept above the ~34px a hiding chip
+          // frees, so hide/show can't ping-pong at the boundary.
+          const need = Math.min(natural + SLACK, MIN_READABLE + 14)
+          if (spacer.clientWidth >= need) setCollapsed(firstHidden, false)
+        }
+      }
+      const visible = chips.filter((c) => !isHidden(c))
+      const lastVisible = visible[visible.length - 1]
+      for (const chip of visible) {
+        chip.style.flexShrink = chip === lastVisible ? '10000' : '0'
+      }
+    }
+    const ro = new ResizeObserver(update)
+    ro.observe(el)
+    ro.observe(spacer)
+    return () => ro.disconnect()
+  }, [groupCount, showTags, showIcons])
 
   // Apply this client's local volume/mute override whenever it changes. Skipped
   // in rosterMode — those entries don't control playback (and shouldn't clobber
@@ -351,6 +478,42 @@ function ClientIndicator({
         {client.avatar ? <img className="client-avatar-img" src={client.avatar} alt="" /> : initial}
       </span>
       <span className="client-name">{client.name}</span>
+      {showTags && groups.length > 0 && (
+        <span className="client-tags" ref={tagsRef}>
+          {groups.map((g) => (
+            // flexShrink/visibility are managed imperatively by the observer
+            // above (strict right-to-left collapse).
+            <span key={g.id} className="client-tag">
+              {g.name}
+            </span>
+          ))}
+        </span>
+      )}
+      <span className="client-row-spacer" ref={spacerRef} aria-hidden="true" />
+      {showIcons && groups.length > 0 && (
+        <span className="client-badges" ref={badgesRef}>
+          {groups.slice(0, shownBadges).map((g) => (
+            <span key={g.id} className="client-badge" title={g.name}>
+              {g.avatar ? (
+                <img src={g.avatar} alt="" className="client-badge-img" />
+              ) : (
+                <IconUsersGroup size={16} />
+              )}
+            </span>
+          ))}
+          {hiddenBadges > 0 && (
+            <span
+              className="client-badge-counter"
+              title={groups
+                .slice(shownBadges)
+                .map((g) => g.name)
+                .join(', ')}
+            >
+              +{hiddenBadges}
+            </span>
+          )}
+        </span>
+      )}
       {streaming && (
         <IconVideoFilled size={15} className="client-streaming-icon" aria-label="Streaming" />
       )}
