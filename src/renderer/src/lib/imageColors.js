@@ -1,3 +1,5 @@
+import { useState, useEffect } from 'react'
+
 // Pull dominant colors out of an image (pywal-style, but tiny): downscale to a
 // 16×16 canvas and read the pixels. Returns { average, vibrant } CSS rgb()
 // strings, or null if the image can't be read (load failure, or a cross-origin
@@ -50,4 +52,35 @@ export function extractImageColors(src) {
     img.onerror = () => resolve(null)
     img.src = src
   })
+}
+
+// Banner gradient inline style for a summary card, from extractImageColors()
+// output. Null colors → undefined (plain card, no banner).
+export function bannerGradient(colors) {
+  if (!colors) return undefined
+  return {
+    background: `linear-gradient(120deg,
+      color-mix(in srgb, ${colors.vibrant} 45%, transparent),
+      color-mix(in srgb, ${colors.average} 22%, transparent))`
+  }
+}
+
+// Hook: colors sampled from an image src, or null while loading / no src /
+// unreadable image.
+export function useImageColors(src) {
+  const [colors, setColors] = useState(null)
+  useEffect(() => {
+    if (!src) {
+      setColors(null)
+      return
+    }
+    let alive = true
+    extractImageColors(src).then((c) => {
+      if (alive) setColors(c)
+    })
+    return () => {
+      alive = false
+    }
+  }, [src])
+  return colors
 }

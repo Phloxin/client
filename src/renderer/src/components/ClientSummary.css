@@ -12,6 +12,9 @@
   display: flex;
   align-items: center;
   gap: 14px;
+  /* Same vertical padding as the banner variant so the name sits at the same
+     height whether or not a banner gradient is present. */
+  padding: 18px 0;
 }
 
 .client-summary-avatar {

@@ -213,6 +213,10 @@ function Main() {
   useEffect(() => {
     channelsRef.current = channels
   }, [channels])
+  const rolesRef = useRef([])
+  useEffect(() => {
+    rolesRef.current = roles
+  }, [roles])
   useEffect(() => {
     clientsRef.current = clients
   }, [clients])
@@ -707,7 +711,9 @@ function Main() {
   // role_ids, which the events handler merges for everyone else.
   const handleAssignRole = useCallback(
     async (clientId, roleId) => {
-      const apply = () =>
+      const roleName = roles.find((r) => r.id === roleId)?.name ?? 'role'
+      const clientName = clients.find((c) => c.id === clientId)?.name ?? 'user'
+      const apply = () => {
         setClients((prev) =>
           prev.map((c) =>
             c.id === clientId && !(c.role_ids || []).includes(roleId)
@@ -715,6 +721,8 @@ function Main() {
               : c
           )
         )
+        showSuccess(`Assigned "${roleName}" to ${clientName}`)
+      }
       if (DEV_MODE) return apply()
       try {
         const res = await fetch(`${apiBase()}/server/clients/${clientId}/roles/${roleId}`, {
@@ -727,12 +735,14 @@ function Main() {
         showError(`Failed to assign role: ${err.message}`)
       }
     },
-    [token, showError]
+    [token, roles, clients, showError, showSuccess]
   )
 
   const handleRemoveRole = useCallback(
     async (clientId, roleId) => {
-      const apply = () =>
+      const roleName = roles.find((r) => r.id === roleId)?.name ?? 'role'
+      const clientName = clients.find((c) => c.id === clientId)?.name ?? 'user'
+      const apply = () => {
         setClients((prev) =>
           prev.map((c) =>
             c.id === clientId
@@ -740,6 +750,10 @@ function Main() {
               : c
           )
         )
+        // Revocations reuse the error (red) toast styling as the "negative"
+        // counterpart to the assign confirmation — it's not a failure.
+        showError(`Revoked "${roleName}" from ${clientName}`)
+      }
       if (DEV_MODE) return apply()
       try {
         const res = await fetch(`${apiBase()}/server/clients/${clientId}/roles/${roleId}`, {
@@ -752,7 +766,7 @@ function Main() {
         showError(`Failed to remove role: ${err.message}`)
       }
     },
-    [token, showError]
+    [token, roles, clients, showError]
   )
 
   // durationSeconds 0 = permanent (server default); reason optional.
@@ -1506,6 +1520,22 @@ function Main() {
         )
       } else if (ev === 'ClientModified') {
         const oldChannelId = clientsRef.current.find((c) => c.id === data.id)?.channel_id
+
+        // Someone changed OUR roles: diff old vs new ids and toast. When we
+        // changed them ourselves, handleAssignRole/handleRemoveRole already
+        // updated local state (and toasted), so the diff here is empty and
+        // this stays silent — no double toast.
+        if (data.id === selfIdRef.current && 'role_ids' in data) {
+          const before = new Set(
+            clientsRef.current.find((c) => c.id === data.id)?.role_ids || []
+          )
+          const after = new Set(data.role_ids || [])
+          const roleName = (id) => rolesRef.current.find((r) => r.id === id)?.name ?? 'a role'
+          const added = [...after].find((id) => !before.has(id))
+          const removed = [...before].find((id) => !after.has(id))
+          if (added != null) showSuccess(`You were given the "${roleName(added)}" role`)
+          else if (removed != null) showError(`Your "${roleName(removed)}" role was revoked`)
+        }
         // ClientModified also carries profile changes (avatar / nickname). Merge
         // whatever fields are present so we don't clobber the others; `in` guards
         // keep an event that omits a field from wiping it.
@@ -2041,63 +2071,22 @@ function Main() {
         />
 
         <main className="chat-area">
+          {/* Summary views have no header bar: their banner card acts as the header.
+              Leaving a view = clicking back to your joined channel in the sidebar. */}
+          {summaryChannelId == null && summaryClientId == null && (
           <div className="chat-header">
             <div className="header-content">
-              {summaryChannelId != null ? (
-                // Viewing a channel's details: its name and a close button back to
-                // the normal view.
-                <>
-                  <span className="view-preview-title">
-                    <IconVolume size={18} stroke={2} />
-                    {summaryChannel?.name ?? 'Channel'}
-                  </span>
-                  <button
-                    type="button"
-                    className="view-preview-close"
-                    onClick={() => setSummaryChannelId(null)}
-                    title="Close"
-                  >
-                    <IconX size={18} />
-                  </button>
-                </>
-              ) : summaryClientId != null ? (
-                // Viewing a client's summary/profile: just their name and a close
-                // button back to the normal view.
-                <>
-                  <span className="view-preview-title">
-                    <IconUser size={18} stroke={2} />
-                    {summaryClient?.name ?? 'Unknown user'}
-                  </span>
-                  <button
-                    type="button"
-                    className="view-preview-close"
-                    onClick={() => setSummaryClientId(null)}
-                    title="Close"
-                  >
-                    <IconX size={18} />
-                  </button>
-                </>
-              ) : previewChannelId != null ? (
+              {previewChannelId != null ? (
                 // Peeking into another channel's chat: no view tabs (no streams),
-                // just the channel name and a close button to return to our view.
-                <>
-                  <span className="view-preview-title">
-                    {previewChannel?.type === 'dm' ? (
-                      <IconUser size={18} stroke={2} />
-                    ) : (
-                      <IconMessage size={18} stroke={2} />
-                    )}
-                    {previewChannelName}
-                  </span>
-                  <button
-                    type="button"
-                    className="view-preview-close"
-                    onClick={() => setPreviewChannelId(null)}
-                    title="Close chat"
-                  >
-                    <IconX size={18} />
-                  </button>
-                </>
+                // just the channel name.
+                <span className="view-preview-title">
+                  {previewChannel?.type === 'dm' ? (
+                    <IconUser size={18} stroke={2} />
+                  ) : (
+                    <IconMessage size={18} stroke={2} />
+                  )}
+                  {previewChannelName}
+                </span>
               ) : connected ? (
                 <>
                   <div className="chat-title">
@@ -2144,6 +2133,7 @@ function Main() {
               )}
             </div>
           </div>
+          )}
 
           {/* Keyed so switching channel/tab remounts and replays the switch animation. */}
           <div

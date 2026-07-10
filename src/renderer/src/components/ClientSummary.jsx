@@ -1,5 +1,6 @@
 import './ClientSummary.css'
 import { RoleIcon } from '../lib/roleIcon'
+import { useImageColors, bannerGradient } from '../lib/imageColors'
 
 // Profile/summary shown in the main area when a client is single-clicked. The
 // name lives in the page header; this is the body. For now it's a scaffold —
@@ -11,9 +12,16 @@ function ClientSummary({ client, roles = [] }) {
   // names. 'everyone' is implicit and not in role_ids, so it won't appear here.
   const assignedRoles = roles.filter((r) => (client?.role_ids || []).includes(r.id))
 
+  // Banner gradient sampled from the avatar, same as ChannelSummary's icon
+  // banner. Null (no avatar / unreadable image) renders the plain card.
+  const bannerColors = useImageColors(client?.avatar)
+
   return (
     <div className="client-summary">
-      <div className="client-summary-card">
+      <div
+        className={`client-summary-card${bannerColors ? ' channel-summary-banner' : ''}`}
+        style={bannerGradient(bannerColors)}
+      >
         <span className="client-summary-avatar" aria-hidden="true">
           {client?.avatar ? (
             <img className="client-summary-avatar-img" src={client.avatar} alt="" />

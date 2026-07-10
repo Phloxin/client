@@ -126,8 +126,8 @@ html[data-transparency='true'] .chat-area {
   text-overflow: ellipsis;
 }
 
-/* Header when peeking into another channel's chat / viewing a profile: title on
-   the left, close on the right. */
+/* Header when peeking into another channel's chat / viewing a profile: just the
+   title (navigate out via the sidebar). */
 .view-preview-title {
   display: flex;
   align-items: center;
@@ -138,34 +138,6 @@ html[data-transparency='true'] .chat-area {
   text-overflow: ellipsis;
   font-weight: var(--font-weight-semibold);
   color: var(--color-text);
-}
-
-.view-preview-close {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 30px;
-  flex-shrink: 0;
-  padding: 0;
-  border: none;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--color-text-secondary);
-  cursor: pointer;
-  transition:
-    background 0.15s ease,
-    color 0.15s ease,
-    transform 0.12s ease;
-}
-
-.view-preview-close:hover {
-  background: var(--color-surface);
-  color: var(--color-text);
-}
-
-.view-preview-close:active {
-  transform: scale(0.9);
 }
 
 .loading {
