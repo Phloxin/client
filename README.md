@@ -256,8 +256,9 @@ time in `serverConfig.js`). All authenticated requests send
 
 | Method          | Endpoint                            | Description                                                                                              |
 | --------------- | ----------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `POST`          | `/login`                            | Returns `{ token, client }`                                                                              |
-| `POST`          | `/register`                         | Self-register (used as fallback when login has no token)                                                 |
+| `POST`          | `/login`                            | Authenticates a user and creates an independent device session                                           |
+| `POST`          | `/register`                         | Creates a user and its first device session                                                              |
+| `POST`          | `/auth/refresh`                     | Atomically rotates a refresh token and returns a replacement auth response                               |
 | `GET`           | `/channels/:id/messages`            | Recent history — GET with JSON body (`limit`/`before`/`after`/`around`), routed through the main process |
 | `POST`          | `/channels/:id/messages`            | Send a message (multipart: `payload_json` + `files[i]`)                                                  |
 | `PATCH`         | `/channels/:id/messages/:mid`       | Edit own message                                                                                         |
