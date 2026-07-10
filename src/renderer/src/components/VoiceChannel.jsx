@@ -61,6 +61,9 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     roles,
     onAssignRole,
     onRemoveRole,
+    vanity,
+    onToggleVanity,
+    onOpenRolesGroups,
     canKickMembers,
     canBanMembers,
     canMuteMembers,
@@ -501,6 +504,9 @@ const VoiceChannel = forwardRef(function VoiceChannel(
           roles={roles}
           onAssignRole={onAssignRole}
           onRemoveRole={onRemoveRole}
+          vanity={vanity}
+          onToggleVanity={onToggleVanity}
+          onOpenRolesGroups={onOpenRolesGroups}
           canKickMembers={canKickMembers}
           canBanMembers={canBanMembers}
           canMuteMembers={canMuteMembers}

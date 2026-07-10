@@ -254,6 +254,15 @@
   overflow-y: auto;
 }
 
+/* Server-group icon in the group picker (and the new-group composer preview). */
+.client-group-icon {
+  width: 16px;
+  height: 16px;
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
 .client-role-empty {
   padding: 6px 4px;
   color: var(--color-text-secondary);

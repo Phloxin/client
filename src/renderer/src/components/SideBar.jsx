@@ -62,6 +62,9 @@ function Sidebar({
   roles,
   onAssignRole,
   onRemoveRole,
+  vanity,
+  onToggleVanity,
+  onOpenRolesGroups,
   bannedUsers = [],
   canKickMembers,
   canBanMembers,
@@ -419,6 +422,9 @@ function Sidebar({
             roles={roles}
             onAssignRole={onAssignRole}
             onRemoveRole={onRemoveRole}
+            vanity={vanity}
+            onToggleVanity={onToggleVanity}
+            onOpenRolesGroups={onOpenRolesGroups}
             canKickMembers={canKickMembers}
             canBanMembers={canBanMembers}
             canMuteMembers={canMuteMembers}
@@ -479,6 +485,9 @@ function Sidebar({
                 roles={roles}
                 onAssignRole={onAssignRole}
                 onRemoveRole={onRemoveRole}
+                vanity={vanity}
+                onToggleVanity={onToggleVanity}
+                onOpenRolesGroups={onOpenRolesGroups}
                 canKickMembers={canKickMembers}
                 canBanMembers={canBanMembers}
                 canMuteMembers={canMuteMembers}

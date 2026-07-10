@@ -13,6 +13,7 @@ import ChannelSummary from '../components/ChannelSummary'
 import TitleBar from '../components/TitleBar'
 import ConnectionOverlay from '../components/ConnectionOverlay'
 import Toast from '../components/Toast'
+import RolesGroupsMenu from '../components/RolesGroupsMenu'
 import IdleAnimation from '../components/IdleAnimation'
 import Settings from './Settings'
 import {
@@ -130,6 +131,10 @@ function normalizeClientVoice(c) {
   return {
     ...c,
     avatar: cdnUrl(c.avatar),
+    // The server sends assigned vanity as full VanityItems; we only keep the
+    // ids and resolve names/icons against the global vanity list, so icon/name
+    // edits propagate from one place.
+    vanity_ids: (c.vanity || []).map((v) => v.id),
     self_mute: !!c.self_mute,
     self_deaf: !!c.self_deaf,
     server_mute: !!c.muted,
@@ -155,6 +160,10 @@ function Main() {
   const [viewMode, setViewMode] = useState('log') // 'log' or 'video'
   const [servers, setServers] = useState([])
   const [roles, setRoles] = useState([])
+  // Vanity items (cosmetic server groups: name + icon, no permissions).
+  const [vanity, setVanity] = useState([])
+  // 'Roles and Groups' popup, opened from a client context menu.
+  const [rolesGroupsOpen, setRolesGroupsOpen] = useState(false)
   const [bans, setBans] = useState([])
   const [connectedServer, setConnectedServer] = useState(null)
   const [connectionStatus, setConnectionStatus] = useState('connected')
@@ -217,6 +226,10 @@ function Main() {
   useEffect(() => {
     rolesRef.current = roles
   }, [roles])
+  const vanityRef = useRef([])
+  useEffect(() => {
+    vanityRef.current = vanity
+  }, [vanity])
   useEffect(() => {
     clientsRef.current = clients
   }, [clients])
@@ -648,6 +661,22 @@ function Main() {
       .catch((err) => console.error('Failed to load roles:', err))
   }, [token])
 
+  // Load the server's vanity groups once per connection; VanityCreated/
+  // VanityDeleted events keep the list current afterwards. Icons come back as
+  // /cdn/… paths, resolved against the active host like avatars.
+  useEffect(() => {
+    if (DEV_MODE || !token) {
+      setVanity([])
+      return
+    }
+    fetch(`${apiBase()}/server/vanity`, { headers: { Authorization: `Bearer ${token}` } })
+      .then((res) => res.json())
+      .then((data) =>
+        setVanity(Array.isArray(data) ? data.map((v) => ({ ...v, avatar: cdnUrl(v.avatar) })) : [])
+      )
+      .catch((err) => console.error('Failed to load vanity groups:', err))
+  }, [token])
+
   // The current ban list (BanApiObject[] = { reason, user }). Banned users are
   // surfaced in the Users roster so they can be unbanned; refreshed after our
   // own ban/unban actions since those change the list.
@@ -750,9 +779,9 @@ function Main() {
               : c
           )
         )
-        // Revocations reuse the error (red) toast styling as the "negative"
-        // counterpart to the assign confirmation — it's not a failure.
-        showError(`Revoked "${roleName}" from ${clientName}`)
+        // Green like assign: a revocation we carried out is a success — red is
+        // reserved for actions taken against us (see the ClientModified diff).
+        showSuccess(`Revoked "${roleName}" from ${clientName}`)
       }
       if (DEV_MODE) return apply()
       try {
@@ -766,7 +795,60 @@ function Main() {
         showError(`Failed to remove role: ${err.message}`)
       }
     },
-    [token, roles, clients, showError]
+    [token, roles, clients, showError, showSuccess]
+  )
+
+  // Create a vanity group (name + optional icon data URL). The server
+  // broadcasts VanityCreated — echoed back to us too — which is what adds it
+  // to the list, so nothing is applied locally here.
+  const handleCreateVanityGroup = useCallback(
+    async (name, avatar) => {
+      try {
+        const res = await fetch(`${apiBase()}/server/vanity`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ type: 'group', name, ...(avatar ? { avatar } : {}) })
+        })
+        await throwIfError(res)
+        showSuccess(`Created group "${name}"`)
+      } catch (err) {
+        showError(`Failed to create group: ${err.message}`)
+      }
+    },
+    [token, showError, showSuccess]
+  )
+
+  // Assign / remove a vanity group on a client. Mirrors roles: vanity_ids is
+  // updated on success (not optimistically); the server broadcasts
+  // ClientModified with vanity_ids, which the events handler merges for
+  // everyone else.
+  const handleToggleVanity = useCallback(
+    async (clientId, vanityId, assign) => {
+      const groupName = vanity.find((v) => v.id === vanityId)?.name ?? 'group'
+      const clientName = clients.find((c) => c.id === clientId)?.name ?? 'user'
+      try {
+        const res = await fetch(`${apiBase()}/server/clients/${clientId}/vanity/${vanityId}`, {
+          method: assign ? 'PUT' : 'DELETE',
+          headers: { Authorization: `Bearer ${token}` }
+        })
+        await throwIfError(res)
+        setClients((prev) =>
+          prev.map((c) => {
+            if (c.id !== clientId) return c
+            const ids = (c.vanity_ids || []).filter((id) => id !== vanityId)
+            return { ...c, vanity_ids: assign ? [...ids, vanityId] : ids }
+          })
+        )
+        showSuccess(
+          assign
+            ? `Assigned "${groupName}" to ${clientName}`
+            : `Removed "${groupName}" from ${clientName}`
+        )
+      } catch (err) {
+        showError(`Failed to update group: ${err.message}`)
+      }
+    },
+    [token, vanity, clients, showError, showSuccess]
   )
 
   // durationSeconds 0 = permanent (server default); reason optional.
@@ -1536,6 +1618,23 @@ function Main() {
           if (added != null) showSuccess(`You were given the "${roleName(added)}" role`)
           else if (removed != null) showError(`Your "${roleName(removed)}" role was revoked`)
         }
+        // Same for OUR vanity groups: green when another user adds us to one,
+        // red when they remove us. Our own toggles were already applied (and
+        // toasted green) by handleToggleVanity, so the diff here stays empty.
+        if (data.id === selfIdRef.current && 'vanity' in data) {
+          const before = new Set(
+            clientsRef.current.find((c) => c.id === data.id)?.vanity_ids || []
+          )
+          const after = new Set((data.vanity || []).map((v) => v.id))
+          const groupName = (id) =>
+            (data.vanity || []).find((v) => v.id === id)?.name ??
+            vanityRef.current.find((v) => v.id === id)?.name ??
+            'a group'
+          const added = [...after].find((id) => !before.has(id))
+          const removed = [...before].find((id) => !after.has(id))
+          if (added != null) showSuccess(`You were added to the "${groupName(added)}" group`)
+          else if (removed != null) showError(`You were removed from the "${groupName(removed)}" group`)
+        }
         // ClientModified also carries profile changes (avatar / nickname). Merge
         // whatever fields are present so we don't clobber the others; `in` guards
         // keep an event that omits a field from wiping it.
@@ -1545,6 +1644,7 @@ function Main() {
             const next = { ...c }
             if ('channel_id' in data) next.channel_id = data.channel_id
             if ('role_ids' in data) next.role_ids = data.role_ids
+            if ('vanity' in data) next.vanity_ids = (data.vanity || []).map((v) => v.id)
             if ('avatar' in data) next.avatar = cdnUrl(data.avatar)
             if (data.nickname != null) next.name = data.nickname
             if (data.name != null) next.name = data.name
@@ -1691,6 +1791,25 @@ function Main() {
           prev.some((b) => b.user.id === data.client.id)
             ? prev
             : [...prev, { reason: data.reason ?? null, user: data.client }]
+        )
+      } else if (ev === 'VanityCreated') {
+        // data is the VanityItem ({ id, type: 'group', name, avatar }). Upsert
+        // by id — our own POST gets this broadcast echoed back too.
+        const item = { ...data, avatar: cdnUrl(data.avatar) }
+        setVanity((prev) =>
+          prev.some((v) => v.id === item.id)
+            ? prev.map((v) => (v.id === item.id ? item : v))
+            : [...prev, item]
+        )
+      } else if (ev === 'VanityDeleted') {
+        setVanity((prev) => prev.filter((v) => v.id !== data.id))
+        // Strip the dead id from anyone still wearing it.
+        setClients((prev) =>
+          prev.map((c) =>
+            (c.vanity_ids || []).includes(data.id)
+              ? { ...c, vanity_ids: c.vanity_ids.filter((id) => id !== data.id) }
+              : c
+          )
         )
       } else {
         setFeed((prev) => appendFeed(prev, systemEntry(`Unknown event: ${ev}`)))
@@ -2016,6 +2135,14 @@ function Main() {
   return (
     <div className="app-shell">
       <Toast message={toast?.message} variant={toast?.variant} onDismiss={dismissToast} />
+      {rolesGroupsOpen && (
+        <RolesGroupsMenu
+          roles={roles}
+          vanity={vanity}
+          onCreateVanity={handleCreateVanityGroup}
+          onClose={() => setRolesGroupsOpen(false)}
+        />
+      )}
       <TitleBar
         title={titleText}
         icon={IconUsersGroup}
@@ -2062,6 +2189,9 @@ function Main() {
           roles={roles}
           onAssignRole={handleAssignRole}
           onRemoveRole={handleRemoveRole}
+          vanity={vanity}
+          onToggleVanity={handleToggleVanity}
+          onOpenRolesGroups={() => setRolesGroupsOpen(true)}
           bannedUsers={bannedUsers}
           canKickMembers={canKickMembers}
           canBanMembers={canBanMembers}
@@ -2165,7 +2295,7 @@ function Main() {
                 onDeleteOverwrite={handleDeleteChannelOverwrite}
               />
             ) : summaryClientId != null ? (
-              <ClientSummary client={summaryClient} roles={roles} />
+              <ClientSummary client={summaryClient} roles={roles} vanity={vanity} />
             ) : previewChannelId != null || viewMode === 'log' ? (
               <ChatPanel
                 feed={feed.filter(

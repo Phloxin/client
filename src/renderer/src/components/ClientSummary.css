@@ -197,3 +197,12 @@
   color: var(--color-text);
   font-size: var(--font-size-sm);
 }
+
+/* Server-group icon inside a group chip. */
+.client-summary-group-icon {
+  width: 14px;
+  height: 14px;
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+  flex-shrink: 0;
+}

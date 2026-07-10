@@ -19,7 +19,9 @@ import {
   IconBan,
   IconMoodSilence,
   IconCheck,
-  IconUserCheck
+  IconUserCheck,
+  IconUsersGroup,
+  IconPlus
 } from '@tabler/icons-react'
 import { setClientAudioState, getClientAudioState } from '../lib/soup'
 import { fileToAvatarDataUrl } from '../lib/avatarFile'
@@ -50,6 +52,9 @@ function ClientIndicator({
   roles = [],
   onAssignRole,
   onRemoveRole,
+  vanity = [],
+  onToggleVanity,
+  onOpenRolesGroups,
   canKickMembers = false,
   canBanMembers = false,
   canMuteMembers = false,
@@ -66,6 +71,8 @@ function ClientIndicator({
   const [modReason, setModReason] = useState('')
   // True when the role picker is expanded in the context menu.
   const [roleOpen, setRoleOpen] = useState(false)
+  // True when the server-group picker is expanded in the context menu.
+  const [groupOpen, setGroupOpen] = useState(false)
   const [banDuration, setBanDuration] = useState(0)
   // True when the duration select is in "Custom…" mode (banDuration comes from a
   // free-form seconds input rather than a preset).
@@ -123,6 +130,7 @@ function ClientIndicator({
       setBanDuration(0)
       setCustomDuration(false)
       setRoleOpen(false)
+      setGroupOpen(false)
     }
   }, [menuPos])
 
@@ -148,8 +156,17 @@ function ClientIndicator({
   const gagged = !!client.server_mute
   const canGag = !isSelf && !!onGag && canMuteMembers
   const canAssignRole = !isSelf
+  // Groups are cosmetic, so unlike roles they're also assignable to ourselves —
+  // our own menu shows the picker below Set Avatar instead of under moderation.
+  const canAssignGroup = !!onToggleVanity
   // The moderation section shows when any action on another user is available.
-  const canModerate = canAssignRole || canKick || canKickFromChannel || canGag || canBan
+  const canModerate =
+    canAssignRole ||
+    (!isSelf && canAssignGroup) ||
+    canKick ||
+    canKickFromChannel ||
+    canGag ||
+    canBan
   // 'everyone' is implicit (every client has it) and 'owner' isn't hand-assigned,
   // so neither is an assignable option in the role picker.
   const assignableRoles = roles.filter((r) => {
@@ -159,7 +176,9 @@ function ClientIndicator({
 
   // A banned user's menu collapses to just Unban; otherwise it offers the normal
   // set. Don't open at all when nothing would be actionable.
-  const canOpenMenu = isBanned ? canUnban : canVolume || canPoke || canSetAvatar || canModerate
+  const canOpenMenu = isBanned
+    ? canUnban
+    : canVolume || canPoke || canSetAvatar || canAssignGroup || canModerate
 
   const handleContextMenu = (e) => {
     if (!canOpenMenu) return
@@ -221,6 +240,55 @@ function ClientIndicator({
   }
 
   const toggleLocalMute = () => setLocalMuted((prev) => !prev)
+
+  // Server-group picker, rendered in our own menu (below Set Avatar) and in the
+  // moderation section of someone else's menu.
+  const groupPicker = (
+    <>
+      <button
+        type="button"
+        className="client-context-menu-item"
+        onClick={() => setGroupOpen((v) => !v)}
+      >
+        <IconUsersGroup size={16} />
+        Assign Server Groups
+      </button>
+      {groupOpen && (
+        <div className="client-role-list">
+          {vanity.map((g) => {
+            const has = (client.vanity_ids || []).includes(g.id)
+            return (
+              <button
+                key={g.id}
+                type="button"
+                className="client-context-menu-item"
+                onClick={() => onToggleVanity?.(client.id, g.id, !has)}
+              >
+                <IconCheck size={16} style={{ visibility: has ? 'visible' : 'hidden' }} />
+                {g.avatar ? (
+                  <img src={g.avatar} alt="" className="client-group-icon" />
+                ) : (
+                  <IconUsersGroup size={16} />
+                )}
+                {g.name}
+              </button>
+            )
+          })}
+          <button
+            type="button"
+            className="client-context-menu-item"
+            onClick={() => {
+              setMenuPos(null)
+              onOpenRolesGroups?.()
+            }}
+          >
+            <IconPlus size={16} />
+            Create Group
+          </button>
+        </div>
+      )}
+    </>
+  )
 
   const handleVolumeChange = (e) => {
     const next = Number(e.target.value)
@@ -343,6 +411,7 @@ function ClientIndicator({
                   )}
                 </>
               )}
+              {isSelf && canAssignGroup && groupPicker}
               {canVolume && (
                 <div className="client-context-menu-row">
                   <button
@@ -510,6 +579,7 @@ function ClientIndicator({
                           )}
                         </div>
                       )}
+                      {canAssignGroup && groupPicker}
                       {canKickFromChannel && (
                         <button
                           type="button"
