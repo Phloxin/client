@@ -5,6 +5,7 @@ import ChannelPermissions from './ChannelPermissions'
 import ImageViewer from './ImageViewer'
 import { cdnUrl } from '../lib/serverConfig'
 import { fileToAvatarDataUrl } from '../lib/avatarFile'
+import { extractImageColors } from '../lib/imageColors'
 
 // Inline editor for the channel description. Mirrors ChatPanel's MessageEditor:
 // auto-grows, Enter saves, Shift+Enter newlines, Escape cancels. Empty is allowed
@@ -91,6 +92,23 @@ function ChannelSummary({
   const iconMenuRef = useRef(null)
   const iconInputRef = useRef(null)
   const hasIcon = !!channel?.channel_icon
+  // Banner colors sampled from the icon ({ average, vibrant } or null). Null
+  // (no icon / unreadable image) renders the plain card with no banner.
+  const [bannerColors, setBannerColors] = useState(null)
+
+  useEffect(() => {
+    if (!hasIcon) {
+      setBannerColors(null)
+      return
+    }
+    let alive = true
+    extractImageColors(cdnUrl(channel.channel_icon)).then((colors) => {
+      if (alive) setBannerColors(colors)
+    })
+    return () => {
+      alive = false
+    }
+  }, [channel?.channel_icon])
 
   // Close the icon context menu on an outside click.
   useEffect(() => {
@@ -144,7 +162,18 @@ function ChannelSummary({
 
   return (
     <div className="client-summary">
-      <div className="client-summary-card">
+      <div
+        className={`client-summary-card${bannerColors ? ' channel-summary-banner' : ''}`}
+        style={
+          bannerColors
+            ? {
+                background: `linear-gradient(120deg,
+                  color-mix(in srgb, ${bannerColors.vibrant} 45%, transparent),
+                  color-mix(in srgb, ${bannerColors.average} 22%, transparent))`
+              }
+            : undefined
+        }
+      >
         <button
           type="button"
           className="client-summary-avatar channel-summary-avatar-btn"

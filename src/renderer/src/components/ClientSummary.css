@@ -35,6 +35,15 @@
   object-fit: cover;
 }
 
+/* Channel details: banner behind the icon + name, painted with a gradient
+   sampled from the icon's colors (inline style; only present when an icon is
+   set and readable). */
+.channel-summary-banner {
+  padding: 18px 16px;
+  border-radius: var(--radius-md);
+  box-shadow: inset 0 0 0 1px var(--hairline);
+}
+
 /* Channel details: the avatar doubles as the icon set/remove button. A dark
    scrim with a trash (icon set) or photo-up (no icon) glyph fades in on hover. */
 .channel-summary-avatar-btn {
