@@ -1,7 +1,8 @@
-import { useState, useRef, useLayoutEffect } from 'react'
+import { useState, useRef, useEffect, useLayoutEffect } from 'react'
 import './ClientSummary.css'
-import { IconVolume, IconPencil, IconTrash, IconPhotoUp } from '@tabler/icons-react'
+import { IconVolume, IconPencil, IconTrash, IconPhotoUp, IconZoomIn } from '@tabler/icons-react'
 import ChannelPermissions from './ChannelPermissions'
+import ImageViewer from './ImageViewer'
 import { cdnUrl } from '../lib/serverConfig'
 import { fileToAvatarDataUrl } from '../lib/avatarFile'
 
@@ -83,10 +84,23 @@ function ChannelSummary({
 }) {
   const limit = channel?.user_limit || 0
   const [editing, setEditing] = useState(false)
-  // Icon delete confirmation dialog (clicking an existing icon asks first).
-  const [confirmIconDelete, setConfirmIconDelete] = useState(false)
+  // Full-size icon lightbox (clicking an existing icon, like a chat image).
+  const [viewerOpen, setViewerOpen] = useState(false)
+  // Right-click context menu on an existing icon: { x, y } or null when closed.
+  const [iconMenu, setIconMenu] = useState(null)
+  const iconMenuRef = useRef(null)
   const iconInputRef = useRef(null)
   const hasIcon = !!channel?.channel_icon
+
+  // Close the icon context menu on an outside click.
+  useEffect(() => {
+    if (!iconMenu) return
+    const close = (e) => {
+      if (iconMenuRef.current && !iconMenuRef.current.contains(e.target)) setIconMenu(null)
+    }
+    document.addEventListener('mousedown', close)
+    return () => document.removeEventListener('mousedown', close)
+  }, [iconMenu])
 
   // Same downscale/re-encode pipeline as client avatars (lib/avatarFile).
   const handleIconFile = (e) => {
@@ -96,16 +110,27 @@ function ChannelSummary({
     fileToAvatarDataUrl(file, (dataUrl) => onSetIcon?.(channel.id, dataUrl))
   }
 
-  // Icon present → confirm-then-delete; absent → pick a file to set one.
+  // Icon present → view it full size; absent → pick a file to set one.
   const handleIconClick = () => {
-    if (hasIcon) setConfirmIconDelete(true)
+    if (hasIcon) setViewerOpen(true)
     else iconInputRef.current?.click()
   }
 
+  const handleIconContextMenu = (e) => {
+    if (!hasIcon) return
+    e.preventDefault()
+    setIconMenu({ x: e.clientX, y: e.clientY })
+  }
+
   const deleteIcon = () => {
-    setConfirmIconDelete(false)
+    setIconMenu(null)
     // null clears the icon server-side.
     if (channel?.id != null) onSetIcon?.(channel.id, null)
+  }
+
+  const replaceIcon = () => {
+    setIconMenu(null)
+    iconInputRef.current?.click()
   }
   // Local copy so an edit shows immediately. Seeded from props; the view is keyed
   // on channel id in Main, so switching channels remounts and re-seeds.
@@ -123,8 +148,9 @@ function ChannelSummary({
         <button
           type="button"
           className="client-summary-avatar channel-summary-avatar-btn"
-          title={hasIcon ? 'Remove channel icon' : 'Set channel icon'}
+          title={hasIcon ? 'View channel icon (right-click for options)' : 'Set channel icon'}
           onClick={handleIconClick}
+          onContextMenu={handleIconContextMenu}
         >
           {hasIcon ? (
             <img className="client-summary-avatar-img" src={cdnUrl(channel.channel_icon)} alt="" />
@@ -132,7 +158,7 @@ function ChannelSummary({
             <IconVolume size={28} stroke={2} />
           )}
           <span className="channel-summary-avatar-overlay" aria-hidden="true">
-            {hasIcon ? <IconTrash size={20} /> : <IconPhotoUp size={20} />}
+            {hasIcon ? <IconZoomIn size={20} /> : <IconPhotoUp size={20} />}
           </span>
         </button>
         <input
@@ -188,32 +214,26 @@ function ChannelSummary({
         onDelete={onDeleteOverwrite}
       />
 
-      {confirmIconDelete && (
+      {viewerOpen && hasIcon && (
+        <ImageViewer
+          src={cdnUrl(channel.channel_icon)}
+          name={`${channel?.name ?? 'Channel'} icon`}
+          onClose={() => setViewerOpen(false)}
+        />
+      )}
+
+      {iconMenu && (
         <div
-          className="chat-confirm-overlay"
-          role="presentation"
-          onClick={() => setConfirmIconDelete(false)}
+          className="channel-context-menu"
+          ref={iconMenuRef}
+          style={{ top: iconMenu.y, left: iconMenu.x }}
         >
-          <div
-            className="chat-confirm-modal"
-            role="dialog"
-            aria-modal="true"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="chat-confirm-body">Remove this channel&apos;s icon?</div>
-            <div className="chat-confirm-footer">
-              <button
-                type="button"
-                className="chat-confirm-btn secondary"
-                onClick={() => setConfirmIconDelete(false)}
-              >
-                Cancel
-              </button>
-              <button type="button" className="chat-confirm-btn danger" onClick={deleteIcon} autoFocus>
-                Remove
-              </button>
-            </div>
-          </div>
+          <button type="button" className="channel-context-item" onClick={replaceIcon}>
+            <IconPhotoUp size={16} /> Replace Icon
+          </button>
+          <button type="button" className="channel-context-item danger" onClick={deleteIcon}>
+            <IconTrash size={16} /> Remove Icon
+          </button>
         </div>
       )}
     </div>

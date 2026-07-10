@@ -1983,7 +1983,6 @@ function Main() {
           onRemoveServer={handleRemoveServer}
           onCreateChannel={handleCreateChannel}
           onDeleteChannel={handleDeleteChannel}
-          onSetChannelIcon={handleSetChannelIcon}
           onReorderChannel={handleReorderChannel}
           onMoveClient={handleMoveClientToChannel}
           onPreviewChannel={handlePreviewChannel}

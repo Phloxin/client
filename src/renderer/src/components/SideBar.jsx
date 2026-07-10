@@ -45,7 +45,6 @@ function Sidebar({
   onRemoveServer,
   onCreateChannel,
   onDeleteChannel,
-  onSetChannelIcon,
   onReorderChannel,
   onMoveClient,
   onPreviewChannel,
@@ -404,7 +403,6 @@ function Sidebar({
             deafened={soundMuted}
             onSelfChannelChange={onSelfChannelChange}
             onDeleteChannel={onDeleteChannel}
-            onSetChannelIcon={onSetChannelIcon}
             onRequestCreateChannel={openCreateChannel}
             onShowChannelSummary={onShowChannelSummary}
             onMoveClient={onMoveClient}

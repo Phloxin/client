@@ -12,7 +12,6 @@ import {
 } from '../lib/soup'
 import { useSettings, useAnimationCategory } from '../context/SettingsContext'
 import { useAnimatedPresence } from '../lib/animation'
-import { fileToAvatarDataUrl } from '../lib/avatarFile'
 import { cdnUrl } from '../lib/serverConfig'
 import ClientIndicator from './ClientIndicator'
 import ScreenSourcePicker from './ScreenSourcePicker'
@@ -22,8 +21,7 @@ import {
   IconPlus,
   IconTrash,
   IconPointFilled,
-  IconInfoCircle,
-  IconPhotoUp
+  IconInfoCircle
 } from '@tabler/icons-react'
 
 const VoiceChannel = forwardRef(function VoiceChannel(
@@ -47,7 +45,6 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     onSharingChange,
     onRequestJoin,
     onDeleteChannel,
-    onSetChannelIcon,
     onRequestCreateChannel,
     onShowChannelSummary,
     onMoveClient,
@@ -95,7 +92,6 @@ const VoiceChannel = forwardRef(function VoiceChannel(
 
   const joinedRef = useRef(false)
   const menuRef = useRef(null)
-  const iconInputRef = useRef(null)
   // Latest mic settings, read by the (re)publish path so a background reconnect
   // re-publishes with current settings rather than those captured at join time.
   const micSettingsRef = useRef(micSettings)
@@ -134,15 +130,6 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   const handleContextMenu = (e) => {
     e.preventDefault()
     setMenuPos({ x: e.clientX, y: e.clientY })
-  }
-
-  // Same downscale/re-encode pipeline as client avatars (lib/avatarFile).
-  const handleIconFile = (e) => {
-    const file = e.target.files?.[0]
-    e.target.value = ''
-    if (!file) return
-    setMenuPos(null)
-    fileToAvatarDataUrl(file, (dataUrl) => onSetChannelIcon?.(channel.id, dataUrl))
   }
 
   // Client entries carry their id under a custom MIME type so this only reacts to
@@ -542,24 +529,6 @@ const VoiceChannel = forwardRef(function VoiceChannel(
           >
             <IconInfoCircle size={16} /> Channel Details
           </button>
-          {onSetChannelIcon && (
-            <>
-              <input
-                ref={iconInputRef}
-                type="file"
-                accept="image/*"
-                style={{ display: 'none' }}
-                onChange={handleIconFile}
-              />
-              <button
-                type="button"
-                className="channel-context-item"
-                onClick={() => iconInputRef.current?.click()}
-              >
-                <IconPhotoUp size={16} /> Set Icon
-              </button>
-            </>
-          )}
           <button
             type="button"
             className="channel-context-item"
