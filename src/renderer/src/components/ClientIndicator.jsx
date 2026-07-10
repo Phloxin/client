@@ -12,6 +12,7 @@ import {
   IconVideoFilled,
   IconHandFinger,
   IconPhotoUp,
+  IconPhotoX,
   IconUserShield,
   IconUserX,
   IconDoorExit,
@@ -21,6 +22,7 @@ import {
   IconUserCheck
 } from '@tabler/icons-react'
 import { setClientAudioState, getClientAudioState } from '../lib/soup'
+import { fileToAvatarDataUrl } from '../lib/avatarFile'
 import { RoleIcon } from '../lib/roleIcon'
 
 // rosterMode renders a presence-only entry (the sidebar's Users tab): no mic/
@@ -177,40 +179,13 @@ function ClientIndicator({
     setMenuPos(null)
   }
 
-  // Hand an avatar image up to be saved. Animated GIFs can't survive a canvas
-  // re-encode (it captures a single frame), so send them as-is to keep the
-  // animation. Other formats (JPG/PNG/WebP) get downscaled to a small square —
-  // avatars render tiny and the data URL is broadcast to everyone, so full-res
-  // photos would bloat every payload. We re-encode to WebP, which keeps PNG
-  // transparency (JPEG would flatten it) and compresses well; the backend
-  // accepts JPG/PNG/GIF/WebP.
+  // Hand an avatar image up to be saved (downscale/re-encode lives in avatarFile).
   const handleAvatarFile = (e) => {
     const file = e.target.files?.[0]
     e.target.value = ''
     if (!file) return
     setMenuPos(null)
-    if (file.type === 'image/gif') {
-      const reader = new FileReader()
-      reader.onload = () => onSetAvatar(reader.result)
-      reader.readAsDataURL(file)
-      return
-    }
-    const img = new Image()
-    img.onload = () => {
-      const size = 256
-      const canvas = document.createElement('canvas')
-      canvas.width = size
-      canvas.height = size
-      const ctx = canvas.getContext('2d')
-      // Cover-crop: scale so the shorter side fills, center the overflow.
-      const scale = Math.max(size / img.width, size / img.height)
-      const w = img.width * scale
-      const h = img.height * scale
-      ctx.drawImage(img, (size - w) / 2, (size - h) / 2, w, h)
-      onSetAvatar(canvas.toDataURL('image/webp', 0.85))
-      URL.revokeObjectURL(img.src)
-    }
-    img.src = URL.createObjectURL(file)
+    fileToAvatarDataUrl(file, onSetAvatar)
   }
 
   // Single-click opens this client's summary; double-click opens a DM. A click
@@ -353,6 +328,19 @@ function ClientIndicator({
                     <IconPhotoUp size={16} />
                     Set avatar
                   </button>
+                  {client.avatar && (
+                    <button
+                      type="button"
+                      className="client-context-menu-item danger"
+                      onClick={() => {
+                        setMenuPos(null)
+                        onSetAvatar(null)
+                      }}
+                    >
+                      <IconPhotoX size={16} />
+                      Remove avatar
+                    </button>
+                  )}
                 </>
               )}
               {canVolume && (

@@ -149,14 +149,16 @@ function Main() {
   const [bans, setBans] = useState([])
   const [connectedServer, setConnectedServer] = useState(null)
   const [connectionStatus, setConnectionStatus] = useState('connected')
-  // Transient error banner for partial failures (bad requests, permission
-  // denials, failed fetches). Null = hidden. Latest error replaces any showing.
-  const [toastError, setToastError] = useState(null)
+  // Transient toast banner: { message, variant } or null when hidden. 'error'
+  // reports partial failures (bad requests, permission denials, failed fetches);
+  // 'success' confirms completed actions. Latest toast replaces any showing.
+  const [toast, setToast] = useState(null)
   // True while a connect attempt is in flight (login → token), so the idle view
   // can say so. Cleared on success (we leave the idle view) or failure.
   const [connecting, setConnecting] = useState(false)
-  const showError = useCallback((message) => setToastError(message), [])
-  const dismissError = useCallback(() => setToastError(null), [])
+  const showError = useCallback((message) => setToast({ message, variant: 'error' }), [])
+  const showSuccess = useCallback((message) => setToast({ message, variant: 'success' }), [])
+  const dismissToast = useCallback(() => setToast(null), [])
 
   //Client UI Hooks
   const [allVideoStreams, setAllVideoStreams] = useState([])
@@ -786,10 +788,10 @@ function Main() {
   )
 
   // Set our own avatar: PATCH /client/self with data-URL image //Update locally -> Server broadcasts ClientModified to others
-  // avatar is a `data:image/...;base64,...` string.
+  // avatar is a `data:image/...;base64,...` string, or null to remove it.
   const handleSetAvatar = useCallback(
     async (avatar) => {
-      if (!avatar) return
+      if (avatar === undefined) return
       const selfId = client?.id
       setClients((prev) => prev.map((c) => (c.id === selfId ? { ...c, avatar } : c)))
       if (DEV_MODE) return
@@ -993,6 +995,7 @@ function Main() {
         body: JSON.stringify({ position })
       })
       await throwIfError(res)
+      showSuccess('Channel moved')
     } catch (err) {
       showError(`Failed to reorder channel: ${err.message}`)
     }
@@ -1014,8 +1017,31 @@ function Main() {
         body: JSON.stringify({ description })
       })
       await throwIfError(res)
+      showSuccess('Channel description updated')
     } catch (err) {
       showError(`Failed to update channel description: ${err.message}`)
+    }
+  }
+
+  // Set a channel's icon (from the channel's right-click menu). channel_icon is
+  // a `data:image/...;base64,...` string, same pipeline as client avatars. The
+  // server broadcasts ChannelUpdated, so no local mutate outside DEV_MODE.
+  const handleSetChannelIcon = async (id, channel_icon) => {
+    if (DEV_MODE) {
+      setChannels((prev) => prev.map((ch) => (ch.id === id ? { ...ch, channel_icon } : ch)))
+      return
+    }
+
+    try {
+      const res = await fetch(`${apiBase()}/channels/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ channel_icon })
+      })
+      await throwIfError(res)
+      showSuccess(channel_icon ? 'Channel icon updated' : 'Channel icon removed')
+    } catch (err) {
+      showError(`Failed to set channel icon: ${err.message}`)
     }
   }
 
@@ -1045,6 +1071,7 @@ function Main() {
         body: JSON.stringify({ type: targetType, allow, deny })
       })
       await throwIfError(res)
+      showSuccess('Channel permissions updated')
     } catch (err) {
       showError(`Failed to update channel permissions: ${err.message}`)
     }
@@ -1073,6 +1100,7 @@ function Main() {
         headers: { Authorization: `Bearer ${token}` }
       })
       await throwIfError(res)
+      showSuccess('Channel permission removed')
     } catch (err) {
       showError(`Failed to remove channel permission: ${err.message}`)
     }
@@ -1925,7 +1953,7 @@ function Main() {
 
   return (
     <div className="app-shell">
-      <Toast message={toastError} onDismiss={dismissError} />
+      <Toast message={toast?.message} variant={toast?.variant} onDismiss={dismissToast} />
       <TitleBar
         title={titleText}
         icon={IconUsersGroup}
@@ -1955,6 +1983,7 @@ function Main() {
           onRemoveServer={handleRemoveServer}
           onCreateChannel={handleCreateChannel}
           onDeleteChannel={handleDeleteChannel}
+          onSetChannelIcon={handleSetChannelIcon}
           onReorderChannel={handleReorderChannel}
           onMoveClient={handleMoveClientToChannel}
           onPreviewChannel={handlePreviewChannel}
@@ -2107,6 +2136,7 @@ function Main() {
                 channel={summaryChannel}
                 memberCount={summaryChannelMemberCount}
                 onSaveDescription={handleSetChannelDescription}
+                onSetIcon={handleSetChannelIcon}
                 roles={roles}
                 clients={clients}
                 canManagePermissions={canManageChannels}

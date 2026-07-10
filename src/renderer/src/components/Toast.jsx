@@ -3,13 +3,14 @@ import { motion, AnimatePresence } from 'motion/react'
 import { useAnimationCategory } from '../context/SettingsContext'
 import { toastSlide } from '../lib/motionPresets'
 import './Toast.css'
-import { IconAlertTriangle } from '@tabler/icons-react'
+import { IconAlertTriangle, IconCircleCheck } from '@tabler/icons-react'
 
-// Transient error banner that drops down from the center of the title bar for
-// partial failures (bad requests, permission denials, failed fetches) — as
-// opposed to ErrorBoundary, which takes over the whole app on a hard crash.
+// Transient banner that drops down from the center of the title bar. The
+// default 'error' variant reports partial failures (bad requests, permission
+// denials, failed fetches) — as opposed to ErrorBoundary, which takes over the
+// whole app on a hard crash. The 'success' variant confirms completed actions.
 // Click anywhere on it to dismiss; it also auto-dismisses after a few seconds.
-function Toast({ message, onDismiss }) {
+function Toast({ message, variant = 'error', onDismiss }) {
   const overlayAnim = useAnimationCategory('overlays')
 
   useEffect(() => {
@@ -23,13 +24,17 @@ function Toast({ message, onDismiss }) {
       {message && (
         <motion.button
           type="button"
-          className="toast"
+          className={`toast ${variant}`}
           onClick={onDismiss}
-          role="alert"
+          role={variant === 'error' ? 'alert' : 'status'}
           title="Dismiss"
           {...toastSlide(overlayAnim)}
         >
-          <IconAlertTriangle size={16} stroke={2} className="toast-icon" />
+          {variant === 'success' ? (
+            <IconCircleCheck size={16} stroke={2} className="toast-icon" />
+          ) : (
+            <IconAlertTriangle size={16} stroke={2} className="toast-icon" />
+          )}
           <span className="toast-text">{message}</span>
         </motion.button>
       )}

@@ -35,6 +35,34 @@
   object-fit: cover;
 }
 
+/* Channel details: the avatar doubles as the icon set/remove button. A dark
+   scrim with a trash (icon set) or photo-up (no icon) glyph fades in on hover. */
+.channel-summary-avatar-btn {
+  position: relative;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.channel-summary-avatar-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.channel-summary-avatar-btn:hover .channel-summary-avatar-overlay,
+.channel-summary-avatar-btn:focus-visible .channel-summary-avatar-overlay {
+  opacity: 1;
+}
+
 .client-summary-name {
   font-size: var(--font-size-xl, 20px);
   font-weight: var(--font-weight-semibold);

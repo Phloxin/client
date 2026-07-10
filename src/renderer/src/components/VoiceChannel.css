@@ -52,7 +52,7 @@
   align-items: center;
   gap: 8px;
   color: var(--color-text-secondary);
-  font-size: var(--font-size-base);
+  font-size: var(--font-size-md);
   font-weight: var(--font-weight-medium);
   border-radius: var(--radius-md);
   transition:
@@ -100,6 +100,15 @@
   background: color-mix(in srgb, var(--color-surface) 65%, transparent);
   color: var(--color-text);
   box-shadow: inset 2px 0 0 var(--color-primary);
+}
+
+/* Custom channel icon; sized independently of the 17px volume icon it replaces. */
+.channel-icon-img {
+  width: 25px;
+  height: 25px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
 }
 
 .channel-name {

@@ -28,6 +28,12 @@
   box-shadow: var(--shadow-3);
 }
 
+/* Success variant: same banner painted with the theme's success color. */
+.toast.success {
+  border-color: color-mix(in srgb, var(--color-success) 60%, transparent);
+  background: var(--color-success);
+}
+
 .toast:hover {
   filter: brightness(1.08);
 }

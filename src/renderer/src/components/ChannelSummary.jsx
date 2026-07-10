@@ -1,7 +1,9 @@
 import { useState, useRef, useLayoutEffect } from 'react'
 import './ClientSummary.css'
-import { IconVolume, IconPencil } from '@tabler/icons-react'
+import { IconVolume, IconPencil, IconTrash, IconPhotoUp } from '@tabler/icons-react'
 import ChannelPermissions from './ChannelPermissions'
+import { cdnUrl } from '../lib/serverConfig'
+import { fileToAvatarDataUrl } from '../lib/avatarFile'
 
 // Inline editor for the channel description. Mirrors ChatPanel's MessageEditor:
 // auto-grows, Enter saves, Shift+Enter newlines, Escape cancels. Empty is allowed
@@ -72,6 +74,7 @@ function ChannelSummary({
   channel,
   memberCount = 0,
   onSaveDescription,
+  onSetIcon,
   roles,
   clients,
   canManagePermissions,
@@ -80,6 +83,30 @@ function ChannelSummary({
 }) {
   const limit = channel?.user_limit || 0
   const [editing, setEditing] = useState(false)
+  // Icon delete confirmation dialog (clicking an existing icon asks first).
+  const [confirmIconDelete, setConfirmIconDelete] = useState(false)
+  const iconInputRef = useRef(null)
+  const hasIcon = !!channel?.channel_icon
+
+  // Same downscale/re-encode pipeline as client avatars (lib/avatarFile).
+  const handleIconFile = (e) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file || channel?.id == null) return
+    fileToAvatarDataUrl(file, (dataUrl) => onSetIcon?.(channel.id, dataUrl))
+  }
+
+  // Icon present → confirm-then-delete; absent → pick a file to set one.
+  const handleIconClick = () => {
+    if (hasIcon) setConfirmIconDelete(true)
+    else iconInputRef.current?.click()
+  }
+
+  const deleteIcon = () => {
+    setConfirmIconDelete(false)
+    // null clears the icon server-side.
+    if (channel?.id != null) onSetIcon?.(channel.id, null)
+  }
   // Local copy so an edit shows immediately. Seeded from props; the view is keyed
   // on channel id in Main, so switching channels remounts and re-seeds.
   const [description, setDescription] = useState(channel?.description || '')
@@ -93,9 +120,28 @@ function ChannelSummary({
   return (
     <div className="client-summary">
       <div className="client-summary-card">
-        <span className="client-summary-avatar" aria-hidden="true">
-          <IconVolume size={28} stroke={2} />
-        </span>
+        <button
+          type="button"
+          className="client-summary-avatar channel-summary-avatar-btn"
+          title={hasIcon ? 'Remove channel icon' : 'Set channel icon'}
+          onClick={handleIconClick}
+        >
+          {hasIcon ? (
+            <img className="client-summary-avatar-img" src={cdnUrl(channel.channel_icon)} alt="" />
+          ) : (
+            <IconVolume size={28} stroke={2} />
+          )}
+          <span className="channel-summary-avatar-overlay" aria-hidden="true">
+            {hasIcon ? <IconTrash size={20} /> : <IconPhotoUp size={20} />}
+          </span>
+        </button>
+        <input
+          ref={iconInputRef}
+          type="file"
+          accept="image/*"
+          style={{ display: 'none' }}
+          onChange={handleIconFile}
+        />
         <span className="client-summary-name">{channel?.name ?? 'Channel'}</span>
       </div>
 
@@ -141,6 +187,35 @@ function ChannelSummary({
         onSet={onSetOverwrite}
         onDelete={onDeleteOverwrite}
       />
+
+      {confirmIconDelete && (
+        <div
+          className="chat-confirm-overlay"
+          role="presentation"
+          onClick={() => setConfirmIconDelete(false)}
+        >
+          <div
+            className="chat-confirm-modal"
+            role="dialog"
+            aria-modal="true"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="chat-confirm-body">Remove this channel&apos;s icon?</div>
+            <div className="chat-confirm-footer">
+              <button
+                type="button"
+                className="chat-confirm-btn secondary"
+                onClick={() => setConfirmIconDelete(false)}
+              >
+                Cancel
+              </button>
+              <button type="button" className="chat-confirm-btn danger" onClick={deleteIcon} autoFocus>
+                Remove
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
