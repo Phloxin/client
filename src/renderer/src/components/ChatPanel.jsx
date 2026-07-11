@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useLayoutEffect, memo } from 'react'
+import { useState, useRef, useEffect, useLayoutEffect, useMemo, memo } from 'react'
 import {
   IconPaperclip,
   IconMoodSmile,
@@ -11,7 +11,8 @@ import {
   IconTrash,
   IconCopy,
   IconPhoto,
-  IconArrowDown
+  IconArrowDown,
+  IconMoodPlus
 } from '@tabler/icons-react'
 import { motion, AnimatePresence } from 'motion/react'
 import ImageViewer from './ImageViewer'
@@ -28,6 +29,9 @@ const MAX_INPUT_LINES = 10
 // Consecutive messages from the same author within this window are grouped under
 // one header (avatar + name + time), like Discord.
 const GROUP_WINDOW_MS = 7 * 60 * 1000
+
+// Quick reactions shown in the hover bar on every message.
+const QUICK_REACTIONS = ['👍', '👎', '😂', '❤️', '🍅']
 
 // Unsent composer text per channel, so a draft survives switching chats (the
 // panel remounts per channel). ponytail: in-memory only — gone on app restart;
@@ -89,8 +93,8 @@ function handleFormatHotkey(e, el) {
 // Renders a message body as Discord-style markdown (links, bold/italic, inline
 // and fenced code, etc.). Memoized so the parse only re-runs when the text
 // changes, not on every feed re-render.
-const MessageText = memo(function MessageText({ text }) {
-  return <div className="chat-message-text">{renderMarkdown(text)}</div>
+const MessageText = memo(function MessageText({ text, resolveMention }) {
+  return <div className="chat-message-text">{renderMarkdown(text, resolveMention)}</div>
 })
 
 // Inline editor swapped in for a message's text while it's being edited. Mirrors
@@ -278,6 +282,7 @@ function ChatPanel({
   onSend,
   onEditMessage,
   onDeleteMessage,
+  onReactMessage,
   onTyping,
   typingUsers = [],
   disabled,
@@ -313,6 +318,10 @@ function ChatPanel({
     enterDuration: 260
   })
   const [showEmoji, setShowEmoji] = useState(false)
+  // @mention autocomplete: { start, query } while the caret sits in an @token
+  // being typed, else null. `start` is the index of the '@' in the text.
+  const [mention, setMention] = useState(null)
+  const [mentionIndex, setMentionIndex] = useState(0)
   const [dragging, setDragging] = useState(false)
   const [viewerImage, setViewerImage] = useState(null)
   // Id of the message currently being edited inline (only one at a time).
@@ -321,6 +330,9 @@ function ChatPanel({
   const [pendingDeleteId, setPendingDeleteId] = useState(null)
   // Right-click menu on own messages: { id, x, y } while open, else null.
   const [msgMenu, setMsgMenu] = useState(null)
+  // Emoji picker for reactions (from the hover bar's "+"): { id, x, y } or null.
+  const [reactPicker, setReactPicker] = useState(null)
+  const reactPickerRef = useRef(null)
   // Jump-to-bottom pill: shown when scrolled away from the bottom; switches to
   // "New messages" when something arrived below the viewport in the meantime.
   const [scrolledUp, setScrolledUp] = useState(false)
@@ -432,6 +444,16 @@ function ChatPanel({
     return () => document.removeEventListener('mousedown', close)
   }, [msgMenu])
 
+  // Close the reaction emoji picker on outside click.
+  useEffect(() => {
+    if (!reactPicker) return
+    const close = (e) => {
+      if (reactPickerRef.current && !reactPickerRef.current.contains(e.target)) setReactPicker(null)
+    }
+    document.addEventListener('mousedown', close)
+    return () => document.removeEventListener('mousedown', close)
+  }, [reactPicker])
+
   // Release object URLs for any attachments still pending on unmount
   useEffect(() => () => attachments.forEach((a) => URL.revokeObjectURL(a.url)), [])
 
@@ -468,6 +490,34 @@ function ChatPanel({
     })
   }
 
+  // Re-derive the active @token from the text before the caret. "@" opens the
+  // popup; the query narrows as they keep typing (word chars only, so a space
+  // or punctuation ends the token).
+  const updateMention = (value, caret) => {
+    const m = value.slice(0, caret).match(/(?:^|\s)@(\w*)$/)
+    setMention(m ? { start: caret - m[1].length - 1, query: m[1] } : null)
+    setMentionIndex(0)
+  }
+
+  const mentionMatches = mention
+    ? (clients || [])
+        .filter((c) => c.name?.toLowerCase().includes(mention.query.toLowerCase()))
+        .slice(0, 8)
+    : []
+
+  // Replace the in-progress @token with the chosen name. The server turns the
+  // plain "@name" into a <@id> token and fills the mentions array on its side.
+  const selectMention = (c) => {
+    const caret = inputRef.current?.selectionEnd ?? text.length
+    updateText(`${text.slice(0, mention.start)}@${c.name} ${text.slice(caret)}`)
+    setMention(null)
+    const pos = mention.start + c.name.length + 2
+    requestAnimationFrame(() => {
+      inputRef.current?.focus()
+      inputRef.current?.setSelectionRange(pos, pos)
+    })
+  }
+
   const insertEmoji = (emoji) => {
     updateText(text + emoji)
     inputRef.current?.focus()
@@ -501,6 +551,7 @@ function ChatPanel({
     const trimmed = text.trim()
     if (!trimmed && !attachments.length) return
     onSend?.(trimmed, attachments)
+    setMention(null)
     setText('')
     drafts.delete(channelKey)
     setAttachments([])
@@ -508,6 +559,25 @@ function ChatPanel({
   }
 
   const handleKeyDown = (e) => {
+    // The mention popup captures navigation keys while it's open.
+    if (mention && mentionMatches.length > 0) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault()
+        const delta = e.key === 'ArrowDown' ? 1 : -1
+        setMentionIndex((i) => (i + delta + mentionMatches.length) % mentionMatches.length)
+        return
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault()
+        selectMention(mentionMatches[mentionIndex])
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setMention(null)
+        return
+      }
+    }
     if (handleFormatHotkey(e, inputRef.current)) return
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
@@ -553,6 +623,14 @@ function ChatPanel({
 
   const resolveName = (entry) =>
     clients?.find((c) => c.id === entry.authorId)?.name || entry.author || 'Unknown'
+
+  // Stable per clients-roster so the memoized MessageText only re-parses when
+  // the roster actually changes. Snowflake ids compare as strings — the token
+  // regex captures a string while roster ids may be numbers.
+  const resolveMention = useMemo(
+    () => (id) => clients?.find((c) => String(c.id) === id)?.name,
+    [clients]
+  )
 
   const resolveAvatar = (entry) => clients?.find((c) => c.id === entry.authorId)?.avatar
 
@@ -634,11 +712,14 @@ function ChatPanel({
             (entry.embeds || []).map((em) => (em.image || em.thumbnail)?.url).find(Boolean) ||
             null
           const hasMenu = canManage || entry.text || imageUrl
+          // Accent wash on messages that mention us (directly or @everyone).
+          const mentionsMe =
+            entry.mentionEveryone || (selfId != null && (entry.mentions || []).includes(selfId))
           return (
             <div key={entry.id} data-anim-status={status}>
               {dayDivider}
               <div
-                className={`chat-message${grouped ? ' grouped' : ''}`}
+                className={`chat-message${grouped ? ' grouped' : ''}${mentionsMe ? ' mentioned' : ''}`}
                 onContextMenu={
                   hasMenu
                     ? (e) => {
@@ -655,6 +736,32 @@ function ChatPanel({
                     : undefined
                 }
               >
+                {!disabled && !isEditing && (
+                  <div className="chat-hover-actions">
+                    {QUICK_REACTIONS.map((emoji) => (
+                      <button
+                        key={emoji}
+                        type="button"
+                        className="chat-hover-action"
+                        title={`React with ${emoji}`}
+                        onClick={() => onReactMessage?.(entry.id, emoji)}
+                      >
+                        {emoji}
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      className="chat-hover-action"
+                      title="More reactions"
+                      onClick={(e) => {
+                        const r = e.currentTarget.getBoundingClientRect()
+                        setReactPicker({ id: entry.id, x: r.right, y: r.bottom + 4 })
+                      }}
+                    >
+                      <IconMoodPlus size={16} />
+                    </button>
+                  </div>
+                )}
                 {grouped ? (
                   <span className="chat-avatar-spacer" aria-hidden="true" />
                 ) : (
@@ -684,7 +791,7 @@ function ChatPanel({
                       onCancel={() => setEditingId(null)}
                     />
                   ) : (
-                    entry.text && <MessageText text={entry.text} />
+                    entry.text && <MessageText text={entry.text} resolveMention={resolveMention} />
                   )}
                   {grouped && edited && (
                     <span className="chat-message-edited chat-message-edited-inline">(edited)</span>
@@ -715,6 +822,47 @@ function ChatPanel({
                   {(entry.embeds || []).map((embed, idx) => (
                     <MessageEmbed key={idx} embed={embed} onImageClick={setViewerImage} />
                   ))}
+                  {/* Rendered even when empty (hidden via :empty) so chips can
+                      play their exit animation as the last one is removed. */}
+                  <div className="chat-reactions">
+                    <AnimatePresence initial={false}>
+                      {(entry.reactions || []).map((r) => (
+                        <motion.button
+                          key={r.emoji}
+                          type="button"
+                          className={`chat-reaction${r.me ? ' mine' : ''}`}
+                          title={`${r.count} reaction${r.count === 1 ? '' : 's'}`}
+                          onClick={() => onReactMessage?.(entry.id, r.emoji)}
+                          layout={msgAnim}
+                          {...(msgAnim
+                            ? {
+                                initial: { opacity: 0, scale: 0.4 },
+                                animate: { opacity: 1, scale: 1 },
+                                exit: { opacity: 0, scale: 0.4 },
+                                transition: { duration: 0.15, ease: 'easeOut' }
+                              }
+                            : { initial: false })}
+                        >
+                          {r.emoji}
+                          {/* Keyed by count so a change remounts the number and
+                              it ticks in from above. */}
+                          <motion.span
+                            key={msgAnim ? r.count : 'count'}
+                            className="chat-reaction-count"
+                            {...(msgAnim
+                              ? {
+                                  initial: { y: -7, opacity: 0 },
+                                  animate: { y: 0, opacity: 1 },
+                                  transition: { duration: 0.15, ease: 'easeOut' }
+                                }
+                              : {})}
+                          >
+                            {r.count}
+                          </motion.span>
+                        </motion.button>
+                      ))}
+                    </AnimatePresence>
+                  </div>
                 </div>
               </div>
             </div>
@@ -811,12 +959,42 @@ function ChatPanel({
           value={text}
           onChange={(e) => {
             updateText(e.target.value)
+            updateMention(e.target.value, e.target.selectionEnd)
             if (e.target.value) onTyping?.()
           }}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
+          onBlur={() => setMention(null)}
           disabled={disabled}
         />
+        <AnimatePresence>
+          {mention && mentionMatches.length > 0 && (
+            <motion.div className="chat-mention-pop" {...menuPop(overlayAnim)}>
+              {mentionMatches.map((c, i) => (
+                <button
+                  key={c.id}
+                  type="button"
+                  className={`chat-mention-item${i === mentionIndex ? ' active' : ''}`}
+                  // mousedown so this fires before the textarea's blur closes us
+                  onMouseDown={(e) => {
+                    e.preventDefault()
+                    selectMention(c)
+                  }}
+                  onMouseEnter={() => setMentionIndex(i)}
+                >
+                  <span className="chat-avatar chat-mention-avatar" aria-hidden="true">
+                    {c.avatar ? (
+                      <img className="chat-avatar-img" src={c.avatar} alt="" />
+                    ) : (
+                      (c.name || '?').charAt(0).toUpperCase()
+                    )}
+                  </span>
+                  {c.name}
+                </button>
+              ))}
+            </motion.div>
+          )}
+        </AnimatePresence>
         <div className="chat-emoji-wrapper" ref={emojiRef}>
           <button
             type="button"
@@ -909,6 +1087,32 @@ function ChatPanel({
           )}
         </div>
       )}
+
+      <AnimatePresence>
+        {reactPicker && (
+          <motion.div
+            className="chat-react-pop"
+            ref={reactPickerRef}
+            style={{
+              // Keep the 320x360 picker on screen, flipping above the button
+              // when there's no room below.
+              left: Math.max(8, Math.min(reactPicker.x - 320, window.innerWidth - 328)),
+              top:
+                reactPicker.y + 360 > window.innerHeight - 8
+                  ? reactPicker.y - 360 - 40
+                  : reactPicker.y
+            }}
+            {...menuPop(overlayAnim)}
+          >
+            <EmojiPicker
+              onSelect={(emoji) => {
+                onReactMessage?.(reactPicker.id, emoji)
+                setReactPicker(null)
+              }}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {viewerImage && (
         <ImageViewer

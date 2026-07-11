@@ -117,6 +117,7 @@
 
 /* Message row: full-bleed hover wash, avatar gutter, floating action chips. */
 .chat-message {
+  position: relative;
   display: flex;
   gap: 14px;
   padding: 3px 24px;
@@ -125,6 +126,161 @@
 
 .chat-message:hover {
   background: color-mix(in srgb, var(--color-surface) 30%, transparent);
+}
+
+/* A message that mentions us (directly or @everyone). */
+.chat-message.mentioned {
+  background: color-mix(in srgb, var(--color-primary) 7%, transparent);
+  box-shadow: inset 2px 0 0 var(--color-primary);
+}
+
+.chat-message.mentioned:hover {
+  background: color-mix(in srgb, var(--color-primary) 11%, transparent);
+}
+
+/* Reaction hover bar: floats over the row's top-right corner, only on hover. */
+.chat-hover-actions {
+  position: absolute;
+  top: -14px;
+  right: 16px;
+  z-index: 3;
+  display: none;
+  align-items: center;
+  padding: 2px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-md);
+  background: var(--color-background-soft);
+  box-shadow: var(--shadow-2);
+}
+
+.chat-message:hover .chat-hover-actions {
+  display: flex;
+}
+
+.chat-hover-action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 16px;
+  cursor: pointer;
+}
+
+.chat-hover-action:hover {
+  background: var(--color-surface);
+  transform: scale(1.15);
+}
+
+/* Reaction chips under the message body. */
+.chat-reactions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+/* Always in the DOM (so exit animations can play); collapse when empty. */
+.chat-reactions:empty {
+  display: none;
+}
+
+.chat-messages.compact .chat-reactions {
+  flex-basis: 100%;
+}
+
+.chat-reaction {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-background-mute) 60%, transparent);
+  font-size: var(--font-size-sm);
+  font-family: var(--font-family-primary);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.chat-reaction:hover {
+  border-color: var(--color-text-muted);
+}
+
+.chat-reaction.mine {
+  border-color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 14%, transparent);
+  color: var(--color-text);
+}
+
+.chat-reaction-count {
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+}
+
+/* Rendered <@id> user mention inside message text. */
+.chat-mention {
+  padding: 0 3px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--color-primary) 16%, transparent);
+  color: var(--color-primary);
+  font-weight: var(--font-weight-semibold);
+}
+
+/* @mention autocomplete popup above the composer. */
+.chat-mention-pop {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 44px;
+  z-index: 40;
+  min-width: 220px;
+  max-height: 280px;
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--color-background-soft);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-3);
+  transform-origin: bottom left;
+}
+
+.chat-mention-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-md);
+  font-family: var(--font-family-primary);
+  cursor: pointer;
+  text-align: left;
+}
+
+.chat-mention-item.active {
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.chat-mention-avatar {
+  width: 22px;
+  height: 22px;
+  font-size: 11px;
+  margin-top: 0;
+}
+
+/* Emoji picker popover for the hover bar's "+" (viewport coords from JS). */
+.chat-react-pop {
+  position: fixed;
+  z-index: 40;
+  will-change: transform;
 }
 
 .chat-message.grouped {
@@ -731,6 +887,7 @@ a.chat-embed-title:hover {
 /* ── Composer: floating field docked at the canvas bottom ──────────────── */
 
 .chat-input-bar {
+  position: relative; /* anchors the @mention autocomplete popup */
   display: flex;
   align-items: flex-end;
   gap: 4px;
@@ -845,6 +1002,9 @@ a.chat-embed-title:hover {
   right: 0;
   z-index: 40;
   transform-origin: bottom right;
+  /* Stable compositing layer so the entrance scale spring doesn't re-rasterize
+     the emoji grid every frame. */
+  will-change: transform;
 }
 
 .chat-emoji-picker {

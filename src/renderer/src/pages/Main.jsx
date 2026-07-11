@@ -94,6 +94,13 @@ function messageFromApi(msg) {
     // Link-preview / rich cards. URLs (incl. attachment://) are resolved
     // server-side, so they're render-ready. May arrive later via MessageUpdated.
     embeds: msg.embeds || [],
+    // Aggregated reactions, flattened to what ChatPanel renders. Custom emoji
+    // are skipped — the server marks them NOT YET IMPLEMENTED.
+    reactions: (msg.reactions || [])
+      .filter((r) => r.emoji?.type === 'basic')
+      .map((r) => ({ emoji: r.emoji.value, count: r.count, me: r.me })),
+    mentions: msg.mentions || [],
+    mentionEveryone: !!msg.mention_everyone,
     // Server timestamp is seconds since the UNIX epoch; JS Date wants ms.
     ts: msg.timestamp,
     // Milliseconds since the UNIX epoch of the last edit, or null if never
@@ -1705,6 +1712,23 @@ function Main() {
         const readingHere =
           data.channel_id === activeChatChannelIdRef.current && chatVisibleRef.current
         if (data.author !== selfIdRef.current && !readingHere) {
+          // Being mentioned (directly or via @everyone) rings the bell.
+          const mentioned =
+            data.mention_everyone || (data.mentions || []).includes(selfIdRef.current)
+          if (mentioned) {
+            const channel = channelsRef.current.find((c) => c.id === data.channel_id)
+            const now = Date.now()
+            setNotifications((prev) =>
+              [
+                {
+                  id: `mention-${data.id ?? now}`,
+                  message: `You were mentioned in ${channel?.name || 'a channel'}`,
+                  timestamp: now
+                },
+                ...prev
+              ].slice(0, 50)
+            )
+          }
           const dmChannel = channelsRef.current.find((c) => c.id === data.channel_id)
           if (dmChannel?.type === 'dm') {
             const name = clientsRef.current.find((c) => c.id === data.author)?.name || 'Someone'
@@ -2035,6 +2059,57 @@ function Main() {
     }
   }
 
+  // Flip one reaction in the local feed (add / bump / un-react).
+  const toggleReactionLocal = (messageId, emoji) => {
+    setFeed((prev) =>
+      prev.map((e) => {
+        if (e.type !== 'message' || e.id !== messageId) return e
+        const reactions = e.reactions || []
+        const existing = reactions.find((r) => r.emoji === emoji)
+        let next
+        if (existing?.me) {
+          // Un-react: drop our count; remove the chip when it hits zero.
+          next = reactions
+            .map((r) => (r.emoji === emoji ? { ...r, count: r.count - 1, me: false } : r))
+            .filter((r) => r.count > 0)
+        } else if (existing) {
+          next = reactions.map((r) =>
+            r.emoji === emoji ? { ...r, count: r.count + 1, me: true } : r
+          )
+        } else {
+          next = [...reactions, { emoji, count: 1, me: true }]
+        }
+        return { ...e, reactions: next }
+      })
+    )
+  }
+
+  // Toggle a reaction: optimistic local flip, then PUT (add) or DELETE
+  // (remove) with the emoji as the path segment. The server's MessageUpdated
+  // broadcast carries the authoritative aggregate and overwrites the guess;
+  // on request failure we flip back.
+  const handleReactMessage = async (messageId, emoji) => {
+    const entry = feed.find((e) => e.type === 'message' && e.id === messageId)
+    if (!entry) return
+    const had = !!(entry.reactions || []).find((r) => r.emoji === emoji)?.me
+    toggleReactionLocal(messageId, emoji)
+    if (DEV_MODE) return
+
+    try {
+      const res = await fetch(
+        `${apiBase()}/channels/${entry.channelId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}`,
+        {
+          method: had ? 'DELETE' : 'PUT',
+          headers: { Authorization: `Bearer ${token}` }
+        }
+      )
+      await throwIfError(res)
+    } catch (err) {
+      toggleReactionLocal(messageId, emoji)
+      showError(`Failed to ${had ? 'remove' : 'add'} reaction: ${err.message}`)
+    }
+  }
+
   // Delete one of our own messages. The server validates ownership and broadcasts
   // MessageDeleted; we also drop it locally on success so it disappears
   // immediately even if the broadcast is delayed (the broadcast is idempotent).
@@ -2306,6 +2381,7 @@ function Main() {
                 onSend={handleSendMessage}
                 onEditMessage={handleEditMessage}
                 onDeleteMessage={handleDeleteMessage}
+                onReactMessage={handleReactMessage}
                 onTyping={handleTyping}
                 typingUsers={typingUsers}
                 disabled={activeChatChannelId == null}
