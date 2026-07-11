@@ -267,6 +267,20 @@ async function copyImageToClipboard(url) {
   }
 }
 
+// Encode plain "@name" tokens to the wire form <@id> — the server only parses
+// <@id>. Longest names first so "@timothy" isn't half-eaten by a client named
+// "tim". @everyone has no client entry, so it passes through untouched.
+function encodeMentions(text, clients) {
+  if (!text.includes('@') || !clients?.length) return text
+  const named = clients.filter((c) => c.name).sort((a, b) => b.name.length - a.name.length)
+  let out = text
+  for (const c of named) {
+    const esc = c.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    out = out.replace(new RegExp(`@${esc}(?!\\w)`, 'gi'), `<@${c.id}>`)
+  }
+  return out
+}
+
 // "Alice is typing", "Alice and Bob are typing", etc.
 function formatTyping(names) {
   if (names.length === 1) return `${names[0]} is typing`
@@ -505,8 +519,8 @@ function ChatPanel({
         .slice(0, 8)
     : []
 
-  // Replace the in-progress @token with the chosen name. The server turns the
-  // plain "@name" into a <@id> token and fills the mentions array on its side.
+  // Replace the in-progress @token with the chosen name. The composer keeps
+  // the friendly "@name" text; handleSend encodes it to <@id> for the wire.
   const selectMention = (c) => {
     const caret = inputRef.current?.selectionEnd ?? text.length
     updateText(`${text.slice(0, mention.start)}@${c.name} ${text.slice(caret)}`)
@@ -550,7 +564,7 @@ function ChatPanel({
     if (disabled) return
     const trimmed = text.trim()
     if (!trimmed && !attachments.length) return
-    onSend?.(trimmed, attachments)
+    onSend?.(encodeMentions(trimmed, clients), attachments)
     setMention(null)
     setText('')
     drafts.delete(channelKey)
@@ -785,7 +799,7 @@ function ChatPanel({
                     <MessageEditor
                       initialText={entry.text || ''}
                       onSave={(content) => {
-                        onEditMessage?.(entry.id, content)
+                        onEditMessage?.(entry.id, encodeMentions(content, clients))
                         setEditingId(null)
                       }}
                       onCancel={() => setEditingId(null)}
