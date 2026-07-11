@@ -4,7 +4,7 @@ import { loadRnnoise, RnnoiseWorkletNode } from '@sapphi-red/web-noise-suppresso
 import rnnoiseWasmPath from '@sapphi-red/web-noise-suppressor/rnnoise.wasm?url'
 import rnnoiseSimdWasmPath from '@sapphi-red/web-noise-suppressor/rnnoise_simd.wasm?url'
 import rnnoiseWorkletPath from '@sapphi-red/web-noise-suppressor/rnnoiseWorklet.js?url'
-import { apiBase, wsBase, getIceServers } from './serverConfig'
+import { apiBase, wsBase } from './serverConfig'
 
 // ─── State ──────────────────────────────────────────────────────
 let device
@@ -16,6 +16,9 @@ let localProducerIds = new Set()
 let screenProducer = null
 let screenAudioProducer = null
 let currentChannel = null
+// ICE servers from the server's Authenticated reply; transports are only
+// created after auth, so this is always populated before use.
+let iceServers = []
 // Stop function for the active local audio processing chain (RNNoise / volume
 // gate). Tears down its AudioContext and analysis loop; null when no chain is active.
 let audioProcessorStop = null
@@ -171,6 +174,7 @@ async function openSocket(token) {
     // Authenticated confirmation
     if (message.type === 'Authenticated') {
       console.log('[Soup] Authenticated')
+      iceServers = message.ice_servers ?? []
       everAuthenticated = true
       reconnectAttempts = 0
       activeCallbacks.onConnect?.()
@@ -554,7 +558,7 @@ async function doPublish(micSettings, onStream) {
   const rawParams = await send('CreateProducerTransport')
   producerTransport = device.createSendTransport({
     ...mapTransportParams(rawParams),
-    iceServers: getIceServers()
+    iceServers
   })
 
   producerTransport.on('connectionstatechange', (state) => {
@@ -914,7 +918,7 @@ export async function subscribe() {
     const rawParams = await send('CreateConsumerTransport')
     consumerTransport = device.createRecvTransport({
       ...mapTransportParams(rawParams),
-      iceServers: getIceServers()
+      iceServers
     })
 
     consumerTransport.on('connectionstatechange', (state) => {

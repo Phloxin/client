@@ -38,19 +38,3 @@ export function cdnUrl(path) {
   if (!path || !path.startsWith('/')) return path
   return `${apiBase()}${path}`
 }
-
-// ICE servers for mediasoup transports. STUN is fixed; the TURN relay is
-// derived from the active server's IP (port 3478) so voice media relays through
-// whichever server we're connected to.
-export function getIceServers() {
-  const ip = currentHost ? currentHost.split(':')[0] : ''
-  return [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-    {
-      urls: `turn:${ip}:3478`,
-      username: 'test',
-      credential: 'password'
-    }
-  ]
-}
