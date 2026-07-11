@@ -130,12 +130,12 @@
 
 /* A message that mentions us (directly or @everyone). */
 .chat-message.mentioned {
-  background: color-mix(in srgb, var(--color-primary) 4%, transparent);
-  box-shadow: inset 2px 0 0 var(--color-primary);
+  background: color-mix(in srgb, var(--color-mention, var(--color-primary)) 4%, transparent);
+  box-shadow: inset 2px 0 0 var(--color-mention, var(--color-primary));
 }
 
 .chat-message.mentioned:hover {
-  background: color-mix(in srgb, var(--color-primary) 7%, transparent);
+  background: color-mix(in srgb, var(--color-mention, var(--color-primary)) 7%, transparent);
 }
 
 /* Reaction hover bar: floats over the row's top-right corner, only on hover. */
@@ -212,8 +212,8 @@
 }
 
 .chat-reaction.mine {
-  border-color: var(--color-primary);
-  background: color-mix(in srgb, var(--color-primary) 14%, transparent);
+  border-color: var(--color-reaction, var(--color-primary));
+  background: color-mix(in srgb, var(--color-reaction, var(--color-primary)) 14%, transparent);
   color: var(--color-text);
 }
 
@@ -226,8 +226,8 @@
 .chat-mention {
   padding: 0 3px;
   border-radius: var(--radius-sm);
-  background: color-mix(in srgb, var(--color-primary) 16%, transparent);
-  color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-mention, var(--color-primary)) 16%, transparent);
+  color: var(--color-mention, var(--color-primary));
   font-weight: var(--font-weight-semibold);
 }
 

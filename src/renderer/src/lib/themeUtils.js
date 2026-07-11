@@ -71,7 +71,7 @@ export const AVAILABLE_THEMES = [
     id: 'gruvbox',
     name: 'Gruvbox',
     description: 'Retro warm dark with golden yellow',
-    swatch: ['#1d2021', '#282828', '#fabd2f']
+    swatch: ['#201b1a', '#2b2423', '#fabd2f']
   }
 ]
 

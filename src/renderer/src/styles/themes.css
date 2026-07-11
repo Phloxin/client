@@ -11,6 +11,15 @@
    Dark themes: canvas sits LIGHTER than the chrome so the single floating
    panel reads as the lit surface. Light themes invert the values, not the
    semantics. --shadow-tint is an RGB triplet consumed by base.css shadows.
+
+   Beyond the primary accent, each theme surfaces two more hues from its
+   source palette so the UI isn't monochrome-plus-primary:
+
+     --color-mention   @mention pills + mentioned-message wash
+     --color-reaction  your own reaction chips
+
+   Both fall back to --color-primary at the point of use, so a theme may omit
+   them; keep the picks inside the theme's canonical palette.
    ============================================================================ */
 
 /* ============================================================================
@@ -36,6 +45,8 @@ body[data-theme='studio'] {
   --color-success-hover: #74d489;
   --color-danger: #e5545a;
   --color-warning: #e0803a;
+  --color-mention: #79aee6;
+  --color-reaction: #57b9a3;
 
   --color-border: #262e37;
   --color-border-light: #37414d;
@@ -65,6 +76,8 @@ body[data-theme='daylight'] {
   --color-success-hover: #257a3f;
   --color-danger: #cf3138;
   --color-warning: #b45d18;
+  --color-mention: #2563a8;
+  --color-reaction: #0e8074;
 
   --color-border: #cfd6dd;
   --color-border-light: #b8c1ca;
@@ -94,6 +107,8 @@ body[data-theme='midnight'] {
   --color-success-hover: #6ded9e;
   --color-danger: #f4565e;
   --color-warning: #e8a33c;
+  --color-mention: #60a5fa;
+  --color-reaction: #f472b6;
 
   --color-border: #1b1d29;
   --color-border-light: #2d3040;
@@ -123,6 +138,8 @@ body[data-theme='aurora'] {
   --color-success-hover: #b8d0a3;
   --color-danger: #d9646e;
   --color-warning: #ebcb8b;
+  --color-mention: #81a1c1;
+  --color-reaction: #b48ead;
 
   --color-border: #333b47;
   --color-border-light: #46505f;
@@ -152,6 +169,8 @@ body[data-theme='mocha'] {
   --color-success-hover: #bdedb9;
   --color-danger: #f38ba8;
   --color-warning: #fab387;
+  --color-mention: #89b4fa;
+  --color-reaction: #94e2d5;
 
   --color-border: #292a3c;
   --color-border-light: #3b3d54;
@@ -181,6 +200,8 @@ body[data-theme='terra'] {
   --color-success-hover: #bfca80;
   --color-danger: #ea6962;
   --color-warning: #d8a657;
+  --color-mention: #d3869b;
+  --color-reaction: #7daea3;
 
   --color-border: #322c26;
   --color-border-light: #463e35;
@@ -210,6 +231,8 @@ body[data-theme='frappe'] {
   --color-success-hover: #bade9f;
   --color-danger: #e78284;
   --color-warning: #ef9f76;
+  --color-mention: #8caaee;
+  --color-reaction: #81c8be;
 
   --color-border: #2b2e3e;
   --color-border-light: #414559;
@@ -239,6 +262,8 @@ body[data-theme='dracula'] {
   --color-success-hover: #6ffb92;
   --color-danger: #ff5555;
   --color-warning: #ffb86c;
+  --color-mention: #ff79c6;
+  --color-reaction: #8be9fd;
 
   --color-border: #2b2d3a;
   --color-border-light: #44475a;
@@ -268,6 +293,8 @@ body[data-theme='rose-pine'] {
   --color-success-hover: #b3dce3;
   --color-danger: #eb6f92;
   --color-warning: #f6c177;
+  --color-mention: #ebbcba;
+  --color-reaction: #3e8fb0;
 
   --color-border: #211f30;
   --color-border-light: #33304a;
@@ -276,14 +303,15 @@ body[data-theme='rose-pine'] {
 }
 
 /* ============================================================================
-   GRUVBOX — retro warm dark, golden yellow.
+   GRUVBOX — retro warm dark, golden yellow on warm red-brown neutrals.
+   Mentions carry the bright red so the palette reads beyond the primary.
    ============================================================================ */
 html[data-theme='gruvbox'],
 body[data-theme='gruvbox'] {
-  --color-background: #1d2021;
-  --color-background-soft: #282828;
-  --color-background-mute: #171818;
-  --color-surface: #3c3836;
+  --color-background: #201b1a;
+  --color-background-soft: #2b2423;
+  --color-background-mute: #191414;
+  --color-surface: #423432;
 
   --color-text: #ebdbb2;
   --color-text-secondary: #d5c4a1;
@@ -297,9 +325,11 @@ body[data-theme='gruvbox'] {
   --color-success-hover: #cdd23a;
   --color-danger: #fb4934;
   --color-warning: #fe8019;
+  --color-mention: #fb4934;
+  --color-reaction: #8ec07c;
 
-  --color-border: #292827;
-  --color-border-light: #3c3836;
+  --color-border: #2d2321;
+  --color-border-light: #423432;
 
-  --shadow-tint: 3 3 3;
+  --shadow-tint: 6 3 2;
 }
