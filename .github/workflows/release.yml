@@ -62,8 +62,20 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-electron-
 
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native/audio-capture
+
       - name: Install dependencies
         run: npm ci
+
+      - name: Verify native audio addon built
+        shell: bash
+        run: node -e "require('./native/audio-capture/index.js'); console.log('audio-capture addon loaded')"
 
       - name: Build + Package
         run: npm run ${{ matrix.script }} -- --publish=never
