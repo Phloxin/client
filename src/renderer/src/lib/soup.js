@@ -4,7 +4,8 @@ import { loadRnnoise, RnnoiseWorkletNode } from '@sapphi-red/web-noise-suppresso
 import rnnoiseWasmPath from '@sapphi-red/web-noise-suppressor/rnnoise.wasm?url'
 import rnnoiseSimdWasmPath from '@sapphi-red/web-noise-suppressor/rnnoise_simd.wasm?url'
 import rnnoiseWorkletPath from '@sapphi-red/web-noise-suppressor/rnnoiseWorklet.js?url'
-import { apiBase, wsBase, getIceServers } from './serverConfig'
+import { apiBase, wsBase } from './serverConfig'
+import { authFetch } from './auth'
 
 // ─── State ──────────────────────────────────────────────────────
 let device
@@ -16,9 +17,21 @@ let localProducerIds = new Set()
 let screenProducer = null
 let screenAudioProducer = null
 let currentChannel = null
+// ICE servers from the server's Authenticated reply; transports are only
+// created after auth, so this is always populated before use.
+let iceServers = []
 // Stop function for the active local audio processing chain (RNNoise / volume
 // gate). Tears down its AudioContext and analysis loop; null when no chain is active.
 let audioProcessorStop = null
+// Self speaking detector, owned here rather than by a channel component so it
+// survives ownership changes: a moderator move rebinds onClientSpeaking to the new
+// channel, and the detector reports our own speaking through that live callback.
+let selfSpeakingStop = null
+let localClientId = null
+// Set while a publish() is mid-flight so a concurrent caller joins the same
+// promise instead of allocating a second producer transport (the server rejects a
+// duplicate). Both the reset-driven republish and an adopt() can race here.
+let publishInFlight = null
 // The RNNoise WASM binary, fetched once and reused across AudioContexts.
 let rnnoiseBinaryPromise = null
 let subscribePromise = null
@@ -51,13 +64,44 @@ let focusedMuted = false
 // in the sidebar) - keyed by clientId.
 let clientAudioOverrides = new Map()
 
+// ─── Reconnection state ──────────────────────────────────────────
+// The voice socket can't "resume": when it drops, the server tears down our
+// transports and removes us from the channel. Recovery is a full re-establish —
+// re-assert channel membership, fetch a fresh ticket, reconnect, re-publish —
+// driven here with capped exponential backoff + jitter (matches the events
+// socket). Remote streams come back on their own: a fresh auth makes the server
+// replay NewProducer for everyone in the channel.
+const VOICE_RECONNECT_BASE_DELAY_MS = 1000
+const VOICE_RECONNECT_MAX_DELAY_MS = 30000
+let reconnectAttempts = 0
+let reconnectTimer = null
+let reconnectInFlight = false // an attempt is mid-flight; don't start a second
+let intentionalClose = false // set by disconnect() so onclose won't reconnect
+let everAuthenticated = false // only auto-reconnect drops that follow a real auth
+
 // ─── Pending response handlers ───────────────────────────────────
 const pendingHandlers = []
 
 // ─── Send a message and wait for a response ──────────────────────
 function send(type, data = null) {
-  return new Promise((resolve) => {
-    pendingHandlers.push(resolve)
+  return new Promise((resolve, reject) => {
+    // Don't queue a resolver against a dead socket — the response would never
+    // come, and a stale handler left in the queue desyncs response routing once
+    // we reconnect.
+    if (ws?.readyState !== WebSocket.OPEN) {
+      reject(new Error(`Voice socket not open (cannot send ${type})`))
+      return
+    }
+    // Reject on a server UserError (e.g. a Produce refused for a missing STREAM
+    // permission) instead of resolving it — otherwise callers proceed on a
+    // response with no payload (undefined id) and start a phantom local-only
+    // producer. Shape is the externally-tagged { UserError: "..." }.
+    pendingHandlers.push((message) => {
+      const userError =
+        message?.UserError ?? (message?.type === 'UserError' ? message.data : null)
+      if (userError != null) reject(new Error(typeof userError === 'string' ? userError : 'Request failed'))
+      else resolve(message)
+    })
     const message = data ? { type, data } : { type }
     ws.send(JSON.stringify(message))
     console.log(`[Soup] Sent: ${type}`, message)
@@ -69,34 +113,68 @@ function send(type, data = null) {
 // Does NOT push onto pendingHandlers, so an unanswered message can't
 // desync the response queue for subsequent send() calls.
 function notify(type, data = null) {
+  if (ws?.readyState !== WebSocket.OPEN) return
   const message = data ? { type, data } : { type }
   ws.send(JSON.stringify(message))
   console.log(`[Soup] Notify: ${type}`, message)
 }
 
 // ─── Connect to signaling server ────────────────────────────────
-export async function connect(token, { onConnect, onDisconnect, onNewProducer, onVideoStream, onTransportsDisconnected, onClientSpeaking, onConsumerClosed } = {}) {
-  activeCallbacks = { onConnect, onDisconnect, onNewProducer, onVideoStream, onTransportsDisconnected, onClientSpeaking, onConsumerClosed }
+// Callbacks: onConnect (fired after each successful auth — initial and
+// reconnect), onDisconnect (intentional/unrecoverable teardown), onReconnecting
+// (an unexpected drop; clear remote tiles but stay "joined"), onReconnectRejoin
+// (async; re-assert channel membership before a reconnect's ticket fetch),
+// onNewProducer, onVideoStream, onTransportsDisconnected, onClientSpeaking,
+// onConsumerClosed.
+export async function connect(callbacks = {}) {
+  activeCallbacks = { ...callbacks }
+  intentionalClose = false
+  everAuthenticated = false
+  reconnectAttempts = 0
+  // Cancel any pending reconnect from a prior session so it can't fire alongside
+  // this fresh connection.
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer)
+    reconnectTimer = null
+  }
+  // Watch OS connectivity. A silent network drop leaves the voice socket
+  // half-open (onclose never fires on its own — unlike the events socket, this
+  // one has no heartbeat to notice), so we use these to detect death and
+  // recover. addEventListener dedupes the stable refs, so repeat calls are safe.
+  window.addEventListener('offline', handleOffline)
+  window.addEventListener('online', handleOnline)
+  await openSocket()
+}
 
-  // Step 1 — get ticket
-  const res = await fetch(`${apiBase()}/server/voice`, {
-    headers: { Authorization: `Bearer ${token}` }
-  })
+// Open the voice WebSocket: fetch a fresh (single-use, 30s) ticket with a
+// current access token, wire every handler, then authenticate. Used for the
+// initial connection and every reconnect attempt — each call replaces the
+// shared `ws`. A stale-socket guard on every handler ignores a superseded
+// socket once a newer one takes over.
+async function openSocket() {
+  // Step 1 — get ticket (authFetch refreshes the access token as needed)
+  const res = await authFetch(`${apiBase()}/server/voice`)
+  if (!res.ok) throw new Error(`Voice ticket request failed: ${res.status}`)
   const { ticket } = await res.json()
   console.log('[Soup] Got ticket:', ticket)
 
   // Step 2 — connect to voice WebSocket
-  ws = new WebSocket(`${wsBase()}/voice`)
-  console.log('[Soup] WebSocket created, readyState:', ws.readyState)
+  const socket = new WebSocket(`${wsBase()}/voice`)
+  ws = socket
+  console.log('[Soup] WebSocket created, readyState:', socket.readyState)
 
   // ─── Assign ALL handlers before anything can fire ───────────────
-  ws.onmessage = (event) => {
+  socket.onmessage = (event) => {
+    if (ws !== socket) return // superseded by a newer socket
     const message = JSON.parse(event.data)
     console.log('[Soup] Received:', message)
 
     // Authenticated confirmation
     if (message.type === 'Authenticated') {
       console.log('[Soup] Authenticated')
+      iceServers = message.ice_servers ?? []
+      everAuthenticated = true
+      reconnectAttempts = 0
       activeCallbacks.onConnect?.()
       return
     }
@@ -104,10 +182,10 @@ export async function connect(token, { onConnect, onDisconnect, onNewProducer, o
     // Handle server-initiated events BEFORE pending handlers
     if (message.type === 'NewProducer') {
       const { id, kind, client_id, produced_type } = message.data
-        if (localProducerIds.has(id)) {
-          console.log('[Soup] Skipping own producer:', id)
-          return
-        }
+      if (localProducerIds.has(id)) {
+        console.log('[Soup] Skipping own producer:', id)
+        return
+      }
       console.log(`[Soup] New producer: ${id} (${kind}, ${produced_type})`)
       activeCallbacks.onNewProducer?.({ producerId: id, kind })
       consumeProducer(id, kind, activeCallbacks.onVideoStream, client_id, produced_type)
@@ -134,47 +212,146 @@ export async function connect(token, { onConnect, onDisconnect, onNewProducer, o
       return
     }
 
-    // Server is moving us to a different channel — transports must be
-    // torn down and re-established, but the websocket stays open.
-    if (message.type === 'TransportsDisconnected') {
-      console.log('[Soup] Transports disconnected, resetting media state')
+    // Server is moving us to a different channel — transports must be torn down
+    // and re-established, but the websocket stays open. TransportsDisconnected is
+    // the self-initiated switch signal; MediaStateReset is the same thing when a
+    // moderator moves us (PATCH /client). Both re-establish via the callback.
+    if (message.type === 'TransportsDisconnected' || message.type === 'MediaStateReset') {
+      console.log(`[Soup] ${message.type}, resetting media state`)
       resetMediaState()
       activeCallbacks.onTransportsDisconnected?.()
       return
     }
 
-    // Route response to pending handler
+    // Route response to pending handler (resolves, or rejects on a UserError)
     if (pendingHandlers.length > 0) {
-      const resolve = pendingHandlers.shift()
-      resolve(message)
+      const handler = pendingHandlers.shift()
+      handler(message)
       return
     }
 
     console.log('[Soup] Unhandled message:', message)
   }
 
-  ws.onclose = (event) => {
+  socket.onclose = (event) => {
+    if (ws !== socket) return // a newer socket has already taken over
     console.log('[Soup] WebSocket disconnected — code:', event.code, 'reason:', event.reason)
     currentChannel = null
+    // Drop any in-flight request resolvers so the next connection's responses
+    // can't resolve stale handlers and desync the response queue.
+    pendingHandlers.length = 0
     resetMediaState()
-    activeCallbacks.onDisconnect?.()
+
+    if (intentionalClose || !everAuthenticated) {
+      // Deliberate teardown, or a connection that never authenticated (treat a
+      // failed initial join as a normal disconnect, not something to retry).
+      ws = null
+      activeCallbacks.onDisconnect?.()
+    } else {
+      // Unexpected drop after a healthy session — keep the user "joined" and
+      // recover in the background. Remote tiles are cleared now and re-arrive
+      // via replayed NewProducer once we're back; mic is re-published on auth.
+      activeCallbacks.onReconnecting?.()
+      scheduleVoiceReconnect()
+    }
   }
 
-  ws.onerror = (err) => {
+  socket.onerror = (err) => {
     console.error('[Soup] WebSocket error:', err)
   }
 
   // ─── onopen last so handlers are guaranteed to be in place ──────
-  ws.onopen = () => {
+  socket.onopen = () => {
+    if (ws !== socket) return
     console.log('[Soup] WebSocket connected, authenticating...')
-    ws.send(JSON.stringify({ ticket }))
+    socket.send(JSON.stringify({ ticket }))
   }
+}
+
+// Schedule a reconnect with capped exponential backoff + jitter.
+function scheduleVoiceReconnect() {
+  if (intentionalClose || reconnectTimer) return
+  const delay = Math.min(
+    VOICE_RECONNECT_MAX_DELAY_MS,
+    VOICE_RECONNECT_BASE_DELAY_MS * 2 ** reconnectAttempts
+  )
+  reconnectAttempts++
+  const jittered = Math.round(delay * (0.5 + Math.random() * 0.5))
+  console.warn(`[Soup] Reconnecting voice in ${jittered}ms (attempt ${reconnectAttempts})`)
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null
+    attemptReconnect()
+  }, jittered)
+}
+
+// One reconnect attempt: re-assert channel membership (the server drops us from
+// the channel when the socket dies), then re-open the socket. The fresh auth
+// makes the server replay NewProducer for everyone in the channel, so remote
+// audio/video re-consume automatically; onConnect re-publishes our mic.
+async function attemptReconnect() {
+  if (intentionalClose || reconnectInFlight) return
+  reconnectInFlight = true
+  try {
+    await activeCallbacks.onReconnectRejoin?.()
+    await openSocket()
+  } catch (err) {
+    console.error('[Soup] Voice reconnect failed:', err)
+    scheduleVoiceReconnect()
+  } finally {
+    reconnectInFlight = false
+  }
+}
+
+// Recover from a detected network failure. Because the voice socket has no
+// heartbeat, a half-open connection can sit in OPEN forever without firing
+// onclose — so the ICE-transport 'failed' state and the OS online/offline
+// events call this to kick recovery. No-op unless we have a live, non-
+// intentional session.
+function forceVoiceReconnect(reason) {
+  if (!everAuthenticated || intentionalClose) return
+  // A socket that still thinks it's open/connecting is the half-open case:
+  // close it so onclose runs the normal teardown + reconnect path.
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+    console.warn(`[Soup] ${reason} — closing half-open voice socket to recover`)
+    ws.close()
+    return
+  }
+  // Already closed and waiting out a backoff — jump straight to a fresh attempt.
+  if (reconnectInFlight) return
+  console.warn(`[Soup] ${reason} — retrying voice connection now`)
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer)
+    reconnectTimer = null
+  }
+  reconnectAttempts = 0
+  attemptReconnect()
+}
+
+// OS reports the network interface went down: tear the dead socket down now so
+// the UI clears and backoff starts (attempts fail until we're back online).
+function handleOffline() {
+  forceVoiceReconnect('Network offline')
+}
+
+// OS reports connectivity is back: recover promptly rather than waiting out the
+// current backoff delay.
+function handleOnline() {
+  forceVoiceReconnect('Network online')
 }
 
 // ─── Disconnect ──────────────────────────────────────────────────
 export function disconnect() {
+  intentionalClose = true
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer)
+    reconnectTimer = null
+  }
+  reconnectAttempts = 0
+  window.removeEventListener('offline', handleOffline)
+  window.removeEventListener('online', handleOnline)
+  // Let the (guarded) onclose handler run resetMediaState + onDisconnect and
+  // null out `ws`; closing synchronously here would race that cleanup.
   ws?.close()
-  ws = null
 }
 
 // ─── Load mediasoup Device ───────────────────────────────────────
@@ -191,7 +368,7 @@ function getRnnoiseBinary() {
   if (!rnnoiseBinaryPromise) {
     rnnoiseBinaryPromise = loadRnnoise({
       url: rnnoiseWasmPath,
-      simdUrl: rnnoiseSimdWasmPath,
+      simdUrl: rnnoiseSimdWasmPath
     }).catch((err) => {
       // Don't cache a failed load - allow a later retry.
       rnnoiseBinaryPromise = null
@@ -249,7 +426,10 @@ async function buildAudioProcessor(stream, micSettings) {
       const average = dataArray.reduce((a, b) => a + b) / dataArray.length
       const normalized = (average / 255) * 100
       // If audio is below threshold, mute; otherwise pass through
-      gate.gain.setValueAtTime(normalized >= micSettings.volumeGateThreshold ? 1 : 0, audioContext.currentTime)
+      gate.gain.setValueAtTime(
+        normalized >= micSettings.volumeGateThreshold ? 1 : 0,
+        audioContext.currentTime
+      )
       rafId = requestAnimationFrame(checkLevel)
     }
     checkLevel()
@@ -260,9 +440,15 @@ async function buildAudioProcessor(stream, micSettings) {
 
   const stop = () => {
     if (rafId) cancelAnimationFrame(rafId)
-    try { rnnoiseNode?.destroy() } catch {}
-    try { source.disconnect() } catch {}
-    try { audioContext.close() } catch {}
+    try {
+      rnnoiseNode?.destroy()
+    } catch {}
+    try {
+      source.disconnect()
+    } catch {}
+    try {
+      audioContext.close()
+    } catch {}
   }
 
   return { stream: destination.stream, stop }
@@ -313,9 +499,30 @@ export function createSpeakingDetector(stream, onChange, { threshold = 8, holdMs
   return () => {
     cancelAnimationFrame(rafId)
     if (speaking) onChange(false)
-    try { source.disconnect() } catch {}
-    try { audioContext.close() } catch {}
+    try {
+      source.disconnect()
+    } catch {}
+    // close() rejects (async) if the context is already closed — e.g. this
+    // cleanup runs twice during teardown. Skip when closed and swallow the
+    // rejection so it never surfaces as an uncaught promise error.
+    if (audioContext.state !== 'closed') audioContext.close().catch(() => {})
   }
+}
+
+// Identify the local client so the soup-owned self speaking detector can report
+// our own speaking state through onClientSpeaking, the same path remote peers use.
+export function setLocalClientId(id) {
+  localClientId = id
+}
+
+// (Re)start the self speaking detector on the current local audio stream. It
+// reports through the live onClientSpeaking callback, so speaking always lands on
+// whichever channel currently owns the session (rebound on switch/adopt).
+function startSelfSpeakingDetector(stream) {
+  selfSpeakingStop?.()
+  selfSpeakingStop = createSpeakingDetector(stream, (isSpeaking) => {
+    if (localClientId != null) activeCallbacks.onClientSpeaking?.(localClientId, isSpeaking)
+  })
 }
 
 // ─── Map snake_case transport params to mediasoup camelCase ───────
@@ -324,22 +531,39 @@ function mapTransportParams(params) {
     id: params.id,
     iceParameters: params.ice_parameters,
     iceCandidates: params.ice_candidates,
-    dtlsParameters: params.dtls_parameters,
+    dtlsParameters: params.dtls_parameters
   }
 }
 
 // ─── Publish: send local audio ───────────────────────────────────
+// Single-flight: a forced-move MediaStateReset (re-establish via the previously
+// joined channel) and the adopt() of the new channel can both call this at once.
+// Allocating two producer transports makes the server error out, so a second
+// concurrent caller joins the in-flight promise, and a call while already
+// published is a no-op.
 export async function publish(micSettings, onStream) {
+  if (producerTransport) return
+  if (publishInFlight) return publishInFlight
+  publishInFlight = doPublish(micSettings, onStream).finally(() => {
+    publishInFlight = null
+  })
+  return publishInFlight
+}
+
+async function doPublish(micSettings, onStream) {
   if (!device) await loadDevice()
 
   const rawParams = await send('CreateProducerTransport')
   producerTransport = device.createSendTransport({
     ...mapTransportParams(rawParams),
-    iceServers: getIceServers()
+    iceServers
   })
 
   producerTransport.on('connectionstatechange', (state) => {
     console.log('[Soup] Producer transport connection state:', state)
+    // ICE gave up (network died without the socket noticing) — recover. Our own
+    // teardown closes transports as 'closed', not 'failed', so this won't loop.
+    if (state === 'failed') forceVoiceReconnect('Producer transport failed')
   })
 
   producerTransport.on('connect', ({ dtlsParameters }, callback, errback) => {
@@ -364,14 +588,17 @@ export async function publish(micSettings, onStream) {
   try {
     stream = await navigator.mediaDevices.getUserMedia({
       audio: {
-        deviceId: micSettings.deviceId && micSettings.deviceId !== 'default' ? { exact: micSettings.deviceId } : undefined,
+        deviceId:
+          micSettings.deviceId && micSettings.deviceId !== 'default'
+            ? { exact: micSettings.deviceId }
+            : undefined,
         echoCancellation: micSettings.echoCancellation,
         // RNNoise replaces the browser suppressor - never run both (they're
         // mutually exclusive in the UI; this guards against any stale state).
         noiseSuppression: micSettings.useRnnoise ? false : micSettings.noiseSuppression,
         autoGainControl: micSettings.autoGainControl,
         sampleRate: micSettings.sampleRate,
-        channelCount: micSettings.channelCount,
+        channelCount: micSettings.channelCount
       }
     })
   } catch (err) {
@@ -393,6 +620,7 @@ export async function publish(micSettings, onStream) {
   }
 
   onStream?.(processedStream)
+  startSelfSpeakingDetector(processedStream)
 
   for (const track of processedStream.getTracks()) {
     const producer = await producerTransport.produce({
@@ -402,7 +630,7 @@ export async function publish(micSettings, onStream) {
         opusStereo: micSettings.channelCount === 2,
         opusMaxPlaybackRate: micSettings.sampleRate,
         opusDtx: true,
-        opusFec: true,
+        opusFec: true
       },
       appData: { produced: 'Audio' }
     })
@@ -429,14 +657,17 @@ export async function republish(micSettings, onStream) {
   try {
     stream = await navigator.mediaDevices.getUserMedia({
       audio: {
-        deviceId: micSettings.deviceId && micSettings.deviceId !== 'default' ? { exact: micSettings.deviceId } : undefined,
+        deviceId:
+          micSettings.deviceId && micSettings.deviceId !== 'default'
+            ? { exact: micSettings.deviceId }
+            : undefined,
         echoCancellation: micSettings.echoCancellation,
         // RNNoise replaces the browser suppressor - never run both (they're
         // mutually exclusive in the UI; this guards against any stale state).
         noiseSuppression: micSettings.useRnnoise ? false : micSettings.noiseSuppression,
         autoGainControl: micSettings.autoGainControl,
         sampleRate: micSettings.sampleRate,
-        channelCount: micSettings.channelCount,
+        channelCount: micSettings.channelCount
       }
     })
   } catch (err) {
@@ -457,8 +688,18 @@ export async function republish(micSettings, onStream) {
   }
 
   onStream?.(processedStream)
+  startSelfSpeakingDetector(processedStream)
 
   const newTracks = processedStream.getTracks()
+
+  // The socket can drop while we were awaiting getUserMedia / the audio
+  // processor above; onclose then runs resetMediaState(), closing the transport
+  // and the producers we captured. Bail rather than produce/replaceTrack on a
+  // corpse (InvalidStateError: closed) — the reconnect path re-publishes fresh.
+  if (!producerTransport || producerTransport.closed) {
+    stopAudioProcessor()
+    return
+  }
 
   if (audioProducers.length === 0) {
     // No existing producer to reuse (first publish hasn't happened yet) -
@@ -471,7 +712,7 @@ export async function republish(micSettings, onStream) {
           opusStereo: micSettings.channelCount === 2,
           opusMaxPlaybackRate: micSettings.sampleRate,
           opusDtx: true,
-          opusFec: true,
+          opusFec: true
         },
         appData: { produced: 'Audio' }
       })
@@ -491,7 +732,7 @@ export async function republish(micSettings, onStream) {
   for (let i = 0; i < audioProducers.length; i++) {
     const producer = audioProducers[i]
     const track = newTracks[i]
-    if (!track) continue
+    if (!track || producer.closed) continue
 
     await producer.replaceTrack({ track })
 
@@ -536,18 +777,25 @@ export async function shareScreen({ fps = 30, width = 1920, height = 1080, audio
   const track = stream.getVideoTracks()[0]
   track.contentHint = 'detail'
 
-  screenProducer = await producerTransport.produce({
-    track,
-    // AV1 SVC: one efficient upload carrying 3 spatial × 3 temporal layers, so
-    // the server can forward a cheap layer to thumbnails / a full layer to the
-    // focused viewer (see setVideoStreamRoles). '_KEY' shares the keyframe across
-    // spatial layers for cleaner layer switching.
-    encodings: [{ maxBitrate: 15000000, scalabilityMode: 'L3T3_KEY' }],
-    codecOptions: {
-      videoGoogleStartBitrate: 8000
-    },
-    appData: { produced: 'ScreenShare' }
-  })
+  try {
+    screenProducer = await producerTransport.produce({
+      track,
+      // AV1 SVC: one efficient upload carrying 3 spatial × 3 temporal layers, so
+      // the server can forward a cheap layer to thumbnails / a full layer to the
+      // focused viewer (see setVideoStreamRoles). '_KEY' shares the keyframe across
+      // spatial layers for cleaner layer switching.
+      encodings: [{ maxBitrate: 15000000, scalabilityMode: 'L3T3_KEY' }],
+      codecOptions: {
+        videoGoogleStartBitrate: 8000
+      },
+      appData: { produced: 'ScreenShare' }
+    })
+  } catch (err) {
+    // Produce refused (e.g. no STREAM permission in this channel). Release the
+    // capture so we don't leave the OS screen-share running with no producer.
+    stream.getTracks().forEach((t) => t.stop())
+    throw err
+  }
 
   localProducerIds.add(screenProducer.id)
   console.log(`[Soup] Screen sharing [id:${screenProducer.id}]`)
@@ -560,7 +808,7 @@ export async function shareScreen({ fps = 30, width = 1920, height = 1080, audio
       track: audioTrack,
       codecOptions: {
         opusDtx: true,
-        opusFec: true,
+        opusFec: true
       },
       appData: { produced: 'ScreenShareAudio' }
     })
@@ -598,15 +846,21 @@ export async function shareCamera(deviceId) {
   const track = stream.getVideoTracks()[0]
   track.contentHint = 'motion'
 
-  screenProducer = await producerTransport.produce({
-    track,
-    // AV1 SVC layers — see the note in shareScreen().
-    encodings: [{ maxBitrate: 15000000, scalabilityMode: 'L3T3_KEY' }],
-    codecOptions: {
-      videoGoogleStartBitrate: 8000
-    },
-    appData: { produced: 'ScreenShare' }
-  })
+  try {
+    screenProducer = await producerTransport.produce({
+      track,
+      // AV1 SVC layers — see the note in shareScreen().
+      encodings: [{ maxBitrate: 15000000, scalabilityMode: 'L3T3_KEY' }],
+      codecOptions: {
+        videoGoogleStartBitrate: 8000
+      },
+      appData: { produced: 'ScreenShare' }
+    })
+  } catch (err) {
+    // Produce refused (e.g. no STREAM permission) — release the camera capture.
+    stream.getTracks().forEach((t) => t.stop())
+    throw err
+  }
 
   localProducerIds.add(screenProducer.id)
   console.log(`[Soup] Camera sharing [id:${screenProducer.id}]`)
@@ -662,11 +916,12 @@ export async function subscribe() {
     const rawParams = await send('CreateConsumerTransport')
     consumerTransport = device.createRecvTransport({
       ...mapTransportParams(rawParams),
-      iceServers: getIceServers()
+      iceServers
     })
 
     consumerTransport.on('connectionstatechange', (state) => {
       console.log('[Soup] Consumer transport connection state:', state)
+      if (state === 'failed') forceVoiceReconnect('Consumer transport failed')
     })
 
     consumerTransport.on('connect', ({ dtlsParameters }, callback, errback) => {
@@ -700,13 +955,18 @@ export async function consumeProducer(producerId, kind, onStream, clientId, prod
     id: consumerParams.id,
     producerId: consumerParams.producer_id,
     kind: consumerParams.kind,
-    rtpParameters: consumerParams.rtp_parameters,
+    rtpParameters: consumerParams.rtp_parameters
   })
 
   const stream = new MediaStream([consumer.track])
 
   // log track state
-  console.log('[Soup] Consumer track state:', consumer.track.readyState, 'muted:', consumer.track.muted)
+  console.log(
+    '[Soup] Consumer track state:',
+    consumer.track.readyState,
+    'muted:',
+    consumer.track.muted
+  )
 
   // Audio must play immediately, so resume it on the server right away. Video
   // instead starts *paused*: streams default to stopped, and the grid opts in
@@ -756,8 +1016,12 @@ export async function consumeProducer(producerId, kind, onStream, clientId, prod
     }
 
     cleanup = () => {
-      try { srcNode.disconnect() } catch {}
-      try { gainNode.disconnect() } catch {}
+      try {
+        srcNode.disconnect()
+      } catch {}
+      try {
+        gainNode.disconnect()
+      } catch {}
       audioEl.pause()
       audioEl.srcObject = null
       audioEl.remove()
@@ -781,7 +1045,14 @@ export async function consumeProducer(producerId, kind, onStream, clientId, prod
   }
 
   remoteConsumers.set(producerId, {
-    consumer, consumerId: consumer.id, kind, clientId, producedType, cleanup, audioEl, gain: gainNode,
+    consumer,
+    consumerId: consumer.id,
+    kind,
+    clientId,
+    producedType,
+    cleanup,
+    audioEl,
+    gain: gainNode,
     // Video is consumed paused above, so seed its bookkeeping as hidden/paused
     // — setVideoStreamRoles() will resume it only when a view role asks for it.
     ...(kind === 'video' ? { serverPaused: true, viewRole: 'hidden' } : {})
@@ -814,7 +1085,7 @@ const VIEW_LAYERS = {
   // mid spatial layer at full fps — better than a carousel thumbnail, cheaper
   // than the focused stream.
   grid: { spatialLayer: 1, temporalLayer: 2 },
-  thumbnail: { spatialLayer: 1, temporalLayer: 0 },
+  thumbnail: { spatialLayer: 1, temporalLayer: 0 }
 }
 
 // Ask the server to forward only the given SVC layers for this consumer.
@@ -826,7 +1097,7 @@ function setConsumerPreferredLayers(entry, { spatialLayer, temporalLayer }) {
   send('SetConsumerPreferredLayers', {
     id: entry.consumerId,
     spatial_layer: spatialLayer,
-    temporal_layer: temporalLayer,
+    temporal_layer: temporalLayer
   }).catch((err) => console.warn('[Soup] SetConsumerPreferredLayers failed:', err))
 }
 
@@ -835,8 +1106,9 @@ function setConsumerPreferredLayers(entry, { spatialLayer, temporalLayer }) {
 function pauseVideoConsumer(entry) {
   if (entry.serverPaused === true) return
   entry.serverPaused = true
-  send('PauseConsumer', { id: entry.consumerId })
-    .catch((err) => console.warn('[Soup] PauseConsumer failed:', err))
+  send('PauseConsumer', { id: entry.consumerId }).catch((err) =>
+    console.warn('[Soup] PauseConsumer failed:', err)
+  )
 }
 
 function resumeVideoConsumer(entry) {
@@ -844,8 +1116,9 @@ function resumeVideoConsumer(entry) {
   // only ever needed to undo a pause — i.e. when serverPaused is true.
   if (entry.serverPaused !== true) return
   entry.serverPaused = false
-  send('ResumeConsumer', { id: entry.consumerId })
-    .catch((err) => console.warn('[Soup] ResumeConsumer failed:', err))
+  send('ResumeConsumer', { id: entry.consumerId }).catch((err) =>
+    console.warn('[Soup] ResumeConsumer failed:', err)
+  )
 }
 
 // Apply the UI's current view to every remote video consumer:
@@ -861,11 +1134,14 @@ export function setVideoStreamRoles({ focusedConsumerId = null, visibleConsumerI
 
     // Visible streams are 'grid' tiles when nothing is focused (they fill the
     // area), or small carousel 'thumbnail's when a stream is focused.
-    const role = entry.consumerId === focusedConsumerId
-      ? 'focused'
-      : visible.has(entry.consumerId)
-        ? (focusedConsumerId == null ? 'grid' : 'thumbnail')
-        : 'hidden'
+    const role =
+      entry.consumerId === focusedConsumerId
+        ? 'focused'
+        : visible.has(entry.consumerId)
+          ? focusedConsumerId == null
+            ? 'grid'
+            : 'thumbnail'
+          : 'hidden'
 
     if (entry.viewRole === role) continue
     entry.viewRole = role
@@ -881,6 +1157,8 @@ export function setVideoStreamRoles({ focusedConsumerId = null, visibleConsumerI
 
 // ─── Reset all media state ───────────────────────────────────────
 export function resetMediaState() {
+  selfSpeakingStop?.()
+  selfSpeakingStop = null
   producerTransport?.close()
   producerTransport = null
   consumerTransport?.close()
@@ -912,9 +1190,7 @@ export function rebindCallbacks(newCallbacks) {
 // Pauses/resumes local audio producers so other clients stop receiving them.
 export function setMicMuted(muted) {
   micMuted = muted
-  producers
-    .filter((p) => p.kind === 'audio')
-    .forEach((p) => (muted ? p.pause() : p.resume()))
+  producers.filter((p) => p.kind === 'audio').forEach((p) => (muted ? p.pause() : p.resume()))
 }
 
 // Lazily create (and resume) the shared playback AudioContext. Created on the
@@ -936,7 +1212,9 @@ function getPlaybackContext() {
 function applyOutputDeviceToContext() {
   if (playbackContext && typeof playbackContext.setSinkId === 'function') {
     const sinkId = outputDeviceId === 'default' ? '' : outputDeviceId
-    playbackContext.setSinkId(sinkId).catch((err) => console.error('[Soup] context setSinkId failed:', err))
+    playbackContext
+      .setSinkId(sinkId)
+      .catch((err) => console.error('[Soup] context setSinkId failed:', err))
   }
 }
 
@@ -970,7 +1248,7 @@ function applyAllAudioState() {
     let gain
     if (entry.producedType === 'ScreenShareAudio') {
       // Only the focused stream's screen-share audio should be audible.
-      const audible = entry.clientId === focusedClientId && !(soundMuted || focusedMuted)
+      const audible = entry.clientId === focusedClientId && !focusedMuted
       gain = audible ? focusedVolume * masterVolume : 0
     } else {
       const override = clientAudioOverrides.get(entry.clientId)
@@ -995,7 +1273,7 @@ export function setClientAudioState(clientId, { volume, muted } = {}) {
   const current = clientAudioOverrides.get(clientId) || { volume: 1, muted: false }
   clientAudioOverrides.set(clientId, {
     volume: volume != null ? volume : current.volume,
-    muted: muted != null ? muted : current.muted,
+    muted: muted != null ? muted : current.muted
   })
   applyAllAudioState()
 }
@@ -1007,14 +1285,6 @@ export function getClientAudioState(clientId) {
 // ─── Getters ─────────────────────────────────────────────────────
 export function isConnected() {
   return ws?.readyState === WebSocket.OPEN
-}
-
-export function isMicMuted() {
-  return micMuted
-}
-
-export function isSoundMuted() {
-  return soundMuted
 }
 
 // ─── TEMP DIAGNOSTIC: live inbound kbps per remote video consumer ─────────
@@ -1035,7 +1305,10 @@ async function logVideoStatsOnce() {
     }
     for (const s of report.values()) {
       if (s.type !== 'inbound-rtp' || s.bytesReceived == null) continue
-      const prev = videoStatsLast.get(entry.consumerId) || { bytes: s.bytesReceived, ts: s.timestamp }
+      const prev = videoStatsLast.get(entry.consumerId) || {
+        bytes: s.bytesReceived,
+        ts: s.timestamp
+      }
       const dt = s.timestamp - prev.ts // ms
       // (bytes * 8) bits over dt ms = kbits/s = kbps
       const kbps = dt > 0 ? (8 * (s.bytesReceived - prev.bytes)) / dt : 0

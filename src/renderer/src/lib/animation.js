@@ -1,0 +1,150 @@
+import { useLayoutEffect, useRef, useState } from 'react'
+
+// Equal when entries line up by key, status, and item reference. Lets us skip a
+// redundant setState that would otherwise loop on every parent render.
+function sameEntries(a, b) {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].key !== b[i].key || a[i].status !== b[i].status || a[i].item !== b[i].item) {
+      return false
+    }
+  }
+  return true
+}
+
+// True when the OS prefers reduced motion.
+export function prefersReducedMotion() {
+  return (
+    typeof window !== 'undefined' &&
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  )
+}
+
+// Track a keyed list, tagging newly-arrived entries 'entering' (everything else
+// 'present') so they can play an enter animation. Returns ordered
+// `{ key, item, status }` in live source order. Removals take effect immediately
+// — there's no exit phase, so callers that want something to animate away should
+// not rely on this hook to keep it mounted. When disabled it's a pass-through
+// that tags everything 'present'.
+//
+// A key stays 'entering' for `enterDuration` ms (covering the CSS enter
+// animation) before being demoted to 'present', rather than on the next effect
+// run. Without this sticky window, an unrelated re-render that hands us a new
+// `items` array reference (e.g. the self-join cascade re-running this effect)
+// would demote a just-added key to 'present' before the browser ever painted
+// 'entering' — so the animation would silently not play.
+export function useAnimatedPresence(items, getKey, { enabled = true, enterDuration = 320 } = {}) {
+  const [rendered, setRendered] = useState(() =>
+    items.map((item) => ({ key: getKey(item), item, status: 'present' }))
+  )
+  const renderedRef = useRef(rendered)
+  // key -> demotion timer id, for keys currently mid-enter. While a key's timer
+  // is pending it stays 'entering' across effect re-runs.
+  const enterTimersRef = useRef(new Map())
+
+  useLayoutEffect(() => {
+    const timers = enterTimersRef.current
+    const prevKeys = new Set(renderedRef.current.map((r) => r.key))
+
+    const next = items.map((item) => {
+      const key = getKey(item)
+      // Begin the enter phase for a brand-new key: tag it 'entering' and start
+      // the timer that will demote it once the animation has played.
+      if (enabled && !prevKeys.has(key) && !timers.has(key)) {
+        const id = setTimeout(() => {
+          timers.delete(key)
+          const demoted = renderedRef.current.map((r) =>
+            r.key === key ? { ...r, status: 'present' } : r
+          )
+          renderedRef.current = demoted
+          setRendered(demoted)
+        }, enterDuration)
+        timers.set(key, id)
+      }
+      return { key, item, status: enabled && timers.has(key) ? 'entering' : 'present' }
+    })
+
+    // Drop timers for keys that have since left, so their pending demotion can't
+    // fire against a stale list.
+    for (const [key, id] of timers) {
+      if (!next.some((n) => n.key === key)) {
+        clearTimeout(id)
+        timers.delete(key)
+      }
+    }
+
+    if (sameEntries(next, renderedRef.current)) return
+    renderedRef.current = next
+    setRendered(next)
+  }, [items, enabled])
+
+  // Clear any pending timers on unmount.
+  useLayoutEffect(
+    () => () => {
+      for (const id of enterTimersRef.current.values()) clearTimeout(id)
+      enterTimersRef.current.clear()
+    },
+    []
+  )
+
+  return rendered
+}
+
+// Block shift for list reorders/insertions. Unlike classic per-row FLIP — where
+// each row measures and animates independently and can drift out of step (the
+// "shuffling through each other" look) — this measures ONE displaced row's
+// vertical delta and plays the exact same translateY on every displaced row, so
+// they move as a single block. Valid because a single move/insert displaces all
+// affected rows by the same distance (the moved/added row's outer height). Rows
+// tagged data-anim-status="entering" (the popping moved/added row) are excluded.
+// Fires only when `signal` (the order key) changes, but re-measures row
+// positions on EVERY commit — rows also move for unrelated reasons (a channel
+// growing as users join it), and animating a reorder from stale positions is
+// exactly the out-of-sync jump this replaces.
+export function useBlockShift(
+  containerRef,
+  signal,
+  { selector = '[data-flip-key]', enabled = true, duration = 260 } = {}
+) {
+  const prevTops = useRef(new Map())
+  const prevSignal = useRef(signal)
+
+  useLayoutEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+
+    const nodes = [...container.querySelectorAll(selector)]
+    const prev = prevTops.current
+    const tops = new Map(
+      nodes.map((n) => [n.getAttribute('data-flip-key'), n.getBoundingClientRect().top])
+    )
+    prevTops.current = tops
+
+    const signalChanged = prevSignal.current !== signal
+    prevSignal.current = signal
+    if (!signalChanged || !enabled || prefersReducedMotion()) return
+
+    // Rows that changed vertical position this commit, minus the popping row.
+    const displaced = nodes.filter((n) => {
+      if (n.getAttribute('data-anim-status') === 'entering') return false
+      const key = n.getAttribute('data-flip-key')
+      const old = prev.get(key)
+      return old != null && Math.abs(old - tops.get(key)) > 0.5
+    })
+    if (displaced.length === 0) return
+
+    // One shared delta from the first displaced row; identical keyframes/timing
+    // on every row = perfectly synchronized block movement. (If two channels
+    // were somehow moved in the same commit the deltas could differ per row —
+    // rare enough that uniform motion is the better trade.)
+    const k0 = displaced[0].getAttribute('data-flip-key')
+    const dy = prev.get(k0) - tops.get(k0)
+    for (const node of displaced) {
+      node.animate(
+        [{ transform: `translateY(${dy}px)` }, { transform: 'translateY(0)' }],
+        { duration, easing: 'cubic-bezier(0.2, 0.7, 0.2, 1)' }
+      )
+    }
+  }) // no dep array: measure every commit, animate only on a signal change
+}

@@ -1,0 +1,208 @@
+.client-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 24px;
+  overflow-y: auto;
+  height: 100%;
+  box-sizing: border-box;
+}
+
+.client-summary-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  /* Same vertical padding as the banner variant so the name sits at the same
+     height whether or not a banner gradient is present. */
+  padding: 18px 0;
+}
+
+.client-summary-avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--color-accent, var(--color-primary));
+  color: #fff;
+  font-size: 24px;
+  font-weight: var(--font-weight-bold);
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+.client-summary-avatar-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* Channel details: banner behind the icon + name, painted with a gradient
+   sampled from the icon's colors (inline style; only present when an icon is
+   set and readable). */
+.channel-summary-banner {
+  padding: 18px 16px;
+  border-radius: var(--radius-md);
+  box-shadow: inset 0 0 0 1px var(--hairline);
+}
+
+/* Channel details: the avatar doubles as the icon set/remove button. A dark
+   scrim with a trash (icon set) or photo-up (no icon) glyph fades in on hover. */
+.channel-summary-avatar-btn {
+  position: relative;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.channel-summary-avatar-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.channel-summary-avatar-btn:hover .channel-summary-avatar-overlay,
+.channel-summary-avatar-btn:focus-visible .channel-summary-avatar-overlay {
+  opacity: 1;
+}
+
+.client-summary-name {
+  font-size: var(--font-size-xl, 20px);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text);
+}
+
+.client-summary-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.client-summary-heading {
+  margin: 0;
+  font-size: var(--font-size-xs, 12px);
+  font-weight: var(--font-weight-bold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-muted);
+}
+
+.client-summary-placeholder {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+}
+
+.client-summary-value {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--color-text);
+}
+
+/* Editable heading (e.g. Description): the pencil reveals on hover, mirroring the
+   hover-to-edit affordance on chat messages. */
+.client-summary-heading-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.client-summary-edit-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  border: none;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 0.12s ease,
+    color 0.12s ease,
+    background 0.12s ease;
+}
+
+.client-summary-section:hover .client-summary-edit-btn,
+.client-summary-edit-btn:focus-visible {
+  opacity: 1;
+}
+
+.client-summary-edit-btn:hover {
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.client-summary-edit-input {
+  width: 100%;
+  resize: none;
+  padding: 8px 10px;
+  border: 1px solid var(--color-primary);
+  border-radius: var(--radius-sm);
+  background: var(--color-background-mute);
+  color: var(--color-text);
+  font-family: var(--font-family-primary);
+  font-size: var(--font-size-sm);
+  line-height: 1.45;
+}
+
+.client-summary-edit-hint {
+  margin-top: 3px;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+
+.client-summary-edit-hint button {
+  border: none;
+  background: none;
+  padding: 0;
+  font-size: inherit;
+  font-family: inherit;
+  color: var(--color-primary);
+  cursor: pointer;
+}
+
+.client-summary-edit-hint button:hover {
+  text-decoration: underline;
+}
+
+/* Assigned server groups, rendered as a wrap of pill chips. */
+.client-summary-roles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.client-summary-role {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--hairline);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+}
+
+/* Server-group icon inside a group chip. */
+.client-summary-group-icon {
+  width: 14px;
+  height: 14px;
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+  flex-shrink: 0;
+}

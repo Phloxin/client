@@ -1,0 +1,178 @@
+/* Channel permission overwrites, rendered inside the Channel Details view.
+   Leans on ClientSummary.css section/heading styles; only overwrite rows, the
+   tri-state toggle, and the editor grid are defined here. */
+
+.chan-perm-kind {
+  font-size: var(--font-size-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-muted);
+}
+
+.chan-perm-overwrites {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chan-perm-overwrite {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+}
+
+.chan-perm-target {
+  font-size: var(--font-size-sm);
+  color: var(--color-text);
+}
+
+.chan-perm-overwrite-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 2px;
+}
+
+.chan-perm-overwrite-actions button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border: none;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+}
+
+.chan-perm-overwrite-actions button:hover {
+  background: var(--color-background-mute);
+  color: var(--color-text);
+}
+
+.chan-perm-overwrite-actions button.danger:hover {
+  color: var(--color-danger, #e5484d);
+}
+
+.chan-perm-add {
+  margin-top: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--color-background-mute);
+  color: var(--color-text);
+  font-family: var(--font-family-primary);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+
+/* Editor */
+.chan-perm-editor-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--font-size-sm);
+  color: var(--color-text);
+  margin-bottom: 8px;
+}
+
+.chan-perm-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chan-perm-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 0;
+}
+
+.chan-perm-label {
+  font-size: var(--font-size-sm);
+  color: var(--color-text);
+}
+
+.chan-perm-toggle {
+  display: inline-flex;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.chan-perm-seg {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  padding: 4px 0;
+  border: none;
+  background: var(--color-surface);
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  transition:
+    background 0.1s ease,
+    color 0.1s ease;
+}
+
+.chan-perm-seg + .chan-perm-seg {
+  border-left: 1px solid var(--hairline);
+}
+
+.chan-perm-seg:hover {
+  color: var(--color-text);
+}
+
+.chan-perm-seg.deny.on {
+  background: var(--color-danger, #e5484d);
+  color: #fff;
+}
+
+.chan-perm-seg.allow.on {
+  background: var(--color-success, #30a46c);
+  color: #fff;
+}
+
+.chan-perm-seg.neutral.on {
+  background: var(--color-background-mute);
+  color: var(--color-text);
+}
+
+.chan-perm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.chan-perm-btn {
+  padding: 6px 14px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+
+.chan-perm-btn.primary {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: #fff;
+}
+
+.chan-perm-btn:hover {
+  filter: brightness(1.08);
+}

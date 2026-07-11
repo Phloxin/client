@@ -1,0 +1,49 @@
+/* Error toast: drops down from the center of the title bar. Anchored to
+   .app-shell (position: relative); sits above the title bar's drag region so
+   it stays clickable. Entrance/exit springs are driven by Motion, so this
+   file only positions and paints it. */
+.toast {
+  position: absolute;
+  top: calc(var(--title-bar-height, 40px) + 6px);
+  left: 0;
+  right: 0;
+  margin: 0 auto;
+  width: fit-content;
+  z-index: 1000;
+  -webkit-app-region: no-drag;
+
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(520px, 80vw);
+  padding: 9px 14px;
+  border: 1px solid color-mix(in srgb, var(--color-danger) 60%, transparent);
+  border-radius: var(--radius-md);
+  background: var(--color-danger);
+  color: #fff;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  text-align: left;
+  cursor: pointer;
+  box-shadow: var(--shadow-3);
+}
+
+/* Success variant: same banner painted with the theme's success color. */
+.toast.success {
+  border-color: color-mix(in srgb, var(--color-success) 60%, transparent);
+  background: var(--color-success);
+}
+
+.toast:hover {
+  filter: brightness(1.08);
+}
+
+.toast-icon {
+  flex-shrink: 0;
+}
+
+.toast-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

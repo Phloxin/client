@@ -1,11 +1,14 @@
 /* ============================================================================
-   SCREEN SOURCE PICKER — modal for choosing a screen/window to share
+   SCREEN SOURCE PICKER — modal for choosing a screen/window/camera to share.
+   Tabs are the shared SegmentedTabs control; the toggle switch styles come
+   from Settings.css (bundled globally).
    ============================================================================ */
 
 .source-picker-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.45);
+  background: rgb(var(--shadow-tint) / 0.55);
+  backdrop-filter: blur(3px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -16,10 +19,11 @@
 .source-picker-modal {
   width: min(880px, 96%);
   height: min(640px, 90%);
-  border-radius: var(--border-radius-lg);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-xl);
   overflow: hidden;
-  background: var(--color-background);
-  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.45);
+  background: var(--gradient-surface);
+  box-shadow: var(--shadow-3);
   display: flex;
   flex-direction: column;
 }
@@ -29,54 +33,8 @@
 .source-picker-tabs {
   display: flex;
   justify-content: center;
-  padding: 12px 22px;
-}
-
-.source-tabs-bar {
-  position: relative;       /* positioning context for the sliding pill */
-  display: flex;
-  background: var(--color-background-mute);
-  border-radius: 999px;
-  padding: 3px;
-  gap: 2px;
-}
-
-.source-tab {
-  position: relative;       /* sit above the sliding pill */
-  z-index: 1;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 16px;
-  border: none;
-  border-radius: 999px;
-  background: transparent;
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-sm);
-  font-weight: 600;
-  cursor: pointer;
-  transition: color 0.15s ease;
-}
-
-.source-tab:hover {
-  color: var(--color-text);
-}
-
-/* The pill background is provided by .pill-indicator; the active tab only
-   changes its text color. */
-.source-tab.active {
-  color: var(--color-text);
-}
-
-/* Sliding pill (positioned/sized inline by usePillIndicator). */
-.source-tabs-bar .pill-indicator {
-  position: absolute;
-  left: 0;
-  top: 0;
-  z-index: 0;
-  border-radius: 999px;
-  background: var(--color-background-soft);
-  pointer-events: none;
+  padding: 14px 22px 10px;
+  border-bottom: 1px solid var(--hairline);
 }
 
 /* ── Body ────────────────────────────────────────────────────────────────── */
@@ -100,7 +58,7 @@
 }
 
 .source-picker-error {
-  color: #ed4245;
+  color: var(--color-danger);
 }
 
 .spin {
@@ -108,7 +66,15 @@
 }
 
 @keyframes source-spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spin {
+    animation: none;
+  }
 }
 
 .source-grid {
@@ -117,28 +83,33 @@
   gap: 12px;
 }
 
-/* ── Source card ───────────────────────────────────────────────────────────── */
+/* ── Source card ─────────────────────────────────────────────────────────── */
 
 .source-card {
   display: flex;
   flex-direction: column;
   padding: 0;
-  border: 2px solid transparent;
-  border-radius: 10px;
-  background: var(--color-background-secondary, #06070d);
+  border: 2px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--color-background-mute);
   cursor: pointer;
   overflow: hidden;
-  transition: border-color 0.15s ease, transform 0.15s ease;
+  transition:
+    border-color 0.15s ease,
+    transform 0.15s ease,
+    box-shadow 0.15s ease;
 }
 
 .source-card:hover {
-  transform: translateY(-1px);
-  border-color: var(--color-border-light);
+  transform: translateY(-2px);
+  border-color: var(--hairline-strong);
+  box-shadow: var(--shadow-2);
 }
 
 .source-card.selected {
+  outline: none;
   border-color: var(--color-primary);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-primary) 30%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 18%, transparent);
 }
 
 .source-thumb {
@@ -181,7 +152,7 @@
   flex-shrink: 0;
 }
 
-/* ── Footer ────────────────────────────────────────────────────────────────── */
+/* ── Footer ──────────────────────────────────────────────────────────────── */
 
 .source-picker-footer {
   display: flex;
@@ -189,6 +160,8 @@
   align-items: center;
   gap: 16px;
   padding: 14px 22px;
+  border-top: 1px solid var(--hairline);
+  background: color-mix(in srgb, var(--color-background-mute) 40%, transparent);
 }
 
 .picker-quality {
@@ -212,7 +185,7 @@
 
 .picker-quality-label {
   font-size: var(--font-size-xs);
-  font-weight: 600;
+  font-weight: var(--font-weight-semibold);
   color: var(--color-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -221,8 +194,9 @@
 
 .picker-segment {
   display: flex;
-  background: var(--color-background-mute);
-  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-background-mute) 80%, transparent);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
   padding: 3px;
   gap: 2px;
 }
@@ -230,13 +204,15 @@
 .picker-segment-btn {
   padding: 4px 12px;
   font-size: var(--font-size-sm);
-  font-weight: 500;
+  font-weight: var(--font-weight-medium);
   border: none;
-  border-radius: 999px;
+  border-radius: calc(var(--radius-md) - 3px);
   background: transparent;
   color: var(--color-text-secondary);
   cursor: pointer;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
 }
 
 .picker-segment-btn:hover:not(.active) {
@@ -244,8 +220,9 @@
 }
 
 .picker-segment-btn.active {
-  background: var(--color-background-soft);
+  background: var(--color-surface);
   color: var(--color-text);
+  box-shadow: var(--shadow-1);
 }
 
 .picker-footer-actions {
@@ -256,85 +233,43 @@
 }
 
 .picker-btn {
-  padding: 7px 18px;
+  padding: 8px 18px;
   border: none;
-  border-radius: var(--border-radius-sm);
+  border-radius: var(--radius-sm);
   font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-medium);
+  font-weight: var(--font-weight-semibold);
   cursor: pointer;
   font-family: var(--font-family-primary);
-  transition: opacity 0.15s ease, background 0.15s ease;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease,
+    transform 0.12s ease;
+}
+
+.picker-btn:active:not(:disabled) {
+  transform: scale(0.97);
 }
 
 .picker-btn.secondary {
-  background: transparent;
+  background: var(--color-surface);
   color: var(--color-text-secondary);
 }
 
 .picker-btn.secondary:hover {
   color: var(--color-text);
-  background: var(--color-background-mute);
+  background: var(--color-border-light);
 }
 
 .picker-btn.primary {
-  background: var(--color-primary);
-  color: var(--color-background);
+  background: var(--gradient-primary);
+  color: var(--color-accent-contrast);
 }
 
 .picker-btn.primary:hover:not(:disabled) {
-  opacity: 0.85;
+  background: var(--gradient-primary-hover);
 }
 
 .picker-btn.primary:disabled {
   opacity: 0.4;
   cursor: not-allowed;
-}
-
-/* ── Toggle switch (shared pattern with AudioSettings) ───────────────────── */
-
-.toggle-switch {
-  position: relative;
-  display: inline-block;
-  width: 40px;
-  height: 22px;
-  flex-shrink: 0;
-}
-
-.toggle-switch input {
-  opacity: 0;
-  width: 0;
-  height: 0;
-  position: absolute;
-}
-
-.toggle-slider {
-  position: absolute;
-  inset: 0;
-  background: var(--color-background-mute);
-  border-radius: 999px;
-  cursor: pointer;
-  transition: background 0.2s ease;
-  border: 1px solid var(--color-border);
-}
-
-.toggle-slider::before {
-  content: '';
-  position: absolute;
-  width: 14px;
-  height: 14px;
-  left: 3px;
-  top: 3px;
-  background: var(--color-text-secondary);
-  border-radius: 50%;
-  transition: transform 0.2s ease, background 0.2s ease;
-}
-
-.toggle-switch input:checked + .toggle-slider {
-  background: var(--color-primary);
-  border-color: var(--color-primary);
-}
-
-.toggle-switch input:checked + .toggle-slider::before {
-  transform: translateX(18px);
-  background: var(--color-background);
 }

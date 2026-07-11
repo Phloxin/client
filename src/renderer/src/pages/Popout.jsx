@@ -9,7 +9,9 @@ import VideoGrid from '../components/VideoGrid'
 // objects directly — they never cross an IPC boundary.
 function Popout() {
   // Resolve the opener's bridge once; it lives for the window's lifetime.
-  const [bridge] = useState(() => (typeof window !== 'undefined' ? window.opener?.__videoPopout : null) || null)
+  const [bridge] = useState(
+    () => (typeof window !== 'undefined' ? window.opener?.__videoPopout : null) || null
+  )
 
   const [data, setData] = useState(
     () => bridge?.getData?.() || { streams: [], clients: [], selectedStreamId: null }
@@ -23,11 +25,7 @@ function Popout() {
   }, [bridge])
 
   if (!bridge) {
-    return (
-      <div className="popout-empty">
-        This window must be opened from the main app.
-      </div>
-    )
+    return <div className="popout-empty">This window must be opened from the main app.</div>
   }
 
   return (

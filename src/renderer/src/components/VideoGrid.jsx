@@ -45,7 +45,21 @@ function bestUniformTileWidth(W, H, n, gap = GRID_GAP) {
   return Math.floor(best)
 }
 
-function VideoGrid({ streams, clients, selectedStreamId, onSelect, onPopout, onFocusAudio, onSetStreamRoles, watchedStreamIds = EMPTY_WATCHED, onSetStreamWatched, volume, muted, onVolumeChange, onMutedChange }) {
+function VideoGrid({
+  streams,
+  clients,
+  selectedStreamId,
+  onSelect,
+  onPopout,
+  onFocusAudio,
+  onSetStreamRoles,
+  watchedStreamIds = EMPTY_WATCHED,
+  onSetStreamWatched,
+  volume,
+  muted,
+  onVolumeChange,
+  onMutedChange
+}) {
   const viewerRef = useRef(null)
   const gridRef = useRef(null)
   const [isFullscreen, setIsFullscreen] = useState(false)
@@ -113,7 +127,7 @@ function VideoGrid({ streams, clients, selectedStreamId, onSelect, onPopout, onF
     const applyRoles = onSetStreamRoles || setVideoStreamRoles
     applyRoles({
       focusedConsumerId: selectedStream?.consumerId ?? null,
-      visibleConsumerIds: visibleIds,
+      visibleConsumerIds: visibleIds
     })
   }, [selectedStream?.consumerId, visibleStreamKey])
 
@@ -142,14 +156,15 @@ function VideoGrid({ streams, clients, selectedStreamId, onSelect, onPopout, onF
     return () => ro.disconnect()
   }, [gridShown, gridTileCount])
 
-  if (!streams.length) return (
-    <div className="video-grid empty">
-      <div className="empty-message">
-        <IconVideoMinus size={100} />
-        No Active Streams
+  if (!streams.length)
+    return (
+      <div className="video-grid empty">
+        <div className="empty-message">
+          <IconVideoMinus size={100} />
+          No Active Streams
+        </div>
       </div>
-    </div>
-  )
+    )
 
   const toggleMute = () => onMutedChange(!muted)
 
@@ -160,7 +175,14 @@ function VideoGrid({ streams, clients, selectedStreamId, onSelect, onPopout, onF
     if (next === 0 && !muted) onMutedChange(true)
   }
 
-  const VolumeIcon = muted || volume === 0 ? IconVolumeOff : volume < 10 ? IconVolume4 : volume <= 50 ? IconVolume2 : IconVolume
+  const VolumeIcon =
+    muted || volume === 0
+      ? IconVolumeOff
+      : volume < 10
+        ? IconVolume4
+        : volume <= 50
+          ? IconVolume2
+          : IconVolume
 
   const isStopped = (s) => !watchedStreamIds.has(s.consumerId)
 
@@ -203,7 +225,9 @@ function VideoGrid({ streams, clients, selectedStreamId, onSelect, onPopout, onF
             autoPlay
             playsInline
             muted
-            ref={(el) => { if (el && el.srcObject !== s.stream) el.srcObject = s.stream }}
+            ref={(el) => {
+              if (el && el.srcObject !== s.stream) el.srcObject = s.stream
+            }}
           />
         )}
         <button
@@ -224,14 +248,14 @@ function VideoGrid({ streams, clients, selectedStreamId, onSelect, onPopout, onF
       {selectedStream ? (
         <>
           {/* Clicking the focused video (anywhere but the controls) unfocuses it. */}
-          <div
-            className="video-focus focusable"
-            onClick={() => onSelect?.(null)}
-          >
+          <div className="video-focus focusable" onClick={() => onSelect?.(null)}>
             <video
               autoPlay
               playsInline
-              ref={(el) => { if (el && el.srcObject !== selectedStream.stream) el.srcObject = selectedStream.stream }}
+              ref={(el) => {
+                if (el && el.srcObject !== selectedStream.stream)
+                  el.srcObject = selectedStream.stream
+              }}
             />
             <div className="focus-label">
               <span>{resolveLabel(selectedStream)}</span>
@@ -278,7 +302,10 @@ function VideoGrid({ streams, clients, selectedStreamId, onSelect, onPopout, onF
             <button
               type="button"
               className="carousel-toggle"
-              onClick={(e) => { e.stopPropagation(); setCarouselCollapsed((prev) => !prev) }}
+              onClick={(e) => {
+                e.stopPropagation()
+                setCarouselCollapsed((prev) => !prev)
+              }}
               title={carouselCollapsed ? 'Show stream list' : 'Hide stream list'}
             >
               {carouselCollapsed ? <IconChevronUp size={18} /> : <IconChevronDown size={18} />}

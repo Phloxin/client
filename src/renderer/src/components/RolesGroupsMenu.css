@@ -1,0 +1,151 @@
+/* ============================================================================
+   ROLES AND GROUPS — popup listing the server's roles and vanity groups,
+   with a composer to create new groups. Opened from a client context menu.
+   ============================================================================ */
+
+.rg-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgb(var(--shadow-tint) / 0.55);
+  backdrop-filter: blur(3px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1100;
+  padding: 24px;
+}
+
+.rg-modal {
+  width: min(420px, 96%);
+  max-height: min(520px, 90%);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-xl);
+  overflow: hidden;
+  background: var(--gradient-surface);
+  box-shadow: var(--shadow-3);
+  display: flex;
+  flex-direction: column;
+}
+
+.rg-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px 0;
+}
+
+.rg-title {
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.rg-close {
+  display: flex;
+  padding: 4px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.rg-close:hover {
+  background: var(--color-background-mute);
+  color: var(--color-text);
+}
+
+.rg-tabs {
+  display: flex;
+  justify-content: center;
+  padding: 10px 18px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.rg-body {
+  padding: 12px 18px 16px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 120px;
+}
+
+.rg-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: 7px 6px;
+  border-radius: var(--radius-sm);
+  color: var(--color-text);
+}
+
+.rg-row:hover {
+  background: var(--color-background-mute);
+}
+
+.rg-row-icon {
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.rg-row-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rg-empty {
+  padding: 12px 6px;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+.rg-create-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  margin-top: var(--spacing-sm);
+  padding-top: var(--spacing-sm);
+  border-top: 1px solid var(--hairline);
+}
+
+.rg-name-input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--color-background-mute);
+  color: var(--color-text);
+  font-family: var(--font-family-primary);
+  font-size: var(--font-size-sm);
+  outline: none;
+}
+
+.rg-name-input:focus {
+  border-color: var(--color-primary);
+}
+
+.rg-icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--color-background-mute);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.rg-icon-btn:hover:not(:disabled) {
+  color: var(--color-text);
+  border-color: var(--hairline-strong);
+}
+
+.rg-icon-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

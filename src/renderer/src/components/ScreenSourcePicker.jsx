@@ -1,11 +1,14 @@
 import { useState, useEffect } from 'react'
+import { motion } from 'motion/react'
+import { useAnimationCategory } from '../context/SettingsContext'
+import { overlayPop } from '../lib/motionPresets'
+import SegmentedTabs from './SegmentedTabs'
 import './ScreenSourcePicker.css'
 import { IconDeviceDesktop, IconAppWindow, IconLoader2, IconCamera } from '@tabler/icons-react'
-import { usePillIndicator } from '../lib/usePillIndicator'
 
 const RESOLUTIONS = [
-  { label: '720p',  width: 1280, height: 720  },
-  { label: '1080p', width: 1920, height: 1080 },
+  { label: '720p', width: 1280, height: 720 },
+  { label: '1080p', width: 1920, height: 1080 }
   // Temporarily omitted from the picker — restore when higher-res streaming is
   // ready to be offered again.
   // { label: '1440p', width: 2560, height: 1440 },
@@ -23,8 +26,7 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
   const [fps, setFps] = useState(30)
   const [resolution, setResolution] = useState('1080p')
   const [audio, setAudio] = useState(true)
-  // Sliding pill for the Screens / Windows / Devices tabs.
-  const tabPill = usePillIndicator(activeTab)
+  const overlayAnim = useAnimationCategory('overlays')
 
   useEffect(() => {
     let cancelled = false
@@ -43,7 +45,9 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
       .catch((err) => {
         if (!cancelled) setError(err.message || 'Failed to load screen sources')
       })
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   // Enumerate connected webcams for the Devices tab. Labels are only populated
@@ -56,8 +60,12 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
         if (cancelled) return
         setCameras(devices.filter((d) => d.kind === 'videoinput'))
       })
-      .catch(() => { if (!cancelled) setCameras([]) })
-    return () => { cancelled = true }
+      .catch(() => {
+        if (!cancelled) setCameras([])
+      })
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   const screens = sources?.filter((s) => s.isScreen) ?? []
@@ -119,35 +127,22 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
 
   return (
     <div className="source-picker-overlay" onClick={onCancel}>
-      <div className="source-picker-modal" onClick={(e) => e.stopPropagation()}>
+      <motion.div
+        className="source-picker-modal"
+        onClick={(e) => e.stopPropagation()}
+        {...overlayPop(overlayAnim)}
+      >
         <div className="source-picker-tabs">
-          <div className="source-tabs-bar" ref={tabPill.barRef}>
-            <span className="pill-indicator" style={tabPill.indicatorStyle} aria-hidden="true" />
-            <button
-              type="button"
-              className={`source-tab${activeTab === 'screens' ? ' active' : ''}`}
-              data-active={activeTab === 'screens'}
-              onClick={() => switchTab('screens')}
-            >
-              <IconDeviceDesktop size={15} /> Screens
-            </button>
-            <button
-              type="button"
-              className={`source-tab${activeTab === 'windows' ? ' active' : ''}`}
-              data-active={activeTab === 'windows'}
-              onClick={() => switchTab('windows')}
-            >
-              <IconAppWindow size={15} /> Windows
-            </button>
-            <button
-              type="button"
-              className={`source-tab${activeTab === 'devices' ? ' active' : ''}`}
-              data-active={activeTab === 'devices'}
-              onClick={() => switchTab('devices')}
-            >
-              <IconCamera size={15} /> Devices
-            </button>
-          </div>
+          <SegmentedTabs
+            ariaLabel="Capture source type"
+            active={activeTab}
+            onChange={switchTab}
+            tabs={[
+              { id: 'screens', label: 'Screens', icon: <IconDeviceDesktop size={15} /> },
+              { id: 'windows', label: 'Windows', icon: <IconAppWindow size={15} /> },
+              { id: 'devices', label: 'Devices', icon: <IconCamera size={15} /> }
+            ]}
+          />
         </div>
 
         <div className="source-picker-body">
@@ -169,12 +164,12 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
               <IconLoader2 size={32} className="spin" />
               Loading sources…
             </div>
+          ) : (activeTab === 'screens' ? screens : windows).length > 0 ? (
+            <div className="source-grid">
+              {(activeTab === 'screens' ? screens : windows).map(renderSource)}
+            </div>
           ) : (
-            (activeTab === 'screens' ? screens : windows).length > 0
-              ? <div className="source-grid">
-                  {(activeTab === 'screens' ? screens : windows).map(renderSource)}
-                </div>
-              : <div className="source-picker-loading">No {activeTab} found</div>
+            <div className="source-picker-loading">No {activeTab} found</div>
           )}
         </div>
 
@@ -245,7 +240,7 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
             </button>
           </div>
         </div>
-      </div>
+      </motion.div>
     </div>
   )
 }

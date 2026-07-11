@@ -1,5 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { motion } from 'motion/react'
 import { IconX, IconDownload, IconZoomReset } from '@tabler/icons-react'
+import { useAnimationCategory } from '../context/SettingsContext'
+import { scrimFade } from '../lib/motionPresets'
 import './ImageViewer.css'
 
 const MIN_SCALE = 1
@@ -80,8 +83,10 @@ function ImageViewer({ src, name, onClose }) {
     }
   }
 
+  const overlayAnim = useAnimationCategory('overlays')
+
   return (
-    <div className="image-viewer-overlay" onClick={onClose}>
+    <motion.div className="image-viewer-overlay" onClick={onClose} {...scrimFade(overlayAnim)}>
       <div className="image-viewer-controls" onClick={(e) => e.stopPropagation()}>
         <button
           type="button"
@@ -127,7 +132,7 @@ function ImageViewer({ src, name, onClose }) {
           }}
         />
       </div>
-    </div>
+    </motion.div>
   )
 }
 

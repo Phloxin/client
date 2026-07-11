@@ -54,7 +54,11 @@ function run(command, args, label) {
 }
 
 function installAppDeps() {
-  run(process.execPath, [electronBuilderCli, 'install-app-deps'], 'electron-builder install-app-deps')
+  run(
+    process.execPath,
+    [electronBuilderCli, 'install-app-deps'],
+    'electron-builder install-app-deps'
+  )
 }
 
 function repairElectronInstall() {
@@ -69,7 +73,11 @@ function repairElectronInstall() {
       'electron install retry'
     )
   } else {
-    run('npx', ['-y', 'node@22', path.join('node_modules', 'electron', 'install.js')], 'electron install retry')
+    run(
+      'npx',
+      ['-y', 'node@22', path.join('node_modules', 'electron', 'install.js')],
+      'electron install retry'
+    )
   }
 
   if (!hasCompleteElectronInstall()) {

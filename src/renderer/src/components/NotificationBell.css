@@ -11,6 +11,7 @@
 
 /* The bell reuses .title-bar-btn for sizing/hover; this just hosts the badge. */
 .notif-bell {
+  outline: none;
   position: relative;
 }
 
@@ -25,13 +26,27 @@
 }
 
 @keyframes notif-bell-jingle {
-  0%   { transform: rotate(0); }
-  15%  { transform: rotate(14deg); }
-  30%  { transform: rotate(-12deg); }
-  45%  { transform: rotate(9deg); }
-  60%  { transform: rotate(-6deg); }
-  75%  { transform: rotate(3deg); }
-  100% { transform: rotate(0); }
+  0% {
+    transform: rotate(0);
+  }
+  15% {
+    transform: rotate(14deg);
+  }
+  30% {
+    transform: rotate(-12deg);
+  }
+  45% {
+    transform: rotate(9deg);
+  }
+  60% {
+    transform: rotate(-6deg);
+  }
+  75% {
+    transform: rotate(3deg);
+  }
+  100% {
+    transform: rotate(0);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -81,19 +96,13 @@
   margin-top: 2px;
   margin-left: 5px;
   pointer-events: none;
-  transform: translateY(-50%);
-  animation: notif-toast-life 4s ease forwards;
+  /* Vertical centering only — entrance/exit is driven by Motion (x/scale). */
+  top: calc(var(--title-bar-height) / 2 - 12px);
+  border: 1px solid var(--hairline);
+  box-shadow: var(--shadow-2);
 }
 
-@keyframes notif-toast-life {
-  0%   { opacity: 0; transform: translateY(-50%) translateX(-12px) scale(0.85); }
-  8%   { opacity: 1; transform: translateY(-50%) translateX(6px) scale(1.03); }
-  13%  { transform: translateY(-50%) translateX(0) scale(1); }
-  88%  { opacity: 1; transform: translateY(-50%) translateX(0) scale(1); }
-  100% { opacity: 0; transform: translateY(-50%) translateX(0) scale(1); }
-}
-
-/* ── Dropdown notification center ─────────────────────────────────────────── */
+/* ── Dropdown notification center (entrance/exit driven by Motion) ────────── */
 
 .notif-panel {
   position: absolute;
@@ -104,44 +113,12 @@
   max-height: 360px;
   display: flex;
   flex-direction: column;
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: 10px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  background: var(--color-background-soft);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-3);
   overflow: hidden;
-  /* Closed state: faded, nudged up toward the bell, and fully inert. The panel
-     stays mounted so it can animate both open and closed; the delayed
-     visibility transition keeps it interactive through the fade-out. */
-  transform-origin: top;
-  opacity: 0;
-  transform: translateY(-6px) scaleY(0.97);
-  visibility: hidden;
-  pointer-events: none;
-  transition:
-    opacity 0.16s ease,
-    transform 0.16s ease,
-    visibility 0s linear 0.16s;
-}
-
-.notif-panel.open {
-  opacity: 1;
-  transform: translateY(0) scaleY(1);
-  visibility: visible;
-  pointer-events: auto;
-  transition:
-    opacity 0.16s ease,
-    transform 0.16s ease,
-    visibility 0s;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .notif-panel {
-    transition: visibility 0s linear 0s;
-    transform: none;
-  }
-  .notif-panel.open {
-    transform: none;
-  }
+  transform-origin: top left;
 }
 
 .notif-panel-header {
@@ -168,7 +145,9 @@
   font-size: var(--font-size-xs);
   font-weight: var(--font-weight-medium);
   cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
 }
 
 .notif-clear-btn:hover {
@@ -199,6 +178,24 @@
 
 .notif-item:last-child {
   border-bottom: none;
+}
+
+/* Clickable inbox rows: reset the button chrome but keep the .notif-item layout
+   (and its bottom divider), and highlight on hover. */
+.notif-item.clickable {
+  width: 100%;
+  border-top: none;
+  border-left: none;
+  border-right: none;
+  background: transparent;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.notif-item.clickable:hover {
+  background: var(--color-background-mute);
 }
 
 .notif-item-msg {

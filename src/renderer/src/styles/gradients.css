@@ -1,0 +1,106 @@
+/* ============================================================================
+   GRADIENT TOKENS
+
+   Derived gradients that add subtle visual depth to surfaces and accents.
+
+   These are defined once here, not per theme. CSS custom properties resolve
+   lazily on the element that *uses* them, so the `color-mix()` calls below pull
+   in whatever `--color-*` value is in scope for the current `[data-theme]`.
+   The result: every theme gets matching gradients for free, and adding a new
+   theme requires no changes here.
+
+   HARMONY RULES — so the gradients never clash with each other or with a theme:
+
+   1. One ramp. Every theme exposes a neutral background ramp, dark -> light:
+        --color-background-mute  ->  --color-background
+        ->  --color-background-soft  ->  --color-surface
+      All neutral gradients are just a short slide ALONG this ramp: lighten an
+      edge toward --color-surface, deepen an edge toward the next-darker ramp
+      tone. Endpoints are always theme tones, so contrast auto-scales per theme.
+
+   2. One contrast budget. Neutral edges move ~8-12% toward a neighbouring ramp
+      tone — never more, so no surface shouts louder than another.
+
+   3. No absolute black/white on neutral surfaces. Mixing toward #000/#fff
+      desaturates unevenly across themes (worst on saturated palettes like
+      Gruvbox/Dracula) and reads as a muddy patch. Stay within the ramp.
+
+   4. Hue lives only in accents. The lone exception is a faint accent whisper in
+      the app backdrop (intentional brand glow) and the primary-button tokens.
+      Neutral panels/bars never carry the accent hue.
+
+   5. Light from above. Top edges catch the highlight; the footer is the
+      deliberate mirror (lip on its BOTTOM edge) so it separates from the panel
+      content above rather than blending into it.
+   ============================================================================ */
+:root {
+  /* App backdrop (built on --color-background). A faint accent whisper at the
+     top — the only hue in the neutral chrome — fading through the base into a
+     deeper bottom. The bottom deepens toward the theme's own darkest neutral
+     (--color-background-mute), not black, so it stays in-palette. */
+  --gradient-app: radial-gradient(
+    140% 120% at 50% -10%,
+    color-mix(in srgb, var(--color-background) 94%, var(--color-primary)) 0%,
+    var(--color-background) 55%,
+    color-mix(in srgb, var(--color-background) 88%, var(--color-background-mute)) 100%
+  );
+
+  /* Elevated panels (built on --color-background-soft): sidebar, chat area,
+     login box. Full-height slide along the ramp — lifted toward --color-surface
+     at the top, settling through the base, deepening toward --color-background
+     at the bottom. Reads as a gently raised surface. */
+  --gradient-surface: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--color-background-soft) 88%, var(--color-surface)) 0%,
+    var(--color-background-soft) 55%,
+    color-mix(in srgb, var(--color-background-soft) 92%, var(--color-background)) 100%
+  );
+
+  /* Header bars (built on --color-background-mute): top of a panel. Highlight
+     toward --color-surface on the TOP edge, settling to the base — light
+     catching the upper lip of a recessed bar. */
+  --gradient-header: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--color-background-mute) 90%, var(--color-surface)) 0%,
+    var(--color-background-mute) 100%
+  );
+
+  /* Footer bars (built on --color-background-mute): sidebar control tray, chat
+     input. The mirror of --gradient-header — base across the top (where the
+     darker mute already steps down from the lighter panel above, giving natural
+     separation) easing to a soft highlight lip toward --color-surface at the
+     BOTTOM. Same ramp, same budget as the header, so the two read as a pair. */
+  --gradient-footer: linear-gradient(
+    180deg,
+    var(--color-background-mute) 95%,
+    color-mix(in srgb, var(--color-background-mute) 90%, var(--color-surface)) 100%
+  );
+
+  /* Primary accent (buttons), built on the accent: vertical sheen from the
+     hover tone down to the base accent, like a softly lit key. */
+  --gradient-primary: linear-gradient(
+    180deg,
+    var(--color-primary-hover) 0%,
+    var(--color-primary) 100%
+  );
+
+  --gradient-primary-hover: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--color-primary-hover) 88%, #fff) 0%,
+    var(--color-primary-hover) 100%
+  );
+}
+
+/* Gradients off: collapse every token back to its flat source color. Because all
+   surfaces consume the `--gradient-*` tokens (never the raw colors directly),
+   redefining the tokens here reverts the whole app to flat fills in one place —
+   no per-surface CSS needs to know about the toggle. Driven by the
+   `gradientsEnabled` appearance setting via uiSettings.applyAppearanceSettings. */
+html[data-gradients='off'] {
+  --gradient-app: var(--color-background);
+  --gradient-surface: var(--color-background-soft);
+  --gradient-header: var(--color-background-mute);
+  --gradient-footer: var(--color-background-mute);
+  --gradient-primary: var(--color-primary);
+  --gradient-primary-hover: var(--color-primary-hover);
+}

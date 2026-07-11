@@ -1,29 +1,40 @@
 /* ============================================================================
-   CUSTOM TITLE BAR (frameless window chrome) — themed via CSS variables
+   CUSTOM TITLE BAR (frameless window chrome) — themed via CSS variables.
+   Part of the continuous chrome zone: transparent over the app backdrop.
    ============================================================================ */
 
 .title-bar {
-  --title-bar-height: 32px;
-  /* Width of the three window controls (3 × 46px). The left spacer mirrors
+  --title-bar-height: 40px;
+  /* Width of the three window controls (3 × 44px). The left spacer mirrors
      this so the center title column stays window-centered. */
-  --title-bar-controls-width: 138px;
+  --title-bar-controls-width: 132px;
   position: relative;
   display: flex;
   align-items: stretch;
   height: var(--title-bar-height);
   flex-shrink: 0;
-  background: var(--color-background);
+  background: transparent;
   color: var(--color-text-secondary);
   user-select: none;
 }
 
+html[data-transparency='true'] .title-bar {
+  background: color-mix(
+    in srgb,
+    var(--color-background) var(--transparency-opacity, 85%),
+    transparent
+  );
+  backdrop-filter: blur(var(--transparency-blur, 20px));
+}
+
 /* Left region balancing the right controls so the title sits at true center.
-   It holds the pinned notification bell plus a draggable fill, and may shrink
-   (the fill collapsing toward 0) when space is tight, while the right controls
-   never do — so the window buttons stay pinned right and never get pushed out. */
+   It holds the pinned notification bell + inbox plus a draggable fill. */
 .title-bar-controls-left {
   flex: 0 1 var(--title-bar-controls-width);
   display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-left: 6px;
   min-width: 0;
   -webkit-app-region: no-drag;
 }
@@ -31,18 +42,17 @@
 /* Draggable fill between the bell and the centered title. */
 .title-bar-left-fill {
   flex: 1 1 auto;
+  align-self: stretch;
   -webkit-app-region: drag;
 }
 
-/* Center title column. Flexes to fill between the equal side columns and
-   clips its contents, so the icon/title give way (rather than slipping under
-   the controls) when the window is too narrow to fit them. */
+/* Center title column. */
 .title-bar-drag {
   flex: 1 1 auto;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: var(--spacing-sm);
+  gap: 7px;
   padding: 0 var(--spacing-sm);
   min-width: 0;
   overflow: hidden;
@@ -58,6 +68,8 @@
 .title-bar-text {
   font-size: var(--font-size-sm);
   font-weight: var(--font-weight-medium);
+  letter-spacing: 0.01em;
+  color: var(--color-text-tertiary);
   line-height: 1;
   white-space: nowrap;
   overflow: hidden;
@@ -67,6 +79,9 @@
 .title-bar-controls {
   flex: 0 0 auto;
   display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-right: 6px;
   -webkit-app-region: no-drag;
 }
 
@@ -75,15 +90,17 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 46px;
-  height: 100%;
+  width: 40px;
+  height: 30px;
   padding: 0;
   border: none;
-  border-radius: 0;
+  border-radius: var(--radius-sm);
   background: transparent;
-  color: var(--color-text-secondary);
+  color: var(--color-text-tertiary);
   cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
 }
 
 .title-bar-btn:hover {

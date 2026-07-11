@@ -2,51 +2,63 @@
    GENERIC / GLOBAL COMPONENT STYLES
    ============================================================================ */
 
+/* Keyboard focus: one visible, accent-tinted ring everywhere. Mouse/touch
+   interaction doesn't trigger it (:focus-visible), so the chrome stays quiet. */
+:focus-visible {
+  outline: 2px solid var(--ring-color);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+
 /* Button Styles */
 button {
   font-family: var(--font-family-primary);
   font-size: var(--font-size-base);
   cursor: pointer;
   border: none;
-  border-radius: var(--border-radius-sm);
-  transition: background-color 0.15s, color 0.15s;
+  border-radius: var(--radius-sm);
+  transition:
+    background-color 0.15s,
+    color 0.15s;
 }
 
 .btn {
   padding: var(--spacing-sm) var(--spacing-md);
   font-weight: var(--font-weight-semibold);
   border: none;
-  border-radius: var(--border-radius-sm);
+  border-radius: var(--radius-sm);
   cursor: pointer;
   transition: all 0.15s ease;
 }
 
 /* Primary Button */
 .btn-primary {
-  background: var(--color-primary);
-  color: var(--color-background);
+  background: var(--gradient-primary);
+  color: var(--color-accent-contrast);
   font-weight: var(--font-weight-semibold);
 }
 
 .btn-primary:hover {
-  background: var(--color-primary-hover);
+  background: var(--gradient-primary-hover);
 }
 
 /* Select/Form Elements */
 select {
   background: var(--color-background-mute);
   color: var(--color-text);
-  border: 1px solid var(--color-border);
-  border-radius: var(--border-radius-sm);
-  padding: var(--spacing-sm);
-  font-size: var(--font-size-md);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  padding: 7px 10px;
+  font-size: var(--font-size-base);
   font-family: var(--font-family-primary);
   cursor: pointer;
-  transition: border-color 0.15s, background-color 0.15s;
+  transition:
+    border-color 0.15s,
+    background-color 0.15s;
 }
 
 select:hover {
-  border-color: var(--color-border-light);
+  border-color: var(--hairline-strong);
 }
 
 select:focus {
@@ -55,23 +67,88 @@ select:focus {
   background: var(--color-background-soft);
 }
 
+/* ============================================================================
+   SEGMENTED TABS (shared control — components/SegmentedTabs.jsx)
+   A recessed track with a raised, spring-animated pill under the active tab.
+   ============================================================================ */
+.seg-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  background: color-mix(in srgb, var(--color-background-mute) 80%, transparent);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+}
 
+.seg-tab {
+  position: relative;
+  padding: 5px 12px;
+  border: none;
+  border-radius: calc(var(--radius-md) - 3px);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
 
-/* SCROLLBAR STYLING */
+.seg-tab:hover:not(.active):not(:disabled) {
+  color: var(--color-text);
+}
+
+.seg-tab.active {
+  color: var(--color-text);
+}
+
+.seg-tab:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* The sliding pill (Motion layoutId element). */
+.seg-pill {
+  position: absolute;
+  inset: 0;
+  border-radius: calc(var(--radius-md) - 3px);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-1);
+  pointer-events: none;
+}
+
+.seg-tab-label {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  line-height: 1;
+}
+
+/* SCROLLBAR STYLING — slim overlay-style thumbs that stay in-palette. */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
 }
 
 ::-webkit-scrollbar-track {
-  background: var(--color-background);
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--color-surface);
-  border-radius: var(--border-radius-sm);
+  background: color-mix(in srgb, var(--color-text-tertiary) 32%, transparent);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--color-border-light);
+  background: color-mix(in srgb, var(--color-text-tertiary) 55%, transparent);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
 }

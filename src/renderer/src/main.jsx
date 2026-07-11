@@ -1,28 +1,45 @@
-import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { HashRouter } from 'react-router-dom'
 import { AuthProvider } from './context/AuthContext'
 import { SettingsProvider } from './context/SettingsContext'
 import ErrorBoundary from './components/ErrorBoundary'
 import './styles/main.css'
-import '@tabler/icons-webfont/dist/tabler-icons.min.css'
+import './styles/animations.css'
+// Bundled interface fonts (self-hosted woff2) selectable in Appearance settings.
+import '@fontsource-variable/inter'
+import '@fontsource-variable/open-sans'
+import '@fontsource-variable/dm-sans'
+import '@fontsource-variable/roboto'
+import '@fontsource-variable/nunito'
 import { initializeTheme, listenForThemeUpdates } from './lib/themeUtils'
+import { applyAppearanceSettings, applyAnimationSettings } from './lib/uiSettings'
 import App from './App'
 
 // Initialize theme on app start and listen for shared theme updates
 initializeTheme()
 listenForThemeUpdates()
 
+// Apply saved appearance/animation prefs before first paint to avoid a flash of
+// the wrong (opaque / animated) state on load.
+const applySaved = (key, apply) => {
+  try {
+    const saved = localStorage.getItem(key)
+    if (saved) apply(JSON.parse(saved))
+  } catch {}
+}
+applySaved('appearanceSettings', applyAppearanceSettings)
+applySaved('animationSettings', applyAnimationSettings)
+
+// StrictMode intentionally left off: its dev-only double-render made dev diverge
+// from production (it double-invokes renders/effects, which prod never does).
 createRoot(document.getElementById('root')).render(
-  <StrictMode>
-    <ErrorBoundary>
-      <HashRouter>
-        <AuthProvider>
-          <SettingsProvider>
-            <App />
-          </SettingsProvider>
-        </AuthProvider>
-      </HashRouter>
-    </ErrorBoundary>
-  </StrictMode>
+  <ErrorBoundary>
+    <HashRouter>
+      <AuthProvider>
+        <SettingsProvider>
+          <App />
+        </SettingsProvider>
+      </AuthProvider>
+    </HashRouter>
+  </ErrorBoundary>
 )

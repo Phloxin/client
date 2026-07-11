@@ -10,8 +10,11 @@ function EmojiPicker({ onSelect }) {
   const gridRef = useRef(null)
   const searchRef = useRef(null)
 
+  // Focus search once the entrance animation has settled — focusing forces a
+  // sync layout, which stutters the pop-in if done on the mount frame.
   useEffect(() => {
-    searchRef.current?.focus()
+    const t = setTimeout(() => searchRef.current?.focus({ preventScroll: true }), 180)
+    return () => clearTimeout(t)
   }, [])
 
   const trimmed = query.trim()

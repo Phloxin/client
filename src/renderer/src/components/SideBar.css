@@ -1,84 +1,63 @@
 /* ============================================================================
-   SIDEBAR STYLES
+   SIDEBAR — flush chrome rail (no card): lives directly on the app backdrop.
+   The floating control dock at the bottom is the rail's one raised element.
    ============================================================================ */
 
 .sidebar {
   width: 240px;
-  background: var(--color-background-soft);
+  background: transparent;
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
-  border-radius: 10px;
   position: relative;
-  user-select: none; 
+  user-select: none;
+  padding: 0 2px 0 6px;
 }
 
+/* Server header row — hosts the ServerMenu trigger. */
 .server-header {
-  height: 45px;
-  padding: 14px var(--spacing-lg) 12px;
+  flex-shrink: 0;
+  padding: 2px 4px 10px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  background: var(--color-background-mute);
-  border-radius: 10px ;
-}
-
-.server-name {
-  font-weight: var(--font-weight-semibold);
-  font-size: var(--font-size-md);
-  color: var(--color-text);
-  letter-spacing: 0.01em;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  min-width: 0;
-}
-
-.server-status {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--color-success);
-  flex-shrink: 0;
 }
 
 .channel-section-label {
-  padding: var(--spacing-md) 14px var(--spacing-xs);
-  font-size: var(--font-size-xs);
-  font-weight: var(--font-weight-bold);
-  text-transform: uppercase;
-  letter-spacing: 0.09em;
-  color: var(--color-text-muted);
+  padding: 0 4px 10px;
   display: flex;
   align-items: center;
   gap: var(--spacing-sm);
 }
 
-/* Divider line filling the space between the "Channels" label and the + button. */
-.channel-section-divider {
+.sidebar-view-tabs {
   flex: 1;
-  height: 1px;
-  background: var(--color-border);
+}
+
+.sidebar-view-tabs .seg-tab {
+  flex: 1;
 }
 
 .channel-add-btn {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
+  width: 28px;
+  height: 28px;
   flex-shrink: 0;
   padding: 0;
-  border: none;
-  border-radius: var(--border-radius-sm);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
   background: transparent;
-  color: var(--color-text-muted);
+  color: var(--color-text-tertiary);
   cursor: pointer;
-  transition: background 0.12s ease, color 0.12s ease, transform 0.12s ease;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease,
+    transform 0.12s ease;
 }
 
 .channel-add-btn:hover {
-  background: var(--color-border);
+  background: var(--color-surface);
   color: var(--color-text);
 }
 
@@ -86,19 +65,128 @@
   transform: scale(0.9);
 }
 
-.control-rows {
-  margin-top: auto;
-  padding: var(--spacing-sm);
-  border-radius: 10px;
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacing-sm);
-  background: var(--color-background-mute);
+/* Wrapper that keeps the channel list mounted while the Users view is showing,
+   preserving the live voice session. Scrolls independently. */
+.sidebar-channel-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 2px 8px 0;
 }
 
-.control-row {
+.sidebar-channel-list.hidden {
+  display: none;
+}
+
+/* Flat client roster shown in "Users" view. */
+.sidebar-user-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 4px 8px 2px;
   display: flex;
-  gap: var(--spacing-xs);
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sidebar-user-empty {
+  padding: var(--spacing-md) 14px;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+  text-align: center;
+}
+
+/* ============================================================================
+   CONTROL DOCK — floating capsule: self user card + action strip.
+   ============================================================================ */
+
+.control-dock {
+  margin: auto 4px 10px 2px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+  background: var(--gradient-footer);
+  box-shadow: var(--shadow-2);
+}
+
+html[data-transparency='true'] .control-dock {
+  background: color-mix(
+    in srgb,
+    var(--color-background-mute) var(--transparency-opacity, 85%),
+    transparent
+  );
+}
+
+.dock-user {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 2px 2px 0;
+}
+
+.dock-avatar {
+  position: relative;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--color-primary) 18%, transparent);
+  color: var(--color-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: var(--font-weight-bold);
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+.dock-avatar.in-voice {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-success) 70%, transparent);
+}
+
+.dock-avatar-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.dock-user-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.dock-user-name {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text);
+  line-height: 1.3;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.dock-user-status {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-tertiary);
+  line-height: 1.3;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.dock-user-status.voice {
+  color: var(--color-success);
+}
+
+.dock-actions {
+  display: flex;
+  gap: 4px;
 }
 
 .control-btn {
@@ -106,18 +194,20 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--color-background-soft);
+  background: transparent;
   color: var(--color-text-secondary);
-  border-radius: var(--border-radius-sm);
-  padding: 7px;
+  border-radius: var(--radius-sm);
+  padding: 7px 0;
   cursor: pointer;
-  transition: background 0.15s, color 0.15s, border-color 0.15s, transform 0.12s ease;
+  transition:
+    background 0.15s,
+    color 0.15s,
+    transform 0.12s ease;
 }
 
 .control-btn:hover:not(:disabled) {
-  background: var(--color-border);
+  background: var(--color-surface);
   color: var(--color-text);
-  border-color: var(--color-border-light);
   transform: translateY(-1px);
 }
 
@@ -127,7 +217,7 @@
 }
 
 .control-btn:disabled {
-  opacity: 0.4;
+  opacity: 0.35;
   cursor: not-allowed;
 }
 
@@ -139,9 +229,17 @@
 }
 
 @keyframes control-icon-pop {
-  0%   { transform: scale(0.6); opacity: 0.4; }
-  60%  { transform: scale(1.12); }
-  100% { transform: scale(1); opacity: 1; }
+  0% {
+    transform: scale(0.6);
+    opacity: 0.4;
+  }
+  60% {
+    transform: scale(1.12);
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -155,13 +253,12 @@
 }
 
 .control-btn.active {
-  background: color-mix(in srgb, var(--color-danger) 18%, transparent);
+  background: color-mix(in srgb, var(--color-danger) 16%, transparent);
   color: var(--color-danger);
-  border-color: color-mix(in srgb, var(--color-danger) 35%, transparent);
 }
 
 .control-btn.active:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--color-danger) 28%, transparent);
+  background: color-mix(in srgb, var(--color-danger) 26%, transparent);
   color: var(--color-danger);
 }
 
@@ -172,10 +269,8 @@
 .sidebar-resize-handle {
   position: absolute;
   top: 0;
-  /* Center the handle within the layout gap between the sidebar and the chat
-     area (gap = --spacing-sm), rather than on the sidebar's edge. Offset is
-     -(width + gap) / 2 so the indicator line lands in the middle of the gap. */
-  right: calc(-1 * (10px + var(--spacing-sm)) / 2);
+  /* Center the handle within the layout gap between the rail and the canvas. */
+  right: calc(-1 * (10px + 6px) / 2);
   width: 10px;
   height: 100%;
   cursor: col-resize;
@@ -185,17 +280,135 @@
 .sidebar-resize-handle::after {
   content: '';
   position: absolute;
-  top: 0;
+  /* Match the straight run of the chat canvas's left edge: its rounded corners
+     (--radius-xl) curve away at the top and bottom, so inset the line to stop
+     where the curve starts. The full-height hit area is unaffected. */
+  top: var(--radius-xl);
   left: 50%;
   transform: translateX(-50%);
-  width: 2px;
-  height: 100%;
+  width: 3px;
+  height: calc(100% - 2 * var(--radius-xl));
   background: transparent;
   border-radius: 2px;
-  transition: background 0.15s;
+  /* No fade, and own compositor layer: the line moves with every drag mousemove
+     over a strip nothing else repaints, so a mid-fade dirty-rect miss leaves
+     ghost pixels behind (worse on the frameless/acrylic window). */
+  will-change: transform;
 }
 
 .sidebar-resize-handle:hover::after,
 .sidebar-resize-handle:active::after {
   background: var(--color-primary);
+  opacity: 75%;
+}
+
+/* ============================================================================
+   CLIENT ROWS (used in channel trees and the Users roster)
+   avatar (speaking ring) · name · streaming/status icons on the right
+   ============================================================================ */
+
+.client-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--font-size-base);
+  line-height: 1;
+  color: var(--color-text-secondary);
+  padding: 5px 8px 5px 26px;
+  margin: 1px 0;
+  overflow: hidden;
+  white-space: nowrap;
+  min-width: 0;
+  position: relative;
+  border-radius: var(--radius-sm);
+  transition:
+    background 0.12s,
+    color 0.12s;
+}
+
+.client-indicator:hover {
+  background: color-mix(in srgb, var(--color-surface) 65%, transparent);
+  color: var(--color-text);
+}
+
+/* Row layout: name, group tags, spacer, group badges, streaming icon. The
+   spacer (flex-grow) pushes the badges/streaming icon to the right edge; under
+   pressure the shrink factors give way in order: tags (10000) collapse first,
+   then badges (50, whose icons fold into a "+N" counter — see ClientIndicator),
+   and the name (1) truncates last. */
+.client-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.client-tags {
+  flex: 0 10000 auto;
+  min-width: 0;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Rounded group-name pill, a compact take on the summary page's role chips.
+   Under pressure a chip compresses gradually (its text ellipsizes) all the way
+   to zero width — no floor, so it never freezes mid-collapse and steals shrink
+   from its left neighbor. ClientIndicator hides it once it's too narrow to
+   read, before it degrades into a pill sliver. */
+.client-tag {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  /* block-ish box, not flex: text-overflow only ellipsizes inline content */
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--hairline);
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.client-row-spacer {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.client-badges {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  flex: 0 50 auto;
+  min-width: 22px; /* room for the "+N" counter when every icon is folded */
+  overflow: hidden;
+}
+
+.client-badge {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.client-badge-img {
+  width: 16px;
+  height: 16px;
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+}
+
+.client-badge-counter {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+}
+
+/* Roster rows sit flush (no channel indent). */
+.sidebar-user-list .client-indicator {
+  padding-left: 8px;
 }

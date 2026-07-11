@@ -1,5 +1,13 @@
 import { useEffect, useState } from 'react'
-import { connect, disconnect, publish, subscribe, consumeProducer, resetMediaState, isConnected } from '../lib/soup'
+import {
+  connect,
+  disconnect,
+  publish,
+  subscribe,
+  consumeProducer,
+  resetMediaState,
+  isConnected
+} from '../lib/soup'
 
 export function useSoup(token) {
   const [connected, setConnected] = useState(false)

@@ -1,114 +1,140 @@
-/* ============================================================================
-   THEME SWITCHER COMPONENT STYLES
-   ============================================================================ */
+/* Theme picker — grid of miniature window previews. */
 
 .theme-switcher {
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacing-lg);
-  padding: var(--spacing-lg);
-  background: var(--color-background-soft);
-  border-radius: var(--border-radius-md);
+  width: 100%;
 }
 
-.theme-switcher-header {
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacing-sm);
-}
-
-.theme-switcher-header h3 {
-  font-size: var(--font-size-lg);
-  font-weight: var(--font-weight-semibold);
-  color: var(--color-text);
-  margin: 0;
-}
-
-.theme-switcher-description {
-  font-size: var(--font-size-sm);
-  color: var(--color-text-secondary);
-  margin: 0;
-}
-
-/* Theme Options Grid */
-.theme-options {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: var(--spacing-md);
-}
-
-.theme-option {
+/* Collapsible header. The native disclosure triangle is replaced by our own
+   chevron that rotates with [open]. */
+.theme-switcher-summary {
   display: flex;
   align-items: center;
-  gap: var(--spacing-md);
-  padding: var(--spacing-md);
-  background: var(--color-background-mute);
-  border: 2px solid transparent;
-  border-radius: var(--border-radius-sm);
+  gap: 8px;
+  padding: 4px 0;
+  margin-bottom: var(--spacing-md);
   cursor: pointer;
-  transition: all 0.15s ease;
-  text-align: left;
+  list-style: none;
+  user-select: none;
 }
 
-.theme-option:hover {
-  background: var(--color-background);
-  border-color: var(--color-border-light);
+.theme-switcher-summary::-webkit-details-marker {
+  display: none;
 }
 
-.theme-option.active {
-  border-color: var(--color-primary);
-  background: var(--color-background);
+.theme-switcher-title {
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text);
 }
 
-.theme-option-info {
+.theme-switcher-current {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-tertiary);
+  margin-left: auto;
+}
+
+.theme-switcher-chevron {
+  color: var(--color-text-tertiary);
+  transition: transform 0.15s ease;
+}
+
+.theme-switcher[open] .theme-switcher-chevron {
+  transform: rotate(180deg);
+}
+
+.theme-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: var(--spacing-md);
+}
+
+.theme-card {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  flex: 1;
+  gap: 6px;
+  padding: 6px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  text-align: left;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    transform 0.15s ease;
 }
 
-.theme-option-name {
-  font-size: var(--font-size-base);
-  font-weight: var(--font-weight-semibold);
-  color: var(--color-text);
+.theme-card:hover {
+  background: var(--color-surface);
+  transform: translateY(-1px);
+}
+
+.theme-card.active {
+  border-color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 8%, transparent);
+}
+
+/* Miniature window: chrome frame around a canvas block with accent details. */
+.theme-card-preview {
   display: block;
+  height: 72px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(128, 128, 128, 0.25);
+  padding: 8px 0 0 10px;
+  overflow: hidden;
 }
 
-.theme-option-desc {
-  font-size: var(--font-size-xs);
-  color: var(--color-text-secondary);
+.theme-card-canvas {
   display: block;
+  position: relative;
+  height: 100%;
+  border-top-left-radius: 6px;
+  padding: 8px;
 }
 
-.theme-option-check {
-  color: var(--color-primary);
-  font-size: var(--font-size-lg);
-  font-weight: var(--font-weight-bold);
+.theme-card-accent {
+  display: block;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  margin-bottom: 6px;
 }
 
-/* Theme Switcher Info */
-.theme-switcher-info {
-  padding: var(--spacing-md);
-  background: var(--color-background-mute);
-  border-radius: var(--border-radius-sm);
+.theme-card-line {
+  display: block;
+  height: 4px;
+  width: 70%;
+  border-radius: 2px;
+  margin-bottom: 4px;
+}
+
+.theme-card-line.short {
+  width: 45%;
+}
+
+.theme-card-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 0 2px;
+}
+
+.theme-card-name {
   font-size: var(--font-size-sm);
-  color: var(--color-text-secondary);
-}
-
-.theme-switcher-info p {
-  margin: 0;
-  line-height: 1.5;
-}
-
-.theme-switcher-info p:not(:last-child) {
-  margin-bottom: var(--spacing-sm);
-}
-
-.theme-switcher-info strong {
-  color: var(--color-text);
   font-weight: var(--font-weight-semibold);
+  color: var(--color-text);
+  line-height: 1.2;
 }
 
-.text-muted {
-  color: var(--color-text-tertiary) !important;
+.theme-card-check {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--color-primary);
+  color: var(--color-accent-contrast);
+  flex-shrink: 0;
 }

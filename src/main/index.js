@@ -1,10 +1,31 @@
-import { app, shell, BrowserWindow, ipcMain, session, desktopCapturer, safeStorage, dialog } from 'electron'
+import {
+  app,
+  shell,
+  BrowserWindow,
+  ipcMain,
+  session,
+  desktopCapturer,
+  safeStorage,
+  dialog
+} from 'electron'
 import { basename, join } from 'path'
 import { readFileSync, writeFileSync, unlinkSync } from 'fs'
 import http from 'http'
 import https from 'https'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
-import icon from '../../resources/icon.png?asset'
+import iconPng from '../../resources/icon.png?asset'
+import iconIco from '../../build/icon.ico?asset'
+// Windows taskbar/window uses the .ico; other platforms keep the png.
+const icon = process.platform === 'win32' ? iconIco : iconPng
+import { setupGlobalKeybinds, stopGlobalKeybinds } from './keybinds'
+
+// On Linux, safeStorage requires a running secret service (GNOME Keyring / KWallet).
+// If neither is available, isEncryptionAvailable() returns false and the server list
+// silently doesn't persist. The 'basic' backend uses Chromium's built-in key store
+// so encryption is always available as a fallback.
+if (process.platform === 'linux') {
+  app.commandLine.appendSwitch('password-store', 'basic')
+}
 
 // Store auth token in main process so it persists across windows
 let authToken = null
@@ -19,13 +40,18 @@ function authFilePath() {
 }
 
 function readAuthFile() {
-  if (!safeStorage.isEncryptionAvailable()) return { token: null, client: null }
   try {
     const raw = readFileSync(authFilePath(), 'utf-8')
     const data = JSON.parse(raw)
+    if (safeStorage.isEncryptionAvailable() && (data.token || data.client)) {
+      return {
+        token: data.token ? safeStorage.decryptString(Buffer.from(data.token, 'base64')) : null,
+        client: data.client ? safeStorage.decryptString(Buffer.from(data.client, 'base64')) : null
+      }
+    }
     return {
-      token: data.token ? safeStorage.decryptString(Buffer.from(data.token, 'base64')) : null,
-      client: data.client ? safeStorage.decryptString(Buffer.from(data.client, 'base64')) : null
+      token: data.plainToken ?? null,
+      client: data.plainClient ?? null
     }
   } catch {
     return { token: null, client: null }
@@ -33,12 +59,16 @@ function readAuthFile() {
 }
 
 function persistAuth() {
-  if (!safeStorage.isEncryptionAvailable()) return
   try {
-    const data = {}
-    if (authToken != null) data.token = safeStorage.encryptString(authToken).toString('base64')
-    if (authClient != null) data.client = safeStorage.encryptString(authClient).toString('base64')
-    writeFileSync(authFilePath(), JSON.stringify(data))
+    if (safeStorage.isEncryptionAvailable()) {
+      const data = {}
+      if (authToken != null) data.token = safeStorage.encryptString(authToken).toString('base64')
+      if (authClient != null) data.client = safeStorage.encryptString(authClient).toString('base64')
+      writeFileSync(authFilePath(), JSON.stringify(data))
+    } else {
+      const data = { plainToken: authToken, plainClient: authClient }
+      writeFileSync(authFilePath(), JSON.stringify(data))
+    }
   } catch (err) {
     console.error('Failed to persist auth data:', err)
   }
@@ -55,22 +85,25 @@ function serversFilePath() {
 }
 
 function readServersFile() {
-  if (!safeStorage.isEncryptionAvailable()) return []
   try {
     const raw = readFileSync(serversFilePath(), 'utf-8')
-    const { data } = JSON.parse(raw)
-    if (!data) return []
-    return JSON.parse(safeStorage.decryptString(Buffer.from(data, 'base64')))
-  } catch {
-    return []
-  }
+    const { data, plain } = JSON.parse(raw)
+    if (data && safeStorage.isEncryptionAvailable()) {
+      return JSON.parse(safeStorage.decryptString(Buffer.from(data, 'base64')))
+    }
+    if (plain) return JSON.parse(plain)
+  } catch {}
+  return []
 }
 
 function persistServers() {
-  if (!safeStorage.isEncryptionAvailable()) return
   try {
-    const data = safeStorage.encryptString(JSON.stringify(servers)).toString('base64')
-    writeFileSync(serversFilePath(), JSON.stringify({ data }))
+    if (safeStorage.isEncryptionAvailable()) {
+      const data = safeStorage.encryptString(JSON.stringify(servers)).toString('base64')
+      writeFileSync(serversFilePath(), JSON.stringify({ data }))
+    } else {
+      writeFileSync(serversFilePath(), JSON.stringify({ plain: JSON.stringify(servers) }))
+    }
   } catch (err) {
     console.error('Failed to persist servers:', err)
   }
@@ -84,8 +117,9 @@ function persistServers() {
 const LAYOUT_PADDING = 8
 const SIDEBAR_MIN_WIDTH = 180
 
-// Width: both side paddings + the sidebar, so it never clips horizontally.
-const MIN_CONTENT_WIDTH = SIDEBAR_MIN_WIDTH + LAYOUT_PADDING * 2 // 196
+// Width: both side paddings + the sidebar is the clip floor (196), but we hold
+// the window to a wider 385px minimum so the chat area stays usable too.
+const MIN_CONTENT_WIDTH = Math.max(385, SIDEBAR_MIN_WIDTH + LAYOUT_PADDING * 2)
 
 // Height: top+bottom padding + the sidebar's fixed-height chrome - the server
 // header, the "Channels" label, and the bottom control-button wrapper - so the
@@ -108,8 +142,8 @@ const MIN_CONTENT_HEIGHT =
 function createWindow() {
   // Create the browser window.
   const mainWindow = new BrowserWindow({
-    width: 1100,
-    height: 670,
+    width: 1000,
+    height: 700,
     // Treat width/height/min* as the web content area (excludes the OS title
     // bar) so the minimums map directly onto the renderer layout below.
     useContentSize: true,
@@ -119,8 +153,8 @@ function createWindow() {
     // Frameless: the renderer draws its own Discord-style title bar (see
     // TitleBar.jsx). Window controls are driven via the window-* IPC below.
     frame: false,
-    backgroundColor: '#1e1e1e',
-    ...(process.platform === 'linux' ? { icon } : {}),
+    // Windows + Linux read the taskbar/window icon from here in dev; macOS uses the dock.
+    ...(process.platform !== 'darwin' ? { icon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false
@@ -226,6 +260,21 @@ app.whenReady().then(() => {
   // IPC test
   ipcMain.on('ping', () => console.log('pong'))
 
+  // ─── Window transparency / vibrancy ───────────────────────────────
+  // On Windows 11+ applies native Acrylic blur-behind material.
+  // On Linux the CSS backdrop-filter handles the blur; nothing extra needed.
+  ipcMain.on('set-window-vibrancy', (e, enabled) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    if (!win) return
+    if (process.platform === 'win32') {
+      try {
+        win.setBackgroundMaterial(enabled ? 'acrylic' : 'none')
+      } catch {
+        // setBackgroundMaterial not available on older Windows builds
+      }
+    }
+  })
+
   // ─── Custom title bar window controls ─────────────────────────────
   // Resolved from the calling window's sender, so the same handlers work for
   // any frameless window that renders the custom title bar.
@@ -237,8 +286,9 @@ app.whenReady().then(() => {
     else win.maximize()
   })
   ipcMain.on('window-close', (e) => BrowserWindow.fromWebContents(e.sender)?.close())
-  ipcMain.handle('window-is-maximized', (e) =>
-    BrowserWindow.fromWebContents(e.sender)?.isMaximized() ?? false
+  ipcMain.handle(
+    'window-is-maximized',
+    (e) => BrowserWindow.fromWebContents(e.sender)?.isMaximized() ?? false
   )
 
   // Load any previously persisted auth from disk
@@ -310,52 +360,60 @@ app.whenReady().then(() => {
   // body ({ limit }), which the renderer's fetch can't send (the Fetch spec
   // forbids a body on GET). Node's http.request has no such restriction, so we
   // make the request here and hand the parsed messages back to the renderer.
-  ipcMain.handle('get-channel-messages', async (_, { url, token, limit }) => {
-    return new Promise((resolve) => {
-      let target
-      try {
-        target = new URL(url)
-      } catch {
-        resolve({ ok: false, error: 'Invalid URL' })
-        return
-      }
-      const lib = target.protocol === 'https:' ? https : http
-      const body = JSON.stringify({ limit })
-      const req = lib.request(
-        {
-          hostname: target.hostname,
-          port: target.port,
-          path: target.pathname + target.search,
-          method: 'GET',
-          headers: {
-            'Content-Type': 'application/json',
-            'Content-Length': Buffer.byteLength(body),
-            Authorization: `Bearer ${token}`
-          }
-        },
-        (res) => {
-          let data = ''
-          res.on('data', (chunk) => {
-            data += chunk
-          })
-          res.on('end', () => {
-            if (res.statusCode >= 200 && res.statusCode < 300) {
-              try {
-                resolve({ ok: true, messages: JSON.parse(data) })
-              } catch {
-                resolve({ ok: false, error: 'Invalid response JSON' })
-              }
-            } else {
-              resolve({ ok: false, status: res.statusCode, error: data })
-            }
-          })
+  ipcMain.handle(
+    'get-channel-messages',
+    async (_, { url, token, limit, before, after, around }) => {
+      return new Promise((resolve) => {
+        let target
+        try {
+          target = new URL(url)
+        } catch {
+          resolve({ ok: false, error: 'Invalid URL' })
+          return
         }
-      )
-      req.on('error', (err) => resolve({ ok: false, error: err.message }))
-      req.write(body)
-      req.end()
-    })
-  })
+        const lib = target.protocol === 'https:' ? https : http
+        const body = JSON.stringify({
+          limit,
+          ...(before != null ? { before } : {}),
+          ...(after != null ? { after } : {}),
+          ...(around != null ? { around } : {})
+        })
+        const req = lib.request(
+          {
+            hostname: target.hostname,
+            port: target.port,
+            path: target.pathname + target.search,
+            method: 'GET',
+            headers: {
+              'Content-Type': 'application/json',
+              'Content-Length': Buffer.byteLength(body),
+              Authorization: `Bearer ${token}`
+            }
+          },
+          (res) => {
+            let data = ''
+            res.on('data', (chunk) => {
+              data += chunk
+            })
+            res.on('end', () => {
+              if (res.statusCode >= 200 && res.statusCode < 300) {
+                try {
+                  resolve({ ok: true, messages: JSON.parse(data) })
+                } catch {
+                  resolve({ ok: false, error: 'Invalid response JSON' })
+                }
+              } else {
+                resolve({ ok: false, status: res.statusCode, error: data })
+              }
+            })
+          }
+        )
+        req.on('error', (err) => resolve({ ok: false, error: err.message }))
+        req.write(body)
+        req.end()
+      })
+    }
+  )
 
   // Login on Admin Window — forward log message to all windows
   ipcMain.on('admin-log', (_, message) => {
@@ -400,6 +458,9 @@ app.whenReady().then(() => {
 
   createWindow()
 
+  // OS-wide passive keybinds for mute/deafen (see keybinds.js).
+  setupGlobalKeybinds()
+
   app.on('activate', function () {
     // On macOS it's common to re-create a window in the app when the
     // dock icon is clicked and there are no other windows open.
@@ -415,6 +476,10 @@ app.on('window-all-closed', () => {
     app.quit()
   }
 })
+
+// Tear down the global keyboard hook so the native listener thread doesn't
+// linger past quit.
+app.on('will-quit', stopGlobalKeybinds)
 
 // In this file you can include the rest of your app's specific main process
 // code. You can also put them in separate files and require them here.

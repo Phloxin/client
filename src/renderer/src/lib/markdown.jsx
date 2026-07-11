@@ -36,17 +36,42 @@ import 'highlight.js/styles/github-dark.css'
 // Register a focused language set (each also registers its own aliases, e.g.
 // js → javascript, py → python, sh → bash, html → xml).
 for (const [name, lang] of [
-  ['javascript', javascript], ['typescript', typescript], ['python', python],
-  ['json', json], ['bash', bash], ['css', css], ['xml', xml], ['rust', rust],
-  ['go', go], ['java', java], ['c', c], ['cpp', cpp], ['csharp', csharp],
-  ['sql', sql], ['markdown', mdLang], ['yaml', yaml]
+  ['javascript', javascript],
+  ['typescript', typescript],
+  ['python', python],
+  ['json', json],
+  ['bash', bash],
+  ['css', css],
+  ['xml', xml],
+  ['rust', rust],
+  ['go', go],
+  ['java', java],
+  ['c', c],
+  ['cpp', cpp],
+  ['csharp', csharp],
+  ['sql', sql],
+  ['markdown', mdLang],
+  ['yaml', yaml]
 ]) {
   hljs.registerLanguage(name, lang)
 }
 
 const d = SimpleMarkdown.defaultRules
 
+// `<@snowflake>` user-mention token (server-encoded). The display name is
+// resolved at parse time from state.resolveMention (id string → name), so the
+// render pass stays context-free. Unknown ids fall back to "unknown".
+const mention = {
+  order: d.autolink.order - 0.5,
+  match: SimpleMarkdown.inlineRegex(/^<@(\d+)>/),
+  parse: (capture, _parse, state) => ({
+    id: capture[1],
+    name: state.resolveMention?.(capture[1]) || 'unknown'
+  })
+}
+
 const rules = {
+  mention,
   // Block-level
   heading: d.heading,
   codeBlock: d.codeBlock,
@@ -92,7 +117,10 @@ function CodeBlock({ code, lang }) {
       {highlighted != null ? (
         // Safe: hljs.highlight HTML-escapes `code`; only its own <span> wrappers
         // are added.
-        <code className={`hljs language-${lang}`} dangerouslySetInnerHTML={{ __html: highlighted }} />
+        <code
+          className={`hljs language-${lang}`}
+          dangerouslySetInnerHTML={{ __html: highlighted }}
+        />
       ) : (
         <code className="hljs">{code}</code>
       )}
@@ -110,6 +138,12 @@ function renderNode(node, key) {
   switch (node.type) {
     case 'text':
       return node.content
+    case 'mention':
+      return (
+        <span key={key} className="chat-mention">
+          @{node.name}
+        </span>
+      )
     case 'strong':
       return <strong key={key}>{renderNodes(node.content)}</strong>
     case 'em':
@@ -119,7 +153,11 @@ function renderNode(node, key) {
     case 'del':
       return <del key={key}>{renderNodes(node.content)}</del>
     case 'inlineCode':
-      return <code key={key} className="chat-inline-code">{node.content}</code>
+      return (
+        <code key={key} className="chat-inline-code">
+          {node.content}
+        </code>
+      )
     case 'br':
       return <br key={key} />
     case 'newline':
@@ -252,10 +290,10 @@ function normalizeBlocks(source) {
 // Parse a message string into React nodes. Soft (single) newlines are preserved
 // by the .chat-message-text { white-space: pre-wrap } styling; blank lines split
 // paragraphs.
-export function renderMarkdown(source) {
+export function renderMarkdown(source, resolveMention) {
   if (!source) return null
   // Normalize block spacing (Discord-style), then add the trailing blank line
   // simple-markdown's block grammar expects.
-  const tree = parser(`${normalizeBlocks(source)}\n\n`, { inline: false })
+  const tree = parser(`${normalizeBlocks(source)}\n\n`, { inline: false, resolveMention })
   return renderNodes(tree)
 }

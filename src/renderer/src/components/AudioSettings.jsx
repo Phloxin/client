@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { IconMicrophone, IconHeadphones } from '@tabler/icons-react'
 import VolumeGateMeter from './VolumeGateMeter'
 
 function AudioSettings({ micSettings, updateMicSettings }) {
@@ -40,21 +41,23 @@ function AudioSettings({ micSettings, updateMicSettings }) {
       </div>
 
       <div className="settings-panel-group">
-
         {/* 1. Microphone Device */}
         <div className="settings-section">
-          <label>Microphone Device</label>
-          <select
-            value={draftSettings.deviceId || 'default'}
-            onChange={(e) => updateDraft({ deviceId: e.target.value })}
-          >
-            <option value="default">Default Device</option>
-            {audioDevices.map((device) => (
-              <option key={device.deviceId} value={device.deviceId}>
-                {device.label || `Audio Input ${device.deviceId.slice(0, 8)}`}
-              </option>
-            ))}
-          </select>
+          <label>Input Device</label>
+          <div className="settings-select-row">
+            <IconMicrophone size={18} stroke={2} />
+            <select
+              value={draftSettings.deviceId || 'default'}
+              onChange={(e) => updateDraft({ deviceId: e.target.value })}
+            >
+              <option value="default">Default Device</option>
+              {audioDevices.map((device) => (
+                <option key={device.deviceId} value={device.deviceId}>
+                  {device.label || `Audio Input ${device.deviceId.slice(0, 8)}`}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
 
         {/* 2. Output Device */}
@@ -63,17 +66,20 @@ function AudioSettings({ micSettings, updateMicSettings }) {
           <p className="settings-section-desc">
             Choose which speakers or headphones other people&apos;s audio plays through.
           </p>
-          <select
-            value={draftSettings.outputDeviceId || 'default'}
-            onChange={(e) => updateDraft({ outputDeviceId: e.target.value })}
-          >
-            <option value="default">Default Device</option>
-            {outputDevices.map((device) => (
-              <option key={device.deviceId} value={device.deviceId}>
-                {device.label || `Audio Output ${device.deviceId.slice(0, 8)}`}
-              </option>
-            ))}
-          </select>
+          <div className="settings-select-row">
+            <IconHeadphones size={18} stroke={2} />
+            <select
+              value={draftSettings.outputDeviceId || 'default'}
+              onChange={(e) => updateDraft({ outputDeviceId: e.target.value })}
+            >
+              <option value="default">Default Device</option>
+              {outputDevices.map((device) => (
+                <option key={device.deviceId} value={device.deviceId}>
+                  {device.label || `Audio Output ${device.deviceId.slice(0, 8)}`}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
 
         {/* 3. Output Volume */}
@@ -101,7 +107,8 @@ function AudioSettings({ micSettings, updateMicSettings }) {
           <div className="settings-toggle-copy">
             <label htmlFor="useVolumeGate">Use Voice Gate</label>
             <p className="settings-section-desc">
-              Silences your mic when ambient noise falls below a set level, cutting background sound between words.
+              Silences your mic when ambient noise falls below a set level, cutting background sound
+              between words.
             </p>
           </div>
           <label className="toggle-switch">
@@ -119,7 +126,8 @@ function AudioSettings({ micSettings, updateMicSettings }) {
           <label>Voice Gate Threshold</label>
           <p className="settings-section-desc">
             Click the bar to set the cut-off level. Audio below the marker is filtered out.
-            {!draftSettings.useVolumeGate && ' Enable the volume gate above to apply this during calls.'}
+            {!draftSettings.useVolumeGate &&
+              ' Enable the volume gate above to apply this during calls.'}
           </p>
           <VolumeGateMeter
             gateEnabled={draftSettings.useVolumeGate}
@@ -134,9 +142,10 @@ function AudioSettings({ micSettings, updateMicSettings }) {
           <div className="settings-toggle-copy">
             <label htmlFor="useRnnoise">AI Noise Suppression (Recommended)</label>
             <p className="settings-section-desc">
-              Uses a voice-trained model to strip keyboard/typing sounds and steady background
-              noise while letting your voice through. More effective than basic noise suppression
-              for typing. Enabling this turns off basic Noise Suppression. Pair with a low Voice Gate for the best experience.
+              Uses a voice-trained model to strip keyboard/typing sounds and steady background noise
+              while letting your voice through. More effective than basic noise suppression for
+              typing. Enabling this turns off basic Noise Suppression. Pair with a low Voice Gate
+              for the best experience.
             </p>
           </div>
           <label className="toggle-switch">
@@ -222,15 +231,16 @@ function AudioSettings({ micSettings, updateMicSettings }) {
             <span className="toggle-slider" />
           </label>
         </div>
-
       </div>
 
-      <div className="settings-status">
-        <span>{isDirty ? 'You have unsaved changes' : 'Settings saved'}</span>
-        <button className="settings-apply-btn" onClick={handleApply} disabled={!isDirty}>
-          Apply
-        </button>
-      </div>
+      {isDirty && (
+        <div className="settings-status">
+          <span>You have unsaved changes</span>
+          <button className="settings-apply-btn" onClick={handleApply}>
+            Apply
+          </button>
+        </div>
+      )}
     </div>
   )
 }
