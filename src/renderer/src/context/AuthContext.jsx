@@ -1,60 +1,43 @@
 import { createContext, useCallback, useContext, useState } from 'react'
-import { apiBase } from '../lib/serverConfig'
+import { setAuthTokens, clearAuthTokens } from '../lib/auth'
 
 const AuthContext = createContext(null)
 
 export function AuthProvider({ children }) {
-  // Token/client are session-only now: the app always launches disconnected and
-  // the user picks a saved server to connect to (see ServerMenu / Main). Nothing
-  // is auto-loaded from disk, so there's no implicit reconnect on startup.
+  // Session-only: the app always launches disconnected and the user picks a
+  // saved server to connect to. `token` marks a live session (set at login,
+  // cleared at disconnect) — the *current* access token lives in lib/auth and
+  // rotates underneath via refresh, so REST callers go through authFetch
+  // instead of reading this.
   const [token, setToken] = useState(null)
-  const [refreshToken, setRefreshToken] = useState(null)
-  const [accessExpiresAt, setAccessExpiresAt] = useState(null)
-  const [refreshExpiresAt, setRefreshExpiresAt] = useState(null)
   const [session, setSession] = useState(null)
   const [client, setClient] = useState(null)
 
+  // Store a full login/register response: the rotating pair goes to the token
+  // store, the rest into React state.
   const applyAuthResponse = useCallback((data) => {
+    setAuthTokens(data)
     setToken(data.access_token)
-    setRefreshToken(data.refresh_token)
-    setAccessExpiresAt(data.access_expires_at)
-    setRefreshExpiresAt(data.refresh_expires_at)
     setSession(data.session)
     setClient(data.client)
     return data
   }, [])
 
-  // Refresh tokens are single-use. The server atomically rotates both tokens;
-  // callers must replace the complete auth response, never reuse the old pair.
-  const refreshAuth = useCallback(async () => {
-    if (!refreshToken) throw new Error('No refresh token')
-    const response = await fetch(`${apiBase()}/auth/refresh`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refresh_token: refreshToken })
-    })
-    const data = await response.json().catch(() => ({}))
-    if (!response.ok || !data.access_token) {
-      throw new Error(data.error || `Server responded ${response.status}`)
-    }
-    return applyAuthResponse(data)
-  }, [applyAuthResponse, refreshToken])
+  const clearAuth = useCallback(() => {
+    clearAuthTokens()
+    setToken(null)
+    setSession(null)
+    setClient(null)
+  }, [])
 
   return (
     <AuthContext.Provider
       value={{
         token,
         setToken,
-        refreshToken,
-        setRefreshToken,
-        accessExpiresAt,
-        setAccessExpiresAt,
-        refreshExpiresAt,
-        setRefreshExpiresAt,
         session,
-        setSession,
         applyAuthResponse,
-        refreshAuth,
+        clearAuth,
         client,
         setClient
       }}

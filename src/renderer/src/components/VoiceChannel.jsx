@@ -35,7 +35,6 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     dragging,
     dropEdge,
     clients,
-    token,
     self,
     micMuted,
     deafened,
@@ -273,7 +272,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     try {
       await patchChannel(channel.id)
 
-      await connect(token, {
+      await connect({
         onConnect: handleConnectEstablished,
         onDisconnect: () => {
           setJoined(false)

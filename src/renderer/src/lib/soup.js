@@ -5,6 +5,7 @@ import rnnoiseWasmPath from '@sapphi-red/web-noise-suppressor/rnnoise.wasm?url'
 import rnnoiseSimdWasmPath from '@sapphi-red/web-noise-suppressor/rnnoise_simd.wasm?url'
 import rnnoiseWorkletPath from '@sapphi-red/web-noise-suppressor/rnnoiseWorklet.js?url'
 import { apiBase, wsBase } from './serverConfig'
+import { authFetch } from './auth'
 
 // ─── State ──────────────────────────────────────────────────────
 let device
@@ -72,7 +73,6 @@ let clientAudioOverrides = new Map()
 // replay NewProducer for everyone in the channel.
 const VOICE_RECONNECT_BASE_DELAY_MS = 1000
 const VOICE_RECONNECT_MAX_DELAY_MS = 30000
-let reconnectToken = null // token captured at connect(), reused per attempt
 let reconnectAttempts = 0
 let reconnectTimer = null
 let reconnectInFlight = false // an attempt is mid-flight; don't start a second
@@ -126,9 +126,8 @@ function notify(type, data = null) {
 // (async; re-assert channel membership before a reconnect's ticket fetch),
 // onNewProducer, onVideoStream, onTransportsDisconnected, onClientSpeaking,
 // onConsumerClosed.
-export async function connect(token, callbacks = {}) {
+export async function connect(callbacks = {}) {
   activeCallbacks = { ...callbacks }
-  reconnectToken = token
   intentionalClose = false
   everAuthenticated = false
   reconnectAttempts = 0
@@ -144,18 +143,17 @@ export async function connect(token, callbacks = {}) {
   // recover. addEventListener dedupes the stable refs, so repeat calls are safe.
   window.addEventListener('offline', handleOffline)
   window.addEventListener('online', handleOnline)
-  await openSocket(token)
+  await openSocket()
 }
 
-// Open the voice WebSocket: fetch a fresh (single-use) ticket, wire every
-// handler, then authenticate. Used for the initial connection and every
-// reconnect attempt — each call replaces the shared `ws`. A stale-socket guard
-// on every handler ignores a superseded socket once a newer one takes over.
-async function openSocket(token) {
-  // Step 1 — get ticket
-  const res = await fetch(`${apiBase()}/server/voice`, {
-    headers: { Authorization: `Bearer ${token}` }
-  })
+// Open the voice WebSocket: fetch a fresh (single-use, 30s) ticket with a
+// current access token, wire every handler, then authenticate. Used for the
+// initial connection and every reconnect attempt — each call replaces the
+// shared `ws`. A stale-socket guard on every handler ignores a superseded
+// socket once a newer one takes over.
+async function openSocket() {
+  // Step 1 — get ticket (authFetch refreshes the access token as needed)
+  const res = await authFetch(`${apiBase()}/server/voice`)
   if (!res.ok) throw new Error(`Voice ticket request failed: ${res.status}`)
   const { ticket } = await res.json()
   console.log('[Soup] Got ticket:', ticket)
@@ -295,7 +293,7 @@ async function attemptReconnect() {
   reconnectInFlight = true
   try {
     await activeCallbacks.onReconnectRejoin?.()
-    await openSocket(reconnectToken)
+    await openSocket()
   } catch (err) {
     console.error('[Soup] Voice reconnect failed:', err)
     scheduleVoiceReconnect()

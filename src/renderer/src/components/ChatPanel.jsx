@@ -875,6 +875,11 @@ function ChatPanel({
                           title={`${r.count} reaction${r.count === 1 ? '' : 's'}`}
                           onClick={() => onReactMessage?.(entry.id, r.emoji)}
                           layout={msgAnim}
+                          // Only re-measure when this message's own reactions
+                          // change — otherwise unrelated re-renders (typing
+                          // indicator, new messages) replay the slide and the
+                          // chips drift apart from their message.
+                          layoutDependency={entry.reactions}
                           {...(msgAnim
                             ? {
                                 initial: { opacity: 0, scale: 0.4 },

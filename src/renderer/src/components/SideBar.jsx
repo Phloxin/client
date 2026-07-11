@@ -30,7 +30,6 @@ const DEFAULT_WIDTH = 240
 function Sidebar({
   channels,
   clients,
-  token,
   self,
   onStreamsUpdate,
   onOpenSettings,
@@ -400,7 +399,6 @@ function Sidebar({
             dragging={dragId === ch.id}
             dropEdge={dropTarget?.id === ch.id && dragId !== ch.id ? dropTarget.edge : null}
             clients={clients.filter((c) => c.channel_id === ch.id)}
-            token={token}
             self={self}
             micMuted={micMuted}
             deafened={soundMuted}

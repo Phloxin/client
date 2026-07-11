@@ -23,6 +23,7 @@ import {
 } from '../lib/soup'
 import { playUiSound } from '../lib/sounds'
 import { setServerHost, apiBase, wsBase, cdnUrl, throwIfError } from '../lib/serverConfig'
+import { authFetch, getFreshToken, setOnSessionExpired } from '../lib/auth'
 import SegmentedTabs from '../components/SegmentedTabs'
 import {
   DEV_MODE,
@@ -151,16 +152,7 @@ function normalizeClientVoice(c) {
 
 function Main() {
   //Server Connection State Hooks
-  const {
-    token,
-    setToken,
-    setRefreshToken,
-    setAccessExpiresAt,
-    setRefreshExpiresAt,
-    setSession,
-    client,
-    setClient
-  } = useAuth()
+  const { token, setToken, applyAuthResponse, clearAuth, client, setClient } = useAuth()
   const [channels, setChannels] = useState([])
   const [clients, setClients] = useState([])
   const [feed, setFeed] = useState([])
@@ -403,9 +395,9 @@ function Main() {
   const markChannelRead = useCallback(
     (channelId, messageId) => {
       if (DEV_MODE || !token || channelId == null) return
-      fetch(`${apiBase()}/channels/${channelId}/read-state`, {
+      authFetch(`${apiBase()}/channels/${channelId}/read-state`, {
         method: 'PUT',
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ last_acknowledged_message_id: messageId ?? null })
       }).catch((err) => console.error('Failed to mark channel read:', err))
     },
@@ -551,9 +543,9 @@ function Main() {
         return id
       }
 
-      const res = await fetch(`${apiBase()}/channels/dm`, {
+      const res = await authFetch(`${apiBase()}/channels/dm`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        headers: { 'Content-Type': 'application/json' },
         // Array so the same endpoint creates a group chat later; today both entry
         // points (double-click, poke) only ever send one recipient.
         body: JSON.stringify({ recipient_ids: [userId] })
@@ -630,9 +622,8 @@ function Main() {
             type: 'application/json'
           })
         )
-        const res = await fetch(`${apiBase()}/channels/${id}/messages`, {
+        const res = await authFetch(`${apiBase()}/channels/${id}/messages`, {
           method: 'POST',
-          headers: { Authorization: `Bearer ${token}` },
           body: formData
         })
         await throwIfError(res)
@@ -650,9 +641,9 @@ function Main() {
     async (userId, reason) => {
       if (!userId || userId === client?.id) return
       try {
-        const res = await fetch(`${apiBase()}/server/clients/${userId}/kick`, {
+        const res = await authFetch(`${apiBase()}/server/clients/${userId}/kick`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(reason ? { reason } : {})
         })
         await throwIfError(res)
@@ -670,7 +661,7 @@ function Main() {
       setRoles([])
       return
     }
-    fetch(`${apiBase()}/server/roles`, { headers: { Authorization: `Bearer ${token}` } })
+    authFetch(`${apiBase()}/server/roles`)
       .then((res) => res.json())
       .then((data) => setRoles(Array.isArray(data) ? data : []))
       .catch((err) => console.error('Failed to load roles:', err))
@@ -684,7 +675,7 @@ function Main() {
       setVanity([])
       return
     }
-    fetch(`${apiBase()}/server/vanity`, { headers: { Authorization: `Bearer ${token}` } })
+    authFetch(`${apiBase()}/server/vanity`)
       .then((res) => res.json())
       .then((data) =>
         setVanity(Array.isArray(data) ? data.map((v) => ({ ...v, avatar: cdnUrl(v.avatar) })) : [])
@@ -700,7 +691,7 @@ function Main() {
       setBans([])
       return
     }
-    fetch(`${apiBase()}/server/bans`, { headers: { Authorization: `Bearer ${token}` } })
+    authFetch(`${apiBase()}/server/bans`)
       .then((res) => res.json())
       .then((data) => setBans(Array.isArray(data) ? data : []))
       .catch((err) => console.error('Failed to load bans:', err))
@@ -769,10 +760,8 @@ function Main() {
       }
       if (DEV_MODE) return apply()
       try {
-        const res = await fetch(`${apiBase()}/server/clients/${clientId}/roles/${roleId}`, {
-          method: 'PUT',
-          headers: { Authorization: `Bearer ${token}` }
-        })
+        const res = await authFetch(`${apiBase()}/server/clients/${clientId}/roles/${roleId}`, {
+          method: 'PUT'        })
         await throwIfError(res)
         apply()
       } catch (err) {
@@ -800,10 +789,8 @@ function Main() {
       }
       if (DEV_MODE) return apply()
       try {
-        const res = await fetch(`${apiBase()}/server/clients/${clientId}/roles/${roleId}`, {
-          method: 'DELETE',
-          headers: { Authorization: `Bearer ${token}` }
-        })
+        const res = await authFetch(`${apiBase()}/server/clients/${clientId}/roles/${roleId}`, {
+          method: 'DELETE'        })
         await throwIfError(res)
         apply()
       } catch (err) {
@@ -819,9 +806,9 @@ function Main() {
   const handleCreateVanityGroup = useCallback(
     async (name, avatar) => {
       try {
-        const res = await fetch(`${apiBase()}/server/vanity`, {
+        const res = await authFetch(`${apiBase()}/server/vanity`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ type: 'group', name, ...(avatar ? { avatar } : {}) })
         })
         await throwIfError(res)
@@ -842,10 +829,8 @@ function Main() {
       const groupName = vanity.find((v) => v.id === vanityId)?.name ?? 'group'
       const clientName = clients.find((c) => c.id === clientId)?.name ?? 'user'
       try {
-        const res = await fetch(`${apiBase()}/server/clients/${clientId}/vanity/${vanityId}`, {
-          method: assign ? 'PUT' : 'DELETE',
-          headers: { Authorization: `Bearer ${token}` }
-        })
+        const res = await authFetch(`${apiBase()}/server/clients/${clientId}/vanity/${vanityId}`, {
+          method: assign ? 'PUT' : 'DELETE'        })
         await throwIfError(res)
         setClients((prev) =>
           prev.map((c) => {
@@ -873,9 +858,9 @@ function Main() {
       try {
         const body = { duration_seconds: durationSeconds }
         if (reason) body.reason = reason
-        const res = await fetch(`${apiBase()}/server/clients/${userId}/ban`, {
+        const res = await authFetch(`${apiBase()}/server/clients/${userId}/ban`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body)
         })
         await throwIfError(res)
@@ -894,10 +879,8 @@ function Main() {
     async (userId) => {
       if (!userId) return
       try {
-        const res = await fetch(`${apiBase()}/server/clients/${userId}/ban`, {
-          method: 'DELETE',
-          headers: { Authorization: `Bearer ${token}` }
-        })
+        const res = await authFetch(`${apiBase()}/server/clients/${userId}/ban`, {
+          method: 'DELETE'        })
         await throwIfError(res)
         refreshBans()
       } catch (err) {
@@ -916,9 +899,9 @@ function Main() {
       setClients((prev) => prev.map((c) => (c.id === selfId ? { ...c, avatar } : c)))
       if (DEV_MODE) return
       try {
-        const res = await fetch(`${apiBase()}/client/self`, {
+        const res = await authFetch(`${apiBase()}/client/self`, {
           method: 'PATCH',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ avatar })
         })
         await throwIfError(res)
@@ -942,12 +925,16 @@ function Main() {
   const loadChannelHistory = useCallback(
     (channelId, shouldApply = () => true) => {
       if (DEV_MODE || !token || channelId == null) return Promise.resolve()
-      return window.electron.ipcRenderer
-        .invoke('get-channel-messages', {
-          url: `${apiBase()}/channels/${channelId}/messages`,
-          token,
-          limit: HISTORY_LIMIT
-        })
+      // The request runs in the main process, outside authFetch — hand it a
+      // token refreshed here if needed.
+      return getFreshToken()
+        .then((accessToken) =>
+          window.electron.ipcRenderer.invoke('get-channel-messages', {
+            url: `${apiBase()}/channels/${channelId}/messages`,
+            token: accessToken,
+            limit: HISTORY_LIMIT
+          })
+        )
         .then((res) => {
           if (!shouldApply()) return
           if (!res?.ok) {
@@ -985,13 +972,15 @@ function Main() {
     }, null)
     if (!oldest) return Promise.resolve()
     loadingOlderRef.current = true
-    return window.electron.ipcRenderer
-      .invoke('get-channel-messages', {
-        url: `${apiBase()}/channels/${channelId}/messages`,
-        token,
-        limit: HISTORY_LIMIT,
-        before: oldest.id
-      })
+    return getFreshToken()
+      .then((accessToken) =>
+        window.electron.ipcRenderer.invoke('get-channel-messages', {
+          url: `${apiBase()}/channels/${channelId}/messages`,
+          token: accessToken,
+          limit: HISTORY_LIMIT,
+          before: oldest.id
+        })
+      )
       .then((res) => {
         if (!res?.ok) {
           if (res?.error) console.error('Failed to load older messages:', res.error)
@@ -1064,9 +1053,9 @@ function Main() {
     }
 
     try {
-      const res = await fetch(`${apiBase()}/server/channel`, {
+      const res = await authFetch(`${apiBase()}/server/channel`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: trimmed, user_limit, position })
       })
       await throwIfError(res)
@@ -1088,10 +1077,8 @@ function Main() {
     }
 
     try {
-      const res = await fetch(`${apiBase()}/channels/${id}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${token}` }
-      })
+      const res = await authFetch(`${apiBase()}/channels/${id}`, {
+        method: 'DELETE'      })
       await throwIfError(res)
       setChannels((prev) => prev.filter((ch) => ch.id !== id))
     } catch (err) {
@@ -1109,9 +1096,9 @@ function Main() {
     }
 
     try {
-      const res = await fetch(`${apiBase()}/channels/${id}`, {
+      const res = await authFetch(`${apiBase()}/channels/${id}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ position })
       })
       await throwIfError(res)
@@ -1131,9 +1118,9 @@ function Main() {
     }
 
     try {
-      const res = await fetch(`${apiBase()}/channels/${id}`, {
+      const res = await authFetch(`${apiBase()}/channels/${id}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ description })
       })
       await throwIfError(res)
@@ -1153,9 +1140,9 @@ function Main() {
     }
 
     try {
-      const res = await fetch(`${apiBase()}/channels/${id}`, {
+      const res = await authFetch(`${apiBase()}/channels/${id}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ channel_icon })
       })
       await throwIfError(res)
@@ -1185,9 +1172,9 @@ function Main() {
     }
 
     try {
-      const res = await fetch(`${apiBase()}/channels/${channelId}/permissions/${targetId}`, {
+      const res = await authFetch(`${apiBase()}/channels/${channelId}/permissions/${targetId}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ type: targetType, allow, deny })
       })
       await throwIfError(res)
@@ -1215,10 +1202,8 @@ function Main() {
     }
 
     try {
-      const res = await fetch(`${apiBase()}/channels/${channelId}/permissions/${targetId}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${token}` }
-      })
+      const res = await authFetch(`${apiBase()}/channels/${channelId}/permissions/${targetId}`, {
+        method: 'DELETE'      })
       await throwIfError(res)
       showSuccess('Channel permission removed')
     } catch (err) {
@@ -1244,9 +1229,9 @@ function Main() {
       }
 
       try {
-        const res = await fetch(`${apiBase()}/client/${userId}`, {
+        const res = await authFetch(`${apiBase()}/client/${userId}`, {
           method: 'PATCH',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ channel_id: channelId })
         })
         await throwIfError(res)
@@ -1276,9 +1261,9 @@ function Main() {
         return
       }
       try {
-        const res = await fetch(`${apiBase()}/client/${userId}`, {
+        const res = await authFetch(`${apiBase()}/client/${userId}`, {
           method: 'PATCH',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ mute: gag })
         })
         await throwIfError(res)
@@ -1333,12 +1318,7 @@ function Main() {
       }
 
       if (result.response.ok && data.access_token) {
-        setToken(data.access_token)
-        setRefreshToken(data.refresh_token)
-        setAccessExpiresAt(data.access_expires_at)
-        setRefreshExpiresAt(data.refresh_expires_at)
-        setSession(data.session)
-        setClient(data.client)
+        applyAuthResponse(data)
         setConnectedServer(server)
       } else {
         setServerHost(null)
@@ -1362,12 +1342,7 @@ function Main() {
     popoutWindowRef.current = null
     setPoppedOut(false)
     disconnectVoice()
-    setToken(null)
-    setRefreshToken(null)
-    setAccessExpiresAt(null)
-    setRefreshExpiresAt(null)
-    setSession(null)
-    setClient(null)
+    clearAuth()
     setChannels([])
     setClients([])
     setFeed([])
@@ -1378,14 +1353,17 @@ function Main() {
     setSummaryClientId(null)
     setReadStates({})
     setConnectionStatus('connected')
-  }, [
-    setToken,
-    setRefreshToken,
-    setAccessExpiresAt,
-    setRefreshExpiresAt,
-    setSession,
-    setClient
-  ])
+  }, [clearAuth])
+
+  // A refresh the server rejects means the device session is revoked or
+  // expired — drop to the disconnected state and require a fresh login.
+  useEffect(() => {
+    setOnSessionExpired(() => {
+      showError('Session expired — please reconnect')
+      handleDisconnect()
+    })
+    return () => setOnSessionExpired(null)
+  }, [handleDisconnect, showError])
 
   // Fetch channels/clients and set up WebSocket + IPC listeners on mount
   useEffect(() => {
@@ -1854,7 +1832,19 @@ function Main() {
 
     // Open a socket and run the handshake. Reused for the initial connection and
     // every reconnect; `connect` reassigns the shared `ws` each time.
-    const connect = () => {
+    const connect = async () => {
+      // Identify must carry a live access token: the one from login may have
+      // expired while we were disconnected, so refresh first when needed.
+      let accessToken
+      try {
+        accessToken = await getFreshToken()
+      } catch {
+        // Couldn't refresh (network). Back off and retry; a dead session fires
+        // the session-expired handler instead, which tears this effect down.
+        scheduleReconnect()
+        return
+      }
+      if (closedByUs) return
       ws = new WebSocket(`${wsBase()}/ws`)
       eventsWsRef.current = ws
       // True between sending a heartbeat (op 2) and receiving its ack (op 4). If a
@@ -1867,8 +1857,11 @@ function Main() {
         // otherwise identify fresh. The server's reply tells us which we got.
         const canResume = sessionIdRef.current != null && lastEventSeqRef.current != null
         const data = canResume
-          ? { token, resume: { session_id: sessionIdRef.current, seq: lastEventSeqRef.current } }
-          : { token }
+          ? {
+              token: accessToken,
+              resume: { session_id: sessionIdRef.current, seq: lastEventSeqRef.current }
+            }
+          : { token: accessToken }
         ws.send(JSON.stringify({ op: 0, data }))
         // Heartbeat: prove we're still alive every interval, reporting the last
         // event sequence we've processed. If these stop arriving the server
@@ -1982,9 +1975,8 @@ function Main() {
     const now = Date.now()
     if (now - lastTypingSentRef.current < TYPING_DURATION_MS) return
     lastTypingSentRef.current = now
-    fetch(`${apiBase()}/channels/${activeChatChannelId}/typing`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}` }
+    authFetch(`${apiBase()}/channels/${activeChatChannelId}/typing`, {
+      method: 'POST'
     }).catch((err) => console.error('Failed to send typing:', err))
   }
 
@@ -2022,9 +2014,8 @@ function Main() {
     attachments.forEach((a) => URL.revokeObjectURL(a.url))
 
     try {
-      const res = await fetch(`${apiBase()}/channels/${activeChatChannelId}/messages`, {
+      const res = await authFetch(`${apiBase()}/channels/${activeChatChannelId}/messages`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
         body: formData
       })
       await throwIfError(res)
@@ -2056,11 +2047,11 @@ function Main() {
     if (activeChatChannelId == null) return
 
     try {
-      const res = await fetch(
+      const res = await authFetch(
         `${apiBase()}/channels/${activeChatChannelId}/messages/${messageId}`,
         {
           method: 'PATCH',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ content: trimmed })
         }
       )
@@ -2108,12 +2099,9 @@ function Main() {
     if (DEV_MODE) return
 
     try {
-      const res = await fetch(
+      const res = await authFetch(
         `${apiBase()}/channels/${entry.channelId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}`,
-        {
-          method: had ? 'DELETE' : 'PUT',
-          headers: { Authorization: `Bearer ${token}` }
-        }
+        { method: had ? 'DELETE' : 'PUT' }
       )
       await throwIfError(res)
     } catch (err) {
@@ -2134,12 +2122,9 @@ function Main() {
     if (activeChatChannelId == null) return
 
     try {
-      const res = await fetch(
+      const res = await authFetch(
         `${apiBase()}/channels/${activeChatChannelId}/messages/${messageId}`,
-        {
-          method: 'DELETE',
-          headers: { Authorization: `Bearer ${token}` }
-        }
+        { method: 'DELETE' }
       )
       await throwIfError(res)
       setFeed((prev) => prev.filter((e) => !(e.type === 'message' && e.id === messageId)))
@@ -2244,7 +2229,6 @@ function Main() {
         <SideBar
           channels={channels}
           clients={clients}
-          token={token}
           self={client}
           onStreamsUpdate={handleStreamsUpdate}
           onStatusChange={sendStatus}
