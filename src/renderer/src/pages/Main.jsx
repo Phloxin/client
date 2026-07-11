@@ -505,6 +505,14 @@ function Main() {
     }
   }
 
+  // Open the channel a bell notification (e.g. a mention) points at.
+  const handleOpenNotification = (n) => {
+    if (n.channelId == null) return
+    setSummaryClientId(null)
+    setSummaryChannelId(null)
+    setPreviewChannelId(n.channelId)
+  }
+
   // Close the summary if the client leaves the server (mirrors the preview-drop
   // above): we can't show a profile for someone no longer connected.
   useEffect(() => {
@@ -1711,24 +1719,28 @@ function Main() {
         // clickable inbox alert (deduped to the latest message per DM channel).
         const readingHere =
           data.channel_id === activeChatChannelIdRef.current && chatVisibleRef.current
+        // Being mentioned (directly or via @everyone) rings the bell — even
+        // while viewing that channel. Snowflakes compared as strings since
+        // JSON may carry them as numbers.
+        const mentioned =
+          data.mention_everyone ||
+          (data.mentions || []).some((id) => String(id) === String(selfIdRef.current))
+        if (mentioned && data.author !== selfIdRef.current) {
+          const channel = channelsRef.current.find((c) => c.id === data.channel_id)
+          const now = Date.now()
+          setNotifications((prev) =>
+            [
+              {
+                id: `mention-${data.id ?? now}`,
+                channelId: data.channel_id,
+                message: `You were mentioned in ${channel?.name || 'a channel'}`,
+                timestamp: now
+              },
+              ...prev
+            ].slice(0, 50)
+          )
+        }
         if (data.author !== selfIdRef.current && !readingHere) {
-          // Being mentioned (directly or via @everyone) rings the bell.
-          const mentioned =
-            data.mention_everyone || (data.mentions || []).includes(selfIdRef.current)
-          if (mentioned) {
-            const channel = channelsRef.current.find((c) => c.id === data.channel_id)
-            const now = Date.now()
-            setNotifications((prev) =>
-              [
-                {
-                  id: `mention-${data.id ?? now}`,
-                  message: `You were mentioned in ${channel?.name || 'a channel'}`,
-                  timestamp: now
-                },
-                ...prev
-              ].slice(0, 50)
-            )
-          }
           const dmChannel = channelsRef.current.find((c) => c.id === data.channel_id)
           if (dmChannel?.type === 'dm') {
             const name = clientsRef.current.find((c) => c.id === data.author)?.name || 'Someone'
@@ -2223,6 +2235,7 @@ function Main() {
         icon={IconUsersGroup}
         notifications={notifications}
         onClearNotifications={() => setNotifications([])}
+        onOpenNotification={handleOpenNotification}
         dmNotifications={dmNotifications}
         onOpenDmNotification={handleOpenDmNotification}
         onClearDmNotifications={() => setDmNotifications([])}

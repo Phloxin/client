@@ -15,7 +15,7 @@ const formatTime = (ts) =>
 // unread badge; clicking it opens a dropdown listing recent notifications. When
 // a new notification arrives it also bounces a transient toast out to the right
 // of the bell. `notifications` is newest-first and owned by the parent.
-function NotificationBell({ notifications = [], onClear }) {
+function NotificationBell({ notifications = [], onClear, onOpen }) {
   const [open, setOpen] = useState(false)
   const [toast, setToast] = useState(null)
   const [unread, setUnread] = useState(0)
@@ -126,12 +126,29 @@ function NotificationBell({ notifications = [], onClear }) {
               <div className="notif-empty">Nothing yet</div>
             ) : (
               <div className="notif-list">
-                {notifications.map((n) => (
-                  <div className="notif-item" key={n.id}>
-                    <span className="notif-item-msg">{n.message}</span>
-                    <span className="notif-item-time">{formatTime(n.timestamp)}</span>
-                  </div>
-                ))}
+                {notifications.map((n) =>
+                  // Entries pointing at a channel (e.g. mentions) are clickable
+                  // and navigate there, like DM inbox alerts.
+                  n.channelId != null ? (
+                    <button
+                      type="button"
+                      className="notif-item clickable"
+                      key={n.id}
+                      onClick={() => {
+                        setOpen(false)
+                        onOpen?.(n)
+                      }}
+                    >
+                      <span className="notif-item-msg">{n.message}</span>
+                      <span className="notif-item-time">{formatTime(n.timestamp)}</span>
+                    </button>
+                  ) : (
+                    <div className="notif-item" key={n.id}>
+                      <span className="notif-item-msg">{n.message}</span>
+                      <span className="notif-item-time">{formatTime(n.timestamp)}</span>
+                    </div>
+                  )
+                )}
               </div>
             )}
           </motion.div>

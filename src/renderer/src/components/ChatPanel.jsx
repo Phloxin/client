@@ -281,6 +281,32 @@ function encodeMentions(text, clients) {
   return out
 }
 
+// Composer text split into plain segments and mention pills, for the highlight
+// backdrop behind the textarea. Same matching rules as encodeMentions, so what
+// lights up is exactly what will encode on send.
+function composerMentionNodes(text, clients) {
+  const names = (clients || [])
+    .filter((c) => c.name)
+    .map((c) => c.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .sort((a, b) => b.length - a.length)
+  if (!text || !names.length) return text
+  const re = new RegExp(`@(?:${names.join('|')})(?!\\w)`, 'gi')
+  const out = []
+  let last = 0
+  let m
+  while ((m = re.exec(text))) {
+    if (m.index > last) out.push(text.slice(last, m.index))
+    out.push(
+      <span className="chat-mention" key={m.index}>
+        {m[0]}
+      </span>
+    )
+    last = m.index + m[0].length
+  }
+  out.push(text.slice(last))
+  return out
+}
+
 // "Alice is typing", "Alice and Bob are typing", etc.
 function formatTyping(names) {
   if (names.length === 1) return `${names[0]} is typing`
@@ -354,6 +380,7 @@ function ChatPanel({
   const lastMsgIdRef = useRef(null)
   const msgMenuRef = useRef(null)
   const fileInputRef = useRef(null)
+  const highlightRef = useRef(null)
   const emojiRef = useRef(null)
   const listRef = useRef(null)
   const inputRef = useRef(null)
@@ -966,21 +993,32 @@ function ChatPanel({
         >
           <IconPaperclip size={20} />
         </button>
-        <textarea
-          ref={inputRef}
-          rows={1}
-          placeholder={disabled ? 'Join a channel to chat' : 'Message...'}
-          value={text}
-          onChange={(e) => {
-            updateText(e.target.value)
-            updateMention(e.target.value, e.target.selectionEnd)
-            if (e.target.value) onTyping?.()
-          }}
-          onKeyDown={handleKeyDown}
-          onPaste={handlePaste}
-          onBlur={() => setMention(null)}
-          disabled={disabled}
-        />
+        <div className="chat-input-wrap">
+          {/* Highlight backdrop: mirrors the textarea's text with mention
+              pills; the textarea above it types in transparent glyphs. */}
+          <div className="chat-input-highlight" ref={highlightRef} aria-hidden="true">
+            {composerMentionNodes(text, clients)}
+          </div>
+          <textarea
+            ref={inputRef}
+            rows={1}
+            placeholder={disabled ? 'Join a channel to chat' : 'Message...'}
+            value={text}
+            onChange={(e) => {
+              updateText(e.target.value)
+              updateMention(e.target.value, e.target.selectionEnd)
+              if (e.target.value) onTyping?.()
+            }}
+            onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
+            onBlur={() => setMention(null)}
+            onScroll={(e) => {
+              // Keep the backdrop aligned when the composer scrolls at max height.
+              if (highlightRef.current) highlightRef.current.scrollTop = e.target.scrollTop
+            }}
+            disabled={disabled}
+          />
+        </div>
         <AnimatePresence>
           {mention && mentionMatches.length > 0 && (
             <motion.div className="chat-mention-pop" {...menuPop(overlayAnim)}>

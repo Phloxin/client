@@ -14,6 +14,7 @@ function TitleBar({
   icon: Icon,
   notifications = [],
   onClearNotifications,
+  onOpenNotification,
   dmNotifications = [],
   onOpenDmNotification,
   onClearDmNotifications
@@ -34,7 +35,11 @@ function TitleBar({
       {/* Left region mirrors the controls' width so the centered title stays
           window-centered: the bell is pinned far-left, the rest is drag space. */}
       <div className="title-bar-controls-left">
-        <NotificationBell notifications={notifications} onClear={onClearNotifications} />
+        <NotificationBell
+          notifications={notifications}
+          onClear={onClearNotifications}
+          onOpen={onOpenNotification}
+        />
         <Inbox
           notifications={dmNotifications}
           onOpen={onOpenDmNotification}

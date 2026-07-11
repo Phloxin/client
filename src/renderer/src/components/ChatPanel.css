@@ -130,12 +130,12 @@
 
 /* A message that mentions us (directly or @everyone). */
 .chat-message.mentioned {
-  background: color-mix(in srgb, var(--color-primary) 7%, transparent);
+  background: color-mix(in srgb, var(--color-primary) 4%, transparent);
   box-shadow: inset 2px 0 0 var(--color-primary);
 }
 
 .chat-message.mentioned:hover {
-  background: color-mix(in srgb, var(--color-primary) 11%, transparent);
+  background: color-mix(in srgb, var(--color-primary) 7%, transparent);
 }
 
 /* Reaction hover bar: floats over the row's top-right corner, only on hover. */
@@ -919,6 +919,49 @@ a.chat-embed-title:hover {
   line-height: 1.45;
   padding: 7px 6px;
   max-height: 320px;
+}
+
+/* Composer with a mention-highlight backdrop: the div behind mirrors the text
+   (with .chat-mention pills) while the textarea types transparent glyphs, so
+   only the backdrop's styled text shows. Caret and selection stay native. */
+.chat-input-wrap {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+}
+
+.chat-input-wrap textarea {
+  position: relative;
+  z-index: 1;
+  color: transparent;
+  caret-color: var(--color-text);
+}
+
+.chat-input-highlight {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  padding: 7px 6px;
+  color: var(--color-text);
+  font-family: var(--font-family-primary);
+  font-size: var(--font-size-md);
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  pointer-events: none;
+}
+
+/* The pill's horizontal padding must not add advance width here, or backdrop
+   text drifts right of the textarea's (invisible) glyphs and the caret looks
+   misplaced. Negative margins cancel it out; the pill bleeds 3px into the
+   neighboring spaces instead. */
+.chat-input-highlight .chat-mention {
+  margin: 0 -3px;
+  /* Same reason: semibold glyphs are wider than the textarea's regular ones. */
+  font-weight: inherit;
+  /* ponytail: wrap can drift from the textarea by a scrollbar's width once the
+     composer overflows at max height; scope a scrollbar-gutter fix if it shows. */
 }
 
 .chat-input-bar textarea::placeholder {
