@@ -6,6 +6,7 @@ import rnnoiseSimdWasmPath from '@sapphi-red/web-noise-suppressor/rnnoise_simd.w
 import rnnoiseWorkletPath from '@sapphi-red/web-noise-suppressor/rnnoiseWorklet.js?url'
 import { apiBase, wsBase } from './serverConfig'
 import { authFetch } from './auth'
+import { startScreenAudio, stopScreenAudio, onScreenAudioError } from './screenAudio'
 
 // ─── State ──────────────────────────────────────────────────────
 let device
@@ -23,6 +24,12 @@ let iceServers = []
 // Stop function for the active local audio processing chain (RNNoise / volume
 // gate). Tears down its AudioContext and analysis loop; null when no chain is active.
 let audioProcessorStop = null
+// The raw getUserMedia capture backing the current audio producer. When RNNoise
+// or the gate is on, the producer gets a different (processed) track, so this
+// handle is the only way to release the OS mic. Held until the producer it feeds
+// is torn down or its track replaced — stopping it while live would kill the
+// send in the passthrough case (where the produced track IS this raw track).
+let rawMicStream = null
 // Self speaking detector, owned here rather than by a channel component so it
 // survives ownership changes: a moderator move rebinds onClientSpeaking to the new
 // channel, and the detector reports our own speaking through that live callback.
@@ -378,6 +385,24 @@ function getRnnoiseBinary() {
   return rnnoiseBinaryPromise
 }
 
+// Shared AudioContext for the local mic chain. Reused across publishes so the
+// RNNoise worklet module is fetched/compiled once, not on every publish or
+// settings Apply (which used to rebuild the context and re-addModule each
+// time). Suspended on media reset rather than closed, so the compiled module
+// survives for the next publish. RNNoise is trained on 48 kHz audio, so the
+// rate is pinned.
+let micContext = null
+let micWorkletLoaded = false
+
+async function getMicContext() {
+  if (!micContext || micContext.state === 'closed') {
+    micContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 })
+    micWorkletLoaded = false
+  }
+  if (micContext.state === 'suspended') await micContext.resume()
+  return micContext
+}
+
 // ─── Build the local audio processing chain ──────────────────────
 // Wires the captured mic stream through optional RNNoise denoising (an
 // AudioWorklet that suppresses keyboard/typing and steady background noise
@@ -390,18 +415,24 @@ async function buildAudioProcessor(stream, micSettings) {
     return { stream, stop: () => {} }
   }
 
-  // RNNoise is trained on 48 kHz audio, so pin the context rate to match.
-  const audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 })
+  const audioContext = await getMicContext()
   const source = audioContext.createMediaStreamSource(stream)
   const destination = audioContext.createMediaStreamDestination()
+  // Every node this chain creates, so stop() can detach them from the shared
+  // context (which lives on for the next publish, unlike the old
+  // context-per-publish teardown).
+  const chainNodes = [source, destination]
   let node = source
   let rnnoiseNode = null
-  let rafId = null
+  let gateTimer = null
 
   if (needsRnnoise) {
     try {
       const binary = await getRnnoiseBinary()
-      await audioContext.audioWorklet.addModule(rnnoiseWorkletPath)
+      if (!micWorkletLoaded) {
+        await audioContext.audioWorklet.addModule(rnnoiseWorkletPath)
+        micWorkletLoaded = true
+      }
       rnnoiseNode = new RnnoiseWorkletNode(audioContext, { maxChannels: 1, wasmBinary: binary })
       node.connect(rnnoiseNode)
       node = rnnoiseNode
@@ -415,6 +446,7 @@ async function buildAudioProcessor(stream, micSettings) {
   if (needsGate) {
     const analyser = audioContext.createAnalyser()
     const gate = audioContext.createGain()
+    chainNodes.push(analyser, gate)
     analyser.fftSize = 256
     node.connect(analyser)
     analyser.connect(gate)
@@ -430,25 +462,29 @@ async function buildAudioProcessor(stream, micSettings) {
         normalized >= micSettings.volumeGateThreshold ? 1 : 0,
         audioContext.currentTime
       )
-      rafId = requestAnimationFrame(checkLevel)
     }
+    // 25Hz via setInterval, not rAF: level detection needs far less than display
+    // rate, and rAF is throttled/paused when the window is hidden — which would
+    // stall the gate and stick outgoing audio gated/ungated while minimized.
     checkLevel()
+    gateTimer = setInterval(checkLevel, 40)
     console.log('[Soup] Volume gate applied, threshold:', micSettings.volumeGateThreshold)
   }
 
   node.connect(destination)
 
   const stop = () => {
-    if (rafId) cancelAnimationFrame(rafId)
+    if (gateTimer) clearInterval(gateTimer)
     try {
       rnnoiseNode?.destroy()
     } catch {}
-    try {
-      source.disconnect()
-    } catch {}
-    try {
-      audioContext.close()
-    } catch {}
+    for (const chainNode of chainNodes) {
+      try {
+        chainNode.disconnect()
+      } catch {}
+    }
+    // The shared context stays open (suspended on media reset) so the
+    // compiled worklet module is reused by the next publish.
   }
 
   return { stream: destination.stream, stop }
@@ -459,6 +495,14 @@ async function buildAudioProcessor(stream, micSettings) {
 function stopAudioProcessor() {
   audioProcessorStop?.()
   audioProcessorStop = null
+}
+
+// Release a raw getUserMedia capture, closing the OS mic handle. Safe on null.
+// Only call once the capture no longer feeds a live producer — in the
+// passthrough case its track IS the produced track, so stopping it mid-use
+// would kill the outgoing audio.
+function stopRawStream(stream) {
+  stream?.getTracks().forEach((track) => track.stop())
 }
 
 // ─── Detect speaking activity on an audio stream ──────────────────
@@ -476,7 +520,7 @@ export function createSpeakingDetector(stream, onChange, { threshold = 8, holdMs
   const data = new Uint8Array(analyser.frequencyBinCount)
   let speaking = false
   let lastAbove = 0
-  let rafId
+  let intervalId
 
   const tick = () => {
     analyser.getByteFrequencyData(data)
@@ -491,13 +535,16 @@ export function createSpeakingDetector(stream, onChange, { threshold = 8, holdMs
       speaking = isSpeaking
       onChange(speaking)
     }
-
-    rafId = requestAnimationFrame(tick)
   }
+  // 25Hz via setInterval, not rAF: this runs once per remote participant plus
+  // self (N+1 loops in a busy channel), level detection doesn't need display
+  // rate, and rAF pauses when the window is hidden — freezing speaking state
+  // while minimized.
   tick()
+  intervalId = setInterval(tick, 40)
 
   return () => {
-    cancelAnimationFrame(rafId)
+    clearInterval(intervalId)
     if (speaking) onChange(false)
     try {
       source.disconnect()
@@ -606,6 +653,11 @@ async function doPublish(micSettings, onStream) {
     throw new Error(`Failed to get audio device: ${err.message}`)
   }
 
+  // Track the raw capture so its OS mic handle can be released on teardown —
+  // the processed track handed to the producer is usually a different track, so
+  // stopping only that would leave the mic open.
+  rawMicStream = stream
+
   // Apply the local processing chain (RNNoise / volume gate). Stop any
   // previous chain first so its AudioContext and worklet don't leak.
   stopAudioProcessor()
@@ -651,6 +703,10 @@ export async function republish(micSettings, onStream) {
   if (!producerTransport) throw new Error('Not connected to voice')
 
   const audioProducers = producers.filter((p) => p.kind === 'audio')
+  // The raw capture backing the current producer(s). Held until the new track
+  // has replaced it below, then stopped — waiting avoids killing a live
+  // passthrough track (where the raw track IS the produced track).
+  const previousRawStream = rawMicStream
 
   // Get a fresh stream with updated constraints
   let stream
@@ -698,8 +754,15 @@ export async function republish(micSettings, onStream) {
   // corpse (InvalidStateError: closed) — the reconnect path re-publishes fresh.
   if (!producerTransport || producerTransport.closed) {
     stopAudioProcessor()
+    // The new capture never reached a producer; release it. The previous raw
+    // capture was already stopped by resetMediaState() when the socket dropped.
+    stopRawStream(stream)
     return
   }
+
+  // Adopt the new capture as the current raw stream; the previous one is
+  // released below once its track is no longer attached to a producer.
+  rawMicStream = stream
 
   if (audioProducers.length === 0) {
     // No existing producer to reuse (first publish hasn't happened yet) -
@@ -722,6 +785,8 @@ export async function republish(micSettings, onStream) {
       console.log(`[Soup] Republished ${track.kind} [id:${producer.id}]`)
     }
 
+    // No producer was reusing it, so the old capture (if any) is free to stop.
+    stopRawStream(previousRawStream)
     console.log('[Soup] Audio republished with new settings')
     return
   }
@@ -758,12 +823,118 @@ export async function republish(micSettings, onStream) {
     console.log(`[Soup] Replaced track on producer [id:${producer.id}]`)
   }
 
+  // Every producer now carries the new track — the old raw capture is detached
+  // and its OS mic handle can finally be released.
+  stopRawStream(previousRawStream)
   console.log('[Soup] Audio republished with new settings')
 }
 
+// Native capture dying mid-share (utility process crash, PipeWire/WASAPI
+// device loss) degrades the share to video-only instead of tearing it down:
+// close the audio producer, surface the reason to the active channel UI.
+onScreenAudioError(({ message }) => {
+  console.error('[Soup] Screen audio capture failed:', message)
+  if (screenAudioProducer) {
+    const audioProducerId = screenAudioProducer.id
+    screenAudioProducer.close()
+    localProducerIds.delete(audioProducerId)
+    notify('CloseProducer', { id: audioProducerId })
+    screenAudioProducer = null
+  }
+  stopScreenAudio().catch(() => {})
+  if (screenProducer) {
+    activeCallbacks.onScreenAudioError?.(message)
+  }
+})
+
+// ─── Video codec + encoder tuning helpers (screen + camera) ──────
+// SVC layering. 'L3' = 3 spatial layers (quarter → full res), 'T3' = 3
+// temporal (fps) layers; '_KEY' shares the keyframe across spatial layers for
+// cleaner switching. setVideoStreamRoles() forwards a given consumer only the
+// layer its view needs. Cameras always use the full mode (native resolution,
+// no picker choice).
+const VIDEO_SCALABILITY_MODE = 'L3T3_KEY'
+
+// Screen shares adapt the spatial-layer count to the picked resolution: every
+// spatial layer is an extra encode pass, and a 720p share's third tier would
+// bottom out at 320x180 - smaller than any tile actually renders. The server
+// clamps setPreferredLayers() to the producer's top layer, so VIEW_LAYERS
+// needs no changes (focused spatial:2 against an L2 producer clamps to 1).
+function scalabilityModeFor(height) {
+  return height >= 1080 ? 'L3T3_KEY' : 'L2T3_KEY'
+}
+
+// Pick an explicit codec for the video produce(). Prefer AV1, then VP9 — both
+// carry real spatial SVC (the layering above), unlike VP8/H264. The codec MUST
+// come from the loaded device's capabilities: mediasoup matches it against the
+// router's codecs and throws 'no matching codec found' on a mismatch, so we
+// only ever return one the device already advertised. undefined preserves
+// mediasoup's default (first router codec) on a server offering neither.
+function pickVideoCodec() {
+  const codecs = device?.rtpCapabilities?.codecs ?? []
+  const find = (mime) =>
+    codecs.find((c) => c.kind === 'video' && c.mimeType?.toLowerCase() === mime)
+  return find('video/av1') ?? find('video/vp9') ?? undefined
+}
+
+// Log the codec the SFU actually negotiated, and warn when it's one without
+// spatial SVC. VP8/H264 have no spatial layers, so 'L3T3_KEY' degrades to
+// temporal-only and setVideoStreamRoles() can't tier thumbnail/focus resolution.
+function logNegotiatedVideoCodec(producer, scalabilityMode) {
+  const mimeType = producer.rtpParameters?.codecs?.find(
+    (c) => !c.mimeType?.toLowerCase().endsWith('/rtx')
+  )?.mimeType
+  console.log('[Soup] Video codec negotiated:', mimeType)
+
+  // Spatial layer count is the 'L' number in the mode (e.g. 'L3T3_KEY' → 3).
+  const spatialLayers = Number(/^L(\d+)/.exec(scalabilityMode ?? '')?.[1] ?? 1)
+  if (spatialLayers > 1 && /^video\/(vp8|h264)$/i.test(mimeType ?? '')) {
+    console.warn(
+      `[Soup] ${mimeType} has no spatial SVC — thumbnail/focus resolution tiering ` +
+        'will not work (temporal layers only).'
+    )
+  }
+}
+
+// Bias how the encoder sheds quality under CPU/bandwidth pressure, via the RTP
+// sender's top-level degradationPreference. Mirrors the audio setParameters path
+// (getParameters → mutate → setParameters in a try/catch). 'maintain-resolution'
+// keeps frames sharp and lets fps drop; 'maintain-framerate' does the reverse.
+async function setDegradationPreference(producer, preference) {
+  const sender = producer.rtpSender
+  if (!sender) return
+  const params = sender.getParameters()
+  params.degradationPreference = preference
+  try {
+    await sender.setParameters(params)
+  } catch (err) {
+    console.warn('[Soup] Failed to set degradationPreference:', err)
+  }
+}
+
 // ─── Share screen ────────────────────────────────────────────────
-export async function shareScreen({ fps = 30, width = 1920, height = 1080, audio = true } = {}) {
+// audioMode selects where screenshare audio comes from:
+//   'app'                 native capture of the shared app only (audioTargets)
+//   'system-exclude-self' native system capture minus our own audio
+//   'system'              native whole-system capture
+//   'system-legacy'       Chromium's loopback (rides the getDisplayMedia stream)
+//   'none'                video only
+// Native modes are produced from the audio-capture pipeline (screenAudio.js);
+// only 'system-legacy' asks getDisplayMedia for audio.
+export async function shareScreen({
+  fps = 30,
+  width = 1920,
+  height = 1080,
+  audioMode = 'none',
+  audioTargets = null,
+  // 'detail' (default) keeps text sharp, 'motion' favors smoothness — drives
+  // the track contentHint and degradationPreference below.
+  optimizeFor = 'detail',
+  // Legacy boolean from the old picker API - maps to system-legacy loopback.
+  audio = undefined
+} = {}) {
   if (!producerTransport) throw new Error('Not connected to voice')
+  if (audio !== undefined && audioMode === 'none' && audio) audioMode = 'system-legacy'
 
   const stream = await navigator.mediaDevices.getDisplayMedia({
     video: {
@@ -771,20 +942,23 @@ export async function shareScreen({ fps = 30, width = 1920, height = 1080, audio
       width: { ideal: width },
       height: { ideal: height }
     },
-    audio
+    audio: audioMode === 'system-legacy'
   })
 
   const track = stream.getVideoTracks()[0]
-  track.contentHint = 'detail'
+  track.contentHint = optimizeFor === 'motion' ? 'motion' : 'detail'
 
+  const scalabilityMode = scalabilityModeFor(height)
   try {
     screenProducer = await producerTransport.produce({
       track,
-      // AV1 SVC: one efficient upload carrying 3 spatial × 3 temporal layers, so
-      // the server can forward a cheap layer to thumbnails / a full layer to the
-      // focused viewer (see setVideoStreamRoles). '_KEY' shares the keyframe across
-      // spatial layers for cleaner layer switching.
-      encodings: [{ maxBitrate: 15000000, scalabilityMode: 'L3T3_KEY' }],
+      // Request the codec explicitly (AV1, else VP9 — see pickVideoCodec) so we get
+      // real spatial SVC: one efficient upload carrying spatial × temporal layers,
+      // so the server can forward a cheap layer to thumbnails / a full layer to
+      // the focused viewer (see setVideoStreamRoles). Spatial-layer count adapts
+      // to the picked resolution (see scalabilityModeFor).
+      codec: pickVideoCodec(),
+      encodings: [{ maxBitrate: 15000000, scalabilityMode }],
       codecOptions: {
         videoGoogleStartBitrate: 8000
       },
@@ -798,18 +972,46 @@ export async function shareScreen({ fps = 30, width = 1920, height = 1080, audio
   }
 
   localProducerIds.add(screenProducer.id)
+  logNegotiatedVideoCodec(screenProducer, scalabilityMode)
+  // Follow the picker's Optimize-for choice: 'detail' keeps text sharp (fps drops
+  // first under pressure), 'motion' favors framerate for video-heavy shares.
+  await setDegradationPreference(
+    screenProducer,
+    optimizeFor === 'motion' ? 'maintain-framerate' : 'maintain-resolution'
+  )
   console.log(`[Soup] Screen sharing [id:${screenProducer.id}]`)
 
-  // System/tab audio is only available for some sources (e.g. full screens
-  // on Windows) - produce it alongside the video when the browser gives us one.
-  const audioTrack = stream.getAudioTracks()[0]
+  // Screenshare audio: native capture for the per-app/system modes, or the
+  // legacy loopback track riding the getDisplayMedia stream. Native capture
+  // failure degrades to a video-only share rather than failing the whole thing.
+  let audioTrack = null
+  if (audioMode === 'system-legacy') {
+    audioTrack = stream.getAudioTracks()[0] ?? null
+  } else if (audioMode !== 'none') {
+    try {
+      const nativeAudio = await startScreenAudio({
+        mode: audioMode,
+        targets: audioTargets ?? undefined
+      })
+      audioTrack = nativeAudio.track
+      console.log(`[Soup] Native screen audio capture started [backend:${nativeAudio.backend}]`)
+    } catch (err) {
+      console.error('[Soup] Native screen audio failed, sharing video-only:', err)
+      activeCallbacks.onScreenAudioError?.(err.message)
+    }
+  }
+
   if (audioTrack) {
     screenAudioProducer = await producerTransport.produce({
       track: audioTrack,
+      // Stereo + a real bitrate: captured app/system audio is music/media,
+      // not speech, and the old mono default audibly degraded it.
       codecOptions: {
+        opusStereo: true,
         opusDtx: true,
         opusFec: true
       },
+      encodings: [{ maxBitrate: 160000 }],
       appData: { produced: 'ScreenShareAudio' }
     })
     localProducerIds.add(screenAudioProducer.id)
@@ -849,8 +1051,10 @@ export async function shareCamera(deviceId) {
   try {
     screenProducer = await producerTransport.produce({
       track,
-      // AV1 SVC layers — see the note in shareScreen().
-      encodings: [{ maxBitrate: 15000000, scalabilityMode: 'L3T3_KEY' }],
+      // Spatial SVC layers with the codec requested explicitly (AV1, else VP9 —
+      // see pickVideoCodec), same as shareScreen().
+      codec: pickVideoCodec(),
+      encodings: [{ maxBitrate: 15000000, scalabilityMode: VIDEO_SCALABILITY_MODE }],
       codecOptions: {
         videoGoogleStartBitrate: 8000
       },
@@ -863,6 +1067,9 @@ export async function shareCamera(deviceId) {
   }
 
   localProducerIds.add(screenProducer.id)
+  logNegotiatedVideoCodec(screenProducer, VIDEO_SCALABILITY_MODE)
+  // Camera content is motion, so keep framerate smooth (resolution drops first).
+  await setDegradationPreference(screenProducer, 'maintain-framerate')
   console.log(`[Soup] Camera sharing [id:${screenProducer.id}]`)
 
   track.onended = () => {
@@ -895,6 +1102,9 @@ export async function stopScreenShare() {
     notify('CloseProducer', { id: audioProducerId })
     screenAudioProducer = null
   }
+
+  // Tear down the native capture session (no-op for legacy/video-only shares).
+  stopScreenAudio().catch(() => {})
 
   console.log('[Soup] Screen share stopped')
 }
@@ -1167,11 +1377,18 @@ export function resetMediaState() {
   screenProducer = null
   screenAudioProducer?.close()
   screenAudioProducer = null
+  stopScreenAudio().catch(() => {})
   producers = []
   localProducerIds.clear()
   device = null
   currentChannel = null
   stopAudioProcessor()
+  // Release the raw mic capture — the producers above are closed, so no live
+  // producer references it anymore (nothing to keep the OS mic open for).
+  stopRawStream(rawMicStream)
+  rawMicStream = null
+  // Idle the shared mic context between sessions; getMicContext() resumes it.
+  if (micContext?.state === 'running') micContext.suspend().catch(() => {})
   subscribePromise = null
   remoteCleanups.forEach((fn) => fn())
   remoteCleanups = []

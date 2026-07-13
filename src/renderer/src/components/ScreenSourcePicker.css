@@ -273,3 +273,94 @@
   opacity: 0.4;
   cursor: not-allowed;
 }
+
+/* ─── Audio source dropdown ─────────────────────────────────────── */
+.picker-audio-select {
+  background: var(--color-background-mute);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  color: inherit;
+  font: inherit;
+  font-size: 0.82rem;
+  padding: 4px 8px;
+  max-width: 200px;
+}
+
+.picker-audio-select:focus-visible {
+  outline: none;
+  border-color: var(--color-primary);
+}
+
+/* ─── Per-app audio list (Linux) ────────────────────────────────── */
+.picker-app-list {
+  margin-top: 10px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-background-mute) 40%, transparent);
+  padding: 8px 10px;
+  max-height: 140px;
+  overflow-y: auto;
+}
+
+.picker-app-list-title {
+  font-size: 0.78rem;
+  font-weight: 600;
+  opacity: 0.75;
+  margin-bottom: 6px;
+}
+
+.picker-app-list-empty {
+  font-size: 0.8rem;
+  opacity: 0.65;
+  padding: 4px 0;
+}
+
+.picker-app-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 2px;
+  font-size: 0.85rem;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+
+.picker-app-item:hover {
+  background: color-mix(in srgb, var(--color-background-mute) 80%, transparent);
+}
+
+.picker-app-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker-app-binary {
+  font-size: 0.72rem;
+  opacity: 0.5;
+}
+
+/* ─── Wayland portal note ───────────────────────────────────────── */
+.picker-portal-note {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  min-height: 180px;
+  opacity: 0.75;
+  text-align: center;
+  padding: 0 32px;
+}
+
+/* ─── Native-capture-unavailable warning ────────────────────────── */
+.picker-audio-warning {
+  margin-top: 10px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  background: color-mix(in srgb, #e5a50a 12%, transparent);
+  border: 1px solid color-mix(in srgb, #e5a50a 35%, transparent);
+}

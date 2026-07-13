@@ -37,11 +37,12 @@ function hasCompleteElectronInstall() {
   return fs.readFileSync(markerFile, 'utf8').trim() === executablePath
 }
 
-function run(command, args, label) {
+function run(command, args, label, options = {}) {
   const result = spawnSync(command, args, {
     cwd: projectRoot,
     env: process.env,
-    stdio: 'inherit'
+    stdio: 'inherit',
+    ...options
   })
 
   if (result.error) {
@@ -61,37 +62,57 @@ function installAppDeps() {
   )
 }
 
-function repairElectronInstall() {
-  console.warn(
-    `[postinstall] Electron was left in a partial install state under Node ${process.versions.node}. Retrying the Electron binary install with Node 22.`
-  )
-
-  if (process.platform === 'win32') {
-    run(
-      process.env.ComSpec || 'cmd.exe',
-      ['/d', '/s', '/c', 'npx -y node@22 node_modules\\electron\\install.js'],
-      'electron install retry'
+// Build the Rust N-API screenshare-audio addon (native/audio-capture). N-API is
+// ABI-stable, so unlike uiohook-napi it does not need an Electron-specific
+// rebuild - one cargo build serves both dev (system Node) and Electron.
+function buildNativeAddon() {
+  const cargoCheck = spawnSync('cargo', ['--version'], {
+    stdio: 'ignore',
+    shell: process.platform === 'win32'
+  })
+  if (cargoCheck.error || cargoCheck.status !== 0) {
+    console.warn(
+      '[postinstall] cargo not found - skipping native/audio-capture build. ' +
+        'Screenshare audio capture will be unavailable; install Rust (https://rustup.rs) and re-run npm install.'
     )
-  } else {
-    run(
-      'npx',
-      ['-y', 'node@22', path.join('node_modules', 'electron', 'install.js')],
-      'electron install retry'
+    return
+  }
+
+  try {
+    // npm is npm.cmd on Windows; batch files must be spawned through a shell
+    // (Node >= 18.20 rejects them with EINVAL otherwise).
+    run('npm', ['--prefix', 'native/audio-capture', 'run', 'build'], 'audio-capture native build', {
+      shell: process.platform === 'win32'
+    })
+  } catch (error) {
+    console.warn(
+      `[postinstall] native/audio-capture build failed: ${error.message}. ` +
+        'Screenshare audio filtering will be unavailable until "npm run build:native" succeeds ' +
+        '(needs the Rust toolchain; on Windows also the MSVC build tools).'
     )
   }
+}
+
+function installElectronBinary() {
+  console.warn('[postinstall] Electron binary is not installed yet; downloading it now.')
+
+  run('npm', ['exec', '--', 'install-electron', '--no'], 'Electron binary install', {
+    shell: process.platform === 'win32'
+  })
 
   if (!hasCompleteElectronInstall()) {
     throw new Error(
-      'Electron is still missing its bundled executable. Delete node_modules and package-lock.json, switch to Node 22 LTS, then run npm install again.'
+      'Electron is still missing its bundled executable. Run "npm exec -- install-electron --no" and retry.'
     )
   }
 }
 
 try {
   installAppDeps()
+  buildNativeAddon()
 
   if (!hasCompleteElectronInstall()) {
-    repairElectronInstall()
+    installElectronBinary()
   }
 } catch (error) {
   console.error(`[postinstall] ${error.message}`)

@@ -6,8 +6,9 @@ import ClientIndicator from './ClientIndicator'
 import ServerMenu from './ServerMenu'
 import { setMicMuted, setSoundMuted } from '../lib/soup'
 import { playUiSound } from '../lib/sounds'
-import { useAnimationCategory } from '../context/SettingsContext'
+import { useAnimationCategory, useSettings } from '../context/SettingsContext'
 import { useAnimatedPresence, useBlockShift } from '../lib/animation'
+import { keyboardEventToAccelerator, normalizeAccelerator } from '../../../shared/keybinds'
 import SegmentedTabs from './SegmentedTabs'
 import './SideBar.css'
 import {
@@ -71,6 +72,7 @@ function Sidebar({
   previewChannelId,
   unreadChannelIds
 }) {
+  const { keybindSettings } = useSettings()
   const [width, setWidth] = useState(() => {
     const saved = localStorage.getItem('sidebar-width')
     return saved ? parseInt(saved) : DEFAULT_WIDTH
@@ -211,9 +213,7 @@ function Sidebar({
     const edge = e.clientY < rect.top + rect.height / 2 ? 'before' : 'after'
     // Suppress the indicator on no-op gaps (adjacent to the dragged channel).
     const next = dropPositionFor(id, edge) == null ? null : { id, edge }
-    setDropTarget((prev) =>
-      prev?.id === next?.id && prev?.edge === next?.edge ? prev : next
-    )
+    setDropTarget((prev) => (prev?.id === next?.id && prev?.edge === next?.edge ? prev : next))
   }
   const handleChannelDrop = (e) => {
     e.preventDefault()
@@ -241,25 +241,75 @@ function Sidebar({
 
   const toggleMic = useCallback(() => {
     const next = !micMutedRef.current
+    micMutedRef.current = next
     setMicMutedState(next)
     playUiSound(next ? 'mic-mute' : 'mic-unmute')
   }, [])
 
   const toggleSound = useCallback(() => {
     const next = !soundMutedRef.current
+    soundMutedRef.current = next
     setSoundMutedState(next)
     playUiSound(next ? 'sound-mute' : 'sound-unmute')
   }, [])
 
-  // The main process owns the OS-wide keyboard hook and tells us which action
-  // fired (see main/keybinds.js). We just run the matching toggle.
-  useEffect(() => {
-    const off = window.electron?.ipcRenderer?.on('keybinds:trigger', (_e, action) => {
+  // Keep both global and focused-window shortcuts on one action path. A working
+  // Wayland portal can report the same focused keystroke just after the DOM
+  // event, so suppress that cross-backend duplicate instead of toggling twice.
+  const lastKeybindTrigger = useRef({ action: null, source: null, time: 0 })
+  const runKeybindAction = useCallback(
+    (action, source) => {
+      const now = performance.now()
+      const previous = lastKeybindTrigger.current
+      if (previous.action === action && previous.source !== source && now - previous.time < 500) {
+        return
+      }
+      lastKeybindTrigger.current = { action, source, time: now }
+
       if (action === 'toggleMicMute') toggleMic()
       else if (action === 'toggleSoundMute') toggleSound()
+    },
+    [toggleMic, toggleSound]
+  )
+
+  // The main process owns the OS-wide keyboard hook and tells us which action
+  // fired (see main/keybinds.js).
+  useEffect(() => {
+    const off = window.electron?.ipcRenderer?.on('keybinds:trigger', (_e, action) => {
+      runKeybindAction(action, 'global')
     })
     return () => off?.()
-  }, [toggleMic, toggleSound])
+  }, [runKeybindAction])
+
+  // Also activate saved shortcuts from ordinary DOM keyboard events while the
+  // app is focused. Wayland always permits these events, so controls remain
+  // usable even when the compositor/portal cannot provide a global shortcut.
+  useEffect(() => {
+    const onKeyDown = (event) => {
+      if (event.repeat || event.defaultPrevented) return
+
+      const target = event.target
+      if (
+        target instanceof HTMLElement &&
+        (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))
+      ) {
+        return
+      }
+
+      const accelerator = keyboardEventToAccelerator(event)
+      if (!accelerator) return
+      const action = Object.entries(keybindSettings).find(
+        ([, bound]) => bound && normalizeAccelerator(bound) === accelerator
+      )?.[0]
+      if (!action) return
+
+      event.preventDefault()
+      runKeybindAction(action, 'focused')
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [keybindSettings, runKeybindAction])
 
   // Apply mute state to soup whenever it changes. Deafening (soundMuted)
   // also silences the mic, regardless of the independent mic-mute toggle.

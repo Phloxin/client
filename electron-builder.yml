@@ -1,5 +1,5 @@
-appId: com.electron.app
-productName: my-app
+appId: app.pylon.client
+productName: Pylon
 directories:
   buildResources: build
 files:
@@ -8,10 +8,17 @@ files:
   - '!electron.vite.config.{js,ts,mjs,cjs}'
   - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
   - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
+  # audio-capture is a file: dep symlinked into node_modules - ship the copy
+  # under node_modules (built artifacts only), not the raw source dir.
+  - '!native/**'
+  - '!**/audio-capture/{target,src,npm}/**'
+  - '!**/audio-capture/{build.rs,Cargo.toml,Cargo.lock,.gitignore}'
 asarUnpack:
   - resources/**
+  # Native modules must live outside the asar to be dlopen-able.
+  - '**/*.node'
 win:
-  executableName: my-app
+  executableName: pylon
 nsis:
   artifactName: ${name}-${version}-setup.${ext}
   shortcutName: ${productName}
@@ -22,12 +29,14 @@ mac:
   extendInfo:
     - NSCameraUsageDescription: Application requests access to the device's camera.
     - NSMicrophoneUsageDescription: Application requests access to the device's microphone.
+    - NSAudioCaptureUsageDescription: Application requests access to capture system audio during screen sharing.
     - NSDocumentsFolderUsageDescription: Application requests access to the user's Documents folder.
     - NSDownloadsFolderUsageDescription: Application requests access to the user's Downloads folder.
   notarize: false
 dmg:
   artifactName: ${name}-${version}.${ext}
 linux:
+  syncDesktopName: true
   target:
     - AppImage
     - snap

@@ -1,95 +1,216 @@
-import { ipcMain, BrowserWindow } from 'electron'
-import { uIOhook, UiohookKey } from 'uiohook-napi'
+import { ipcMain, BrowserWindow, globalShortcut } from 'electron'
+import { normalizeAccelerator, uiohookKeyNameToAccelerator } from '../shared/keybinds'
 
-// Global, *passive* keybinds (Discord/TeamSpeak style). uIOhook observes every
-// keystroke OS-wide without consuming it, so a bound key still types normally in
-// other apps — it just also fires our action. This is why we can't use Electron's
-// globalShortcut (that one is exclusive and swallows the key).
-
-// keycode -> readable name, the inverse of UiohookKey. Used to build combo
-// strings that match what the renderer stores (e.g. "Ctrl+Shift+M").
-const CODE_TO_NAME = Object.fromEntries(
-  Object.entries(UiohookKey).map(([name, code]) => [code, name])
-)
-
-const MODIFIER_CODES = new Set([
-  UiohookKey.Ctrl,
-  UiohookKey.CtrlRight,
-  UiohookKey.Alt,
-  UiohookKey.AltRight,
-  UiohookKey.Shift,
-  UiohookKey.ShiftRight,
-  UiohookKey.Meta,
-  UiohookKey.MetaRight
-])
+// X11, Windows, and macOS use a passive uIOhook listener. Wayland intentionally
+// prevents that kind of global input observation, so it uses Electron's
+// compositor-managed GlobalShortcuts portal instead.
 
 // Build a combo string from a uIOhook keydown event, or null while only modifier
-// keys are held (so capture waits for a real key before committing).
+// keys are held.
 function eventToCombo(e) {
-  if (MODIFIER_CODES.has(e.keycode)) return null
+  if (passiveModifierCodes.has(e.keycode)) return null
+
   const parts = []
   if (e.ctrlKey) parts.push('Ctrl')
   if (e.altKey) parts.push('Alt')
   if (e.shiftKey) parts.push('Shift')
   if (e.metaKey) parts.push('Meta')
-  parts.push(CODE_TO_NAME[e.keycode] || `Key${e.keycode}`)
+  const keyName = passiveCodeToName[e.keycode]
+  if (!keyName) return null
+  parts.push(uiohookKeyNameToAccelerator(keyName))
   return parts.join('+')
 }
 
 let binds = {} // { actionId: combo }
-let capturing = false // true while the settings UI is recording a new combo
 let started = false
+let passiveHook = null
+let passiveCodeToName = {}
+let passiveModifierCodes = new Set()
+let backend = 'starting'
+let registrationStatus = {}
+const portalRegistrations = new Map() // actionId -> Electron accelerator
+
+const isWayland = process.platform === 'linux' && process.env.XDG_SESSION_TYPE === 'wayland'
 
 function firstWindow() {
   return BrowserWindow.getAllWindows()[0] || null
 }
 
-export function setupGlobalKeybinds() {
-  // Renderer pushes the current binds whenever they change.
-  ipcMain.on('keybinds:set', (_e, next) => {
-    binds = next || {}
-  })
-  ipcMain.on('keybinds:capture-start', () => {
-    capturing = true
-  })
-  ipcMain.on('keybinds:capture-cancel', () => {
-    capturing = false
-  })
+function sendToRenderer(channel, ...args) {
+  const win = firstWindow()
+  if (!win || win.isDestroyed()) return
+  win.webContents.send(channel, ...args)
+}
 
-  uIOhook.on('keydown', (e) => {
-    const combo = eventToCombo(e)
-    if (!combo) return // waiting on a non-modifier key
+function statusPayload() {
+  return { backend, actions: registrationStatus }
+}
 
-    const win = firstWindow()
-    if (!win || win.isDestroyed()) return
+function publishStatus(target = null) {
+  const payload = statusPayload()
+  if (target && !target.isDestroyed()) target.send('keybinds:status', payload)
+  else sendToRenderer('keybinds:status', payload)
+}
 
-    if (capturing) {
-      capturing = false
-      win.webContents.send('keybinds:captured', combo)
-      return // a key pressed during capture only records; it doesn't trigger
+function trigger(action) {
+  sendToRenderer('keybinds:trigger', action)
+}
+
+function unregisterPortalAction(action) {
+  const accelerator = portalRegistrations.get(action)
+  if (!accelerator) return
+  globalShortcut.unregister(accelerator)
+  portalRegistrations.delete(action)
+}
+
+function updatePortalBinds(next) {
+  const desired = Object.fromEntries(
+    Object.entries(next).map(([action, combo]) => [action, normalizeAccelerator(combo)])
+  )
+
+  // Remove changed bindings first so swapping two action shortcuts works.
+  for (const [action, accelerator] of portalRegistrations) {
+    if (desired[action] !== accelerator) unregisterPortalAction(action)
+  }
+
+  const claimed = new Map()
+  registrationStatus = {}
+  for (const [action, accelerator] of Object.entries(desired)) {
+    if (!accelerator) {
+      registrationStatus[action] = { registered: false, reason: 'unassigned' }
+      continue
+    }
+    if (claimed.has(accelerator)) {
+      registrationStatus[action] = {
+        registered: false,
+        reason: 'duplicate',
+        message: `Already assigned to ${claimed.get(accelerator)}.`
+      }
+      unregisterPortalAction(action)
+      continue
+    }
+    claimed.set(accelerator, action)
+
+    if (portalRegistrations.get(action) === accelerator) {
+      registrationStatus[action] = { registered: true }
+      continue
     }
 
-    for (const [action, bound] of Object.entries(binds)) {
-      if (bound && bound === combo) {
-        win.webContents.send('keybinds:trigger', action)
-        break
+    try {
+      const registered = globalShortcut.register(accelerator, () => trigger(action))
+      if (registered) {
+        portalRegistrations.set(action, accelerator)
+        registrationStatus[action] = { registered: true }
+      } else {
+        registrationStatus[action] = {
+          registered: false,
+          reason: 'unavailable',
+          message: 'The compositor rejected this shortcut or it is already in use.'
+        }
+      }
+    } catch (err) {
+      console.error(`[keybinds] failed to register ${accelerator}:`, err)
+      registrationStatus[action] = {
+        registered: false,
+        reason: 'error',
+        message: 'This shortcut is not supported by the desktop.'
       }
     }
-  })
+  }
 
+  publishStatus()
+}
+
+async function startPassiveHook() {
   try {
+    const { uIOhook, UiohookKey } = await import('uiohook-napi')
+    passiveHook = uIOhook
+    passiveCodeToName = Object.fromEntries(
+      Object.entries(UiohookKey).map(([name, code]) => [code, name])
+    )
+    passiveModifierCodes = new Set([
+      UiohookKey.Ctrl,
+      UiohookKey.CtrlRight,
+      UiohookKey.Alt,
+      UiohookKey.AltRight,
+      UiohookKey.Shift,
+      UiohookKey.ShiftRight,
+      UiohookKey.Meta,
+      UiohookKey.MetaRight
+    ])
+    uIOhook.on('keydown', (e) => {
+      const combo = eventToCombo(e)
+      if (!combo) return
+
+      for (const [action, bound] of Object.entries(binds)) {
+        if (bound && normalizeAccelerator(bound) === combo) {
+          trigger(action)
+          break
+        }
+      }
+    })
+
     uIOhook.start()
     started = true
+    backend = 'passive-hook'
+    registrationStatus = Object.fromEntries(
+      Object.entries(binds).map(([action, combo]) => [
+        action,
+        combo ? { registered: true } : { registered: false, reason: 'unassigned' }
+      ])
+    )
+    publishStatus()
   } catch (err) {
+    backend = 'unavailable'
+    registrationStatus = Object.fromEntries(
+      Object.entries(binds).map(([action, combo]) => [
+        action,
+        combo
+          ? {
+              registered: false,
+              reason: 'error',
+              message: 'The operating-system keyboard hook could not be started.'
+            }
+          : { registered: false, reason: 'unassigned' }
+      ])
+    )
     console.error('[keybinds] failed to start global hook:', err)
+    publishStatus()
+  }
+}
+
+export function setupGlobalKeybinds() {
+  // Renderer pushes the current binds whenever they change.
+  ipcMain.on('keybinds:set', (e, next) => {
+    binds = next || {}
+    if (isWayland) updatePortalBinds(binds)
+    else if (started) {
+      registrationStatus = Object.fromEntries(
+        Object.entries(binds).map(([action, combo]) => [
+          action,
+          combo ? { registered: true } : { registered: false, reason: 'unassigned' }
+        ])
+      )
+      publishStatus(e.sender)
+    }
+  })
+  ipcMain.handle('keybinds:get-status', () => statusPayload())
+
+  if (isWayland) {
+    backend = 'wayland-portal'
+  } else {
+    startPassiveHook()
   }
 }
 
 export function stopGlobalKeybinds() {
-  if (!started) return
-  try {
-    uIOhook.stop()
-  } catch (err) {
-    console.error('[keybinds] failed to stop global hook:', err)
+  for (const action of [...portalRegistrations.keys()]) unregisterPortalAction(action)
+  if (started && passiveHook) {
+    try {
+      passiveHook.stop()
+    } catch (err) {
+      console.error('[keybinds] failed to stop global hook:', err)
+    }
   }
+  ipcMain.removeHandler('keybinds:get-status')
 }

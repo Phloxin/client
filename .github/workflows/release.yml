@@ -7,9 +7,19 @@ on:
         description: 'Release description (optional)'
         required: false
         default: ''
+      release_tag:
+        description: 'Existing version tag to rebuild (for example, v0.0.1); leave blank for a new release'
+        type: string
+        required: false
+        default: ''
+      replace_existing_assets:
+        description: 'Replace assets for an existing version tag at the selected commit'
+        type: boolean
+        required: false
+        default: false
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.release_tag || github.ref }}
   cancel-in-progress: false
 
 permissions:
@@ -33,10 +43,12 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
 
       - name: Setup Node.js 22
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: npm
@@ -46,10 +58,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libx11-dev libxtst-dev libxt-dev libxinerama-dev libxkbcommon-dev libxkbfile-dev
+            libx11-dev libxtst-dev libxt-dev libxinerama-dev libxkbcommon-dev libxkbfile-dev \
+            libxrandr-dev libx11-xcb-dev libxkbcommon-x11-dev \
+            libpipewire-0.3-dev
 
       - name: Cache Electron binaries
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cache/electron
@@ -62,14 +76,29 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-electron-
 
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native/audio-capture
+
       - name: Install dependencies
         run: npm ci
+
+      - name: Build native audio addon
+        run: npm run build:native
+
+      - name: Verify native audio addon built
+        shell: bash
+        run: node -e "require('./native/audio-capture/index.js'); console.log('audio-capture addon loaded')"
 
       - name: Build + Package
         run: npm run ${{ matrix.script }} -- --publish=never
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-${{ matrix.os }}
           path: |
@@ -81,6 +110,7 @@ jobs:
             dist/**/*.deb
             dist/**/*.snap
             dist/**/*.tar.gz
+            !dist/**/*-unpacked/**
           if-no-files-found: error
           compression-level: 0
 
@@ -93,34 +123,61 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
 
       - name: Get version from package.json
         id: version
         run: echo "version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
 
-      - name: Create tag
+      - name: Create or validate tag
+        env:
+          VERSION_TAG: v${{ steps.version.outputs.version }}
+          REQUESTED_TAG: ${{ inputs.release_tag }}
+          REPLACE_EXISTING_ASSETS: ${{ inputs.replace_existing_assets }}
         run: |
-          git fetch --tags
-          if ! git rev-parse "v${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
+          TAG_NAME="${REQUESTED_TAG:-${VERSION_TAG}}"
+          if [[ "${TAG_NAME}" != "${VERSION_TAG}" ]]; then
+            echo "::error::Requested tag ${TAG_NAME} does not match package.json version tag ${VERSION_TAG}."
+            exit 1
+          fi
+
+          git fetch --tags --force
+          if git rev-parse --verify --quiet "refs/tags/${TAG_NAME}" >/dev/null; then
+            if [[ "${REPLACE_EXISTING_ASSETS}" != "true" ]]; then
+              echo "::error::Tag ${TAG_NAME} already exists. Rerun with 'Replace assets' enabled to rebuild this release."
+              exit 1
+            fi
+
+            tag_commit=$(git rev-list -n 1 "${TAG_NAME}")
+            checked_out_commit=$(git rev-parse HEAD)
+            if [[ "${tag_commit}" != "${checked_out_commit}" ]]; then
+              echo "::error::Tag ${TAG_NAME} points to ${tag_commit}, but this run checked out ${checked_out_commit}. Set the release tag input to ${TAG_NAME} to replace its assets."
+              exit 1
+            fi
+
+            echo "Reusing ${TAG_NAME} at ${tag_commit}; existing release assets may be overwritten."
+          else
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
-            git tag "v${{ steps.version.outputs.version }}"
-            git push origin "v${{ steps.version.outputs.version }}"
+            git tag "${TAG_NAME}" "$(git rev-parse HEAD)"
+            git push origin "${TAG_NAME}"
           fi
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: release-assets
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: v${{ steps.version.outputs.version }}
           name: v${{ steps.version.outputs.version }}
           body: ${{ inputs.description }}
           generate_release_notes: true
+          overwrite_files: ${{ inputs.replace_existing_assets }}
           files: |
             release-assets/**/*.exe
             release-assets/**/*.msi

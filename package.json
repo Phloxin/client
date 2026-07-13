@@ -1,12 +1,13 @@
 {
-  "name": "my-app",
+  "name": "pylon",
+  "desktopName": "app.pylon.client.desktop",
   "version": "0.0.1",
   "description": "An Electron application with React",
   "main": "./out/main/index.js",
   "author": "example.com",
   "homepage": "https://electron-vite.org",
   "engines": {
-    "node": ">=22 <25",
+    "node": ">=22.12 <25",
     "npm": ">=10"
   },
   "scripts": {
@@ -15,6 +16,7 @@
     "start": "electron-vite preview",
     "dev": "electron-vite dev",
     "build": "electron-vite build",
+    "build:native": "npm --prefix native/audio-capture run build",
     "postinstall": "node scripts/postinstall.cjs",
     "build:unpack": "npm run build && electron-builder --dir",
     "build:win": "npm run build && electron-builder --win",
@@ -31,6 +33,7 @@
     "@fontsource-variable/roboto": "^5.2.10",
     "@sapphi-red/web-noise-suppressor": "^0.3.5",
     "@tabler/icons-react": "^3.44.0",
+    "audio-capture": "file:native/audio-capture",
     "highlight.js": "^11.11.1",
     "mediasoup-client": "^3.20.0",
     "motion": "^12.42.2",
@@ -43,7 +46,7 @@
     "@electron-toolkit/eslint-config": "^2.1.0",
     "@electron-toolkit/eslint-config-prettier": "^3.0.0",
     "@vitejs/plugin-react": "^5.1.1",
-    "electron": "^39.2.6",
+    "electron": "^43.1.0",
     "electron-builder": "^26.15.3",
     "electron-vite": "^5.0.0",
     "eslint": "^9.39.1",
@@ -54,5 +57,11 @@
     "react": "^19.2.1",
     "react-dom": "^19.2.1",
     "vite": "^7.2.6"
+  },
+  "allowScripts": {
+    "esbuild@0.25.12": true,
+    "esbuild@0.28.1": true,
+    "uiohook-napi@1.5.5": true,
+    "electron-winstaller": false
   }
 }

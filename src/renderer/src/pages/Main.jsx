@@ -42,7 +42,7 @@ import {
   IconVolume
 } from '@tabler/icons-react'
 
-const APP_TITLE = 'Teamspeak 26'
+const APP_TITLE = 'Pylon'
 
 //Various Timing Definitions
 const MAX_LOG_ENTRIES = 500
@@ -329,6 +329,10 @@ function Main() {
 
   // While popped out, watch for the popout window closing (via its controls or
   // app shutdown) and restore the in-app stream view + re-enable the toggle.
+  // Polls `.closed` rather than listening for 'pagehide': the new window's empty
+  // document fires pagehide as it navigates to the popout route, which read as an
+  // instant close and yanked the view back with the popout still open. `.closed`
+  // only flips on a genuine close, so it has no such false positive.
   useEffect(() => {
     if (!poppedOut) return
     const id = setInterval(() => {
@@ -337,7 +341,7 @@ function Main() {
         setPoppedOut(false)
         setViewMode('video')
       }
-    }, 500)
+    }, 1000)
     return () => clearInterval(id)
   }, [poppedOut])
 
@@ -1291,7 +1295,7 @@ function Main() {
     const credentials = {
       username: server.username,
       password: server.password,
-      device_name: 'CNaps Desktop'
+      device_name: 'Pylon Desktop'
     }
     const login = () =>
       fetch(`${apiBase()}/login`, {
