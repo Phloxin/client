@@ -7,7 +7,7 @@
   "author": "example.com",
   "homepage": "https://electron-vite.org",
   "engines": {
-    "node": ">=22 <25",
+    "node": ">=22.12 <25",
     "npm": ">=10"
   },
   "scripts": {
@@ -46,7 +46,7 @@
     "@electron-toolkit/eslint-config": "^2.1.0",
     "@electron-toolkit/eslint-config-prettier": "^3.0.0",
     "@vitejs/plugin-react": "^5.1.1",
-    "electron": "^41.10.1",
+    "electron": "^43.1.0",
     "electron-builder": "^26.15.3",
     "electron-vite": "^5.0.0",
     "eslint": "^9.39.1",
@@ -59,6 +59,9 @@
     "vite": "^7.2.6"
   },
   "allowScripts": {
-    "electron@41.10.1": true
+    "esbuild@0.25.12": true,
+    "esbuild@0.28.1": true,
+    "uiohook-napi@1.5.5": true,
+    "electron-winstaller": false
   }
 }

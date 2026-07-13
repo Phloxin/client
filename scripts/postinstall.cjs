@@ -93,28 +93,16 @@ function buildNativeAddon() {
   }
 }
 
-function repairElectronInstall() {
-  console.warn(
-    `[postinstall] Electron was left in a partial install state under Node ${process.versions.node}. Retrying the Electron binary install with Node 22.`
-  )
+function installElectronBinary() {
+  console.warn('[postinstall] Electron binary is not installed yet; downloading it now.')
 
-  if (process.platform === 'win32') {
-    run(
-      process.env.ComSpec || 'cmd.exe',
-      ['/d', '/s', '/c', 'npx -y node@22 node_modules\\electron\\install.js'],
-      'electron install retry'
-    )
-  } else {
-    run(
-      'npx',
-      ['-y', 'node@22', path.join('node_modules', 'electron', 'install.js')],
-      'electron install retry'
-    )
-  }
+  run('npm', ['exec', '--', 'install-electron', '--no'], 'Electron binary install', {
+    shell: process.platform === 'win32'
+  })
 
   if (!hasCompleteElectronInstall()) {
     throw new Error(
-      'Electron is still missing its bundled executable. Delete node_modules and package-lock.json, switch to Node 22 LTS, then run npm install again.'
+      'Electron is still missing its bundled executable. Run "npm exec -- install-electron --no" and retry.'
     )
   }
 }
@@ -124,7 +112,7 @@ try {
   buildNativeAddon()
 
   if (!hasCompleteElectronInstall()) {
-    repairElectronInstall()
+    installElectronBinary()
   }
 } catch (error) {
   console.error(`[postinstall] ${error.message}`)
