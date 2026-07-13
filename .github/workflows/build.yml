@@ -53,7 +53,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libx11-dev libxtst-dev libxt-dev libxinerama-dev libxkbcommon-dev libxkbfile-dev \
-            libxrandr-dev libx11-xcb-dev libxkbcommon-x11-dev
+            libxrandr-dev libx11-xcb-dev libxkbcommon-x11-dev \
+            libpipewire-0.3-dev
 
       - name: Cache Electron binaries
         uses: actions/cache@v4
@@ -79,6 +80,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Build native audio addon
+        run: npm run build:native
 
       - name: Verify native audio addon built
         shell: bash
