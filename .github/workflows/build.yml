@@ -52,7 +52,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libx11-dev libxtst-dev libxt-dev libxinerama-dev libxkbcommon-dev libxkbfile-dev
+            libx11-dev libxtst-dev libxt-dev libxinerama-dev libxkbcommon-dev libxkbfile-dev \
+            libxrandr-dev libx11-xcb-dev libxkbcommon-x11-dev
 
       - name: Cache Electron binaries
         uses: actions/cache@v4
