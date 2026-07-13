@@ -110,6 +110,7 @@ jobs:
             dist/**/*.deb
             dist/**/*.snap
             dist/**/*.tar.gz
+            !dist/**/*-unpacked/**
           if-no-files-found: error
           compression-level: 0
 
