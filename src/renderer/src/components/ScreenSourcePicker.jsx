@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { motion } from 'motion/react'
 import { useAnimationCategory } from '../context/SettingsContext'
 import { overlayPop } from '../lib/motionPresets'
@@ -22,18 +22,39 @@ const RESOLUTIONS = [
   // { label: '4K',    width: 3840, height: 2160 },
 ]
 
-// Audio is a simple On/Off toggle per tab. "On" maps to the best capture mode
-// the backend supports for that source type; "Off" is silent. The concrete
-// mode is hidden from the user - the label is always On/Off.
-//   screens tab  On -> system audio minus this app (whole-desktop share)
-//   apps tab     On -> just the shared window's app
-// Falls back down the capability ladder, ending at Chromium whole-system
-// loopback ('system-legacy') when no native backend is present.
+// Linux needs an explicit audio-source choice. X11 can use the selected window
+// title to suggest a matching PipeWire playback app, but Wayland's portal does
+// not expose the selected window's owning PID, so the audio app is selected
+// independently. Other platforms keep the simpler On/Off control.
 function audioOptionsFor(tab, caps) {
   const off = { value: 'none', label: 'Off' }
   if (!caps || caps.backend === 'none') {
-    return [{ value: 'system-legacy', label: 'On' }, off]
+    return [
+      {
+        value: 'system-legacy',
+        label: caps?.platform === 'linux' ? 'Entire system' : 'On'
+      },
+      off
+    ]
   }
+
+  if (caps.platform === 'linux') {
+    const app = { value: 'app', label: 'Selected app(s) only' }
+    const system = caps.excludeSelf
+      ? { value: 'system-exclude-self', label: 'Entire system (except Pylon)' }
+      : caps.system
+        ? { value: 'system', label: 'Entire system' }
+        : { value: 'system-legacy', label: 'Entire system' }
+
+    // A window share defaults to per-app audio. Screen shares (and Wayland,
+    // where the portal has not picked a source yet) default to system audio.
+    return tab === 'windows' && caps.perApp
+      ? [app, system, off]
+      : caps.perApp
+        ? [system, app, off]
+        : [system, off]
+  }
+
   const onValue =
     tab === 'windows' && caps.perApp
       ? 'app'
@@ -91,6 +112,7 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
   const [audioMode, setAudioMode] = useState(prefs.audioOff ? 'none' : null)
   const [apps, setApps] = useState(null)
   const [selectedApps, setSelectedApps] = useState(() => new Set())
+  const audioSelectionTouched = useRef(false)
   const overlayAnim = useAnimationCategory('overlays')
 
   const isWayland = caps?.wayland === true
@@ -171,28 +193,48 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
 
   const needsAppList = effectiveAudioMode === 'app' && caps?.platform !== 'win32'
 
-  // Load the audio-app list when per-app mode gets selected (Linux). A stale
-  // list may show briefly on re-entry; it's replaced when the fetch resolves.
+  // Keep the Linux playback-app list live while per-app mode is selected.
+  // Requests are scheduled sequentially because the main-process bridge has a
+  // single in-flight list-apps reply slot.
   useEffect(() => {
     if (!needsAppList) return
     let cancelled = false
-    listScreenAudioApps()
-      .then((result) => {
-        if (cancelled) return
-        setApps(result)
-        const windowName = sources?.find((s) => s.id === selectedId)?.name
-        setSelectedApps(new Set(matchAppsToWindow(result, windowName)))
-      })
-      .catch(() => {
-        if (!cancelled) setApps([])
-      })
+    let refreshTimer = null
+
+    const refreshApps = () => {
+      listScreenAudioApps()
+        .then((result) => {
+          if (cancelled) return
+          setApps(result)
+          const availableIds = new Set(result.map((app) => app.id))
+          setSelectedApps((previous) => {
+            const retained = new Set([...previous].filter((id) => availableIds.has(id)))
+            if (retained.size > 0 || isWayland || audioSelectionTouched.current) {
+              return retained
+            }
+            const windowName = sources?.find((source) => source.id === selectedId)?.name
+            return new Set(matchAppsToWindow(result, windowName))
+          })
+        })
+        .catch(() => {
+          if (!cancelled) setApps((current) => current ?? [])
+        })
+        .finally(() => {
+          if (!cancelled) refreshTimer = setTimeout(refreshApps, 1500)
+        })
+    }
+
+    refreshApps()
     return () => {
       cancelled = true
+      if (refreshTimer !== null) clearTimeout(refreshTimer)
     }
+    // Window changes are handled by selectSource without restarting polling.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [needsAppList])
 
   const toggleApp = (id) => {
+    audioSelectionTouched.current = true
     setSelectedApps((prev) => {
       const next = new Set(prev)
       if (next.has(id)) next.delete(id)
@@ -201,12 +243,30 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
     })
   }
 
+  const selectSource = (source) => {
+    setSelectedId(source.id)
+    if (needsAppList && !isWayland && !source.isScreen && apps !== null) {
+      audioSelectionTouched.current = false
+      setSelectedApps(new Set(matchAppsToWindow(apps, source.name)))
+    }
+  }
+
+  const selectAudioMode = (mode) => {
+    setAudioMode(mode)
+    if (mode === 'app' && caps?.platform === 'linux') {
+      audioSelectionTouched.current = false
+      setApps(null)
+      setSelectedApps(new Set())
+    }
+  }
+
   // Switch tabs and move the selection to that tab's first item, so the
   // selected source always matches what's visible.
   const switchTab = (tab) => {
     setActiveTab(tab)
     if (tab === 'screens') setSelectedId(screens[0]?.id ?? null)
-    else if (tab === 'windows') setSelectedId(windows[0]?.id ?? null)
+    else if (tab === 'windows' && windows[0]) selectSource(windows[0])
+    else if (tab === 'windows') setSelectedId(null)
     else setSelectedId(cameras?.[0]?.deviceId ?? null)
   }
 
@@ -249,7 +309,7 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
       key={source.id}
       type="button"
       className={`source-card${selectedId === source.id ? ' selected' : ''}`}
-      onClick={() => setSelectedId(source.id)}
+      onClick={() => selectSource(source)}
       onDoubleClick={() => confirmWith(source.id)}
     >
       <div className="source-thumb">
@@ -384,18 +444,33 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
             <div className="picker-quality">
               <div className="picker-quality-group">
                 <span className="picker-quality-label">Audio</span>
-                <div className="picker-segment">
-                  {audioOptions.map((opt) => (
-                    <button
-                      key={opt.value}
-                      type="button"
-                      className={`picker-segment-btn${effectiveAudioMode === opt.value ? ' active' : ''}`}
-                      onClick={() => setAudioMode(opt.value)}
-                    >
-                      {opt.label}
-                    </button>
-                  ))}
-                </div>
+                {caps?.platform === 'linux' ? (
+                  <select
+                    className="picker-audio-select"
+                    aria-label="Screen-share audio source"
+                    value={effectiveAudioMode}
+                    onChange={(e) => selectAudioMode(e.target.value)}
+                  >
+                    {audioOptions.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <div className="picker-segment">
+                    {audioOptions.map((opt) => (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        className={`picker-segment-btn${effectiveAudioMode === opt.value ? ' active' : ''}`}
+                        onClick={() => selectAudioMode(opt.value)}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
 
               <div className="picker-quality-group">

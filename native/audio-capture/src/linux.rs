@@ -153,73 +153,149 @@ pub fn capabilities() -> Capabilities {
   }
 }
 
-/// Registry *global* props are a subset of full object props: nodes don't
-/// carry a pid there, but Client globals expose the server-verified
-/// `pipewire.sec.pid`. Nodes reference their owning connection via
-/// `client.id`, so client-map + node join gives node -> pid without binding
-/// any objects.
+/// Registry *global* props are a subset of full object props. In particular,
+/// playback nodes created through pipewire-pulse only expose their real
+/// application PID after the Node is bound and emits its info event. Falling
+/// back to the owning Client's secure PID is useful for native PipeWire nodes,
+/// but is not sufficient on its own: every PulseAudio-compatible app would be
+/// attributed to the shared pipewire-pulse daemon.
 fn client_pid(props: &spa::utils::dict::DictRef) -> Option<u32> {
   props.get("pipewire.sec.pid").and_then(|p| p.parse().ok())
 }
 
+fn explicit_application_pid(props: &spa::utils::dict::DictRef) -> Option<u32> {
+  props.get("application.process.id").and_then(|p| p.parse().ok())
+}
+
+fn node_application_pid(
+  props: &spa::utils::dict::DictRef,
+  fallback_client_id: Option<u32>,
+  client_pids: &HashMap<u32, u32>,
+) -> Option<u32> {
+  explicit_application_pid(props).or_else(|| {
+      props
+        .get("client.id")
+        .and_then(|c| c.parse::<u32>().ok())
+        .or(fallback_client_id)
+        .and_then(|client_id| client_pids.get(&client_id).copied())
+    })
+}
+
+struct BoundNode {
+  _proxy: pw::node::Node,
+  _listener: pw::node::NodeListener,
+}
+
 pub fn list_apps() -> Result<Vec<AudioApp>, String> {
   let (mainloop, _context, core) = connect().map_err(|e| e.to_string())?;
-  let registry = core.get_registry().map_err(|e| e.to_string())?;
+  let registry = core.get_registry_rc().map_err(|e| e.to_string())?;
 
   struct Scan {
-    clients: HashMap<u32, u32>,             // client global id -> pid
-    nodes: Vec<(u32, String)>,              // (client id, display name)
+    clients: HashMap<u32, u32>,       // client global id -> secure pid fallback
+    nodes: HashMap<u32, AudioApp>,    // playback node global id -> real app
   }
-  let scan = Rc::new(RefCell::new(Scan { clients: HashMap::new(), nodes: Vec::new() }));
-  let scan_clone = scan.clone();
+  let scan = Rc::new(RefCell::new(Scan {
+    clients: HashMap::new(),
+    nodes: HashMap::new(),
+  }));
+  let bound_nodes: Rc<RefCell<HashMap<u32, BoundNode>>> =
+    Rc::new(RefCell::new(HashMap::new()));
+  let registry_weak = registry.downgrade();
+  let scan_add = scan.clone();
+  let scan_remove = scan.clone();
+  let bindings_add = bound_nodes.clone();
+  let bindings_remove = bound_nodes.clone();
   let _listener = registry
     .add_listener_local()
     .global(move |global| {
       let Some(props) = global.props else { return };
-      let mut scan = scan_clone.borrow_mut();
       match global.type_ {
         pw::types::ObjectType::Client => {
           if let Some(pid) = client_pid(props) {
-            scan.clients.insert(global.id, pid);
+            scan_add.borrow_mut().clients.insert(global.id, pid);
           }
         }
         pw::types::ObjectType::Node => {
           if props.get("media.class") != Some(MEDIA_CLASS_PLAYBACK) {
             return;
           }
-          let Some(client_id) = props.get("client.id").and_then(|c| c.parse::<u32>().ok())
-          else {
-            return;
+          let fallback_client_id = props.get("client.id").and_then(|c| c.parse().ok());
+          let Some(registry) = registry_weak.upgrade() else { return };
+          let node = match registry.bind::<pw::node::Node, _>(global) {
+            Ok(node) => node,
+            Err(err) => {
+              eprintln!("[audio-capture] bind playback node {} failed: {err}", global.id);
+              return;
+            }
           };
-          let name = props
-            .get("application.name")
-            .or_else(|| props.get("node.name"))
-            .unwrap_or("Unknown app")
-            .to_string();
-          scan.nodes.push((client_id, name));
+          let node_id = global.id;
+          let scan_info = scan_add.clone();
+          let node_listener = node
+            .add_listener_local()
+            .info(move |info| {
+              let Some(props) = info.props() else { return };
+              let mut scan = scan_info.borrow_mut();
+              // Node info change events can contain only the registry-level
+              // property subset. Never replace a real app PID/name learned
+              // from a full info event with the pipewire-pulse fallback.
+              if explicit_application_pid(props).is_none() && scan.nodes.contains_key(&node_id) {
+                return;
+              }
+              let Some(pid) = node_application_pid(props, fallback_client_id, &scan.clients)
+              else {
+                return;
+              };
+              let name = props
+                .get("application.name")
+                .or_else(|| props.get("node.name"))
+                .unwrap_or("Unknown app")
+                .to_string();
+              let binary = props.get("application.process.binary").map(str::to_string);
+              scan.nodes.insert(
+                node_id,
+                AudioApp {
+                  id: pid.to_string(),
+                  name,
+                  pid: Some(pid),
+                  binary,
+                },
+              );
+            })
+            .register();
+          bindings_add.borrow_mut().insert(
+            node_id,
+            BoundNode {
+              _proxy: node,
+              _listener: node_listener,
+            },
+          );
         }
         _ => {}
       }
     })
+    .global_remove(move |id| {
+      bindings_remove.borrow_mut().remove(&id);
+      let mut scan = scan_remove.borrow_mut();
+      scan.clients.remove(&id);
+      scan.nodes.remove(&id);
+    })
     .register();
 
+  // The first trip discovers globals and binds playback nodes; the second
+  // waits for the bound nodes' full info events.
+  roundtrip(&mainloop, &core);
   roundtrip(&mainloop, &core);
 
   let ours = our_process_tree();
   let scan = scan.borrow();
   // pid -> app, aggregating multi-stream apps into one row
   let mut apps: HashMap<u32, AudioApp> = HashMap::new();
-  for (client_id, name) in &scan.nodes {
-    let Some(&pid) = scan.clients.get(client_id) else { continue };
+  for app in scan.nodes.values() {
+    let Some(pid) = app.pid else { continue };
     if ours.contains(&pid) {
       continue;
     }
-    apps.entry(pid).or_insert(AudioApp {
-      id: pid.to_string(),
-      name: name.clone(),
-      pid: Some(pid),
-      binary: None,
-    });
+    apps.entry(pid).or_insert_with(|| app.clone());
   }
   let mut result: Vec<AudioApp> = apps.into_values().collect();
   result.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
@@ -235,13 +311,21 @@ struct PortInfo {
 
 #[derive(Default)]
 struct LinkState {
-  /// Client global id -> server-verified pid (pipewire.sec.pid).
+  /// Client global id -> server-verified pid, used only when a bound node does
+  /// not publish application.process.id itself.
   client_pids: HashMap<u32, u32>,
   /// Our null sink's node global id (identified by node.name).
   sink_node: Option<u32>,
   /// Our sink's input ports: channel name -> port global id.
   sink_ports: HashMap<String, u32>,
-  /// Candidate app playback nodes: node global id -> pid.
+  /// All playback node globals, including nodes whose bound info has not
+  /// arrived yet. Their port globals can precede the full node info event.
+  playback_nodes: HashSet<u32>,
+  /// Last known identity for every playback node. PipeWire may later emit a
+  /// partial info event without application.process.id; retain the real PID
+  /// instead of downgrading it to the shared pipewire-pulse daemon PID.
+  node_pids: HashMap<u32, u32>,
+  /// Selected app playback nodes: node global id -> real application pid.
   app_nodes: HashMap<u32, u32>,
   /// Output ports of candidate nodes: node global id -> ports.
   app_ports: HashMap<u32, Vec<PortInfo>>,
@@ -307,8 +391,39 @@ fn link_ports(core: &pw::core::CoreRc, state: &mut LinkState, node_id: u32) {
 }
 
 fn relink_all(core: &pw::core::CoreRc, state: &mut LinkState) {
-  let nodes: Vec<u32> = state.app_ports.keys().copied().collect();
+  let nodes: Vec<u32> = state.app_nodes.keys().copied().collect();
   for node_id in nodes {
+    link_ports(core, state, node_id);
+  }
+}
+
+fn unlink_node(state: &mut LinkState, node_id: u32) {
+  state.app_nodes.remove(&node_id);
+  let output_ports: HashSet<u32> = state
+    .app_ports
+    .get(&node_id)
+    .into_iter()
+    .flatten()
+    .map(|port| port.global_id)
+    .collect();
+  state
+    .links
+    .retain(|&(output_port, _), _| !output_ports.contains(&output_port));
+}
+
+fn update_node_target(
+  core: &pw::core::CoreRc,
+  state: &mut LinkState,
+  mode: &Mode,
+  node_id: u32,
+  pid: u32,
+) {
+  if state.app_nodes.get(&node_id) == Some(&pid) {
+    return;
+  }
+  unlink_node(state, node_id);
+  if wants_node(mode, pid) {
+    state.app_nodes.insert(node_id, pid);
     link_ports(core, state, node_id);
   }
 }
@@ -360,13 +475,18 @@ fn run_capture(
 
   // 2. Registry listener maintaining app-node -> sink links.
   let state = Rc::new(RefCell::new(LinkState::default()));
-  let registry = core.get_registry().map_err(|e| e.to_string())?;
+  let registry = core.get_registry_rc().map_err(|e| e.to_string())?;
+  let registry_weak = registry.downgrade();
+  let bound_nodes: Rc<RefCell<HashMap<u32, BoundNode>>> =
+    Rc::new(RefCell::new(HashMap::new()));
   let _registry_listener = {
     let state_add = state.clone();
     let state_rm = state.clone();
     let core_add = core.clone();
     let mode_add = mode.clone();
     let sink_name_add = sink_name.clone();
+    let bindings_add = bound_nodes.clone();
+    let bindings_remove = bound_nodes.clone();
     registry
       .add_listener_local()
         .global(move |global| {
@@ -382,18 +502,49 @@ fn run_capture(
               if props.get("node.name") == Some(sink_name_add.as_str()) {
                 st.sink_node = Some(global.id);
               } else if props.get("media.class") == Some(MEDIA_CLASS_PLAYBACK) {
-                // Client globals always precede their nodes, so the pid is
-                // resolvable by the time a node shows up.
-                let Some(pid) = props
-                  .get("client.id")
-                  .and_then(|c| c.parse::<u32>().ok())
-                  .and_then(|c| st.client_pids.get(&c).copied())
-                else {
-                  return;
+                let node_id = global.id;
+                let fallback_client_id = props.get("client.id").and_then(|c| c.parse().ok());
+                st.playback_nodes.insert(node_id);
+                drop(st);
+
+                let Some(registry) = registry_weak.upgrade() else { return };
+                let node = match registry.bind::<pw::node::Node, _>(global) {
+                  Ok(node) => node,
+                  Err(err) => {
+                    eprintln!("[audio-capture] bind playback node {node_id} failed: {err}");
+                    return;
+                  }
                 };
-                if wants_node(&mode_add, pid) {
-                  st.app_nodes.insert(global.id, pid);
-                }
+                let state_info = state_add.clone();
+                let core_info = core_add.clone();
+                let mode_info = mode_add.clone();
+                let node_listener = node
+                  .add_listener_local()
+                  .info(move |info| {
+                    let Some(props) = info.props() else { return };
+                    let mut st = state_info.borrow_mut();
+                    let explicit_pid = explicit_application_pid(props);
+                    let Some(pid) = explicit_pid
+                      .or_else(|| st.node_pids.get(&node_id).copied())
+                      .or_else(|| {
+                        node_application_pid(props, fallback_client_id, &st.client_pids)
+                      })
+                    else {
+                      return;
+                    };
+                    if explicit_pid.is_some() || !st.node_pids.contains_key(&node_id) {
+                      st.node_pids.insert(node_id, pid);
+                    }
+                    update_node_target(&core_info, &mut st, &mode_info, node_id, pid);
+                  })
+                  .register();
+                bindings_add.borrow_mut().insert(
+                  node_id,
+                  BoundNode {
+                    _proxy: node,
+                    _listener: node_listener,
+                  },
+                );
               }
             }
             pw::types::ObjectType::Port => {
@@ -406,28 +557,34 @@ fn run_capture(
               if Some(node_id) == st.sink_node && direction == "in" {
                 st.sink_ports.insert(channel, global.id);
                 relink_all(&core_add, &mut st);
-              } else if st.app_nodes.contains_key(&node_id) && direction == "out" {
+              } else if st.playback_nodes.contains(&node_id) && direction == "out" {
                 st.app_ports
                   .entry(node_id)
                   .or_default()
                   .push(PortInfo { global_id: global.id, channel });
-                link_ports(&core_add, &mut st, node_id);
+                if st.app_nodes.contains_key(&node_id) {
+                  link_ports(&core_add, &mut st, node_id);
+                }
               }
             }
             _ => {}
           }
         })
         .global_remove(move |id| {
+          bindings_remove.borrow_mut().remove(&id);
           let mut st = state_rm.borrow_mut();
           // The server already removed any links touching a dead port/node;
           // just drop our bookkeeping (and proxies) for them.
-          if st.app_nodes.remove(&id).is_some() {
+          if st.playback_nodes.remove(&id) {
+            st.app_nodes.remove(&id);
+            st.node_pids.remove(&id);
             if let Some(ports) = st.app_ports.remove(&id) {
               for port in ports {
                 st.links.retain(|&(out_port, _), _| out_port != port.global_id);
               }
             }
           } else {
+            st.client_pids.remove(&id);
             st.links.retain(|&(out_port, in_port), _| out_port != id && in_port != id);
             st.sink_ports.retain(|_, &mut port_id| port_id != id);
           }
