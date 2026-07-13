@@ -119,6 +119,15 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     onSharingChange?.(channel.id, sharing)
   }, [sharing])
 
+  // Mirror this channel's stream tiles up to the sidebar/Main. Done in an effect
+  // rather than inside the setVideoStreams updaters so the parent's setState
+  // never runs during this component's render (that triggers React's
+  // "update a component while rendering a different component" warning). Fires on
+  // mount with [] too, which handleStreamsUpdate reads as "no streams" — harmless.
+  useEffect(() => {
+    onStreamsUpdate?.(videoStreams)
+  }, [videoStreams])
+
   // Close the right-click menu on an outside click.
   useEffect(() => {
     if (!menuPos) return
@@ -194,7 +203,6 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     setSharing(false)
     setVideoStreams([])
     setSpeakingClients({})
-    if (onStreamsUpdate) onStreamsUpdate([])
   }
 
   // Republish audio whenever mic settings change while in a channel
@@ -226,11 +234,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   // Remove a remote video tile whose consumer was closed (e.g. the
   // remote client restarted screen share, replacing its old producer)
   const handleConsumerClosed = (consumerId) => {
-    setVideoStreams((prev) => {
-      const updated = prev.filter((s) => s.consumerId !== consumerId)
-      if (onStreamsUpdate) onStreamsUpdate(updated)
-      return updated
-    })
+    setVideoStreams((prev) => prev.filter((s) => s.consumerId !== consumerId))
   }
 
   // Native audio capture died mid-share; the video share continues.
@@ -259,7 +263,6 @@ const VoiceChannel = forwardRef(function VoiceChannel(
           fallbackLabel: `${channel.name} ${kind === 'video' ? 'Stream' : 'Feed'}`
         }
       ]
-      if (onStreamsUpdate) onStreamsUpdate(updated)
       return updated
     })
   }
@@ -287,7 +290,6 @@ const VoiceChannel = forwardRef(function VoiceChannel(
           setSharing(false)
           setVideoStreams([])
           setSpeakingClients({})
-          if (onStreamsUpdate) onStreamsUpdate([])
         },
         onReconnecting: handleReconnecting,
         // Server drops us from the channel when the socket dies — re-assert
@@ -364,7 +366,6 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     setSharing(false)
     setVideoStreams([])
     setSpeakingClients({})
-    if (onStreamsUpdate) onStreamsUpdate([])
   }
 
   const handleLeave = () => {
@@ -373,18 +374,13 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     setSharing(false)
     setVideoStreams([])
     setSpeakingClients({})
-    if (onStreamsUpdate) onStreamsUpdate([])
     // Tell the server we're leaving all channels (channel_id: null).
     onSelfChannelChange?.(null)
   }
 
   // Remove the local (self) screen-share tile after the share ends
   const clearSelfStream = () => {
-    setVideoStreams((prev) => {
-      const remaining = prev.filter((item) => !item.isSelf)
-      if (onStreamsUpdate) onStreamsUpdate(remaining)
-      return remaining
-    })
+    setVideoStreams((prev) => prev.filter((item) => !item.isSelf))
   }
 
   // Capture and publish the chosen source after the user picks one
@@ -424,7 +420,6 @@ const VoiceChannel = forwardRef(function VoiceChannel(
               fallbackLabel: self.name || 'You'
             }
           ]
-          if (onStreamsUpdate) onStreamsUpdate(updated)
           return updated
         })
       }

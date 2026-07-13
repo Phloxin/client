@@ -80,6 +80,13 @@ function Sidebar({
 
   const [joinedChannelId, setJoinedChannelId] = useState(null)
   const [sharing, setSharing] = useState(false)
+  // You can't be sharing without a joined channel. When the joined channel clears
+  // — leave, kick, or a server disconnect that unmounts the VoiceChannel without
+  // routing through onSharingChange — force sharing off so the dock button
+  // reverts from "End Stream" to "Start Stream".
+  useEffect(() => {
+    if (!joinedChannelId) setSharing(false)
+  }, [joinedChannelId])
   const [micMuted, setMicMutedState] = useState(false)
   const [soundMuted, setSoundMutedState] = useState(false)
   const channelRefs = useRef({})
