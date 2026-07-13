@@ -89,6 +89,9 @@ export default function IdleAnimation({ connecting = false }) {
 
     let step = () => ''
     const build = () => {
+      // The ResizeObserver can fire once more as the container collapses during
+      // unmount, after React has nulled capRef — bail rather than deref null.
+      if (!capRef.current) return
       const r = root.getBoundingClientRect()
       const cols = Math.max(8, Math.floor(r.width / charW))
       const rows = Math.max(6, Math.floor(r.height / lineH))
