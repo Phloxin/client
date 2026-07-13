@@ -152,7 +152,11 @@ fn activate_process_loopback(pid: u32, mode: PROCESS_LOOPBACK_MODE) -> Result<IA
       },
     },
   };
-  let prop = PROPVARIANT {
+  // ManuallyDrop: PROPVARIANT's Drop calls PropVariantClear, which for VT_BLOB
+  // does CoTaskMemFree(pBlobData). pBlobData borrows the stack local `params`,
+  // not COM-allocated memory, so letting it clear would free a stack pointer
+  // (access violation). This variant just borrows params to marshal the call.
+  let prop = std::mem::ManuallyDrop::new(PROPVARIANT {
     Anonymous: PROPVARIANT_0 {
       Anonymous: std::mem::ManuallyDrop::new(PROPVARIANT_0_0 {
         vt: VT_BLOB,
@@ -167,7 +171,7 @@ fn activate_process_loopback(pid: u32, mode: PROCESS_LOOPBACK_MODE) -> Result<IA
         },
       }),
     },
-  };
+  });
 
   let (tx, rx) = mpsc::channel();
   let handler: IActivateAudioInterfaceCompletionHandler = ActivateHandler { tx }.into();
@@ -176,7 +180,7 @@ fn activate_process_loopback(pid: u32, mode: PROCESS_LOOPBACK_MODE) -> Result<IA
     ActivateAudioInterfaceAsync(
       VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
       &IAudioClient::IID,
-      Some(&prop),
+      Some(&*prop),
       &handler,
     )
   }

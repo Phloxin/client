@@ -22,40 +22,27 @@ const RESOLUTIONS = [
   // { label: '4K',    width: 3840, height: 2160 },
 ]
 
-// Audio-source choices for a share, gated on what the native capture backend
-// can do. Order matters: the first entry is the default for that tab.
+// Audio is a simple On/Off toggle per tab. "On" maps to the best capture mode
+// the backend supports for that source type; "Off" is silent. The concrete
+// mode is hidden from the user - the label is always On/Off.
+//   screens tab  On -> system audio minus this app (whole-desktop share)
+//   apps tab     On -> just the shared window's app
+// Falls back down the capability ladder, ending at Chromium whole-system
+// loopback ('system-legacy') when no native backend is present.
 function audioOptionsFor(tab, caps) {
+  const off = { value: 'none', label: 'Off' }
   if (!caps || caps.backend === 'none') {
-    // No native backend: only Chromium's whole-system loopback or nothing.
-    return [
-      { value: 'system-legacy', label: 'Entire system' },
-      { value: 'none', label: 'No audio' }
-    ]
+    return [{ value: 'system-legacy', label: 'On' }, off]
   }
-  const isWindows = caps.platform === 'win32'
-  const appOption = {
-    value: 'app',
-    label: isWindows ? "This window's app only" : 'Specific apps…'
-  }
-  const options = []
-  if (tab === 'windows') {
-    if (caps.perApp) options.push(appOption)
-    if (caps.excludeSelf)
-      options.push({ value: 'system-exclude-self', label: 'System (minus this app)' })
-  } else {
-    if (caps.excludeSelf)
-      options.push({ value: 'system-exclude-self', label: 'System (minus this app)' })
-    // Per-app selection with a screen share is meaningful on Linux, where
-    // audio apps are picked independently of the video source.
-    if (caps.perApp && !isWindows) options.push(appOption)
-  }
-  if (caps.system) options.push({ value: 'system', label: 'Entire system' })
-  options.push({
-    value: 'system-legacy',
-    label: caps.system ? 'Entire system (legacy)' : 'Entire system'
-  })
-  options.push({ value: 'none', label: 'No audio' })
-  return options
+  const onValue =
+    tab === 'windows' && caps.perApp
+      ? 'app'
+      : caps.excludeSelf
+        ? 'system-exclude-self'
+        : caps.system
+          ? 'system'
+          : 'system-legacy'
+  return [{ value: onValue, label: 'On' }, off]
 }
 
 // Preselect audio apps whose name plausibly matches the shared window's title.
@@ -277,7 +264,7 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
     ? [{ id: 'screens', label: 'Screen / Window', icon: <IconDeviceDesktop size={15} /> }]
     : [
         { id: 'screens', label: 'Screens', icon: <IconDeviceDesktop size={15} /> },
-        { id: 'windows', label: 'Windows', icon: <IconAppWindow size={15} /> }
+        { id: 'windows', label: 'Apps', icon: <IconAppWindow size={15} /> }
       ]
 
   return (
@@ -378,17 +365,18 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
             <div className="picker-quality">
               <div className="picker-quality-group">
                 <span className="picker-quality-label">Audio</span>
-                <select
-                  className="picker-audio-select"
-                  value={effectiveAudioMode}
-                  onChange={(e) => setAudioMode(e.target.value)}
-                >
+                <div className="picker-segment">
                   {audioOptions.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
+                    <button
+                      key={opt.value}
+                      type="button"
+                      className={`picker-segment-btn${effectiveAudioMode === opt.value ? ' active' : ''}`}
+                      onClick={() => setAudioMode(opt.value)}
+                    >
                       {opt.label}
-                    </option>
+                    </button>
                   ))}
-                </select>
+                </div>
               </div>
 
               <div className="picker-quality-group">
