@@ -11,7 +11,7 @@ function LoginScreen({
   return (
     <div className="login-screen">
       <div className="login-box">
-        <div className="login-title">CNaps Buddies and Friends</div>
+        <div className="login-title">Pylon</div>
         <div className="admin-section">
           <label>Username</label>
           <input

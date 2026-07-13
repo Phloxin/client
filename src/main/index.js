@@ -20,6 +20,15 @@ const icon = process.platform === 'win32' ? iconIco : iconPng
 import { setupGlobalKeybinds, stopGlobalKeybinds } from './keybinds'
 import { setupAudioCapture, stopAudioCaptureHost } from './audioCapture'
 
+const APP_ID = 'app.pylon.client'
+
+// Portals need a stable XDG application ID. In development there is no
+// installed .desktop file for Electron to infer it from, so set the name before
+// ready; packaged Linux builds use the matching desktopName metadata below.
+if (process.platform === 'linux') {
+  app.setDesktopName(APP_ID)
+}
+
 // On Linux, safeStorage requires a running secret service (GNOME Keyring / KWallet).
 // If neither is available, isEncryptionAvailable() returns false and the server list
 // silently doesn't persist. The 'basic' backend uses Chromium's built-in key store
@@ -39,7 +48,7 @@ const enableFeatures = []
 // capture starts (see the display-media handler below).
 const isWayland = process.platform === 'linux' && process.env.XDG_SESSION_TYPE === 'wayland'
 if (isWayland) {
-  enableFeatures.push('WebRTCPipeWireCapturer')
+  enableFeatures.push('WebRTCPipeWireCapturer', 'GlobalShortcutsPortal')
 }
 
 // Opt-in hardware video accel experiment (VOIP_HW_ACCEL=1): offloads VP9/AV1
@@ -261,7 +270,7 @@ function createWindow() {
 // Some APIs can only be used after this event occurs.
 app.whenReady().then(() => {
   // Set app user model id for windows
-  electronApp.setAppUserModelId('com.electron')
+  electronApp.setAppUserModelId(APP_ID)
 
   // Default open or close DevTools by F12 in development
   // and ignore CommandOrControl + R in production.
@@ -533,7 +542,8 @@ app.whenReady().then(() => {
 
   createWindow()
 
-  // OS-wide passive keybinds for mute/deafen (see keybinds.js).
+  // OS-wide mute/deafen keybinds: passive hook on X11/Windows/macOS and the
+  // compositor-managed GlobalShortcuts portal on Wayland (see keybinds.js).
   setupGlobalKeybinds()
 
   // Native per-app screenshare audio capture (audiocapture:* IPC).

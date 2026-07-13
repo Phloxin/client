@@ -55,7 +55,7 @@ function Admin() {
     fetch(`${API_BASE_URL}/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password, device_name: 'CNaps Admin' })
+      body: JSON.stringify({ username, password, device_name: 'Pylon Admin' })
     })
       .then((res) => res.json())
       .then((data) => {

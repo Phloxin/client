@@ -463,6 +463,14 @@
 
 /* ── Volume gate meter ─────────────────────────────────────────────────── */
 
+.keybind-registration-success {
+  color: var(--color-success);
+}
+
+.keybind-registration-error {
+  color: var(--color-danger);
+}
+
 .volume-gate-meter {
   display: flex;
   flex-direction: column;

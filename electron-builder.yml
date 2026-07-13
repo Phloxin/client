@@ -1,5 +1,5 @@
-appId: com.electron.app
-productName: my-app
+appId: app.pylon.client
+productName: Pylon
 directories:
   buildResources: build
 files:
@@ -18,7 +18,7 @@ asarUnpack:
   # Native modules must live outside the asar to be dlopen-able.
   - '**/*.node'
 win:
-  executableName: my-app
+  executableName: pylon
 nsis:
   artifactName: ${name}-${version}-setup.${ext}
   shortcutName: ${productName}
@@ -35,6 +35,7 @@ mac:
 dmg:
   artifactName: ${name}-${version}.${ext}
 linux:
+  syncDesktopName: true
   target:
     - AppImage
     - snap

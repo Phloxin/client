@@ -42,7 +42,7 @@ import {
   IconVolume
 } from '@tabler/icons-react'
 
-const APP_TITLE = 'Teamspeak 26'
+const APP_TITLE = 'Pylon'
 
 //Various Timing Definitions
 const MAX_LOG_ENTRIES = 500
@@ -1300,7 +1300,7 @@ function Main() {
     const credentials = {
       username: server.username,
       password: server.password,
-      device_name: 'CNaps Desktop'
+      device_name: 'Pylon Desktop'
     }
     const login = () =>
       fetch(`${apiBase()}/login`, {

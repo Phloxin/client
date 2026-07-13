@@ -1,7 +1,7 @@
-# Teamspeak 26 — Desktop Client
+# Pylon — Desktop Client
 
 A Discord/TeamSpeak-style desktop client for voice, video/screen-share, and text
-chat. Built with Electron + React, it connects to the CNaps backend over HTTP and
+chat. Built with Electron + React, it connects to the Pylon backend over HTTP and
 two WebSockets: one for real-time events, one for voice/video media via a
 [mediasoup](https://mediasoup.org/) SFU.
 
@@ -23,7 +23,7 @@ of saved servers.
 | Realtime events    | WebSocket (`/ws`) with heartbeat + session resume                              |
 | Voice / video      | WebSocket (`/voice`) + `mediasoup-client` (WebRTC SFU)                         |
 | Noise suppression  | `@sapphi-red/web-noise-suppressor` (RNNoise WASM)                              |
-| Global hotkeys     | `uiohook-napi` (passive OS-wide key hook)                                      |
+| Global hotkeys     | `uiohook-napi` (passive hook) + XDG Global Shortcuts portal on Wayland         |
 | Chat rendering     | `simple-markdown` + `highlight.js` + `unicode-emoji-json`                      |
 | Icons              | `@tabler/icons-react`                                                          |
 | Fonts              | Self-hosted `@fontsource-variable` (Inter, Open Sans, DM Sans, Roboto, Nunito) |
@@ -40,7 +40,7 @@ of saved servers.
 - Per-client local volume/mute overrides (right-click a user); remote volumes can be boosted past 100% via GainNodes.
 - Mute / deafen with state broadcast to other clients (`VoiceStateUpdate`).
 - Output-device (sinkId) and master-volume selection.
-- Global, _passive_ mute/deafen hotkeys (Discord-style) — the bound key still types normally in other apps.
+- Global mute/deafen hotkeys. They are passive on X11, Windows, and macOS; Wayland uses compositor-managed portal shortcuts.
 
 **Video & screen share**
 
@@ -89,7 +89,7 @@ of saved servers.
 ## Project Structure
 
 ```
-my-app/
+pylon/
 ├── build/                          # Packaging resources (icon.ico, entitlements)
 ├── resources/
 │   └── icon.png                    # App icon (non-Windows)
@@ -163,7 +163,7 @@ The Node.js backbone. Responsibilities:
 
 ### Global Keybinds (`src/main/keybinds.js`)
 
-Uses `uiohook-napi` to observe every keystroke OS-wide **without consuming it**, so a bound key still types normally elsewhere — this is why Electron's exclusive `globalShortcut` isn't used. The renderer pushes the current bind map and a capture mode; matching key combos fire `keybinds:trigger` back to the renderer (mute/deafen).
+Uses `uiohook-napi` to observe keystrokes OS-wide **without consuming them** on X11, Windows, and macOS. Wayland does not permit passive global input observation, so there Electron registers each action through the compositor's XDG Global Shortcuts portal. Shortcut capture itself uses focused renderer keyboard events on every platform; matching global shortcuts fire `keybinds:trigger` back to the renderer (mute/deafen).
 
 ### Preload (`src/preload/index.js`)
 

@@ -1,6 +1,7 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { IconX } from '@tabler/icons-react'
 import { useSettings } from '../context/SettingsContext'
+import { keyboardEventToAccelerator } from '../../../shared/keybinds'
 
 const ACTIONS = [
   {
@@ -18,32 +19,58 @@ const ACTIONS = [
 function KeybindsSettings() {
   const { keybindSettings, updateKeybindSettings } = useSettings()
   const [capturing, setCapturing] = useState(null) // action id currently listening
-  const capturingRef = useRef(null)
-  useEffect(() => {
-    capturingRef.current = capturing
-  }, [capturing])
+  const [registration, setRegistration] = useState(null)
 
-  // The global keyboard hook (main process) records the next pressed combo and
-  // sends it back here. Escape cancels.
+  // Capture locally while this window is focused. This is deliberately separate
+  // from the global backend: Wayland does not expose arbitrary keyboard events
+  // to applications, even when an X11 compatibility hook is running.
   useEffect(() => {
-    const off = window.electron?.ipcRenderer?.on('keybinds:captured', (_e, combo) => {
-      const action = capturingRef.current
-      if (!action) return
-      if (combo !== 'Escape') updateKeybindSettings({ [action]: combo })
+    if (!capturing) return undefined
+
+    const captureKey = (event) => {
+      event.preventDefault()
+      event.stopPropagation()
+      if (event.repeat) return
+      if (event.code === 'Escape') {
+        setCapturing(null)
+        return
+      }
+
+      const combo = keyboardEventToAccelerator(event)
+      if (!combo) return // wait through modifier-only/unsupported key presses
+      updateKeybindSettings({ [capturing]: combo })
       setCapturing(null)
+    }
+    window.addEventListener('keydown', captureKey, true)
+    return () => window.removeEventListener('keydown', captureKey, true)
+  }, [capturing, updateKeybindSettings])
+
+  useEffect(() => {
+    let mounted = true
+    window.electron?.ipcRenderer
+      ?.invoke('keybinds:get-status')
+      .then((status) => {
+        if (mounted) setRegistration(status)
+      })
+      .catch(() => {})
+    const off = window.electron?.ipcRenderer?.on('keybinds:status', (_e, status) => {
+      setRegistration(status)
     })
-    return () => off?.()
-  }, [updateKeybindSettings])
+    return () => {
+      mounted = false
+      off?.()
+    }
+  }, [])
 
   const startCapture = (actionId) => {
     setCapturing(actionId)
-    window.electron?.ipcRenderer?.send('keybinds:capture-start')
   }
 
   const cancelCapture = () => {
     setCapturing(null)
-    window.electron?.ipcRenderer?.send('keybinds:capture-cancel')
   }
+
+  const statusFor = (actionId) => registration?.actions?.[actionId]
 
   return (
     <div className="settings-panel-card">
@@ -52,7 +79,7 @@ function KeybindsSettings() {
           <h2>Keybinds</h2>
           <p>
             Assign global keyboard shortcuts. These work system-wide, even when the app is in the
-            background, and don&apos;t block the key in other apps.
+            background. On Wayland, shortcuts are registered with and controlled by your desktop.
           </p>
         </div>
       </div>
@@ -63,6 +90,16 @@ function KeybindsSettings() {
             <div className="settings-toggle-copy">
               <label>{a.label}</label>
               <p className="settings-section-desc">{a.desc}</p>
+              {keybindSettings[a.id] && statusFor(a.id)?.registered && (
+                <p className="settings-section-desc keybind-registration-success">
+                  Registered globally.
+                </p>
+              )}
+              {keybindSettings[a.id] && statusFor(a.id)?.registered === false && (
+                <p className="settings-section-desc keybind-registration-error">
+                  {statusFor(a.id).message || 'Global registration failed.'}
+                </p>
+              )}
             </div>
             <div className="keybind-controls">
               <button
