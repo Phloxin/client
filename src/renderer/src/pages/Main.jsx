@@ -329,25 +329,20 @@ function Main() {
 
   // While popped out, watch for the popout window closing (via its controls or
   // app shutdown) and restore the in-app stream view + re-enable the toggle.
+  // Polls `.closed` rather than listening for 'pagehide': the new window's empty
+  // document fires pagehide as it navigates to the popout route, which read as an
+  // instant close and yanked the view back with the popout still open. `.closed`
+  // only flips on a genuine close, so it has no such false positive.
   useEffect(() => {
     if (!poppedOut) return
-    const win = popoutWindowRef.current
-    const restore = () => {
-      popoutWindowRef.current = null
-      setPoppedOut(false)
-      setViewMode('video')
-    }
-    // Event-driven detection: the popout is same-origin, so 'pagehide' fires on
-    // it as it unloads — no need to busy-poll `.closed`. A slow fallback poll
-    // covers the odd window manager / edge case the event might miss.
-    win?.addEventListener('pagehide', restore)
     const id = setInterval(() => {
-      if (!popoutWindowRef.current || popoutWindowRef.current.closed) restore()
-    }, 5000)
-    return () => {
-      clearInterval(id)
-      win?.removeEventListener('pagehide', restore)
-    }
+      if (!popoutWindowRef.current || popoutWindowRef.current.closed) {
+        popoutWindowRef.current = null
+        setPoppedOut(false)
+        setViewMode('video')
+      }
+    }, 1000)
+    return () => clearInterval(id)
   }, [poppedOut])
 
   // A channel we're "peeking" into: viewing/posting in its chat without joining

@@ -58,6 +58,18 @@ function matchAppsToWindow(apps, windowName) {
     .map((app) => app.id)
 }
 
+// Last-used quality/audio choices, remembered across sessions so a user with a
+// consistent setup doesn't re-pick them every share. Audio is stored as On/Off
+// only — the concrete capture mode is re-derived from caps each time.
+const PREFS_KEY = 'streamPrefs'
+function loadPrefs() {
+  try {
+    return { ...JSON.parse(localStorage.getItem(PREFS_KEY)) }
+  } catch {
+    return {}
+  }
+}
+
 // Modal that lists capturable screens/windows (fetched from the main process)
 // and lets the user pick which one to share. On Wayland the OS portal picks
 // the video source instead, so only audio/quality options are shown there.
@@ -67,13 +79,16 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
   const [error, setError] = useState(null)
   const [selectedId, setSelectedId] = useState(null)
   const [activeTab, setActiveTab] = useState('screens')
-  const [fps, setFps] = useState(30)
-  const [resolution, setResolution] = useState('1080p')
+  const prefs = useMemo(loadPrefs, [])
+  const [fps, setFps] = useState(prefs.fps ?? 30)
+  const [resolution, setResolution] = useState(prefs.resolution ?? '1080p')
   // Bias the encoder toward sharp frames ('detail', for text/UI) or smooth
   // motion ('motion', for video-heavy shares). Threaded to soup as optimizeFor.
-  const [optimizeFor, setOptimizeFor] = useState('detail')
+  const [optimizeFor, setOptimizeFor] = useState(prefs.optimizeFor ?? 'motion')
   const [caps, setCaps] = useState(null)
-  const [audioMode, setAudioMode] = useState(null)
+  // Remembered as On/Off; 'off' -> silent, 'on' lets the effective mode below
+  // derive the best capture mode from caps. null falls through to the tab default.
+  const [audioMode, setAudioMode] = useState(prefs.audioOff ? 'none' : null)
   const [apps, setApps] = useState(null)
   const [selectedApps, setSelectedApps] = useState(() => new Set())
   const overlayAnim = useAnimationCategory('overlays')
@@ -206,6 +221,10 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
       return
     }
     const res = RESOLUTIONS.find((r) => r.label === resolution)
+    localStorage.setItem(
+      PREFS_KEY,
+      JSON.stringify({ fps, resolution, optimizeFor, audioOff: effectiveAudioMode === 'none' })
+    )
     let audioTargets = null
     if (effectiveAudioMode === 'app') {
       audioTargets = caps?.platform === 'win32' ? [id] : [...selectedApps]
