@@ -4,7 +4,7 @@ import { loadRnnoise, RnnoiseWorkletNode } from '@sapphi-red/web-noise-suppresso
 import rnnoiseWasmPath from '@sapphi-red/web-noise-suppressor/rnnoise.wasm?url'
 import rnnoiseSimdWasmPath from '@sapphi-red/web-noise-suppressor/rnnoise_simd.wasm?url'
 import rnnoiseWorkletPath from '@sapphi-red/web-noise-suppressor/rnnoiseWorklet.js?url'
-import { apiBase, wsBase, getIceServers } from './serverConfig'
+import { apiBase, wsBase } from './serverConfig'
 import { authFetch } from './auth'
 import { startScreenAudio, stopScreenAudio, onScreenAudioError } from './screenAudio'
 
