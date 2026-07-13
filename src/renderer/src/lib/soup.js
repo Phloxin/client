@@ -864,17 +864,49 @@ function scalabilityModeFor(height) {
   return height >= 1080 ? 'L3T3_KEY' : 'L2T3_KEY'
 }
 
-// Pick an explicit codec for the video produce(). Prefer AV1, then VP9 — both
-// carry real spatial SVC (the layering above), unlike VP8/H264. The codec MUST
-// come from the loaded device's capabilities: mediasoup matches it against the
-// router's codecs and throws 'no matching codec found' on a mismatch, so we
-// only ever return one the device already advertised. undefined preserves
+// Ceiling for the screen-share encoding, scaled to the picked resolution. This is
+// a cap, not a target — congestion control sends less on a constrained link — but
+// keeping it modest stops the bandwidth estimator from probing so high that it
+// overshoots and triggers the loss/keyframe-recovery freezes. Well below what a
+// single SVC encoding could demand at full motion.
+function maxBitrateFor(height) {
+  if (height >= 1440) return 8_000_000
+  if (height >= 1080) return 6_000_000
+  return 4_000_000
+}
+
+// Pick an explicit codec for the video produce(). Both AV1 and VP9 carry real
+// spatial SVC (the layering above), unlike VP8/H264, so either keeps the
+// focused/grid/thumbnail tiering — the choice is only about encode cost/quality:
+//   - 'detail' (static text/UI screen content): AV1. VP9's screen-content SVC
+//     path renders a black frame on the receiver here, and low-motion content is
+//     cheap enough for software AV1.
+//   - everything else (motion shares, cameras): VP9, whose software encoder keeps
+//     up with high-motion content where software AV1 (rarely hardware-accelerated)
+//     falls behind and stutters.
+// The codec MUST come from the loaded device's capabilities: mediasoup matches it
+// against the router's codecs and throws 'no matching codec found' on a mismatch,
+// so we only ever return one the device already advertised. undefined preserves
 // mediasoup's default (first router codec) on a server offering neither.
-function pickVideoCodec() {
+function pickVideoCodec(optimizeFor) {
   const codecs = device?.rtpCapabilities?.codecs ?? []
   const find = (mime) =>
     codecs.find((c) => c.kind === 'video' && c.mimeType?.toLowerCase() === mime)
-  return find('video/av1') ?? find('video/vp9') ?? undefined
+  return optimizeFor === 'detail'
+    ? (find('video/av1') ?? find('video/vp9') ?? undefined)
+    : (find('video/vp9') ?? find('video/av1') ?? undefined)
+}
+
+// Webcam prefers H.264: it's almost always hardware-encoded (low CPU/battery for
+// a live camera) and fine for low-res motion. Trade-off vs VP9/AV1: H.264 has no
+// spatial SVC, so unfocused/thumbnail camera tiles can only drop frames
+// (temporal), not resolution — see logNegotiatedVideoCodec's warning. Falls back
+// to VP9/AV1 (full spatial tiering) when the router doesn't advertise H.264.
+function pickCameraCodec() {
+  const codecs = device?.rtpCapabilities?.codecs ?? []
+  const find = (mime) =>
+    codecs.find((c) => c.kind === 'video' && c.mimeType?.toLowerCase() === mime)
+  return find('video/h264') ?? find('video/vp9') ?? find('video/av1') ?? undefined
 }
 
 // Log the codec the SFU actually negotiated, and warn when it's one without
@@ -952,15 +984,17 @@ export async function shareScreen({
   try {
     screenProducer = await producerTransport.produce({
       track,
-      // Request the codec explicitly (AV1, else VP9 — see pickVideoCodec) so we get
+      // Request the codec explicitly (per optimizeFor — see pickVideoCodec) so we get
       // real spatial SVC: one efficient upload carrying spatial × temporal layers,
       // so the server can forward a cheap layer to thumbnails / a full layer to
       // the focused viewer (see setVideoStreamRoles). Spatial-layer count adapts
       // to the picked resolution (see scalabilityModeFor).
-      codec: pickVideoCodec(),
-      encodings: [{ maxBitrate: 15000000, scalabilityMode }],
+      codec: pickVideoCodec(optimizeFor),
+      encodings: [{ maxBitrate: maxBitrateFor(height), scalabilityMode }],
       codecOptions: {
-        videoGoogleStartBitrate: 8000
+        // Start conservatively (kbps) and let BWE ramp — a high start bitrate
+        // over-probes the link and causes the initial overshoot/freeze.
+        videoGoogleStartBitrate: 2500
       },
       appData: { produced: 'ScreenShare' }
     })
@@ -1048,15 +1082,23 @@ export async function shareCamera(deviceId) {
   const track = stream.getVideoTracks()[0]
   track.contentHint = 'motion'
 
+  // H.264 has no spatial SVC, so its scalability tops out at temporal-only (L1T3)
+  // — a full spatial mode would just be ignored. VP9/AV1 fallbacks keep the full
+  // spatial+temporal mode.
+  const cameraCodec = pickCameraCodec()
+  const cameraScalabilityMode = /h264/i.test(cameraCodec?.mimeType ?? '')
+    ? 'L1T3'
+    : VIDEO_SCALABILITY_MODE
   try {
     screenProducer = await producerTransport.produce({
       track,
-      // Spatial SVC layers with the codec requested explicitly (AV1, else VP9 —
-      // see pickVideoCodec), same as shareScreen().
-      codec: pickVideoCodec(),
-      encodings: [{ maxBitrate: 15000000, scalabilityMode: VIDEO_SCALABILITY_MODE }],
+      // Webcam prefers hardware H.264, falling back to VP9/AV1 — see pickCameraCodec.
+      codec: cameraCodec,
+      // Webcams capture at native (typically 720p–1080p) resolution; cap at the
+      // 1080p tier and let BWE ramp from a conservative start, same as shareScreen.
+      encodings: [{ maxBitrate: 6_000_000, scalabilityMode: cameraScalabilityMode }],
       codecOptions: {
-        videoGoogleStartBitrate: 8000
+        videoGoogleStartBitrate: 2500
       },
       appData: { produced: 'ScreenShare' }
     })
@@ -1067,7 +1109,7 @@ export async function shareCamera(deviceId) {
   }
 
   localProducerIds.add(screenProducer.id)
-  logNegotiatedVideoCodec(screenProducer, VIDEO_SCALABILITY_MODE)
+  logNegotiatedVideoCodec(screenProducer, cameraScalabilityMode)
   // Camera content is motion, so keep framerate smooth (resolution drops first).
   await setDegradationPreference(screenProducer, 'maintain-framerate')
   console.log(`[Soup] Camera sharing [id:${screenProducer.id}]`)

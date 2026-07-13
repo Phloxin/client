@@ -15,10 +15,10 @@ import { getScreenAudioCapabilities, listScreenAudioApps } from '../lib/screenAu
 
 const RESOLUTIONS = [
   { label: '720p', width: 1280, height: 720 },
-  { label: '1080p', width: 1920, height: 1080 }
-  // Temporarily omitted from the picker — restore when higher-res streaming is
-  // ready to be offered again.
-  // { label: '1440p', width: 2560, height: 1440 },
+  { label: '1080p', width: 1920, height: 1080 },
+  { label: '1440p', width: 2560, height: 1440 }
+  // 4K omitted from the picker — restore when the encoder/bitrate ladder is
+  // tuned for it.
   // { label: '4K',    width: 3840, height: 2160 },
 ]
 
