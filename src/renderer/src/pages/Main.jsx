@@ -1944,10 +1944,6 @@ function Main() {
     setFeed([])
     connect()
 
-    window.electron.ipcRenderer.on('log-message', (_, message) => {
-      setFeed((prev) => appendFeed(prev, systemEntry(message)))
-    })
-
     return () => {
       closedByUs = true
       if (reconnectTimer) clearTimeout(reconnectTimer)
@@ -1955,7 +1951,6 @@ function Main() {
       clearHeartbeat()
       if (ws) ws.close()
       eventsWsRef.current = null
-      window.electron.ipcRenderer.removeAllListeners('log-message')
     }
   }, [token, loadChannelHistory, handleDisconnect])
 

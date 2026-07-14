@@ -249,22 +249,19 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     // Don't bake in the client's name here - the clients list for this
     // channel may not have caught up with this client's channel move yet.
     // The label is resolved at render time from clientId instead.
-    setVideoStreams((prev) => {
-      const updated = [
-        ...prev,
-        {
-          stream,
-          consumerId,
-          kind,
-          isSelf: false,
-          clientId,
-          channelId: channel.id,
-          channelName: channel.name,
-          fallbackLabel: `${channel.name} ${kind === 'video' ? 'Stream' : 'Feed'}`
-        }
-      ]
-      return updated
-    })
+    setVideoStreams((prev) => [
+      ...prev,
+      {
+        stream,
+        consumerId,
+        kind,
+        isSelf: false,
+        clientId,
+        channelId: channel.id,
+        channelName: channel.name,
+        fallbackLabel: `${channel.name} ${kind === 'video' ? 'Stream' : 'Feed'}`
+      }
+    ])
   }
 
   const handleDoubleClick = () => {
@@ -407,21 +404,18 @@ const VoiceChannel = forwardRef(function VoiceChannel(
           clearSelfStream()
         }
 
-        setVideoStreams((prev) => {
-          const updated = [
-            ...prev,
-            {
-              stream: screen.stream,
-              consumerId: screen.id,
-              kind: 'video',
-              isSelf: true,
-              clientId: self.id,
-              channelName: channel.name,
-              fallbackLabel: self.name || 'You'
-            }
-          ]
-          return updated
-        })
+        setVideoStreams((prev) => [
+          ...prev,
+          {
+            stream: screen.stream,
+            consumerId: screen.id,
+            kind: 'video',
+            isSelf: true,
+            clientId: self.id,
+            channelName: channel.name,
+            fallbackLabel: self.name || 'You'
+          }
+        ])
       }
       setSharing(true)
     } catch (err) {

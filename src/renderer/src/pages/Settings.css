@@ -63,6 +63,17 @@
   display: flex;
   flex-direction: column;
   min-height: 0;
+  /* Settings is all controls, no copyable content — keep text unselectable so
+     clicking toggles/labels doesn't leave stray highlights. Text inputs are
+     exempted below (typing needs selection). */
+  user-select: none;
+}
+
+.settings-layout input[type='text'],
+.settings-layout input[type='number'],
+.settings-layout input[type='password'],
+.settings-layout textarea {
+  user-select: text;
 }
 
 .settings-header {

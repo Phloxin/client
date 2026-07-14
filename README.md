@@ -123,13 +123,10 @@ pylon/
 │       ├── index.html              # Renderer entry + Content-Security-Policy
 │       └── src/
 │           ├── main.jsx            # React entry — mounts providers, applies saved theme/prefs
-│           ├── App.jsx             # Routes: / , /admin , /settings , /popout
+│           ├── App.jsx             # Routes: / , /settings , /popout
 │           ├── context/
 │           │   ├── AuthContext.jsx     # token + client identity (synced to main process)
 │           │   └── SettingsContext.jsx # mic / sound / appearance / animation / keybind settings
-│           ├── hooks/
-│           │   ├── useSoup.js          # Voice/video session lifecycle
-│           │   └── useTheme.js
 │           ├── lib/
 │           │   ├── soup.js             # mediasoup client: transports, produce/consume, SVC roles, codecs
 │           │   ├── screenAudio.js      # Screen-share audio capture modes (native backends)
@@ -148,11 +145,10 @@ pylon/
 │           ├── pages/
 │           │   ├── Main.jsx            # Primary view: sidebar + chat/video + all realtime wiring
 │           │   ├── Settings.jsx        # In-app settings overlay
-│           │   ├── Popout.jsx          # Detached video-grid window
-│           │   └── Admin.jsx           # Legacy standalone admin window (/#/admin)
+│           │   └── Popout.jsx          # Detached video-grid window
 │           ├── components/
 │           │   ├── SideBar.jsx / ServerMenu.jsx        # Channels, roster, server switcher, dock controls
-│           │   ├── VoiceChannel.jsx / ClientIndicator.jsx / Channel.jsx
+│           │   ├── VoiceChannel.jsx / ClientIndicator.jsx
 │           │   ├── ChatPanel.jsx / EmojiPicker.jsx / ImageViewer.jsx
 │           │   ├── VideoGrid.jsx / ScreenSourcePicker.jsx   # Streams, zoom/minimap, source picker
 │           │   ├── ChannelSummary.jsx / ChannelPermissions.jsx  # Channel details + overwrite editor
@@ -178,7 +174,7 @@ pylon/
 
 The Node.js backbone. Responsibilities:
 
-- **Windows** — creates a frameless main `BrowserWindow` (content-size minimums derived from the sidebar layout), plus the legacy admin window and the video popout (allowed as a same-process child window via `setWindowOpenHandler`).
+- **Windows** — creates a frameless main `BrowserWindow` (content-size minimums derived from the sidebar layout), plus the video popout (allowed as a same-process child window via `setWindowOpenHandler`).
 - **Custom title bar controls** — `window-minimize` / `window-maximize-toggle` / `window-close` / `window-is-maximized`, resolved from the calling window so any frameless window works.
 - **Encrypted persistence** — auth token + client identity (`auth.json`) and the saved server list with credentials (`servers.json`), both encrypted with `safeStorage` (OS keychain), falling back to plaintext only where encryption is unavailable. On Linux it forces the `basic` password-store so encryption is always available.
 - **Screen capture** — enumerates capturable screens/windows with thumbnails for the renderer's picker, and services `getDisplayMedia` with the chosen source and audio mode.
@@ -223,9 +219,8 @@ Applies the saved theme and appearance/animation prefs _before first paint_ (to 
 | `/`         | `Main`     | Primary app view                                   |
 | `/settings` | `Settings` | Settings (also shown as an in-app overlay in Main) |
 | `/popout`   | `Popout`   | Detached video-grid window                         |
-| `/admin`    | `Admin`    | Legacy standalone admin window                     |
 
-> Moderation now happens inline in the main window (role/kick/ban menus in the roster). The `/admin` route/window is retained but secondary.
+> Moderation happens inline in the main window (role/kick/ban menus in the roster).
 
 ### Auth (`context/AuthContext.jsx` + `lib/auth.js`)
 
@@ -346,8 +341,6 @@ time in `serverConfig.js`). All authenticated requests send
 | `keybinds:set` / `keybinds:get-status`                                      | Renderer → Main          | Push binds / query hook availability        |
 | `keybinds:trigger`                                                          | Main → Renderer          | Fire a bound action (mute/deafen)           |
 | `theme-changed-ipc`                                                         | Renderer → Main → All    | Broadcast theme change across windows       |
-| `open-admin`                                                                | Renderer → Main          | Open the legacy admin window                |
-| `admin-log`                                                                 | Renderer → Main → All    | Broadcast a log line to all windows         |
 
 ---
 

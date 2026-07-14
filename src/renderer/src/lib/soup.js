@@ -882,32 +882,25 @@ function maxBitrateFor(height) {
   return 5_000_000
 }
 
-// Pick an explicit codec for the video produce(). Both AV1 and VP9 carry real
-// spatial SVC (the layering above), unlike VP8/H264, so either keeps the
-// focused/grid/thumbnail tiering — the choice is only about encode cost/quality:
-//   - 'detail' (static text/UI screen content): AV1. VP9's screen-content SVC
-//     path renders a black frame on the receiver here, and low-motion content is
-//     cheap enough for software AV1.
-//   - everything else (motion shares, cameras): VP9, whose software encoder keeps
-//     up with high-motion content where software AV1 (rarely hardware-accelerated)
-//     falls behind and stutters.
-// The codec MUST come from the loaded device's capabilities: mediasoup matches it
-// against the router's codecs and throws 'no matching codec found' on a mismatch,
-// so we only ever return one the device already advertised. undefined preserves
-// mediasoup's default (first router codec) on a server offering neither.
-function pickVideoCodec(optimizeFor) {
-  const codecs = device?.rtpCapabilities?.codecs ?? []
-  const find = (mime) =>
-    codecs.find((c) => c.kind === 'video' && c.mimeType?.toLowerCase() === mime)
-  // AV1 for both modes (VP9 fallback). AV1's earlier motion freezing was libaom
-  // thrashing ACROSS spatial layers; with single-layer screen share (L1T3, see
-  // scalabilityModeFor) its rate control is stable and it's more efficient than
-  // VP9 — Discord-level sharpness at lower bitrate. Kept per-mode so motion can be
-  // flipped back to VP9-first (find('video/vp9') ?? find('video/av1')) if a future
-  // machine's software AV1 can't keep up.
-  return optimizeFor === 'detail'
-    ? (find('video/av1') ?? find('video/vp9') ?? undefined)
-    : (find('video/av1') ?? find('video/vp9') ?? undefined)
+// A video codec from the loaded device's capabilities, by mime type. The codec
+// passed to produce() MUST come from these: mediasoup matches it against the
+// router's codecs and throws 'no matching codec found' on a mismatch, so we only
+// ever return one the device already advertised. undefined (no match) preserves
+// mediasoup's default (first router codec).
+function findVideoCodec(mime) {
+  return device?.rtpCapabilities?.codecs?.find(
+    (c) => c.kind === 'video' && c.mimeType?.toLowerCase() === mime
+  )
+}
+
+// Screen share: AV1 for both optimize modes (VP9 fallback). AV1's earlier motion
+// freezing was libaom thrashing ACROSS spatial layers; with single-layer encoding
+// (L1T3, see scalabilityModeFor) its rate control is stable and it's more
+// efficient than VP9 — Discord-level sharpness at lower bitrate. Flip to
+// findVideoCodec('video/vp9') ?? findVideoCodec('video/av1') if a future
+// machine's software AV1 can't keep up.
+function pickVideoCodec() {
+  return findVideoCodec('video/av1') ?? findVideoCodec('video/vp9')
 }
 
 // Webcam prefers H.264: it's almost always hardware-encoded (low CPU/battery for
@@ -916,10 +909,7 @@ function pickVideoCodec(optimizeFor) {
 // (temporal), not resolution — see logNegotiatedVideoCodec's warning. Falls back
 // to VP9/AV1 (full spatial tiering) when the router doesn't advertise H.264.
 function pickCameraCodec() {
-  const codecs = device?.rtpCapabilities?.codecs ?? []
-  const find = (mime) =>
-    codecs.find((c) => c.kind === 'video' && c.mimeType?.toLowerCase() === mime)
-  return find('video/h264') ?? find('video/vp9') ?? find('video/av1') ?? undefined
+  return findVideoCodec('video/h264') ?? findVideoCodec('video/vp9') ?? findVideoCodec('video/av1')
 }
 
 // Log the codec the SFU actually negotiated, and warn when it's one without
@@ -1031,12 +1021,12 @@ export async function shareScreen({
   try {
     screenProducer = await producerTransport.produce({
       track,
-      // Request the codec explicitly (per optimizeFor — see pickVideoCodec) so we get
+      // Request the codec explicitly (AV1, else VP9 — see pickVideoCodec) so we get
       // real spatial SVC: one efficient upload carrying spatial × temporal layers,
       // so the server can forward a cheap layer to thumbnails / a full layer to
       // the focused viewer (see setVideoStreamRoles). Spatial-layer count adapts
       // to the picked resolution (see scalabilityModeFor).
-      codec: pickVideoCodec(optimizeFor),
+      codec: pickVideoCodec(),
       encodings: [{ maxBitrate: maxBitrateFor(height), scalabilityMode }],
       codecOptions: {
         // Start conservatively (kbps) and let BWE ramp — a high start bitrate

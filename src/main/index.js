@@ -341,9 +341,6 @@ app.whenReady().then(() => {
       })
   })
 
-  // IPC test
-  ipcMain.on('ping', () => console.log('pong'))
-
   // ─── Window transparency / vibrancy ───────────────────────────────
   // On Windows 11+ applies native Acrylic blur-behind material.
   // On Linux the CSS backdrop-filter handles the blur; nothing extra needed.
@@ -498,40 +495,6 @@ app.whenReady().then(() => {
       })
     }
   )
-
-  // Login on Admin Window — forward log message to all windows
-  ipcMain.on('admin-log', (_, message) => {
-    const windows = BrowserWindow.getAllWindows()
-    windows.forEach((win) => {
-      win.webContents.send('log-message', message)
-    })
-  })
-
-  // Open admin panel in a new window
-  ipcMain.on('open-admin', () => {
-    const adminWindow = new BrowserWindow({
-      width: 400,
-      height: 700,
-      title: 'Admin Panel',
-      autoHideMenuBar: true,
-      webPreferences: {
-        preload: join(__dirname, '../preload/index.js'),
-        sandbox: false
-      }
-    })
-
-    if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
-      adminWindow.loadURL(process.env['ELECTRON_RENDERER_URL'] + '#/admin')
-    } else {
-      adminWindow.loadFile(join(__dirname, '../renderer/index.html'), {
-        hash: 'admin'
-      })
-    }
-  })
-
-  // Settings are now rendered as an in-app overlay in the main window.
-  // The previous IPC handler that opened a separate settings BrowserWindow
-  // has been intentionally removed to keep settings inside the main UI.
 
   ipcMain.on('theme-changed-ipc', (_, themeId) => {
     const windows = BrowserWindow.getAllWindows()
