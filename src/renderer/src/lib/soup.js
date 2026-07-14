@@ -855,24 +855,31 @@ onScreenAudioError(({ message }) => {
 // no picker choice).
 const VIDEO_SCALABILITY_MODE = 'L3T3_KEY'
 
-// Screen shares adapt the spatial-layer count to the picked resolution: every
-// spatial layer is an extra encode pass, and a 720p share's third tier would
-// bottom out at 320x180 - smaller than any tile actually renders. The server
-// clamps setPreferredLayers() to the producer's top layer, so VIEW_LAYERS
-// needs no changes (focused spatial:2 against an L2 producer clamps to 1).
-function scalabilityModeFor(height) {
-  return height >= 1080 ? 'L3T3_KEY' : 'L2T3_KEY'
+// Single spatial layer (L1), temporal only (T3). We deliberately do NOT use
+// spatial SVC (L2/L3) for screen share: splitting the budget across 1080p/540p/
+// 270p layers plus the inter-layer coding tax leaves the full-res image softly
+// quantized and artifact-y under motion — the whole reason Discord looks sharp at
+// ~4 Mbps (one clean stream) while we did not at 10 Mbps (three). One layer puts
+// the entire budget into one efficiently-coded 1080p stream.
+//
+// Trade-off: no per-viewer RESOLUTION tiering. The T3 temporal layers still let
+// setVideoStreamRoles() give thumbnails a lower fps; VIEW_LAYERS' spatial indices
+// clamp harmlessly to the single layer. Reintroduce spatial tiering via simulcast
+// (independent clean encodings) if multi-stream receive cost ever matters more
+// than focused-stream quality.
+function scalabilityModeFor() {
+  return 'L1T3'
 }
 
-// Ceiling for the screen-share encoding, scaled to the picked resolution. This is
-// a cap, not a target — congestion control sends less on a constrained link — but
-// keeping it modest stops the bandwidth estimator from probing so high that it
-// overshoots and triggers the loss/keyframe-recovery freezes. Well below what a
-// single SVC encoding could demand at full motion.
+// Ceiling for the (single-layer) screen-share encoding, scaled to resolution. The
+// whole budget now feeds one full-res stream, so these can be lower than the old
+// split-across-layers caps and still look sharp. A cap, not a target — congestion
+// control sends less on a constrained link — it only bites when the link can't
+// keep up.
 function maxBitrateFor(height) {
-  if (height >= 1440) return 8_000_000
-  if (height >= 1080) return 6_000_000
-  return 4_000_000
+  if (height >= 1440) return 12_000_000
+  if (height >= 1080) return 8_000_000
+  return 5_000_000
 }
 
 // Pick an explicit codec for the video produce(). Both AV1 and VP9 carry real
@@ -892,6 +899,10 @@ function pickVideoCodec(optimizeFor) {
   const codecs = device?.rtpCapabilities?.codecs ?? []
   const find = (mime) =>
     codecs.find((c) => c.kind === 'video' && c.mimeType?.toLowerCase() === mime)
+  // Motion uses VP9: libvpx's real-time SVC rate control holds a stable
+  // resolution and degrades gracefully under heavy motion, where software AV1
+  // (libaom) thrashes resolution frame-to-frame and freezes viewers. 'detail' is
+  // low-motion, so libaom is stable there and AV1's compression wins on text.
   return optimizeFor === 'detail'
     ? (find('video/av1') ?? find('video/vp9') ?? undefined)
     : (find('video/vp9') ?? find('video/av1') ?? undefined)
@@ -926,6 +937,38 @@ function logNegotiatedVideoCodec(producer, scalabilityMode) {
         'will not work (temporal layers only).'
     )
   }
+}
+
+// Poll the video sender's outbound-rtp stats and log encoderImplementation (is it
+// hardware or software? e.g. 'libaom' = software AV1) and qualityLimitationReason
+// ('cpu' = the encoder can't keep up, 'bandwidth' = the link, 'none' = fine).
+// This is the live equivalent of chrome://webrtc-internals for diagnosing stream
+// freezes. Returns a stop function; only the most recent share is polled.
+let encoderStatsStop = null
+function startEncoderStatsLog(producer) {
+  encoderStatsStop?.()
+  const sender = producer.rtpSender
+  if (!sender?.getStats) return
+  const id = setInterval(async () => {
+    try {
+      const stats = await sender.getStats()
+      for (const s of stats.values()) {
+        if (s.type !== 'outbound-rtp' || s.kind !== 'video') continue
+        console.log(
+          `[Soup] encoder: ${s.encoderImplementation ?? '?'} | limited by: ` +
+            `${s.qualityLimitationReason ?? '?'} | ${s.frameWidth ?? '?'}x${s.frameHeight ?? '?'}` +
+            `@${Math.round(s.framesPerSecond ?? 0)}fps`
+        )
+      }
+    } catch {
+      // getStats can reject transiently around teardown — ignore.
+    }
+  }, 3000)
+  encoderStatsStop = () => {
+    clearInterval(id)
+    encoderStatsStop = null
+  }
+  return encoderStatsStop
 }
 
 // Bias how the encoder sheds quality under CPU/bandwidth pressure, via the RTP
@@ -1013,6 +1056,7 @@ export async function shareScreen({
     screenProducer,
     optimizeFor === 'motion' ? 'maintain-framerate' : 'maintain-resolution'
   )
+  startEncoderStatsLog(screenProducer)
   console.log(`[Soup] Screen sharing [id:${screenProducer.id}]`)
 
   // Screenshare audio: native capture for the per-app/system modes, or the
@@ -1112,6 +1156,7 @@ export async function shareCamera(deviceId) {
   logNegotiatedVideoCodec(screenProducer, cameraScalabilityMode)
   // Camera content is motion, so keep framerate smooth (resolution drops first).
   await setDegradationPreference(screenProducer, 'maintain-framerate')
+  startEncoderStatsLog(screenProducer)
   console.log(`[Soup] Camera sharing [id:${screenProducer.id}]`)
 
   track.onended = () => {
@@ -1129,6 +1174,7 @@ export async function shareCamera(deviceId) {
 // ─── Stop screen share ───────────────────────────────────────────
 export async function stopScreenShare() {
   if (!screenProducer) return
+  encoderStatsStop?.()
   const producerId = screenProducer.id
   screenProducer.close()
   localProducerIds.delete(producerId)
@@ -1415,6 +1461,7 @@ export function resetMediaState() {
   producerTransport = null
   consumerTransport?.close()
   consumerTransport = null
+  encoderStatsStop?.()
   screenProducer?.close()
   screenProducer = null
   screenAudioProducer?.close()
