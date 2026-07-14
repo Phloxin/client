@@ -210,6 +210,56 @@
   background: #000;
 }
 
+/* Zoomed: drag pans instead of click-to-unfocus, so signal grabbability. */
+.video-focus.zoomed {
+  cursor: grab;
+}
+.video-focus.zoomed:active {
+  cursor: grabbing;
+}
+
+/* ── Zoom minimap (full frame + visible-region outline, hover-only) ──────── */
+
+.zoom-minimap {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 180px;
+  aspect-ratio: 16 / 9;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #000;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  cursor: grab;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.zoom-minimap:active {
+  cursor: grabbing;
+}
+
+.video-focus:hover .zoom-minimap,
+.video-focus:focus-within .zoom-minimap {
+  opacity: 1;
+}
+
+.zoom-minimap video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+/* The visible region; the giant shadow dims everything outside it. */
+.zoom-minimap-rect {
+  position: absolute;
+  /* Themed, deliberately not --color-primary; --color-mention is a cool
+     highlight tone every theme defines. */
+  border: 2px solid var(--color-mention);
+  border-radius: 4px;
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.55);
+}
+
 .focus-label {
   position: absolute;
   left: 0;

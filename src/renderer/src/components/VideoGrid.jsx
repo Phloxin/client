@@ -26,6 +26,12 @@ const EMPTY_WATCHED = new Set()
 const GRID_GAP = 12
 const TILE_AR = 16 / 9
 
+// Scroll-to-zoom bounds/step for the focused stream.
+const ZOOM_MAX = 8
+const ZOOM_STEP = 1.25
+
+const clamp = (v, min, max) => Math.min(max, Math.max(min, v))
+
 // Largest uniform 16:9 tile width that fits `n` tiles inside a W×H area without
 // scrolling. Tries every column count and, for each, takes the tile size capped
 // by both the available width (per column) and height (per row), then keeps the
@@ -62,8 +68,17 @@ function VideoGrid({
 }) {
   const viewerRef = useRef(null)
   const gridRef = useRef(null)
+  const focusRef = useRef(null)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [carouselCollapsed, setCarouselCollapsed] = useState(false)
+  // Scroll-to-zoom on the focused stream: scale + pan offset (px, container
+  // coords, translate-then-scale from the top-left). z=1 is the normal fit view.
+  // Deliberately ephemeral — reset whenever the focused stream changes.
+  const [view, setView] = useState({ z: 1, x: 0, y: 0 })
+  // In-progress drag-pan bookkeeping; `moved` suppresses the click-to-unfocus
+  // that would otherwise fire when the drag ends.
+  const dragRef = useRef(null)
+  const suppressClickRef = useRef(false)
   // Computed uniform tile width (px) for the unfocused grid, so every tile is
   // the same size and the whole set fits without scrolling. Null until measured.
   const [gridTileWidth, setGridTileWidth] = useState(null)
@@ -100,6 +115,103 @@ function VideoGrid({
   // No fallback: when nothing is selected, selectedStream is null and we render
   // the spread-out grid view instead of the single-focus view.
   const selectedStream = sortedStreams.find((s) => s.consumerId === selectedStreamId) || null
+
+  // Reset the zoom whenever focus moves (or clears) so returning to a stream
+  // always starts at the normal fit view — zoom is never persisted.
+  useEffect(() => {
+    setView({ z: 1, x: 0, y: 0 })
+  }, [selectedStream?.consumerId])
+
+  // Scroll-to-zoom on the focused stream, anchored at the cursor. Native
+  // listener (not React onWheel) because it must preventDefault, and wheel
+  // events are passive by default.
+  useEffect(() => {
+    const el = focusRef.current
+    if (!el) return
+    const onWheel = (e) => {
+      e.preventDefault()
+      const rect = el.getBoundingClientRect()
+      const cx = e.clientX - rect.left
+      const cy = e.clientY - rect.top
+      setView((v) => {
+        const z = clamp(v.z * (e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP), 1, ZOOM_MAX)
+        if (z === 1) return { z: 1, x: 0, y: 0 }
+        // Keep the point under the cursor fixed while the scale changes, then
+        // clamp so the frame's edges never pull inside the container.
+        const s = z / v.z
+        return {
+          z,
+          x: clamp(cx - (cx - v.x) * s, rect.width * (1 - z), 0),
+          y: clamp(cy - (cy - v.y) * s, rect.height * (1 - z), 0)
+        }
+      })
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [selectedStream?.consumerId])
+
+  // Drag to pan while zoomed. A real drag (moved past a click threshold) sets
+  // suppressClickRef so the mouseup's click doesn't unfocus the stream.
+  const handlePanStart = (e) => {
+    if (view.z === 1 || e.button !== 0) return
+    dragRef.current = { sx: e.clientX, sy: e.clientY, x: view.x, y: view.y, moved: false }
+  }
+  const handlePanMove = (e) => {
+    const d = dragRef.current
+    const el = focusRef.current
+    if (!d || !el) return
+    const dx = e.clientX - d.sx
+    const dy = e.clientY - d.sy
+    if (Math.abs(dx) + Math.abs(dy) > 4) d.moved = true
+    if (!d.moved) return
+    const rect = el.getBoundingClientRect()
+    setView((v) => ({
+      z: v.z,
+      x: clamp(d.x + dx, rect.width * (1 - v.z), 0),
+      y: clamp(d.y + dy, rect.height * (1 - v.z), 0)
+    }))
+  }
+  const handlePanEnd = () => {
+    if (dragRef.current?.moved) suppressClickRef.current = true
+    dragRef.current = null
+  }
+
+  // Drag the minimap to move the viewport in map coordinates: dragging right
+  // moves the visible region right, which pans the video content left — the
+  // inverse of dragging the video itself. A minimap pixel spans (frame/map)
+  // container pixels, so deltas scale by z·W/mapW. Window-level listeners let
+  // the drag continue outside the tiny map.
+  const handleMapPanStart = (e) => {
+    e.stopPropagation() // don't start a video-pan drag underneath
+    if (e.button !== 0) return
+    const el = focusRef.current
+    const map = e.currentTarget.getBoundingClientRect()
+    if (!el || !map.width) return
+    const rect = el.getBoundingClientRect()
+    // Click-to-jump: center the viewport on the clicked map point first, then
+    // let the drag (if any) continue from there.
+    const fx = (e.clientX - map.left) / map.width
+    const fy = (e.clientY - map.top) / map.height
+    const jx = clamp(-(fx - 0.5 / view.z) * rect.width * view.z, rect.width * (1 - view.z), 0)
+    const jy = clamp(-(fy - 0.5 / view.z) * rect.height * view.z, rect.height * (1 - view.z), 0)
+    setView((v) => ({ z: v.z, x: jx, y: jy }))
+    const start = { sx: e.clientX, sy: e.clientY, x: jx, y: jy }
+    const onMove = (ev) => {
+      const dx = ((ev.clientX - start.sx) * rect.width) / map.width
+      const dy = ((ev.clientY - start.sy) * rect.height) / map.height
+      setView((v) => ({
+        z: v.z,
+        x: clamp(start.x - dx * v.z, rect.width * (1 - v.z), 0),
+        y: clamp(start.y - dy * v.z, rect.height * (1 - v.z), 0)
+      }))
+    }
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
 
   // Only the focused stream's screen-share audio should be audible -
   // re-apply whenever the focus changes or the volume/mute state changes.
@@ -247,16 +359,69 @@ function VideoGrid({
     <div className={`video-viewer${isFullscreen ? ' fullscreen' : ''}`} ref={viewerRef}>
       {selectedStream ? (
         <>
-          {/* Clicking the focused video (anywhere but the controls) unfocuses it. */}
-          <div className="video-focus focusable" onClick={() => onSelect?.(null)}>
+          {/* Clicking the focused video (anywhere but the controls) unfocuses it.
+              Scrolling zooms toward the cursor; dragging pans while zoomed (and
+              suppresses the unfocus click). */}
+          <div
+            className={`video-focus focusable${view.z > 1 ? ' zoomed' : ''}`}
+            ref={focusRef}
+            onClick={() => {
+              if (suppressClickRef.current) {
+                suppressClickRef.current = false
+                return
+              }
+              onSelect?.(null)
+            }}
+            onMouseDown={handlePanStart}
+            onMouseMove={handlePanMove}
+            onMouseUp={handlePanEnd}
+            onMouseLeave={handlePanEnd}
+          >
             <video
               autoPlay
               playsInline
+              style={
+                view.z > 1
+                  ? {
+                      transform: `translate(${view.x}px, ${view.y}px) scale(${view.z})`,
+                      transformOrigin: '0 0'
+                    }
+                  : undefined
+              }
               ref={(el) => {
                 if (el && el.srcObject !== selectedStream.stream)
                   el.srcObject = selectedStream.stream
               }}
             />
+            {/* Zoom minimap: the full frame with the visible region outlined.
+                Shown only while zoomed and hovering (same hover gate as the
+                other controls, via CSS). */}
+            {view.z > 1 && (
+              <div
+                className="zoom-minimap"
+                onClick={(e) => e.stopPropagation()}
+                onMouseDown={handleMapPanStart}
+              >
+                <video
+                  autoPlay
+                  playsInline
+                  muted
+                  ref={(el) => {
+                    if (el && el.srcObject !== selectedStream.stream)
+                      el.srcObject = selectedStream.stream
+                  }}
+                />
+                <div
+                  className="zoom-minimap-rect"
+                  style={{
+                    left: `${(-view.x / ((focusRef.current?.clientWidth || 1) * view.z)) * 100}%`,
+                    top: `${(-view.y / ((focusRef.current?.clientHeight || 1) * view.z)) * 100}%`,
+                    width: `${100 / view.z}%`,
+                    height: `${100 / view.z}%`
+                  }}
+                />
+              </div>
+            )}
             <div className="focus-label">
               <span>{resolveLabel(selectedStream)}</span>
             </div>

@@ -949,6 +949,8 @@ function logNegotiatedVideoCodec(producer, scalabilityMode) {
 let encoderStatsStop = null
 function startEncoderStatsLog(producer) {
   encoderStatsStop?.()
+  // Diagnostic scaffolding — dev builds only, it logs every 3s during any share.
+  if (!import.meta.env.DEV) return
   const sender = producer.rtpSender
   if (!sender?.getStats) return
   const id = setInterval(async () => {

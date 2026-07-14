@@ -687,31 +687,6 @@ function Main() {
       .catch((err) => console.error('Failed to load vanity groups:', err))
   }, [token])
 
-  // The current ban list (BanApiObject[] = { reason, user }). Banned users are
-  // surfaced in the Users roster so they can be unbanned; refreshed after our
-  // own ban/unban actions since those change the list.
-  const refreshBans = useCallback(() => {
-    if (DEV_MODE || !token) {
-      setBans([])
-      return
-    }
-    authFetch(`${apiBase()}/server/bans`)
-      .then((res) => res.json())
-      .then((data) => setBans(Array.isArray(data) ? data : []))
-      .catch((err) => console.error('Failed to load bans:', err))
-  }, [token])
-
-  useEffect(() => {
-    refreshBans()
-  }, [refreshBans])
-
-  // Banned users, shaped like roster clients (resolved avatar) so ClientIndicator
-  // can render them. Marked via the returned id set below.
-  const bannedUsers = useMemo(
-    () => bans.map((b) => ({ ...b.user, avatar: cdnUrl(b.user.avatar) })),
-    [bans]
-  )
-
   // Our effective permissions: the OR of every role we hold (explicit role_ids
   // plus the implicit 'everyone' role). ADMINISTRATOR implies all. Computed from
   // the live roster entry so it tracks role changes via ClientModified.
@@ -743,6 +718,33 @@ function Main() {
     DEV_MODE ||
     isAdmin ||
     (myPermissions & (PERM_MANAGE_CHANNELS | PERM_MANAGE_ROLES)) !== 0n
+
+  // The current ban list (BanApiObject[] = { reason, user }). Banned users are
+  // surfaced in the Users roster so they can be unbanned; refreshed after our
+  // own ban/unban actions since those change the list. Gated on canBanMembers —
+  // the server 403s the fetch for anyone else, so don't fire a guaranteed-
+  // forbidden request on every join (it re-runs if our roles later allow it).
+  const refreshBans = useCallback(() => {
+    if (DEV_MODE || !token || !canBanMembers) {
+      setBans([])
+      return
+    }
+    authFetch(`${apiBase()}/server/bans`)
+      .then((res) => res.json())
+      .then((data) => setBans(Array.isArray(data) ? data : []))
+      .catch((err) => console.error('Failed to load bans:', err))
+  }, [token, canBanMembers])
+
+  useEffect(() => {
+    refreshBans()
+  }, [refreshBans])
+
+  // Banned users, shaped like roster clients (resolved avatar) so ClientIndicator
+  // can render them. Marked via the returned id set below.
+  const bannedUsers = useMemo(
+    () => bans.map((b) => ({ ...b.user, avatar: cdnUrl(b.user.avatar) })),
+    [bans]
+  )
 
   // Assign / remove a role. role_ids is updated on success (not optimistically),
   // so a server rejection — e.g. missing MANAGE_ROLES — doesn't leave a stale
