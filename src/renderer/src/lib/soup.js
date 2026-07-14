@@ -899,13 +899,15 @@ function pickVideoCodec(optimizeFor) {
   const codecs = device?.rtpCapabilities?.codecs ?? []
   const find = (mime) =>
     codecs.find((c) => c.kind === 'video' && c.mimeType?.toLowerCase() === mime)
-  // Motion uses VP9: libvpx's real-time SVC rate control holds a stable
-  // resolution and degrades gracefully under heavy motion, where software AV1
-  // (libaom) thrashes resolution frame-to-frame and freezes viewers. 'detail' is
-  // low-motion, so libaom is stable there and AV1's compression wins on text.
+  // AV1 for both modes (VP9 fallback). AV1's earlier motion freezing was libaom
+  // thrashing ACROSS spatial layers; with single-layer screen share (L1T3, see
+  // scalabilityModeFor) its rate control is stable and it's more efficient than
+  // VP9 — Discord-level sharpness at lower bitrate. Kept per-mode so motion can be
+  // flipped back to VP9-first (find('video/vp9') ?? find('video/av1')) if a future
+  // machine's software AV1 can't keep up.
   return optimizeFor === 'detail'
     ? (find('video/av1') ?? find('video/vp9') ?? undefined)
-    : (find('video/vp9') ?? find('video/av1') ?? undefined)
+    : (find('video/av1') ?? find('video/vp9') ?? undefined)
 }
 
 // Webcam prefers H.264: it's almost always hardware-encoded (low CPU/battery for
