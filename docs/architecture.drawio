@@ -20,14 +20,11 @@
         <mxCell id="providers" value="Provider Tree&#xa;ErrorBoundary → HashRouter&#xa;→ Auth → Settings" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eaf1fb;strokeColor=#6c8ebf;" vertex="1" parent="rend">
           <mxGeometry x="20" y="45" width="240" height="70" as="geometry" />
         </mxCell>
-        <mxCell id="pages" value="Pages / Routes&#xa;Main · Settings · Admin · Popout" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eaf1fb;strokeColor=#6c8ebf;" vertex="1" parent="rend">
+        <mxCell id="pages" value="Pages / Routes&#xa;Main · Settings · Popout" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eaf1fb;strokeColor=#6c8ebf;" vertex="1" parent="rend">
           <mxGeometry x="290" y="45" width="240" height="70" as="geometry" />
         </mxCell>
         <mxCell id="components" value="UI Components&#xa;SideBar · ChatPanel · VideoGrid&#xa;VoiceChannel · ScreenSourcePicker" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eaf1fb;strokeColor=#6c8ebf;" vertex="1" parent="rend">
           <mxGeometry x="560" y="45" width="260" height="70" as="geometry" />
-        </mxCell>
-        <mxCell id="hooks" value="hooks/useSoup&#xa;React ↔ engine glue" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eaf1fb;strokeColor=#6c8ebf;" vertex="1" parent="rend">
-          <mxGeometry x="850" y="45" width="230" height="70" as="geometry" />
         </mxCell>
 
         <!-- row 2: network-facing layer -->
@@ -51,10 +48,7 @@
         <mxCell id="e_pages_comp" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="rend" source="pages" target="components">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e_comp_hooks" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="rend" source="components" target="hooks">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="e_hooks_soup" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="rend" source="hooks" target="soup">
+        <mxCell id="e_comp_soup" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="rend" source="components" target="soup">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
         <mxCell id="e_soup_audio" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="rend" source="soup" target="audio">

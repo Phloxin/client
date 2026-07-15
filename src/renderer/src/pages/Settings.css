@@ -69,9 +69,7 @@
   user-select: none;
 }
 
-.settings-layout input[type='text'],
-.settings-layout input[type='number'],
-.settings-layout input[type='password'],
+.settings-layout input,
 .settings-layout textarea {
   user-select: text;
 }
@@ -83,7 +81,6 @@
   font-weight: var(--font-weight-bold);
   color: var(--color-text);
   border-bottom: 1px solid var(--hairline);
-  user-select: none;
 }
 
 .settings-body {

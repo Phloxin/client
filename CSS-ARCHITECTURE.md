@@ -15,11 +15,9 @@ src/renderer/src/
 │   └── main.css           # Main entry point (imports all assets)
 ├── App.css                # App component-specific styles
 ├── pages/
-│   ├── Admin.css          # Admin page-specific styles
 │   ├── Main.css           # Main page layout and sidebar styles
 │   └── Settings.css       # Settings page-specific styles
 └── components/
-    ├── LoginScreen.css    # Login screen styles
     ├── ThemeSwitcher.css  # Theme switcher component styles
     ├── VideoGrid.css      # Video grid component styles
     └── VoiceChannel.css   # Voice channel component styles
@@ -74,28 +72,11 @@ All themes define the following variable categories:
 
 ## How to Switch Themes
 
-### Using the Hook (React Components)
+### In React Components
 
-```javascript
-import { useTheme } from '../hooks/useTheme'
-
-function MyComponent() {
-  const { theme, availableThemes, setCurrentTheme } = useTheme()
-
-  return (
-    <div>
-      <p>Current theme: {theme}</p>
-      <select onChange={(e) => setCurrentTheme(e.target.value)}>
-        {availableThemes.map((t) => (
-          <option key={t.id} value={t.id}>
-            {t.name}
-          </option>
-        ))}
-      </select>
-    </div>
-  )
-}
-```
+Read with `getTheme()`, switch with `setTheme(id)`, and subscribe to the
+`theme-changed` window event to follow changes made elsewhere — see
+`components/ThemeSwitcher.jsx` for the full pattern.
 
 ### Using the Utility Functions (Vanilla JS)
 
@@ -139,7 +120,6 @@ Each page owns its own layout, sections, buttons, and status elements:
 | File           | Owns                                                                     |
 | -------------- | ------------------------------------------------------------------------ |
 | `Main.css`     | `.layout`, `.sidebar`, `.chat-area`, `.settings-btn`, `.view-toggle-btn` |
-| `Admin.css`    | `.admin-layout`, `.admin-section`, `.admin-btn`, `.admin-status`         |
 | `Settings.css` | `.settings-layout`, `.settings-section`, `.settings-status`              |
 
 ### Component Styles (`components/*.css`)
@@ -148,7 +128,6 @@ Each component with non-trivial styling has a co-located CSS file:
 
 | File                | Owns                                                                            |
 | ------------------- | ------------------------------------------------------------------------------- |
-| `LoginScreen.css`   | `.login-screen`, `.login-box`, `.login-title`, `.admin-section` (login context) |
 | `ThemeSwitcher.css` | `.theme-switcher`, `.theme-options`, `.theme-option`                            |
 | `VideoGrid.css`     | `.video-grid`, `.video-tile`                                                    |
 | `VoiceChannel.css`  | `.join-btn`, `.leave-btn`, `.share-btn`                                         |

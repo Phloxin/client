@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { IconCheck, IconChevronDown } from '@tabler/icons-react'
-import { setTheme, getTheme, getAvailableThemes, getThemeById, initializeTheme } from '../lib/themeUtils'
+import { setTheme, getTheme, getAvailableThemes, getThemeById } from '../lib/themeUtils'
 import './ThemeSwitcher.css'
 
 // Theme picker: a grid of miniature window previews built from each theme's
@@ -8,10 +8,8 @@ import './ThemeSwitcher.css'
 // persists, and broadcasts to other windows (see lib/themeUtils). The grid
 // collapses via a native <details> — the summary doubles as the section header.
 export function ThemeSwitcher() {
-  const [theme, setThemeState] = useState(() => {
-    initializeTheme()
-    return getTheme()
-  })
+  // Theme is already initialized at app boot (main.jsx) — just read it.
+  const [theme, setThemeState] = useState(getTheme)
 
   // Follow theme changes made elsewhere (another window via IPC → themeUtils
   // re-dispatches a 'theme-changed' DOM event locally).

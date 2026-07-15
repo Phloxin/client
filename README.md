@@ -154,7 +154,7 @@ pylon/
 │           │   ├── ChannelSummary.jsx / ChannelPermissions.jsx  # Channel details + overwrite editor
 │           │   ├── ClientSummary.jsx / RolesGroupsMenu.jsx      # Profiles, roles & vanity groups
 │           │   ├── AudioSettings.jsx / VolumeGateMeter.jsx / KeybindsSettings.jsx
-│           │   ├── LoginScreen.jsx / ThemeSwitcher.jsx / SegmentedTabs.jsx
+│           │   ├── ThemeSwitcher.jsx / SegmentedTabs.jsx
 │           │   ├── TitleBar.jsx                     # Custom window controls
 │           │   ├── NotificationBell.jsx / Inbox.jsx # Notifications + DM inbox
 │           │   ├── ConnectionOverlay.jsx            # Reconnecting overlay
