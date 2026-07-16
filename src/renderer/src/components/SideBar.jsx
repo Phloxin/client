@@ -43,6 +43,7 @@ function Sidebar({
   onAddServer,
   onEditServer,
   onRemoveServer,
+  onNotify,
   onCreateChannel,
   onDeleteChannel,
   onReorderChannel,
@@ -409,6 +410,7 @@ function Sidebar({
           onAddServer={onAddServer}
           onEditServer={onEditServer}
           onRemoveServer={onRemoveServer}
+          onNotify={onNotify}
         />
       </div>
 
@@ -580,7 +582,7 @@ function Sidebar({
             )}
           </button>
           <button
-            className="control-btn"
+            className={`control-btn${sharing ? ' streaming' : ''}`}
             title={sharing ? 'End Stream' : 'Start Stream'}
             disabled={!joinedChannelId}
             onClick={() => channelRefs.current[joinedChannelId]?.toggleShare()}
@@ -646,7 +648,10 @@ function Sidebar({
                     value={channelName}
                     placeholder="New Channel"
                     onChange={(e) => setChannelName(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && submitCreateChannel()}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') submitCreateChannel()
+                      else if (e.key === 'Escape') setShowCreateChannel(false)
+                    }}
                     autoFocus
                   />
                 </label>
@@ -657,7 +662,10 @@ function Sidebar({
                     min={0}
                     value={channelLimit}
                     onChange={(e) => setChannelLimit(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && submitCreateChannel()}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') submitCreateChannel()
+                      else if (e.key === 'Escape') setShowCreateChannel(false)
+                    }}
                   />
                 </label>
                 {channelError && <div className="add-server-error">{channelError}</div>}

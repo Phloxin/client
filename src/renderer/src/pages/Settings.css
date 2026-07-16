@@ -270,6 +270,36 @@
   color: var(--color-text);
 }
 
+/* Preview button for a notification sound — sits just left of its toggle. */
+.sound-preview-btn {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  padding: 0;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease,
+    transform 0.12s ease;
+}
+
+.sound-preview-btn:hover {
+  background: var(--color-surface);
+  color: var(--color-primary);
+}
+
+.sound-preview-btn:active {
+  transform: scale(0.9);
+}
+
 /* ── Toggle switch ─────────────────────────────────────────────────────── */
 
 .toggle-switch {

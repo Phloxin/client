@@ -1,13 +1,75 @@
+import { useState, useRef, useEffect } from 'react'
 import './ClientSummary.css'
-import { IconUsersGroup } from '@tabler/icons-react'
+import { IconUsersGroup, IconPhotoUp, IconTrash, IconZoomIn } from '@tabler/icons-react'
 import { RoleIcon } from '../lib/roleIcon'
 import { useImageColors, bannerGradient } from '../lib/imageColors'
+import { fileToAvatarDataUrl } from '../lib/avatarFile'
+import ImageViewer from './ImageViewer'
 
 // Profile/summary shown in the main area when a client is single-clicked. The
 // name lives in the page header; this is the body. Activity stats (e.g. last
 // online) get filled in once the server exposes them.
-function ClientSummary({ client, roles = [], vanity = [] }) {
+//
+// The avatar frame mirrors ChannelSummary's icon frame: click an existing avatar
+// to view it full size, right-click for replace/remove. Setting your own avatar
+// is self-only — `isSelf` gates the context menu and the click-to-set fallback,
+// so other people's avatars are view-only.
+function ClientSummary({ client, roles = [], vanity = [], isSelf = false, onSetAvatar }) {
   const initial = client?.name?.charAt(0).toUpperCase() ?? '?'
+  const hasAvatar = !!client?.avatar
+  const canEdit = isSelf && !!onSetAvatar
+
+  // Full-size avatar lightbox (clicking an existing avatar, like a chat image).
+  const [viewerOpen, setViewerOpen] = useState(false)
+  // Right-click context menu on your own avatar: { x, y } or null when closed.
+  const [avatarMenu, setAvatarMenu] = useState(null)
+  const avatarMenuRef = useRef(null)
+  const avatarInputRef = useRef(null)
+
+  // Close the avatar context menu on an outside click.
+  useEffect(() => {
+    if (!avatarMenu) return
+    const close = (e) => {
+      if (avatarMenuRef.current && !avatarMenuRef.current.contains(e.target)) setAvatarMenu(null)
+    }
+    document.addEventListener('mousedown', close)
+    return () => document.removeEventListener('mousedown', close)
+  }, [avatarMenu])
+
+  // Same downscale/re-encode pipeline as everywhere else (lib/avatarFile).
+  const handleAvatarFile = (e) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    setAvatarMenu(null)
+    fileToAvatarDataUrl(file, onSetAvatar)
+  }
+
+  // Avatar present → view it full size; absent → (self only) pick a file to set one.
+  const handleAvatarClick = () => {
+    if (hasAvatar) setViewerOpen(true)
+    else if (canEdit) avatarInputRef.current?.click()
+  }
+
+  const handleAvatarContextMenu = (e) => {
+    if (!canEdit) return
+    e.preventDefault()
+    setAvatarMenu({ x: e.clientX, y: e.clientY })
+  }
+
+  const replaceAvatar = () => {
+    setAvatarMenu(null)
+    avatarInputRef.current?.click()
+  }
+
+  const removeAvatar = () => {
+    setAvatarMenu(null)
+    onSetAvatar?.(null)
+  }
+
+  // The frame is interactive when there's an image to expand or (for self) an
+  // avatar to set. Otherwise it's a plain, non-clickable initial.
+  const interactive = hasAvatar || canEdit
   // The roles this client has explicitly been granted (role_ids), resolved to
   // names. 'everyone' is implicit and not in role_ids, so it won't appear here.
   const assignedRoles = roles.filter((r) => (client?.role_ids || []).includes(r.id))
@@ -24,13 +86,47 @@ function ClientSummary({ client, roles = [], vanity = [] }) {
         className={`client-summary-card${bannerColors ? ' channel-summary-banner' : ''}`}
         style={bannerGradient(bannerColors)}
       >
-        <span className="client-summary-avatar" aria-hidden="true">
-          {client?.avatar ? (
-            <img className="client-summary-avatar-img" src={client.avatar} alt="" />
-          ) : (
-            initial
-          )}
-        </span>
+        {interactive ? (
+          <button
+            type="button"
+            className="client-summary-avatar channel-summary-avatar-btn"
+            title={
+              hasAvatar
+                ? canEdit
+                  ? 'View avatar (right-click for options)'
+                  : 'View avatar'
+                : 'Set avatar'
+            }
+            onClick={handleAvatarClick}
+            onContextMenu={handleAvatarContextMenu}
+          >
+            {hasAvatar ? (
+              <img className="client-summary-avatar-img" src={client.avatar} alt="" />
+            ) : (
+              initial
+            )}
+            <span className="channel-summary-avatar-overlay" aria-hidden="true">
+              {hasAvatar ? <IconZoomIn size={20} /> : <IconPhotoUp size={20} />}
+            </span>
+          </button>
+        ) : (
+          <span className="client-summary-avatar" aria-hidden="true">
+            {hasAvatar ? (
+              <img className="client-summary-avatar-img" src={client.avatar} alt="" />
+            ) : (
+              initial
+            )}
+          </span>
+        )}
+        {canEdit && (
+          <input
+            ref={avatarInputRef}
+            type="file"
+            accept="image/*"
+            style={{ display: 'none' }}
+            onChange={handleAvatarFile}
+          />
+        )}
         <span className="client-summary-name">{client?.name ?? 'Unknown user'}</span>
       </div>
 
@@ -74,6 +170,31 @@ function ClientSummary({ client, roles = [], vanity = [] }) {
         <h3 className="client-summary-heading">Activity</h3>
         <p className="client-summary-placeholder">Last online and other stats will appear here.</p>
       </section>
+
+      {viewerOpen && hasAvatar && (
+        <ImageViewer
+          src={client.avatar}
+          name={`${client?.name ?? 'User'} avatar`}
+          onClose={() => setViewerOpen(false)}
+        />
+      )}
+
+      {avatarMenu && (
+        <div
+          className="channel-context-menu"
+          ref={avatarMenuRef}
+          style={{ top: avatarMenu.y, left: avatarMenu.x }}
+        >
+          <button type="button" className="channel-context-item" onClick={replaceAvatar}>
+            <IconPhotoUp size={16} /> Replace Avatar
+          </button>
+          {hasAvatar && (
+            <button type="button" className="channel-context-item danger" onClick={removeAvatar}>
+              <IconTrash size={16} /> Remove Avatar
+            </button>
+          )}
+        </div>
+      )}
     </div>
   )
 }

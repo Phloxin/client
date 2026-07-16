@@ -346,18 +346,76 @@
   border-color: var(--color-primary);
 }
 
+/* Password field with an inline reveal (eye) toggle. */
+.add-server-password {
+  position: relative;
+  display: flex;
+}
+
+.add-server-password input {
+  flex: 1;
+  min-width: 0;
+  /* Room for the toggle button on the right. */
+  padding-right: 38px;
+}
+
+.add-server-password-toggle {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  transition:
+    color 0.12s ease,
+    background 0.12s ease;
+}
+
+.add-server-password-toggle:hover {
+  color: var(--color-text);
+  background: var(--color-surface);
+}
+
 .add-server-error {
   font-size: var(--font-size-sm);
   color: var(--color-danger);
 }
 
+/* Register/Login pill at the top of the add-server form: fills the width with
+   two even halves (matches the full-width inputs below). */
+.add-server-mode-tabs {
+  width: 100%;
+  margin-bottom: 2px;
+}
+
+.add-server-mode-tabs .seg-tab {
+  flex: 1;
+}
+
 .add-server-footer {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
   gap: var(--spacing-sm);
   padding: 12px 16px;
   border-top: 1px solid var(--hairline);
   background: color-mix(in srgb, var(--color-background-mute) 40%, transparent);
+}
+
+/* Failure reason for Register: sits to the left of the action buttons. */
+.add-server-footer .add-server-error {
+  margin-right: auto;
+  text-align: left;
+  line-height: 1.3;
 }
 
 .add-server-btn {

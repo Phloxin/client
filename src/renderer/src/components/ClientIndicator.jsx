@@ -237,14 +237,25 @@ function ClientIndicator({
     setClientAudioState(client.id, { volume: volume / 100, muted: localMuted })
   }, [client.id, volume, localMuted, isSelf, rosterMode])
 
-  // Close the context menu on outside click
+  // Close the context menu on outside click or Escape. Escape is marked handled
+  // so the app-level Escape (Main.jsx) doesn't also close a view underneath.
   useEffect(() => {
     if (!menuPos) return
     const close = (e) => {
       if (menuRef.current && !menuRef.current.contains(e.target)) setMenuPos(null)
     }
+    const onKey = (e) => {
+      if (e.key === 'Escape' && !e.defaultPrevented) {
+        e.preventDefault()
+        setMenuPos(null)
+      }
+    }
     document.addEventListener('mousedown', close)
-    return () => document.removeEventListener('mousedown', close)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', close)
+      document.removeEventListener('keydown', onKey)
+    }
   }, [menuPos])
 
   // Reset the poke composer whenever the menu closes.
@@ -615,6 +626,7 @@ function ClientIndicator({
                           e.preventDefault()
                           submitPoke()
                         } else if (e.key === 'Escape') {
+                          e.preventDefault()
                           setPokeOpen(false)
                         }
                       }}
@@ -654,6 +666,7 @@ function ClientIndicator({
                             e.preventDefault()
                             submitMod()
                           } else if (e.key === 'Escape') {
+                            e.preventDefault()
                             setModAction(null)
                           }
                         }}
