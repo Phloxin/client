@@ -78,14 +78,11 @@ if (isWayland) {
   enableFeatures.push('WebRTCPipeWireCapturer', 'GlobalShortcutsPortal')
 }
 
-// Opt-in hardware video accel experiment (VOIP_HW_ACCEL=1): offloads VP9/AV1
-// decode - and encode where the driver supports it - to VA-API/GPU instead of
-// libvpx/libaom software paths, the dominant CPU cost while screensharing.
-// Gated because it is driver-dependent (black frames / silent SW fallback on
-// bad stacks). Verify with chrome://gpu and getStats() encoderImplementation/
-// decoderImplementation. Escalations for stubborn drivers (add to the list
-// manually when testing): VaapiIgnoreDriverChecks, VaapiOnNvidiaGPUs.
-if (process.platform === 'linux' && process.env.VOIP_HW_ACCEL) {
+if (
+  process.platform === 'linux' &&
+  !process.env.VOIP_NO_HW_ENCODE &&
+  appSettings.hardwareAcceleration !== false
+) {
   enableFeatures.push(
     'VaapiVideoDecoder',
     'AcceleratedVideoDecodeLinuxGL',
@@ -246,6 +243,13 @@ const MIN_CONTENT_HEIGHT =
   SIDEBAR_CONTROLS_HEIGHT // 232
 
 function createWindow() {
+  // A hidden BrowserWindow normally gets revealed after Chromium's first paint.
+  // With GPU acceleration disabled on Linux (notably native Wayland), that first
+  // hidden paint may never arrive, so `ready-to-show` never fires and the app
+  // keeps running without mapping a window. Show this specific software-rendered
+  // case immediately; backgroundColor prevents a white flash while React loads.
+  const showImmediately = process.platform === 'linux' && appSettings.hardwareAcceleration === false
+
   // Create the browser window.
   const mainWindow = new BrowserWindow({
     width: 1000,
@@ -255,7 +259,8 @@ function createWindow() {
     useContentSize: true,
     minWidth: MIN_CONTENT_WIDTH,
     minHeight: MIN_CONTENT_HEIGHT,
-    show: false,
+    show: showImmediately,
+    backgroundColor: '#1e1e1e',
     // Frameless: the renderer draws its own Discord-style title bar (see
     // TitleBar.jsx). Window controls are driven via the window-* IPC below.
     frame: false,
@@ -270,9 +275,11 @@ function createWindow() {
     }
   })
 
-  mainWindow.on('ready-to-show', () => {
-    mainWindow.show()
-  })
+  if (!showImmediately) {
+    mainWindow.once('ready-to-show', () => {
+      mainWindow.show()
+    })
+  }
 
   // Let the custom title bar swap its maximize/restore icon when the window's
   // maximized state changes by any means (button, double-click, OS snap).
