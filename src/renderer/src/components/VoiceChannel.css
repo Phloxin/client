@@ -79,7 +79,8 @@
   color: var(--color-text);
 }
 
-.channel-item.active .channel-row::before {
+.channel-item.active .channel-row::before,
+.channel-item.previewing .channel-row::before {
   content: '';
   position: absolute;
   left: 0;
@@ -91,6 +92,14 @@
   box-shadow: 0 0 8px color-mix(in srgb, var(--color-primary) 70%, transparent);
 }
 
+/* Peeking uses the mention hue (falls back to primary) to distinguish it from
+   the joined channel's amber rail. */
+.channel-item.previewing .channel-row::before {
+  background: var(--color-mention, var(--color-primary));
+  box-shadow: 0 0 8px
+    color-mix(in srgb, var(--color-mention, var(--color-primary)) 70%, transparent);
+}
+
 .channel-item.active .channel-row > svg {
   color: var(--color-primary);
 }
@@ -99,7 +108,14 @@
 .channel-item.previewing .channel-row {
   background: color-mix(in srgb, var(--color-surface) 65%, transparent);
   color: var(--color-text);
-  box-shadow: inset 2px 0 0 var(--color-primary);
+}
+
+/* Placeholder icon (no custom channel icon set). Keep its 25px layout box so it
+   occupies exactly the same space as .channel-icon-img — the name never shifts
+   and the row height never changes when a channel gains/loses a custom icon —
+   but shrink the visible glyph via transform (no layout impact). */
+.channel-icon-placeholder {
+  transform: scale(0.8);
 }
 
 /* Custom channel icon; sized independently of the 17px volume icon it replaces. */

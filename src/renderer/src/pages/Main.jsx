@@ -2169,6 +2169,25 @@ function Main() {
   const closeSettings = () => setShowSettings(false)
   const overlayAnim = useAnimationCategory('overlays')
 
+  // Focused Escape closes the topmost open menu/view, one layer per press, in
+  // stacking order (settings overlay → roles/groups menu → canvas summary/peek
+  // views). Skips when a nested control already handled the key (defaultPrevented,
+  // e.g. an open picker) so it never yanks a layer out from under one.
+  useEffect(() => {
+    const onKeyDown = (e) => {
+      if (e.key !== 'Escape' || e.defaultPrevented) return
+      if (showSettings) setShowSettings(false)
+      else if (rolesGroupsOpen) setRolesGroupsOpen(false)
+      else if (summaryChannelId != null) setSummaryChannelId(null)
+      else if (summaryClientId != null) setSummaryClientId(null)
+      else if (previewChannelId != null) setPreviewChannelId(null)
+      else return
+      e.preventDefault()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [showSettings, rolesGroupsOpen, summaryChannelId, summaryClientId, previewChannelId])
+
   const connected = !!token
   const titleText = connectedServer ? `${APP_TITLE} — ${connectedServer.nickname}` : APP_TITLE
 
@@ -2243,6 +2262,7 @@ function Main() {
           onAddServer={handleAddServer}
           onEditServer={handleEditServer}
           onRemoveServer={handleRemoveServer}
+          onNotify={showSuccess}
           onCreateChannel={handleCreateChannel}
           onDeleteChannel={handleDeleteChannel}
           onReorderChannel={handleReorderChannel}
@@ -2368,7 +2388,13 @@ function Main() {
                 onDeleteOverwrite={handleDeleteChannelOverwrite}
               />
             ) : summaryClientId != null ? (
-              <ClientSummary client={summaryClient} roles={roles} vanity={vanity} />
+              <ClientSummary
+                client={summaryClient}
+                roles={roles}
+                vanity={vanity}
+                isSelf={summaryClient?.id === client?.id}
+                onSetAvatar={handleSetAvatar}
+              />
             ) : previewChannelId != null || viewMode === 'log' ? (
               <ChatPanel
                 feed={feed.filter(

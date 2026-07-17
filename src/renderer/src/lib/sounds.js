@@ -66,11 +66,13 @@ const cache = {}
 // Play a named sound event. `volume` is 0..1. Skips playback when the event's
 // category is disabled. Playback rejections (e.g. autoplay policy before the
 // first user gesture) are swallowed — these are non-critical.
-export function playUiSound(name, volume = 0.5) {
+// `force` bypasses the per-category enable check — used by the Settings preview
+// buttons so a sound can be auditioned even while its category is toggled off.
+export function playUiSound(name, volume = 0.5, force = false) {
   const src = SOUND_FILES[name]
   if (!src) return
   const category = EVENT_CATEGORY[name]
-  if (category && enabledCategories[category] === false) return
+  if (!force && category && enabledCategories[category] === false) return
   let el = cache[name]
   if (!el) {
     el = new Audio(src)

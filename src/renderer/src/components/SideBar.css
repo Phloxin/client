@@ -263,6 +263,17 @@ html[data-transparency='true'] .control-dock {
   color: var(--color-danger);
 }
 
+/* Active stream: the stream toggle goes green (success) while sharing. */
+.control-btn.streaming {
+  background: color-mix(in srgb, var(--color-success) 16%, transparent);
+  color: var(--color-success);
+}
+
+.control-btn.streaming:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-success) 26%, transparent);
+  color: var(--color-success);
+}
+
 /* ============================================================================
    RESIZE HANDLE
    ============================================================================ */

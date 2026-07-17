@@ -226,6 +226,15 @@ function createWindow() {
   mainWindow.on('maximize', sendMaxState)
   mainWindow.on('unmaximize', sendMaxState)
 
+  // On a frameless window Windows raises its native system menu when the drag
+  // region is right-clicked, but it renders detached/unresponsive ("frozen").
+  // We already expose min/max/close in the title bar, so just suppress it. The
+  // event fires on the BrowserWindow (per Electron's docs); bind webContents too
+  // to cover both dispatch paths.
+  const suppressSystemMenu = (e) => e.preventDefault()
+  mainWindow.on('system-context-menu', suppressSystemMenu)
+  mainWindow.webContents.on('system-context-menu', suppressSystemMenu)
+
   mainWindow.webContents.setWindowOpenHandler((details) => {
     // The video-grid popout is opened with window.open(url, 'video-popout', ...)
     // so it stays same-origin/same-process as its opener and can read the live

@@ -17,7 +17,7 @@ import ClientIndicator from './ClientIndicator'
 import ScreenSourcePicker from './ScreenSourcePicker'
 import './VoiceChannel.css'
 import {
-  IconInnerShadowRightFilled,
+  IconDiamondsFilled,
   IconPlus,
   IconTrash,
   IconPointFilled,
@@ -474,7 +474,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
         {channel.channel_icon ? (
           <img className="channel-icon-img" src={cdnUrl(channel.channel_icon)} alt="" />
         ) : (
-          <IconInnerShadowRightFilled size={25} />
+          <IconDiamondsFilled className="channel-icon-placeholder" size={25} />
         )}
         <span className="channel-name">{channel.name}</span>
         {unread && (

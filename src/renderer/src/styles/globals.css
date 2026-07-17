@@ -137,14 +137,16 @@ select:focus {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--color-text-tertiary) 32%, transparent);
+  /* The theme's secondary accent (reaction hue, not primary), at full strength
+     whether idle or hovered — hover only brightens slightly. */
+  background: var(--color-mention, var(--color-text-tertiary));
   border-radius: 999px;
   border: 3px solid transparent;
   background-clip: padding-box;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--color-text-tertiary) 55%, transparent);
+  background: color-mix(in srgb, var(--color-reaction, var(--color-text-tertiary)) 85%, white);
   border: 3px solid transparent;
   background-clip: padding-box;
 }

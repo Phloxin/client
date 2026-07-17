@@ -4,13 +4,14 @@ import {
   IconMicrophone,
   IconBellRinging,
   IconKeyboard,
-  IconCheck
+  IconCheck,
+  IconPlayerPlayFilled
 } from '@tabler/icons-react'
 import { useSettings } from '../context/SettingsContext'
 import { ThemeSwitcher } from '../components/ThemeSwitcher'
 import AudioSettings from '../components/AudioSettings'
 import KeybindsSettings from '../components/KeybindsSettings'
-import { SOUND_CATEGORIES } from '../lib/sounds'
+import { SOUND_CATEGORIES, playUiSound } from '../lib/sounds'
 import { UI_FONTS } from '../lib/uiSettings'
 import './Settings.css'
 
@@ -436,6 +437,15 @@ function Settings() {
                     <div className="settings-toggle-copy">
                       <label htmlFor={`sound-${category.id}`}>{category.label}</label>
                     </div>
+                    <button
+                      type="button"
+                      className="sound-preview-btn"
+                      title={`Play ${category.label}`}
+                      aria-label={`Play ${category.label}`}
+                      onClick={() => playUiSound(category.events[0], 0.5, true)}
+                    >
+                      <IconPlayerPlayFilled size={14} />
+                    </button>
                     <label className="toggle-switch">
                       <input
                         type="checkbox"
