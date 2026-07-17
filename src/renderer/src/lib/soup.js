@@ -855,21 +855,17 @@ onScreenAudioError(({ message }) => {
 // no picker choice).
 const VIDEO_SCALABILITY_MODE = 'L3T3_KEY'
 
-// Single spatial layer (L1), temporal only (T3). We deliberately do NOT use
-// spatial SVC (L2/L3) for screen share: splitting the budget across 1080p/540p/
-// 270p layers plus the inter-layer coding tax leaves the full-res image softly
-// quantized and artifact-y under motion — the whole reason Discord looks sharp at
-// ~4 Mbps (one clean stream) while we did not at 10 Mbps (three). One layer puts
-// the entire budget into one efficiently-coded 1080p stream.
-//
-// Trade-off: no per-viewer RESOLUTION tiering. The T3 temporal layers still let
-// setVideoStreamRoles() give thumbnails a lower fps; VIEW_LAYERS' spatial indices
-// clamp harmlessly to the single layer. Reintroduce spatial tiering via simulcast
-// (independent clean encodings) if multi-stream receive cost ever matters more
-// than focused-stream quality.
-function scalabilityModeFor() {
-  return 'L1T3'
-}
+// Screen share uses a single plain encoding — no scalabilityMode at all.
+// Spatial SVC (L2/L3) was dropped first: splitting the budget across layers
+// left the full-res image soft (Discord looks sharp at ~4 Mbps with one clean
+// stream). Temporal layers (L1T3) went next: hardware encoders reject or
+// refuse to register for SVC modes (observed: the D3D12 encoder does plain
+// H.264 fine but AV1 'L1T3' fell back to libaom; MediaFoundation H.264 threw
+// on 'L1T3' in setParameters) — and since a software-AV1 sender gets
+// downgraded to H.264 (no layers) anyway, the layers only ever served
+// machines that were about to lose them. Trade-off: no per-viewer fps/res
+// tiering for screen shares — setVideoStreamRoles() still pauses hidden
+// streams, and its layer preferences clamp harmlessly on a single layer.
 
 // Ceiling for the (single-layer) screen-share encoding, scaled to resolution. The
 // whole budget now feeds one full-res stream, so these can be lower than the old
@@ -882,24 +878,46 @@ function maxBitrateFor(height) {
   return 5_000_000
 }
 
-// A video codec from the loaded device's capabilities, by mime type. The codec
-// passed to produce() MUST come from these: mediasoup matches it against the
-// router's codecs and throws 'no matching codec found' on a mismatch, so we only
-// ever return one the device already advertised. undefined (no match) preserves
-// mediasoup's default (first router codec).
+// A video codec from the loaded device's sending capabilities, by mime type.
+// The codec passed to produce() MUST come from sendRtpCapabilities: the legacy
+// rtpCapabilities getter aliases the receiving capabilities, whose H.264 profile
+// variants may not match what this device can send. undefined (no match)
+// preserves mediasoup's default (first router codec).
 function findVideoCodec(mime) {
-  return device?.rtpCapabilities?.codecs?.find(
+  return device?.sendRtpCapabilities?.codecs?.find(
     (c) => c.kind === 'video' && c.mimeType?.toLowerCase() === mime
   )
 }
 
-// Screen share: AV1 for both optimize modes (VP9 fallback). AV1's earlier motion
-// freezing was libaom thrashing ACROSS spatial layers; with single-layer encoding
-// (L1T3, see scalabilityModeFor) its rate control is stable and it's more
-// efficient than VP9 — Discord-level sharpness at lower bitrate. Flip to
-// findVideoCodec('video/vp9') ?? findVideoCodec('video/av1') if a future
-// machine's software AV1 can't keep up.
+// Set once a share's measured encoder came up software for AV1/VP9 (see
+// maybeDowngradeScreenCodec): future shares then start on H.264 directly instead
+// of re-running ~9s of libaom pain each time. This is the capability check —
+// driven by the encoder the machine actually produced, not GPU-model sniffing.
+// ponytail: sticky once set; cleared by resetScreenCodecPreference() when the
+// encoder landscape changes (e.g. the hardware-acceleration toggle) so AV1 is
+// re-probed.
+const SCREEN_H264_KEY = 'screenPreferH264'
+
+// Forget a persisted "AV1 is software here → use H.264" verdict so the next
+// share re-probes AV1 from scratch. Call when something that changes which
+// encoders exist has changed — notably toggling hardware acceleration, after
+// which AV1 that was software may now be hardware (or vice-versa).
+export function resetScreenCodecPreference() {
+  localStorage.removeItem(SCREEN_H264_KEY)
+}
+
+// Screen share: AV1 for efficiency (Discord-level sharpness at lower bitrate,
+// one plain encoding — see the SVC note above maxBitrateFor), VP9 fallback.
+// Whether AV1 encodes in
+// hardware or software can't be known up front (mediaCapabilities.encodingInfo
+// lies on Windows — reports AV1 powerEfficient even when the WebRTC encoder is
+// libaom), so the first share probes it: getStats names the real encoder ~3s in,
+// and a software result downgrades the share to H.264 and persists the choice
+// (SCREEN_H264_KEY) so later shares skip the probe.
 function pickVideoCodec() {
+  if (localStorage.getItem(SCREEN_H264_KEY) === '1') {
+    return findVideoCodec('video/h264') ?? findVideoCodec('video/vp9')
+  }
   return findVideoCodec('video/av1') ?? findVideoCodec('video/vp9')
 }
 
@@ -910,6 +928,15 @@ function pickVideoCodec() {
 // to VP9/AV1 (full spatial tiering) when the router doesn't advertise H.264.
 function pickCameraCodec() {
   return findVideoCodec('video/h264') ?? findVideoCodec('video/vp9') ?? findVideoCodec('video/av1')
+}
+
+// Short codec name (e.g. 'AV1', 'VP9', 'H264') from a producer/consumer's
+// rtpParameters, skipping the rtx retransmission codec. Feeds the UI codec badge.
+function codecLabel(rtpParameters) {
+  const mime = rtpParameters?.codecs?.find(
+    (c) => !c.mimeType?.toLowerCase().endsWith('/rtx')
+  )?.mimeType
+  return mime?.split('/')[1]
 }
 
 // Log the codec the SFU actually negotiated, and warn when it's one without
@@ -931,28 +958,63 @@ function logNegotiatedVideoCodec(producer, scalabilityMode) {
   }
 }
 
-// Poll the video sender's outbound-rtp stats and log encoderImplementation (is it
-// hardware or software? e.g. 'libaom' = software AV1) and qualityLimitationReason
-// ('cpu' = the encoder can't keep up, 'bandwidth' = the link, 'none' = fine).
-// This is the live equivalent of chrome://webrtc-internals for diagnosing stream
-// freezes. Returns a stop function; only the most recent share is polled.
+// getStats' encoderImplementation names the actual encoder. These substrings are
+// Chromium's SOFTWARE encoders (libaom = SW AV1, libvpx = SW VP9/VP8, openh264 =
+// SW H264); any other non-empty implementation is hardware/accelerated. This is
+// how we tell a real HW AV1 encode from the software-AV1 fallback that pickVideoCodec
+// tries to avoid — the codec name alone can't. 'unknown'/empty = not determined yet.
+// ponytail: substring match; if a new SW encoder name appears (chrome://webrtc-
+// internals → encoderImplementation), add it here.
+const SOFTWARE_ENCODER_RE = /libaom|libvpx|openh264/i
+function encoderIsHardware(impl) {
+  if (!impl || impl === 'unknown') return null
+  return !SOFTWARE_ENCODER_RE.test(impl)
+}
+
+// Poll the video sender's outbound-rtp stats every 3s and report to onStats:
+// codec + whether the encoder is hardware or software (encoderImplementation, e.g.
+// 'libaom' = software AV1) for the sharer's HW/SW tile badge, and qualityLimitationReason
+// ('cpu' = the encoder can't keep up) which drives maybeDowngradeScreenCodec. The
+// live equivalent of chrome://webrtc-internals; also logged in dev. Returns a stop
+// function; only the most recent share is polled.
 let encoderStatsStop = null
-function startEncoderStatsLog(producer) {
+function startEncoderStatsLog(producer, onStats) {
   encoderStatsStop?.()
-  // Diagnostic scaffolding — dev builds only, it logs every 3s during any share.
-  if (!import.meta.env.DEV) return
   const sender = producer.rtpSender
   if (!sender?.getStats) return
+  let prev = null // last { totalEncodeTime, framesEncoded } for per-frame encode cost
   const id = setInterval(async () => {
     try {
       const stats = await sender.getStats()
       for (const s of stats.values()) {
         if (s.type !== 'outbound-rtp' || s.kind !== 'video') continue
-        console.log(
-          `[Soup] encoder: ${s.encoderImplementation ?? '?'} | limited by: ` +
-            `${s.qualityLimitationReason ?? '?'} | ${s.frameWidth ?? '?'}x${s.frameHeight ?? '?'}` +
-            `@${Math.round(s.framesPerSecond ?? 0)}fps`
-        )
+        // ms of encoder time per encoded frame — the clearest HW-vs-SW signal
+        // besides the implementation name (software AV1 sits an order of
+        // magnitude above hardware).
+        const encodeMsPerFrame =
+          prev && s.framesEncoded > prev.framesEncoded
+            ? ((s.totalEncodeTime - prev.totalEncodeTime) * 1000) /
+              (s.framesEncoded - prev.framesEncoded)
+            : null
+        prev = { totalEncodeTime: s.totalEncodeTime ?? 0, framesEncoded: s.framesEncoded ?? 0 }
+        if (import.meta.env.DEV) {
+          console.log(
+            `[Soup] encoder: ${s.encoderImplementation ?? '?'} | limited by: ` +
+              `${s.qualityLimitationReason ?? '?'} | ${s.frameWidth ?? '?'}x${s.frameHeight ?? '?'}` +
+              `@${Math.round(s.framesPerSecond ?? 0)}fps` +
+              (encodeMsPerFrame != null ? ` | ${encodeMsPerFrame.toFixed(1)}ms/frame` : '')
+          )
+        }
+        onStats?.({
+          codec: codecLabel(producer.rtpParameters),
+          implementation: s.encoderImplementation,
+          hardware: encoderIsHardware(s.encoderImplementation),
+          qualityLimitationReason: s.qualityLimitationReason,
+          width: s.frameWidth,
+          height: s.frameHeight,
+          fps: s.framesPerSecond,
+          encodeMsPerFrame
+        })
       }
     } catch {
       // getStats can reject transiently around teardown — ignore.
@@ -963,6 +1025,91 @@ function startEncoderStatsLog(producer) {
     encoderStatsStop = null
   }
   return encoderStatsStop
+}
+
+// ─── Adaptive screen-share codec downgrade ───────────────────────
+// The share starts on AV1 (best quality-per-bit when hardware-encoded); the first
+// stats sample (~3s) names the encoder the machine actually produced. Software
+// AV1/VP9 (libaom/libvpx — the heaviest encoders Chromium ships) downgrades to
+// H.264 immediately and persists the choice (SCREEN_H264_KEY): H.264 is hardware
+// via MediaFoundation where the GPU process supports it, else openh264, the
+// cheapest software encoder. A hardware encoder only downgrades under sustained
+// cpu limitation. We re-produce ONCE, reusing the live capture track so the user
+// doesn't re-pick a source. The SFU already tolerates a brief two-producer overlap
+// (see consumeProducer's stale-consumer cleanup), so we produce the replacement
+// before closing the original — a failed downgrade leaves the AV1 share running
+// rather than killing it.
+const CPU_STRIKES_TO_DOWNGRADE = 3 // ~3 polls × 3s ≈ 9s of sustained cpu limiting
+let screenShareCtx = null // { track, height, optimizeFor, onEncoderStats } while sharing
+let screenCpuStrikes = 0
+let screenDowngraded = false // one-shot per share; no flap back to AV1
+
+// Composed stats sink for the screen producer: feeds the UI badge and the downgrade.
+function screenStatsHandler(stats) {
+  screenShareCtx?.onEncoderStats?.(stats)
+  maybeDowngradeScreenCodec(stats)
+}
+
+async function maybeDowngradeScreenCodec(stats) {
+  if (screenDowngraded || !screenShareCtx || !screenProducer) return
+  const current = screenProducer.rtpParameters?.codecs?.[0]?.mimeType ?? ''
+  if (/h264/i.test(current)) return // already on the lightest codec
+
+  const softwareEncoder = stats.hardware === false
+  if (softwareEncoder) {
+    // Verified software AV1/VP9 is never worth keeping — downgrade now.
+    screenCpuStrikes = CPU_STRIKES_TO_DOWNGRADE
+  } else {
+    // Hardware (or not-yet-known) encoder: only downgrade under sustained cpu
+    // limitation. Decay rather than reset — a loaded encoder oscillates between
+    // 'cpu' and 'bandwidth', and a hard reset let that oscillation dodge the
+    // downgrade forever.
+    screenCpuStrikes =
+      stats.qualityLimitationReason === 'cpu'
+        ? screenCpuStrikes + 1
+        : Math.max(0, screenCpuStrikes - 1)
+  }
+  if (screenCpuStrikes < CPU_STRIKES_TO_DOWNGRADE) return
+  screenDowngraded = true // commit — win or lose, don't re-evaluate
+
+  const h264 = findVideoCodec('video/h264')
+  if (!h264) return // nothing lighter to switch to
+
+  const ctx = screenShareCtx
+  const oldId = screenProducer.id
+  try {
+    // No scalabilityMode on H.264: MediaFoundation hardware encoders reject
+    // 'L1T3' in setParameters, breaking setDegradationPreference below.
+    const next = await producerTransport.produce({
+      track: ctx.track,
+      codec: h264,
+      encodings: [{ maxBitrate: maxBitrateFor(ctx.height) }],
+      // Same shared-track rule as shareScreen: closing a producer must never
+      // stop the capture track (stopScreenShare owns that).
+      stopTracks: false,
+      codecOptions: { videoGoogleStartBitrate: 2500 },
+      appData: { produced: 'ScreenShare' }
+    })
+    screenProducer.close()
+    localProducerIds.delete(oldId)
+    notify('CloseProducer', { id: oldId })
+    screenProducer = next
+    localProducerIds.add(next.id)
+    // Only a measured-software encoder proves the machine can't accelerate
+    // AV1/VP9 — remember that so pickVideoCodec() starts future shares on
+    // H.264 directly. A hardware encoder that got cpu-limited stays probe-able.
+    if (softwareEncoder) localStorage.setItem(SCREEN_H264_KEY, '1')
+    await setDegradationPreference(
+      next,
+      ctx.optimizeFor === 'motion' ? 'maintain-framerate' : 'maintain-resolution'
+    )
+    startEncoderStatsLog(next, screenStatsHandler)
+    console.log(
+      `[Soup] Screen codec downgraded to H264 (${softwareEncoder ? 'software encoder' : 'cpu limited'}) [id:${next.id}]`
+    )
+  } catch (err) {
+    console.warn('[Soup] Screen codec downgrade failed; staying on AV1:', err)
+  }
 }
 
 // Bias how the encoder sheds quality under CPU/bandwidth pressure, via the RTP
@@ -1000,9 +1147,16 @@ export async function shareScreen({
   // the track contentHint and degradationPreference below.
   optimizeFor = 'detail',
   // Legacy boolean from the old picker API - maps to system-legacy loopback.
-  audio = undefined
+  audio = undefined,
+  // Fires with { implementation, hardware } from encoder stats, ~3s after the
+  // share starts, so the caller can show HW/SW on the self tile.
+  onEncoderStats = undefined
 } = {}) {
   if (!producerTransport) throw new Error('Not connected to voice')
+  // A share started while one is live (mid-flight double-toggle, or a prior
+  // share whose audio setup failed after the video producer went live) must
+  // not overwrite screenProducer and leak a still-encoding producer.
+  if (screenProducer) await stopScreenShare()
   if (audio !== undefined && audioMode === 'none' && audio) audioMode = 'system-legacy'
 
   const stream = await navigator.mediaDevices.getDisplayMedia({
@@ -1017,17 +1171,19 @@ export async function shareScreen({
   const track = stream.getVideoTracks()[0]
   track.contentHint = optimizeFor === 'motion' ? 'motion' : 'detail'
 
-  const scalabilityMode = scalabilityModeFor(height)
   try {
     screenProducer = await producerTransport.produce({
       track,
-      // Request the codec explicitly (AV1, else VP9 — see pickVideoCodec) so we get
-      // real spatial SVC: one efficient upload carrying spatial × temporal layers,
-      // so the server can forward a cheap layer to thumbnails / a full layer to
-      // the focused viewer (see setVideoStreamRoles). Spatial-layer count adapts
-      // to the picked resolution (see scalabilityModeFor).
+      // Request the codec explicitly: AV1, else VP9 — or H.264 once the probe
+      // learned AV1 is software here (see pickVideoCodec). One plain encoding,
+      // no scalabilityMode (see the SVC note above maxBitrateFor).
       codec: pickVideoCodec(),
-      encodings: [{ maxBitrate: maxBitrateFor(height), scalabilityMode }],
+      encodings: [{ maxBitrate: maxBitrateFor(height) }],
+      // The adaptive downgrade re-produces this SAME track, so producers must
+      // not stop it on close() (the default stopTracks:true killed the
+      // replacement producer — black stream at 0fps). stopScreenShare() and
+      // resetMediaState() stop the capture track explicitly instead.
+      stopTracks: false,
       codecOptions: {
         // Start conservatively (kbps) and let BWE ramp — a high start bitrate
         // over-probes the link and causes the initial overshoot/freeze.
@@ -1043,14 +1199,19 @@ export async function shareScreen({
   }
 
   localProducerIds.add(screenProducer.id)
-  logNegotiatedVideoCodec(screenProducer, scalabilityMode)
+  logNegotiatedVideoCodec(screenProducer)
   // Follow the picker's Optimize-for choice: 'detail' keeps text sharp (fps drops
   // first under pressure), 'motion' favors framerate for video-heavy shares.
   await setDegradationPreference(
     screenProducer,
     optimizeFor === 'motion' ? 'maintain-framerate' : 'maintain-resolution'
   )
-  startEncoderStatsLog(screenProducer)
+  // Arm the adaptive downgrade: retain the track + params so a sustained-CPU stall
+  // can re-produce as H.264 without the user re-picking a source.
+  screenShareCtx = { track, height, optimizeFor, onEncoderStats }
+  screenCpuStrikes = 0
+  screenDowngraded = false
+  startEncoderStatsLog(screenProducer, screenStatsHandler)
   console.log(`[Soup] Screen sharing [id:${screenProducer.id}]`)
 
   // Screenshare audio: native capture for the per-app/system modes, or the
@@ -1074,20 +1235,29 @@ export async function shareScreen({
   }
 
   if (audioTrack) {
-    screenAudioProducer = await producerTransport.produce({
-      track: audioTrack,
-      // Stereo + a real bitrate: captured app/system audio is music/media,
-      // not speech, and the old mono default audibly degraded it.
-      codecOptions: {
-        opusStereo: true,
-        opusDtx: true,
-        opusFec: true
-      },
-      encodings: [{ maxBitrate: 160000 }],
-      appData: { produced: 'ScreenShareAudio' }
-    })
-    localProducerIds.add(screenAudioProducer.id)
-    console.log(`[Soup] Screen audio sharing [id:${screenAudioProducer.id}]`)
+    try {
+      screenAudioProducer = await producerTransport.produce({
+        track: audioTrack,
+        // Stereo + a real bitrate: captured app/system audio is music/media,
+        // not speech, and the old mono default audibly degraded it.
+        codecOptions: {
+          opusStereo: true,
+          opusDtx: true,
+          opusFec: true
+        },
+        encodings: [{ maxBitrate: 160000 }],
+        appData: { produced: 'ScreenShareAudio' }
+      })
+      localProducerIds.add(screenAudioProducer.id)
+      console.log(`[Soup] Screen audio sharing [id:${screenAudioProducer.id}]`)
+    } catch (err) {
+      // Match the native-capture failure path: degrade to video-only rather
+      // than rejecting the whole share — that would strand the live video
+      // producer with the UI thinking no share started.
+      audioTrack.stop()
+      console.error('[Soup] Screen audio produce failed, sharing video-only:', err)
+      activeCallbacks.onScreenAudioError?.(err.message)
+    }
   }
 
   track.onended = () => {
@@ -1100,7 +1270,8 @@ export async function shareScreen({
 
   return {
     id: screenProducer.id,
-    stream: previewStream
+    stream: previewStream,
+    codec: codecLabel(screenProducer.rtpParameters)
   }
 }
 
@@ -1109,8 +1280,10 @@ export async function shareScreen({
 // existing stop/preview/remote-render paths all apply. Unlike screen share,
 // the webcam carries no audio and uses the device's own native quality - the
 // fps/resolution/audio picker settings don't apply here.
-export async function shareCamera(deviceId) {
+export async function shareCamera(deviceId, onEncoderStats) {
   if (!producerTransport) throw new Error('Not connected to voice')
+  // Same guard as shareScreen: never overwrite a live producer.
+  if (screenProducer) await stopScreenShare()
 
   const stream = await navigator.mediaDevices.getUserMedia({
     video: deviceId ? { deviceId: { exact: deviceId } } : true,
@@ -1120,12 +1293,12 @@ export async function shareCamera(deviceId) {
   const track = stream.getVideoTracks()[0]
   track.contentHint = 'motion'
 
-  // H.264 has no spatial SVC, so its scalability tops out at temporal-only (L1T3)
-  // — a full spatial mode would just be ignored. VP9/AV1 fallbacks keep the full
-  // spatial+temporal mode.
+  // H.264 gets NO scalabilityMode (MediaFoundation hardware encoders reject
+  // 'L1T3' in setParameters, which would break setDegradationPreference below);
+  // VP9/AV1 fallbacks keep the full spatial+temporal mode.
   const cameraCodec = pickCameraCodec()
   const cameraScalabilityMode = /h264/i.test(cameraCodec?.mimeType ?? '')
-    ? 'L1T3'
+    ? undefined
     : VIDEO_SCALABILITY_MODE
   try {
     screenProducer = await producerTransport.produce({
@@ -1134,7 +1307,9 @@ export async function shareCamera(deviceId) {
       codec: cameraCodec,
       // Webcams capture at native (typically 720p–1080p) resolution; cap at the
       // 1080p tier and let BWE ramp from a conservative start, same as shareScreen.
-      encodings: [{ maxBitrate: 6_000_000, scalabilityMode: cameraScalabilityMode }],
+      encodings: [
+        { maxBitrate: 6_000_000, ...(cameraScalabilityMode ? { scalabilityMode: cameraScalabilityMode } : {}) }
+      ],
       codecOptions: {
         videoGoogleStartBitrate: 2500
       },
@@ -1150,7 +1325,7 @@ export async function shareCamera(deviceId) {
   logNegotiatedVideoCodec(screenProducer, cameraScalabilityMode)
   // Camera content is motion, so keep framerate smooth (resolution drops first).
   await setDegradationPreference(screenProducer, 'maintain-framerate')
-  startEncoderStatsLog(screenProducer)
+  startEncoderStatsLog(screenProducer, onEncoderStats)
   console.log(`[Soup] Camera sharing [id:${screenProducer.id}]`)
 
   track.onended = () => {
@@ -1161,7 +1336,8 @@ export async function shareCamera(deviceId) {
 
   return {
     id: screenProducer.id,
-    stream: previewStream
+    stream: previewStream,
+    codec: codecLabel(screenProducer.rtpParameters)
   }
 }
 
@@ -1169,6 +1345,11 @@ export async function shareCamera(deviceId) {
 export async function stopScreenShare() {
   if (!screenProducer) return
   encoderStatsStop?.()
+  // Screen producers are created with stopTracks:false (the downgrade reuses
+  // the track), so the OS capture must be released here explicitly. Camera
+  // shares have no ctx and keep the default: close() stops their track.
+  screenShareCtx?.track?.stop()
+  screenShareCtx = null
   const producerId = screenProducer.id
   screenProducer.close()
   localProducerIds.delete(producerId)
@@ -1235,7 +1416,7 @@ export async function consumeProducer(producerId, kind, onStream, clientId, prod
 
   const consumerParams = await send('Consume', {
     id: producerId,
-    rtp_params: device.rtpCapabilities
+    rtp_params: device.recvRtpCapabilities
   })
 
   if (consumerParams.error) {
@@ -1333,7 +1514,7 @@ export async function consumeProducer(producerId, kind, onStream, clientId, prod
         break
       }
     }
-    onStream?.({ stream, kind, consumerId: consumer.id, clientId })
+    onStream?.({ stream, kind, consumerId: consumer.id, clientId, codec: codecLabel(consumer.rtpParameters) })
   }
 
   remoteConsumers.set(producerId, {
@@ -1456,6 +1637,9 @@ export function resetMediaState() {
   consumerTransport?.close()
   consumerTransport = null
   encoderStatsStop?.()
+  // Screen producers use stopTracks:false — release the capture explicitly.
+  screenShareCtx?.track?.stop()
+  screenShareCtx = null
   screenProducer?.close()
   screenProducer = null
   screenAudioProducer?.close()

@@ -5,17 +5,27 @@ import {
   IconBellRinging,
   IconKeyboard,
   IconCheck,
-  IconPlayerPlayFilled
+  IconPlayerPlayFilled,
+  IconAdjustments,
+  IconSettings
 } from '@tabler/icons-react'
 import { useSettings } from '../context/SettingsContext'
 import { ThemeSwitcher } from '../components/ThemeSwitcher'
 import AudioSettings from '../components/AudioSettings'
 import KeybindsSettings from '../components/KeybindsSettings'
+import AdvancedSettings from '../components/AdvancedSettings'
+import GeneralSettings from '../components/GeneralSettings'
 import { SOUND_CATEGORIES, playUiSound } from '../lib/sounds'
 import { UI_FONTS } from '../lib/uiSettings'
 import './Settings.css'
 
 const sections = [
+  {
+    id: 'general',
+    title: 'General',
+    description: 'App version and updates.',
+    icon: IconSettings
+  },
   {
     id: 'appearance',
     title: 'Appearance',
@@ -39,6 +49,12 @@ const sections = [
     title: 'Notifications',
     description: 'Adjust volume and toggle notification sounds.',
     icon: IconBellRinging
+  },
+  {
+    id: 'advanced',
+    title: 'Advanced',
+    description: 'Hardware acceleration and diagnostic overlays.',
+    icon: IconAdjustments
   }
 ]
 
@@ -81,6 +97,8 @@ function Settings() {
         </aside>
 
         <section className="settings-panel">
+          {activeSection === 'general' && <GeneralSettings />}
+
           {activeSection === 'appearance' && (
             <div className="settings-panel-card">
               <div className="settings-panel-header">
@@ -414,6 +432,8 @@ function Settings() {
           )}
 
           {activeSection === 'keybinds' && <KeybindsSettings />}
+
+          {activeSection === 'advanced' && <AdvancedSettings />}
 
           {activeSection === 'notifications' && (
             <div className="settings-panel-card">

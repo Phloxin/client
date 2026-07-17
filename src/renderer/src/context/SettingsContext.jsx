@@ -43,7 +43,9 @@ const DEFAULT_APPEARANCE = {
   messageDisplay: 'cozy',
   // Server-group decorations on client rows (tag pills / icon badges).
   showGroupTags: true,
-  showGroupIcons: true
+  showGroupIcons: true,
+  // Show the codec / HW-SW badge on the focused stream (Advanced settings).
+  showCodecBadge: true
 }
 
 // No shortcuts assigned by default; a value is a combo string like "Ctrl+Shift+M".

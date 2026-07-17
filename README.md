@@ -95,7 +95,6 @@ system-wide (WASAPI process loopback on Windows, PipeWire on Linux).
 - Ten themes: Studio (default), Daylight, Midnight, Aurora, Terra, Rosé Pine, Catppuccin Frappé, Catppuccin Mocha, Dracula, Gruvbox.
 - Appearance settings: background transparency (Acrylic on Windows 11 / compositor blur on Linux), surface gradients, shadows, interface font, cozy/compact messages, and per-category animation toggles (respects OS reduced-motion).
 - Configurable UI sound effects (join/leave, message, stream start/stop) with per-category toggles.
-- `DEV_MODE` mock data path so the UI runs with no backend.
 
 ---
 
@@ -140,8 +139,7 @@ pylon/
 │           │   ├── motionPresets.js    # Shared Motion spring/fade presets
 │           │   ├── themeUtils.js       # Theme catalog + apply/persist (+ legacy id migration)
 │           │   ├── uiSettings.js       # Appearance/animation/font application
-│           │   ├── avatarFile.js / imageColors.js / roleIcon.jsx
-│           │   └── mock.js             # DEV_MODE mock channels/clients/streams
+│           │   └── avatarFile.js / imageColors.js / roleIcon.jsx
 │           ├── pages/
 │           │   ├── Main.jsx            # Primary view: sidebar + chat/video + all realtime wiring
 │           │   ├── Settings.jsx        # In-app settings overlay
@@ -383,4 +381,4 @@ Other scripts: `npm run lint`, `npm run format`, `npm start` (preview a build),
 
 - **Frameless window:** the renderer draws its own title bar; window minimums are content-area sizes derived from the sidebar layout so controls never clip.
 - **CSP:** `src/renderer/index.html` restricts sources but allows `http/https/ws/wss` connections (any server host), `blob:`/`data:` media, WASM eval (RNNoise), and YouTube frames for embeds.
-- **DEV_MODE** (`lib/mock.js`): renders the full UI with mock channels/clients/streams and no backend. Dev builds also log outbound encoder stats (codec implementation, limitation reason, resolution/fps) every 3s during a share.
+- **Dev builds** log outbound encoder stats (codec implementation, limitation reason, resolution/fps) every 3s during a share.

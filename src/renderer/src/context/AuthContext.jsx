@@ -34,12 +34,10 @@ export function AuthProvider({ children }) {
     <AuthContext.Provider
       value={{
         token,
-        setToken,
         session,
         applyAuthResponse,
         clearAuth,
-        client,
-        setClient
+        client
       }}
     >
       {children}

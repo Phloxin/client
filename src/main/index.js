@@ -19,6 +19,7 @@ import iconIco from '../../build/icon.ico?asset'
 const icon = process.platform === 'win32' ? iconIco : iconPng
 import { setupGlobalKeybinds, stopGlobalKeybinds } from './keybinds'
 import { setupAudioCapture, stopAudioCaptureHost } from './audioCapture'
+import { setupUpdater } from './updater'
 
 const APP_ID = 'app.pylon.client'
 
@@ -37,6 +38,33 @@ if (process.platform === 'linux') {
   app.commandLine.appendSwitch('password-store', 'basic')
 }
 
+// User-controllable app settings that the main process must apply at startup
+// (before app 'ready'), so they can't live in renderer localStorage. Plain
+// JSON, unencrypted — nothing sensitive here. Read synchronously at module load
+// because disableHardwareAcceleration() and enable-features must be set pre-ready.
+// getPath('userData') is available before ready. Written via the set-app-settings
+// IPC below; changes take effect on the next launch.
+function appSettingsFilePath() {
+  return join(app.getPath('userData'), 'app-settings.json')
+}
+
+function readAppSettings() {
+  try {
+    return { hardwareAcceleration: true, ...JSON.parse(readFileSync(appSettingsFilePath(), 'utf-8')) }
+  } catch {
+    return { hardwareAcceleration: true }
+  }
+}
+
+const appSettings = readAppSettings()
+
+// Master hardware-acceleration switch (Advanced settings). Off disables all
+// Chromium GPU acceleration — the standard escape hatch for broken driver stacks
+// (black frames, GPU-process crashes). Must be called before app 'ready'.
+if (appSettings.hardwareAcceleration === false) {
+  app.disableHardwareAcceleration()
+}
+
 // Chromium feature flags are accumulated here because appendSwitch OVERWRITES
 // a previously-set 'enable-features' value - every feature must go through a
 // single comma-joined switch.
@@ -51,20 +79,45 @@ if (isWayland) {
   enableFeatures.push('WebRTCPipeWireCapturer', 'GlobalShortcutsPortal')
 }
 
-// Opt-in hardware video accel experiment (VOIP_HW_ACCEL=1): offloads VP9/AV1
-// decode - and encode where the driver supports it - to VA-API/GPU instead of
-// libvpx/libaom software paths, the dominant CPU cost while screensharing.
-// Gated because it is driver-dependent (black frames / silent SW fallback on
-// bad stacks). Verify with chrome://gpu and getStats() encoderImplementation/
-// decoderImplementation. Escalations for stubborn drivers (add to the list
-// manually when testing): VaapiIgnoreDriverChecks, VaapiOnNvidiaGPUs.
-if (process.platform === 'linux' && process.env.VOIP_HW_ACCEL) {
+if (
+  process.platform === 'linux' &&
+  !process.env.VOIP_NO_HW_ENCODE &&
+  appSettings.hardwareAcceleration !== false
+) {
   enableFeatures.push(
     'VaapiVideoDecoder',
     'AcceleratedVideoDecodeLinuxGL',
     'AcceleratedVideoEncoder'
   )
   app.commandLine.appendSwitch('ignore-gpu-blocklist')
+}
+
+// Windows hardware video ENCODE — on by default. All three feature names
+// verified against this electron.exe:
+//   - WebRtcAV1HWEncode: the WebRTC-layer gate. Without it the peer
+//     connection's encoder factory never offers hardware AV1, no matter what
+//     the GPU supports — Chrome flips it via Finch field trials, which
+//     Electron never receives, so its compiled-off default applies. This (not
+//     missing GPU support) was why AV1 encoded as libaom on an RTX 40-series.
+//   - D3D12VideoEncodeAccelerator + D3D12VideoEncodeAcceleratorL1T3: the D3D12
+//     encode path the AV1 delegate lives on, and its temporal-layer support.
+// Verified end-to-end on an RTX 4070 SUPER: AV1 at 1080p via
+// D3D12VideoEncodeAccelerator at ~8ms/frame. GPUs without AV1 encode still
+// come up libaom and are caught by the runtime probe in soup.js
+// (startEncoderStatsLog → maybeDowngradeScreenCodec), which switches the share
+// to H.264 — hardware via MediaFoundation, which needs no flags at all — and
+// persists that choice. Kill switches for bad driver stacks: VOIP_NO_HW_ENCODE=1
+// or the Advanced settings hardware-acceleration toggle.
+if (
+  process.platform === 'win32' &&
+  !process.env.VOIP_NO_HW_ENCODE &&
+  appSettings.hardwareAcceleration !== false
+) {
+  enableFeatures.push(
+    'D3D12VideoEncodeAccelerator',
+    'D3D12VideoEncodeAcceleratorL1T3',
+    'WebRtcAV1HWEncode'
+  )
 }
 
 // Windows capture note: modern Chromium may already default to Windows
@@ -191,6 +244,13 @@ const MIN_CONTENT_HEIGHT =
   SIDEBAR_CONTROLS_HEIGHT // 232
 
 function createWindow() {
+  // A hidden BrowserWindow normally gets revealed after Chromium's first paint.
+  // With GPU acceleration disabled on Linux (notably native Wayland), that first
+  // hidden paint may never arrive, so `ready-to-show` never fires and the app
+  // keeps running without mapping a window. Show this specific software-rendered
+  // case immediately; backgroundColor prevents a white flash while React loads.
+  const showImmediately = process.platform === 'linux' && appSettings.hardwareAcceleration === false
+
   // Create the browser window.
   const mainWindow = new BrowserWindow({
     width: 1000,
@@ -200,7 +260,8 @@ function createWindow() {
     useContentSize: true,
     minWidth: MIN_CONTENT_WIDTH,
     minHeight: MIN_CONTENT_HEIGHT,
-    show: false,
+    show: showImmediately,
+    backgroundColor: '#1e1e1e',
     // Frameless: the renderer draws its own Discord-style title bar (see
     // TitleBar.jsx). Window controls are driven via the window-* IPC below.
     frame: false,
@@ -215,9 +276,11 @@ function createWindow() {
     }
   })
 
-  mainWindow.on('ready-to-show', () => {
-    mainWindow.show()
-  })
+  if (!showImmediately) {
+    mainWindow.once('ready-to-show', () => {
+      mainWindow.show()
+    })
+  }
 
   // Let the custom title bar swap its maximize/restore icon when the window's
   // maximized state changes by any means (button, double-click, OS snap).
@@ -280,6 +343,22 @@ function createWindow() {
 app.whenReady().then(() => {
   // Set app user model id for windows
   electronApp.setAppUserModelId(APP_ID)
+
+  // Auto-update wiring (GitHub Releases). IPC + events for the General tab.
+  setupUpdater()
+
+  // Answers "is video encode/decode accelerated in THIS build" from any bug
+  // report — the answer drifts across Electron upgrades. Logged on
+  // gpu-info-update, NOT at ready: the GPU process only launches with the first
+  // window, so a ready-time snapshot reads all-software even on healthy
+  // machines. Deduped; the last line printed is the settled truth.
+  let lastGpuStatus = ''
+  app.on('gpu-info-update', () => {
+    const status = JSON.stringify(app.getGPUFeatureStatus())
+    if (status === lastGpuStatus) return
+    lastGpuStatus = status
+    console.log('[GPU] feature status:', status)
+  })
 
   // Default open or close DevTools by F12 in development
   // and ignore CommandOrControl + R in production.
@@ -388,6 +467,24 @@ app.whenReady().then(() => {
 
   // Load the saved server list from disk
   servers = readServersFile()
+
+  // ─── Advanced app settings (startup-applied, so main-process owned) ──
+  // Read the current values (e.g. hardware-acceleration toggle) for the
+  // Advanced settings UI, and persist changes. Changes apply on next launch.
+  ipcMain.handle('get-app-settings', () => readAppSettings())
+  ipcMain.on('set-app-settings', (_, changes) => {
+    try {
+      const merged = { ...readAppSettings(), ...changes }
+      writeFileSync(appSettingsFilePath(), JSON.stringify(merged))
+    } catch (err) {
+      console.error('Failed to persist app settings:', err)
+    }
+  })
+  // Restart the app so a startup-only setting (hardware acceleration) takes hold.
+  ipcMain.on('relaunch-app', () => {
+    app.relaunch()
+    app.exit(0)
+  })
 
   // Return the saved server list to any window that asks
   ipcMain.handle('get-servers', () => servers)
