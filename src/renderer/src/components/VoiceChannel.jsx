@@ -245,7 +245,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     )
   }
 
-  const handleVideoStream = ({ stream, kind, consumerId, clientId }) => {
+  const handleVideoStream = ({ stream, kind, consumerId, clientId, codec }) => {
     // Don't bake in the client's name here - the clients list for this
     // channel may not have caught up with this client's channel move yet.
     // The label is resolved at render time from clientId instead.
@@ -257,6 +257,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
         kind,
         isSelf: false,
         clientId,
+        codec,
         channelId: channel.id,
         channelName: channel.name,
         fallbackLabel: `${channel.name} ${kind === 'video' ? 'Stream' : 'Feed'}`
@@ -381,21 +382,38 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   }
 
   // Capture and publish the chosen source after the user picks one
+  // Encoder stats land ~3s after the share starts; tag the self tile with the live
+  // codec + HW/SW so the sharer sees what's actually encoding (release builds have no
+  // console), including after an adaptive downgrade flips AV1 → H264. Idempotent —
+  // bails when nothing changed so it stops re-rendering once settled.
+  const handleSelfEncoderStats = (consumerId, { codec, hardware }) => {
+    if (hardware == null && codec == null) return
+    setVideoStreams((prev) => {
+      const s = prev.find((x) => x.consumerId === consumerId && x.isSelf)
+      if (!s) return prev
+      const nextCodec = codec ?? s.codec
+      if (s.hardware === hardware && s.codec === nextCodec) return prev
+      return prev.map((x) => (x === s ? { ...x, hardware, codec: nextCodec } : x))
+    })
+  }
+
   const startShareWithSource = async (sourceId, options = {}) => {
     setShowSourcePicker(false)
     try {
       let screen
+      // Bound to the self tile once we know its consumerId (screen.id below).
+      const onEncoderStats = (stats) => handleSelfEncoderStats(screen?.id, stats)
       if (options.isCamera) {
         // Webcams capture directly via getUserMedia - no main-process source
         // hand-off, and no audio/fps/resolution settings.
-        screen = await shareCamera(sourceId)
+        screen = await shareCamera(sourceId, onEncoderStats)
       } else {
         // Tell the main process which source and audio mode the display-media
         // handler should use. sourceId is null on Wayland, where the OS portal
         // does the picking when getDisplayMedia runs.
         window.electron.ipcRenderer.send('set-screen-audio-mode', options.audioMode ?? 'none')
         window.electron.ipcRenderer.send('set-screen-source', sourceId ?? null)
-        screen = await shareScreen(options)
+        screen = await shareScreen({ ...options, onEncoderStats })
       }
       if (screen?.stream) {
         screen.stream.getVideoTracks()[0].onended = () => {
@@ -412,6 +430,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
             kind: 'video',
             isSelf: true,
             clientId: self.id,
+            codec: screen.codec,
             channelName: channel.name,
             fallbackLabel: self.name || 'You'
           }

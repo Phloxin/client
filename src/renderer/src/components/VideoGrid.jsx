@@ -422,6 +422,16 @@ function VideoGrid({
                 />
               </div>
             )}
+            {selectedStream.codec && (
+              <div className="focus-codec-badge" title="Video codec / encoder">
+                {selectedStream.codec}
+                {selectedStream.hardware != null && (
+                  <span className={selectedStream.hardware ? 'enc-hw' : 'enc-sw'}>
+                    {selectedStream.hardware ? 'HW' : 'SW'}
+                  </span>
+                )}
+              </div>
+            )}
             <div className="focus-label">
               <span>{resolveLabel(selectedStream)}</span>
             </div>

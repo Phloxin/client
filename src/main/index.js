@@ -67,6 +67,27 @@ if (process.platform === 'linux' && process.env.VOIP_HW_ACCEL) {
   app.commandLine.appendSwitch('ignore-gpu-blocklist')
 }
 
+// Windows hardware video ENCODE. H.264 hardware encode works out of the box via
+// the default MediaFoundation path — MFVEA creates its own D3D11 device, so it
+// runs even when the GPU process is software-composited (verified on a machine
+// showing 'NVIDIA H.264 Encoder MFT' alongside gpu_compositing:
+// disabled_software). AV1 comes up as software libaom there; soup.js detects
+// that at runtime (getStats encoderImplementation) and drops the share to H.264,
+// so every machine lands on its best working encoder without GPU-model sniffing.
+//
+// 'D3D12VideoEncodeAccelerator' (D3D12 VEA + its AV1 delegate; feature name
+// verified against this electron.exe) is OPT-IN only: on that same machine it
+// produced an encoder that reported hardware AV1 but streamed black frames —
+// with software compositing there are no valid shared images to import, and a
+// black-but-"hardware" encoder is invisible to the runtime software fallback.
+// D3D12VideoEncodeAcceleratorL1T3 (also verified in the binary): hardware
+// encoders must explicitly support temporal-layer modes or WebRTC falls back
+// to software — screen share requests AV1 'L1T3', so without this the D3D12
+// encoder handles plain H.264 but AV1 lands on libaom even on AV1-encode GPUs.
+if (process.platform === 'win32' && process.env.VOIP_HW_ACCEL) {
+  enableFeatures.push('D3D12VideoEncodeAccelerator', 'D3D12VideoEncodeAcceleratorL1T3')
+}
+
 // Windows capture note: modern Chromium may already default to Windows
 // Graphics Capture (WGC) for window shares. Before adding any WGC feature
 // flags here, verify the exact feature names against a Windows Electron
@@ -280,6 +301,19 @@ function createWindow() {
 app.whenReady().then(() => {
   // Set app user model id for windows
   electronApp.setAppUserModelId(APP_ID)
+
+  // Answers "is video encode/decode accelerated in THIS build" from any bug
+  // report — the answer drifts across Electron upgrades. Logged on
+  // gpu-info-update, NOT at ready: the GPU process only launches with the first
+  // window, so a ready-time snapshot reads all-software even on healthy
+  // machines. Deduped; the last line printed is the settled truth.
+  let lastGpuStatus = ''
+  app.on('gpu-info-update', () => {
+    const status = JSON.stringify(app.getGPUFeatureStatus())
+    if (status === lastGpuStatus) return
+    lastGpuStatus = status
+    console.log('[GPU] feature status:', status)
+  })
 
   // Default open or close DevTools by F12 in development
   // and ignore CommandOrControl + R in production.

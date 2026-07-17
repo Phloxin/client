@@ -276,6 +276,35 @@
   pointer-events: none;
 }
 
+/* Codec badge, top-left of the focused frame. */
+.focus-codec-badge {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(4px);
+  pointer-events: none;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+/* HW = green (accelerated, good), SW = amber (software fallback — the case worth
+   spotting, e.g. software AV1 on a GPU without AV1 encode). Only shown on the
+   sharer's own tile. */
+.focus-codec-badge .enc-hw {
+  color: #4ade80;
+}
+.focus-codec-badge .enc-sw {
+  color: #fbbf24;
+}
+
 /* ── Hover controls (fullscreen / collapse carousel) ────────────────────── */
 
 .video-controls {
