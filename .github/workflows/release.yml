@@ -110,6 +110,8 @@ jobs:
             dist/**/*.deb
             dist/**/*.snap
             dist/**/*.tar.gz
+            dist/**/*.yml
+            dist/**/*.blockmap
             !dist/**/*-unpacked/**
           if-no-files-found: error
           compression-level: 0
@@ -187,3 +189,5 @@ jobs:
             release-assets/**/*.deb
             release-assets/**/*.snap
             release-assets/**/*.tar.gz
+            release-assets/**/*.yml
+            release-assets/**/*.blockmap
