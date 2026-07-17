@@ -6,18 +6,26 @@ import {
   IconKeyboard,
   IconCheck,
   IconPlayerPlayFilled,
-  IconAdjustments
+  IconAdjustments,
+  IconSettings
 } from '@tabler/icons-react'
 import { useSettings } from '../context/SettingsContext'
 import { ThemeSwitcher } from '../components/ThemeSwitcher'
 import AudioSettings from '../components/AudioSettings'
 import KeybindsSettings from '../components/KeybindsSettings'
 import AdvancedSettings from '../components/AdvancedSettings'
+import GeneralSettings from '../components/GeneralSettings'
 import { SOUND_CATEGORIES, playUiSound } from '../lib/sounds'
 import { UI_FONTS } from '../lib/uiSettings'
 import './Settings.css'
 
 const sections = [
+  {
+    id: 'general',
+    title: 'General',
+    description: 'App version and updates.',
+    icon: IconSettings
+  },
   {
     id: 'appearance',
     title: 'Appearance',
@@ -89,6 +97,8 @@ function Settings() {
         </aside>
 
         <section className="settings-panel">
+          {activeSection === 'general' && <GeneralSettings />}
+
           {activeSection === 'appearance' && (
             <div className="settings-panel-card">
               <div className="settings-panel-header">

@@ -19,6 +19,7 @@ import iconIco from '../../build/icon.ico?asset'
 const icon = process.platform === 'win32' ? iconIco : iconPng
 import { setupGlobalKeybinds, stopGlobalKeybinds } from './keybinds'
 import { setupAudioCapture, stopAudioCaptureHost } from './audioCapture'
+import { setupUpdater } from './updater'
 
 const APP_ID = 'app.pylon.client'
 
@@ -335,6 +336,9 @@ function createWindow() {
 app.whenReady().then(() => {
   // Set app user model id for windows
   electronApp.setAppUserModelId(APP_ID)
+
+  // Auto-update wiring (GitHub Releases). IPC + events for the General tab.
+  setupUpdater()
 
   // Answers "is video encode/decode accelerated in THIS build" from any bug
   // report — the answer drifts across Electron upgrades. Logged on
