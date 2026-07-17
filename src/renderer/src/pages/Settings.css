@@ -249,6 +249,37 @@
   line-height: 1.45;
 }
 
+/* Pending-restart banner for startup-only settings (e.g. hardware accel). */
+.settings-restart-notice {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--spacing-sm);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+  background: color-mix(in srgb, var(--color-warning, #e0a458) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-warning, #e0a458) 30%, transparent);
+  border-radius: var(--radius-sm);
+  padding: var(--spacing-sm) var(--spacing-md);
+}
+
+.settings-restart-btn {
+  margin-left: auto;
+  flex-shrink: 0;
+  padding: 5px 12px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--color-primary);
+  color: var(--color-primary-contrast, #fff);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  cursor: pointer;
+  transition: filter 0.12s ease;
+}
+
+.settings-restart-btn:hover {
+  filter: brightness(1.1);
+}
+
 /* Row variant: copy on the left, control on the right. */
 .settings-toggle-row {
   flex-direction: row;

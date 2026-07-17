@@ -37,6 +37,33 @@ if (process.platform === 'linux') {
   app.commandLine.appendSwitch('password-store', 'basic')
 }
 
+// User-controllable app settings that the main process must apply at startup
+// (before app 'ready'), so they can't live in renderer localStorage. Plain
+// JSON, unencrypted — nothing sensitive here. Read synchronously at module load
+// because disableHardwareAcceleration() and enable-features must be set pre-ready.
+// getPath('userData') is available before ready. Written via the set-app-settings
+// IPC below; changes take effect on the next launch.
+function appSettingsFilePath() {
+  return join(app.getPath('userData'), 'app-settings.json')
+}
+
+function readAppSettings() {
+  try {
+    return { hardwareAcceleration: true, ...JSON.parse(readFileSync(appSettingsFilePath(), 'utf-8')) }
+  } catch {
+    return { hardwareAcceleration: true }
+  }
+}
+
+const appSettings = readAppSettings()
+
+// Master hardware-acceleration switch (Advanced settings). Off disables all
+// Chromium GPU acceleration — the standard escape hatch for broken driver stacks
+// (black frames, GPU-process crashes). Must be called before app 'ready'.
+if (appSettings.hardwareAcceleration === false) {
+  app.disableHardwareAcceleration()
+}
+
 // Chromium feature flags are accumulated here because appendSwitch OVERWRITES
 // a previously-set 'enable-features' value - every feature must go through a
 // single comma-joined switch.
@@ -81,8 +108,13 @@ if (process.platform === 'linux' && process.env.VOIP_HW_ACCEL) {
 // come up libaom and are caught by the runtime probe in soup.js
 // (startEncoderStatsLog → maybeDowngradeScreenCodec), which switches the share
 // to H.264 — hardware via MediaFoundation, which needs no flags at all — and
-// persists that choice. Kill switch for bad driver stacks: VOIP_NO_HW_ENCODE=1.
-if (process.platform === 'win32' && !process.env.VOIP_NO_HW_ENCODE) {
+// persists that choice. Kill switches for bad driver stacks: VOIP_NO_HW_ENCODE=1
+// or the Advanced settings hardware-acceleration toggle.
+if (
+  process.platform === 'win32' &&
+  !process.env.VOIP_NO_HW_ENCODE &&
+  appSettings.hardwareAcceleration !== false
+) {
   enableFeatures.push(
     'D3D12VideoEncodeAccelerator',
     'D3D12VideoEncodeAcceleratorL1T3',
@@ -424,6 +456,24 @@ app.whenReady().then(() => {
 
   // Load the saved server list from disk
   servers = readServersFile()
+
+  // ─── Advanced app settings (startup-applied, so main-process owned) ──
+  // Read the current values (e.g. hardware-acceleration toggle) for the
+  // Advanced settings UI, and persist changes. Changes apply on next launch.
+  ipcMain.handle('get-app-settings', () => readAppSettings())
+  ipcMain.on('set-app-settings', (_, changes) => {
+    try {
+      const merged = { ...readAppSettings(), ...changes }
+      writeFileSync(appSettingsFilePath(), JSON.stringify(merged))
+    } catch (err) {
+      console.error('Failed to persist app settings:', err)
+    }
+  })
+  // Restart the app so a startup-only setting (hardware acceleration) takes hold.
+  ipcMain.on('relaunch-app', () => {
+    app.relaunch()
+    app.exit(0)
+  })
 
   // Return the saved server list to any window that asks
   ipcMain.handle('get-servers', () => servers)

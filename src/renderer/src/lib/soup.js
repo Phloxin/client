@@ -893,8 +893,18 @@ function findVideoCodec(mime) {
 // maybeDowngradeScreenCodec): future shares then start on H.264 directly instead
 // of re-running ~9s of libaom pain each time. This is the capability check —
 // driven by the encoder the machine actually produced, not GPU-model sniffing.
-// ponytail: sticky once set; delete the key to re-probe AV1 (e.g. GPU upgrade).
+// ponytail: sticky once set; cleared by resetScreenCodecPreference() when the
+// encoder landscape changes (e.g. the hardware-acceleration toggle) so AV1 is
+// re-probed.
 const SCREEN_H264_KEY = 'screenPreferH264'
+
+// Forget a persisted "AV1 is software here → use H.264" verdict so the next
+// share re-probes AV1 from scratch. Call when something that changes which
+// encoders exist has changed — notably toggling hardware acceleration, after
+// which AV1 that was software may now be hardware (or vice-versa).
+export function resetScreenCodecPreference() {
+  localStorage.removeItem(SCREEN_H264_KEY)
+}
 
 // Screen share: AV1 for efficiency (Discord-level sharpness at lower bitrate,
 // one plain encoding — see the SVC note above maxBitrateFor), VP9 fallback.

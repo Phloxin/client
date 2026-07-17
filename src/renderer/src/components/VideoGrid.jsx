@@ -17,6 +17,7 @@ import {
   IconPlayerStopFilled
 } from '@tabler/icons-react'
 import { setFocusedScreenAudio, setVideoStreamRoles } from '../lib/soup'
+import { useSettings } from '../context/SettingsContext'
 
 // Stable empty default so the role effect doesn't churn when no watched set is
 // passed (e.g. the popout's first render before the bridge data arrives).
@@ -66,6 +67,8 @@ function VideoGrid({
   onVolumeChange,
   onMutedChange
 }) {
+  const { appearanceSettings } = useSettings()
+  const showCodecBadge = appearanceSettings.showCodecBadge !== false
   const viewerRef = useRef(null)
   const gridRef = useRef(null)
   const focusRef = useRef(null)
@@ -422,7 +425,7 @@ function VideoGrid({
                 />
               </div>
             )}
-            {selectedStream.codec && (
+            {showCodecBadge && selectedStream.codec && (
               <div className="focus-codec-badge" title="Video codec / encoder">
                 {selectedStream.codec}
                 {selectedStream.hardware != null && (

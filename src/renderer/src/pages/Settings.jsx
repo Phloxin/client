@@ -5,12 +5,14 @@ import {
   IconBellRinging,
   IconKeyboard,
   IconCheck,
-  IconPlayerPlayFilled
+  IconPlayerPlayFilled,
+  IconAdjustments
 } from '@tabler/icons-react'
 import { useSettings } from '../context/SettingsContext'
 import { ThemeSwitcher } from '../components/ThemeSwitcher'
 import AudioSettings from '../components/AudioSettings'
 import KeybindsSettings from '../components/KeybindsSettings'
+import AdvancedSettings from '../components/AdvancedSettings'
 import { SOUND_CATEGORIES, playUiSound } from '../lib/sounds'
 import { UI_FONTS } from '../lib/uiSettings'
 import './Settings.css'
@@ -39,6 +41,12 @@ const sections = [
     title: 'Notifications',
     description: 'Adjust volume and toggle notification sounds.',
     icon: IconBellRinging
+  },
+  {
+    id: 'advanced',
+    title: 'Advanced',
+    description: 'Hardware acceleration and diagnostic overlays.',
+    icon: IconAdjustments
   }
 ]
 
@@ -414,6 +422,8 @@ function Settings() {
           )}
 
           {activeSection === 'keybinds' && <KeybindsSettings />}
+
+          {activeSection === 'advanced' && <AdvancedSettings />}
 
           {activeSection === 'notifications' && (
             <div className="settings-panel-card">
