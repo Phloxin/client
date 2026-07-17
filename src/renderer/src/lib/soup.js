@@ -878,13 +878,13 @@ function maxBitrateFor(height) {
   return 5_000_000
 }
 
-// A video codec from the loaded device's capabilities, by mime type. The codec
-// passed to produce() MUST come from these: mediasoup matches it against the
-// router's codecs and throws 'no matching codec found' on a mismatch, so we only
-// ever return one the device already advertised. undefined (no match) preserves
-// mediasoup's default (first router codec).
+// A video codec from the loaded device's sending capabilities, by mime type.
+// The codec passed to produce() MUST come from sendRtpCapabilities: the legacy
+// rtpCapabilities getter aliases the receiving capabilities, whose H.264 profile
+// variants may not match what this device can send. undefined (no match)
+// preserves mediasoup's default (first router codec).
 function findVideoCodec(mime) {
-  return device?.rtpCapabilities?.codecs?.find(
+  return device?.sendRtpCapabilities?.codecs?.find(
     (c) => c.kind === 'video' && c.mimeType?.toLowerCase() === mime
   )
 }
@@ -1406,7 +1406,7 @@ export async function consumeProducer(producerId, kind, onStream, clientId, prod
 
   const consumerParams = await send('Consume', {
     id: producerId,
-    rtp_params: device.rtpCapabilities
+    rtp_params: device.recvRtpCapabilities
   })
 
   if (consumerParams.error) {
