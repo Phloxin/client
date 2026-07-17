@@ -26,14 +26,6 @@ import { setServerHost, apiBase, wsBase, cdnUrl, throwIfError } from '../lib/ser
 import { authFetch, getFreshToken, setOnSessionExpired } from '../lib/auth'
 import SegmentedTabs from '../components/SegmentedTabs'
 import {
-  DEV_MODE,
-  MOCK_TOKEN,
-  MOCK_CLIENT,
-  MOCK_CHANNELS,
-  MOCK_CLIENTS,
-  createMockStreams
-} from '../lib/mock'
-import {
   IconVideo,
   IconMessage,
   IconUser,
@@ -152,7 +144,7 @@ function normalizeClientVoice(c) {
 
 function Main() {
   //Server Connection State Hooks
-  const { token, setToken, applyAuthResponse, clearAuth, client, setClient } = useAuth()
+  const { token, applyAuthResponse, clearAuth, client } = useAuth()
   const [channels, setChannels] = useState([])
   const [clients, setClients] = useState([])
   const [feed, setFeed] = useState([])
@@ -398,7 +390,7 @@ function Main() {
   // Ack our read cursor in a channel up to `messageId` (the channel's latest).
   const markChannelRead = useCallback(
     (channelId, messageId) => {
-      if (DEV_MODE || !token || channelId == null) return
+      if (!token || channelId == null) return
       authFetch(`${apiBase()}/channels/${channelId}/read-state`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -419,7 +411,7 @@ function Main() {
         ? prev.filter((n) => n.channelId !== activeChatChannelId)
         : prev
     )
-    if (DEV_MODE || !token) return
+    if (!token) return
     const latest = channels.find((c) => c.id === activeChatChannelId)?.last_message_id ?? null
     if (latest === (readStates[activeChatChannelId] ?? null)) return
     setReadStates((prev) => ({ ...prev, [activeChatChannelId]: latest }))
@@ -529,24 +521,6 @@ function Main() {
   // (fire a message without necessarily switching views). Idempotent server-side.
   const ensureDmChannel = useCallback(
     async (userId) => {
-      if (DEV_MODE) {
-        const id = `dm-${userId}`
-        setChannels((prev) =>
-          prev.some((c) => c.id === id)
-            ? prev
-            : [
-                ...prev,
-                {
-                  id,
-                  type: 'dm',
-                  name: clientsRef.current.find((c) => c.id === userId)?.name,
-                  recipients: [client?.id, userId]
-                }
-              ]
-        )
-        return id
-      }
-
       const res = await authFetch(`${apiBase()}/channels/dm`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -598,22 +572,6 @@ function Main() {
       if (!userId || userId === client?.id) return
       const text = (message || '').trim() || '👋'
 
-      if (DEV_MODE) {
-        const id = await ensureDmChannel(userId)
-        setFeed((prev) =>
-          appendFeed(prev, {
-            id: crypto.randomUUID(),
-            type: 'message',
-            channelId: id,
-            author: client?.name,
-            authorId: client?.id,
-            text,
-            ts: Date.now()
-          })
-        )
-        return
-      }
-
       try {
         const id = await ensureDmChannel(userId)
         if (id == null) return
@@ -661,7 +619,7 @@ function Main() {
   // Load the server's role list once per connection. It feeds both the Assign
   // Role menu and our own permission computation (which gates kick/ban below).
   useEffect(() => {
-    if (DEV_MODE || !token) {
+    if (!token) {
       setRoles([])
       return
     }
@@ -675,7 +633,7 @@ function Main() {
   // VanityDeleted events keep the list current afterwards. Icons come back as
   // /cdn/… paths, resolved against the active host like avatars.
   useEffect(() => {
-    if (DEV_MODE || !token) {
+    if (!token) {
       setVanity([])
       return
     }
@@ -707,17 +665,13 @@ function Main() {
   }, [roles, clients, client])
 
   const isAdmin = (myPermissions & PERM_ADMINISTRATOR) !== 0n
-  // DEV_MODE has no server to enforce or supply roles, so grant moderation there
-  // to keep the menu testable.
-  const canKickMembers = DEV_MODE || isAdmin || (myPermissions & PERM_KICK_MEMBERS) !== 0n
-  const canBanMembers = DEV_MODE || isAdmin || (myPermissions & PERM_BAN_MEMBERS) !== 0n
-  const canMuteMembers = DEV_MODE || isAdmin || (myPermissions & PERM_MUTE_MEMBERS) !== 0n
+  const canKickMembers = isAdmin || (myPermissions & PERM_KICK_MEMBERS) !== 0n
+  const canBanMembers = isAdmin || (myPermissions & PERM_BAN_MEMBERS) !== 0n
+  const canMuteMembers = isAdmin || (myPermissions & PERM_MUTE_MEMBERS) !== 0n
   // Editing a channel's permission overwrites needs MANAGE_CHANNELS or
   // MANAGE_ROLES (or admin). The server is authoritative; this only gates the UI.
   const canManageChannels =
-    DEV_MODE ||
-    isAdmin ||
-    (myPermissions & (PERM_MANAGE_CHANNELS | PERM_MANAGE_ROLES)) !== 0n
+    isAdmin || (myPermissions & (PERM_MANAGE_CHANNELS | PERM_MANAGE_ROLES)) !== 0n
 
   // The current ban list (BanApiObject[] = { reason, user }). Banned users are
   // surfaced in the Users roster so they can be unbanned; refreshed after our
@@ -725,7 +679,7 @@ function Main() {
   // the server 403s the fetch for anyone else, so don't fire a guaranteed-
   // forbidden request on every join (it re-runs if our roles later allow it).
   const refreshBans = useCallback(() => {
-    if (DEV_MODE || !token || !canBanMembers) {
+    if (!token || !canBanMembers) {
       setBans([])
       return
     }
@@ -764,7 +718,6 @@ function Main() {
         )
         showSuccess(`Assigned "${roleName}" to ${clientName}`)
       }
-      if (DEV_MODE) return apply()
       try {
         const res = await authFetch(`${apiBase()}/server/clients/${clientId}/roles/${roleId}`, {
           method: 'PUT'        })
@@ -793,7 +746,6 @@ function Main() {
         // reserved for actions taken against us (see the ClientModified diff).
         showSuccess(`Revoked "${roleName}" from ${clientName}`)
       }
-      if (DEV_MODE) return apply()
       try {
         const res = await authFetch(`${apiBase()}/server/clients/${clientId}/roles/${roleId}`, {
           method: 'DELETE'        })
@@ -903,7 +855,6 @@ function Main() {
       if (avatar === undefined) return
       const selfId = client?.id
       setClients((prev) => prev.map((c) => (c.id === selfId ? { ...c, avatar } : c)))
-      if (DEV_MODE) return
       try {
         const res = await authFetch(`${apiBase()}/client/self`, {
           method: 'PATCH',
@@ -930,7 +881,7 @@ function Main() {
   // bails if the result is stale (user switched channels before it arrived).
   const loadChannelHistory = useCallback(
     (channelId, shouldApply = () => true) => {
-      if (DEV_MODE || !token || channelId == null) return Promise.resolve()
+      if (!token || channelId == null) return Promise.resolve()
       // The request runs in the main process, outside authFetch — hand it a
       // token refreshed here if needed.
       return getFreshToken()
@@ -971,7 +922,7 @@ function Main() {
   // The server returns at most HISTORY_LIMIT; a short page means we've reached the start -> mark the channel exhausted and stop asking.
   const loadOlderMessages = useCallback(() => {
     const channelId = activeChatChannelIdRef.current
-    if (DEV_MODE || !token || channelId == null || loadingOlderRef.current) return Promise.resolve()
+    if (!token || channelId == null || loadingOlderRef.current) return Promise.resolve()
     const oldest = feedRef.current.reduce((min, e) => {
       if (e.type !== 'message' || e.channelId !== channelId) return min
       return !min || byChronology(e, min) < 0 ? e : min
@@ -1052,12 +1003,6 @@ function Main() {
         ? afterPosition + 1
         : channels.reduce((max, ch) => Math.max(max, ch.position ?? 0), -1) + 1
 
-    if (DEV_MODE) {
-      const id = Math.max(0, ...channels.map((c) => c.id)) + 1
-      setChannels((prev) => [...prev, { id, name: trimmed, user_limit, position, clients: [] }])
-      return
-    }
-
     try {
       const res = await authFetch(`${apiBase()}/server/channel`, {
         method: 'POST',
@@ -1077,11 +1022,6 @@ function Main() {
   // Delete a channel. Removed locally on success; the server may also broadcast
   // a deletion to other clients.
   const handleDeleteChannel = async (id) => {
-    if (DEV_MODE) {
-      setChannels((prev) => prev.filter((ch) => ch.id !== id))
-      return
-    }
-
     try {
       const res = await authFetch(`${apiBase()}/channels/${id}`, {
         method: 'DELETE'      })
@@ -1094,13 +1034,8 @@ function Main() {
 
   // Move a channel to a new position (drag-to-reorder). The server reindexes the
   // rest and broadcasts ChannelUpdated for the affected channels, so we don't
-  // mutate locally on success — except in DEV_MODE, which has no server.
+  // mutate locally on success.
   const handleReorderChannel = async (id, position) => {
-    if (DEV_MODE) {
-      setChannels((prev) => prev.map((ch) => (ch.id === id ? { ...ch, position } : ch)))
-      return
-    }
-
     try {
       const res = await authFetch(`${apiBase()}/channels/${id}`, {
         method: 'PATCH',
@@ -1116,13 +1051,8 @@ function Main() {
 
   // Set a channel's description (edited from the Channel Details view). Like
   // reorder, the server broadcasts ChannelUpdated, so we don't mutate locally on
-  // success — except in DEV_MODE, which has no server.
+  // success.
   const handleSetChannelDescription = async (id, description) => {
-    if (DEV_MODE) {
-      setChannels((prev) => prev.map((ch) => (ch.id === id ? { ...ch, description } : ch)))
-      return
-    }
-
     try {
       const res = await authFetch(`${apiBase()}/channels/${id}`, {
         method: 'PATCH',
@@ -1138,13 +1068,8 @@ function Main() {
 
   // Set a channel's icon (from the channel's right-click menu). channel_icon is
   // a `data:image/...;base64,...` string, same pipeline as client avatars. The
-  // server broadcasts ChannelUpdated, so no local mutate outside DEV_MODE.
+  // server broadcasts ChannelUpdated, so no local mutate here.
   const handleSetChannelIcon = async (id, channel_icon) => {
-    if (DEV_MODE) {
-      setChannels((prev) => prev.map((ch) => (ch.id === id ? { ...ch, channel_icon } : ch)))
-      return
-    }
-
     try {
       const res = await authFetch(`${apiBase()}/channels/${id}`, {
         method: 'PATCH',
@@ -1161,22 +1086,8 @@ function Main() {
   // Upsert a channel permission overwrite for a role or user (allow/deny are
   // decimal bitfield strings). Like description/reorder, the server broadcasts
   // ChannelUpdated with the new overwrites, so we don't mutate locally
-  // on success — except in DEV_MODE, which has no server.
+  // on success.
   const handleSetChannelOverwrite = async (channelId, targetId, targetType, allow, deny) => {
-    const overwrite = { id: String(targetId), type: targetType, allow, deny }
-    if (DEV_MODE) {
-      setChannels((prev) =>
-        prev.map((ch) => {
-          if (ch.id !== channelId) return ch
-          const rest = (ch.overwrites || []).filter(
-            (o) => !(o.type === targetType && String(o.id) === String(targetId))
-          )
-          return { ...ch, overwrites: [...rest, overwrite] }
-        })
-      )
-      return
-    }
-
     try {
       const res = await authFetch(`${apiBase()}/channels/${channelId}/permissions/${targetId}`, {
         method: 'PUT',
@@ -1191,22 +1102,6 @@ function Main() {
   }
 
   const handleDeleteChannelOverwrite = async (channelId, targetId) => {
-    if (DEV_MODE) {
-      setChannels((prev) =>
-        prev.map((ch) =>
-          ch.id === channelId
-            ? {
-                ...ch,
-                overwrites: (ch.overwrites || []).filter(
-                  (o) => String(o.id) !== String(targetId)
-                )
-              }
-            : ch
-        )
-      )
-      return
-    }
-
     try {
       const res = await authFetch(`${apiBase()}/channels/${channelId}/permissions/${targetId}`, {
         method: 'DELETE'      })
@@ -1219,20 +1114,13 @@ function Main() {
 
   // Move another client into a channel (drag their entry onto a channel header).
   // The server enforces permissions and broadcasts ClientModified, so we don't
-  // mutate locally on success — except in DEV_MODE, which has no server.
+  // mutate locally on success.
   const handleMoveClientToChannel = useCallback(
     async (userId, channelId) => {
       if (userId == null) return
       // No-op if they're already there.
       const current = clients.find((c) => String(c.id) === String(userId))
       if (current && current.channel_id === channelId) return
-
-      if (DEV_MODE) {
-        setClients((prev) =>
-          prev.map((c) => (String(c.id) === String(userId) ? { ...c, channel_id: channelId } : c))
-        )
-        return
-      }
 
       try {
         const res = await authFetch(`${apiBase()}/client/${userId}`, {
@@ -1257,15 +1145,9 @@ function Main() {
 
   // Gag / ungag a client: server-wide mute (PATCH /client { mute }) so they can't
   // speak in any channel. The server broadcasts VoiceStateUpdate with the new
-  // server_mute, so we don't mutate locally on success — except in DEV_MODE.
+  // server_mute, so we don't mutate locally on success.
   const handleGagUser = useCallback(
     async (userId, gag) => {
-      if (DEV_MODE) {
-        setClients((prev) =>
-          prev.map((c) => (String(c.id) === String(userId) ? { ...c, server_mute: gag } : c))
-        )
-        return
-      }
       try {
         const res = await authFetch(`${apiBase()}/client/${userId}`, {
           method: 'PATCH',
@@ -1283,14 +1165,6 @@ function Main() {
   // Connect to a saved server: point all endpoints at its host, then log in with
   // its stored credentials. Setting the token triggers the data-loading effect.
   const handleConnect = async (server) => {
-    if (DEV_MODE) {
-      setServerHost(server.host)
-      setToken(MOCK_TOKEN)
-      setClient(MOCK_CLIENT)
-      setConnectedServer(server)
-      return
-    }
-
     setServerHost(server.host)
     setConnecting(true)
 
@@ -1374,15 +1248,6 @@ function Main() {
   // Fetch channels/clients and set up WebSocket + IPC listeners on mount
   useEffect(() => {
     if (!token) return
-
-    if (DEV_MODE) {
-      setChannels(MOCK_CHANNELS)
-      setClients(MOCK_CLIENTS)
-      setFeed([])
-      const mockStreams = createMockStreams()
-      setAllVideoStreams(mockStreams)
-      return () => mockStreams.forEach((s) => s._stopMock?.())
-    }
 
     // Reset any session carried over from a previous token/server so the first
     // IDENTIFY of this session is fresh — we must never resume into a session
@@ -1972,7 +1837,7 @@ function Main() {
   // Announce to the server that we're typing, throttled to one ping per
   // TYPING_DURATION so we don't hit the endpoint on every keystroke.
   const handleTyping = () => {
-    if (DEV_MODE || activeChatChannelId == null) return
+    if (activeChatChannelId == null) return
     const now = Date.now()
     if (now - lastTypingSentRef.current < TYPING_DURATION_MS) return
     lastTypingSentRef.current = now
@@ -1983,22 +1848,6 @@ function Main() {
 
   // Send a chat message (with any attachments) to the channel we're currently in
   const handleSendMessage = async (text, attachments) => {
-    if (DEV_MODE) {
-      setFeed((prev) =>
-        appendFeed(prev, {
-          id: crypto.randomUUID(),
-          type: 'message',
-          channelId: activeChatChannelId,
-          author: client?.name,
-          authorId: client?.id,
-          text,
-          attachments,
-          ts: Date.now()
-        })
-      )
-      return
-    }
-
     if (activeChatChannelId == null) return
 
     const payload = {
@@ -2033,17 +1882,6 @@ function Main() {
   const handleEditMessage = async (messageId, content) => {
     const trimmed = content.trim()
     if (!trimmed) return
-
-    if (DEV_MODE) {
-      setFeed((prev) =>
-        prev.map((e) =>
-          e.type === 'message' && e.id === messageId
-            ? { ...e, text: trimmed, editedTs: Date.now() }
-            : e
-        )
-      )
-      return
-    }
 
     if (activeChatChannelId == null) return
 
@@ -2097,7 +1935,6 @@ function Main() {
     if (!entry) return
     const had = !!(entry.reactions || []).find((r) => r.emoji === emoji)?.me
     toggleReactionLocal(messageId, emoji)
-    if (DEV_MODE) return
 
     try {
       const res = await authFetch(
@@ -2115,11 +1952,6 @@ function Main() {
   // MessageDeleted; we also drop it locally on success so it disappears
   // immediately even if the broadcast is delayed (the broadcast is idempotent).
   const handleDeleteMessage = async (messageId) => {
-    if (DEV_MODE) {
-      setFeed((prev) => prev.filter((e) => !(e.type === 'message' && e.id === messageId)))
-      return
-    }
-
     if (activeChatChannelId == null) return
 
     try {
