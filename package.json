@@ -1,11 +1,11 @@
 {
   "name": "pylon",
   "desktopName": "app.pylon.client.desktop",
-  "version": "0.0.3",
-  "description": "An Electron application with React",
+  "version": "0.0.4",
+  "description": "A desktop client for voice, video/screen-share, and text chat.",
   "main": "./out/main/index.js",
-  "author": "example.com",
-  "homepage": "https://electron-vite.org",
+  "author": "Phloxin",
+  "homepage": "https://github.com/Phloxin/client",
   "engines": {
     "node": ">=22.12 <25",
     "npm": ">=10"
