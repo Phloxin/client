@@ -67,25 +67,27 @@ if (process.platform === 'linux' && process.env.VOIP_HW_ACCEL) {
   app.commandLine.appendSwitch('ignore-gpu-blocklist')
 }
 
-// Windows hardware video ENCODE. H.264 hardware encode works out of the box via
-// the default MediaFoundation path — MFVEA creates its own D3D11 device, so it
-// runs even when the GPU process is software-composited (verified on a machine
-// showing 'NVIDIA H.264 Encoder MFT' alongside gpu_compositing:
-// disabled_software). AV1 comes up as software libaom there; soup.js detects
-// that at runtime (getStats encoderImplementation) and drops the share to H.264,
-// so every machine lands on its best working encoder without GPU-model sniffing.
-//
-// 'D3D12VideoEncodeAccelerator' (D3D12 VEA + its AV1 delegate; feature name
-// verified against this electron.exe) is OPT-IN only: on that same machine it
-// produced an encoder that reported hardware AV1 but streamed black frames —
-// with software compositing there are no valid shared images to import, and a
-// black-but-"hardware" encoder is invisible to the runtime software fallback.
-// D3D12VideoEncodeAcceleratorL1T3 (also verified in the binary): hardware
-// encoders must explicitly support temporal-layer modes or WebRTC falls back
-// to software — screen share requests AV1 'L1T3', so without this the D3D12
-// encoder handles plain H.264 but AV1 lands on libaom even on AV1-encode GPUs.
-if (process.platform === 'win32' && process.env.VOIP_HW_ACCEL) {
-  enableFeatures.push('D3D12VideoEncodeAccelerator', 'D3D12VideoEncodeAcceleratorL1T3')
+// Windows hardware video ENCODE — on by default. All three feature names
+// verified against this electron.exe:
+//   - WebRtcAV1HWEncode: the WebRTC-layer gate. Without it the peer
+//     connection's encoder factory never offers hardware AV1, no matter what
+//     the GPU supports — Chrome flips it via Finch field trials, which
+//     Electron never receives, so its compiled-off default applies. This (not
+//     missing GPU support) was why AV1 encoded as libaom on an RTX 40-series.
+//   - D3D12VideoEncodeAccelerator + D3D12VideoEncodeAcceleratorL1T3: the D3D12
+//     encode path the AV1 delegate lives on, and its temporal-layer support.
+// Verified end-to-end on an RTX 4070 SUPER: AV1 at 1080p via
+// D3D12VideoEncodeAccelerator at ~8ms/frame. GPUs without AV1 encode still
+// come up libaom and are caught by the runtime probe in soup.js
+// (startEncoderStatsLog → maybeDowngradeScreenCodec), which switches the share
+// to H.264 — hardware via MediaFoundation, which needs no flags at all — and
+// persists that choice. Kill switch for bad driver stacks: VOIP_NO_HW_ENCODE=1.
+if (process.platform === 'win32' && !process.env.VOIP_NO_HW_ENCODE) {
+  enableFeatures.push(
+    'D3D12VideoEncodeAccelerator',
+    'D3D12VideoEncodeAcceleratorL1T3',
+    'WebRtcAV1HWEncode'
+  )
 }
 
 // Windows capture note: modern Chromium may already default to Windows
