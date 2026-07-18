@@ -14,6 +14,7 @@ const DEFAULT_SOUND_SETTINGS = Object.fromEntries(SOUND_CATEGORIES.map((c) => [c
 const AUDIO_SAMPLE_RATE = 48000
 const AUDIO_CHANNEL_COUNT = 1
 const AUDIO_BITRATE = 128000
+const MIC_SETTINGS_VERSION = 2
 
 const DEFAULT_SETTINGS = {
   echoCancellation: false,
@@ -26,15 +27,14 @@ const DEFAULT_SETTINGS = {
   bitrate: AUDIO_BITRATE,
   deviceId: 'default',
   useVolumeGate: false,
-  // On the speech-band metric (see createSpeechLevelReader in soup.js); opens on
-  // clear-and-up speech, stays closed on silence/quiet background post-RNNoise.
+  // On the shared speech-band RMS scale (see createSpeechLevelReader in soup.js).
   volumeGateThreshold: 15,
   useRnnoise: true,
   outputDeviceId: 'default',
   outputVolume: 100,
   // Bumped when a change makes an existing stored value mean something different;
   // read by migrateMicSettings to rewrite old saves.
-  settingsVersion: 1
+  settingsVersion: MIC_SETTINGS_VERSION
 }
 
 const DEFAULT_APPEARANCE = {
@@ -79,13 +79,11 @@ function migrateAnimations(settings) {
   return next
 }
 
-// The volume gate switched from a full-spectrum average to a speech-band metric
-// (see createSpeechLevelReader in soup.js). Old thresholds were on an incompatible,
-// nonlinear scale, so any pre-v1 save has its gate threshold reset to the new
-// default — users can re-tune against the meter, which now shares the same metric.
+// Reset thresholds saved against either legacy FFT scale. Version 2 uses the
+// shared speech-band RMS metric and an RNNoise-aware settings meter.
 function migrateMicSettings(saved) {
   const merged = { ...DEFAULT_SETTINGS, ...saved }
-  if (!saved.settingsVersion) {
+  if ((Number(saved.settingsVersion) || 0) < MIC_SETTINGS_VERSION) {
     merged.volumeGateThreshold = DEFAULT_SETTINGS.volumeGateThreshold
     merged.settingsVersion = DEFAULT_SETTINGS.settingsVersion
   }

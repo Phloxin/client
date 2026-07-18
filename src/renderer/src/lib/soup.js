@@ -440,12 +440,28 @@ function getRnnoiseBinary() {
 // survives for the next publish. RNNoise is trained on 48 kHz audio, so the
 // rate is pinned.
 let micContext = null
-let micWorkletLoaded = false
+const rnnoiseWorkletLoads = new WeakMap()
+
+function ensureRnnoiseWorklet(audioContext) {
+  let load = rnnoiseWorkletLoads.get(audioContext)
+  if (!load) {
+    load = audioContext.audioWorklet.addModule(rnnoiseWorkletPath).catch((err) => {
+      rnnoiseWorkletLoads.delete(audioContext)
+      throw err
+    })
+    rnnoiseWorkletLoads.set(audioContext, load)
+  }
+  return load
+}
+
+async function createRnnoiseProcessor(audioContext) {
+  const [binary] = await Promise.all([getRnnoiseBinary(), ensureRnnoiseWorklet(audioContext)])
+  return new RnnoiseWorkletNode(audioContext, { maxChannels: 1, wasmBinary: binary })
+}
 
 async function getMicContext() {
   if (!micContext || micContext.state === 'closed') {
     micContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 })
-    micWorkletLoaded = false
   }
   if (micContext.state === 'suspended') await micContext.resume()
   return micContext
@@ -455,12 +471,13 @@ async function getMicContext() {
 // Wires the captured mic stream through optional RNNoise denoising (an
 // AudioWorklet that suppresses keyboard/typing and steady background noise
 // while preserving voice) and the optional volume gate, in that order.
-// Returns the processed stream plus a stop() that tears the chain down.
+// Returns the processed stream, a post-RNNoise/pre-gate detector stream, and a
+// stop() that tears the chain down.
 async function buildAudioProcessor(stream, micSettings) {
   const needsRnnoise = micSettings.useRnnoise
   const needsGate = micSettings.useVolumeGate
   if (!needsRnnoise && !needsGate) {
-    return { stream, stop: () => {} }
+    return { stream, detectionStream: stream, stop: () => {} }
   }
 
   const audioContext = await getMicContext()
@@ -476,12 +493,7 @@ async function buildAudioProcessor(stream, micSettings) {
 
   if (needsRnnoise) {
     try {
-      const binary = await getRnnoiseBinary()
-      if (!micWorkletLoaded) {
-        await audioContext.audioWorklet.addModule(rnnoiseWorkletPath)
-        micWorkletLoaded = true
-      }
-      rnnoiseNode = new RnnoiseWorkletNode(audioContext, { maxChannels: 1, wasmBinary: binary })
+      rnnoiseNode = await createRnnoiseProcessor(audioContext)
       node.connect(rnnoiseNode)
       node = rnnoiseNode
       console.log('[Soup] RNNoise denoiser applied')
@@ -491,23 +503,28 @@ async function buildAudioProcessor(stream, micSettings) {
     }
   }
 
+  // The local speaking detector should judge the same denoised signal as the
+  // gate, but before the gate can erase quiet speech. Without this side branch,
+  // a closed/chattering gate also forces the self indicator off.
+  let detectionDestination = null
   if (needsGate) {
-    // Same speech-band metric the speaking detector uses, so the gate opens on the
-    // same quiet speech the indicator lights up on. These used to diverge: the gate
-    // averaged the full spectrum and cut quiet voices before they were ever sent.
-    const { analyser, read } = createSpeechLevelReader(audioContext)
+    detectionDestination = audioContext.createMediaStreamDestination()
+    node.connect(detectionDestination)
+
+    const reader = createSpeechLevelReader(audioContext)
     const gate = audioContext.createGain()
-    chainNodes.push(analyser, gate)
-    node.connect(analyser)
-    analyser.connect(gate)
+    const gateController = createLevelGateController(audioContext, gate, reader.read, {
+      threshold: micSettings.volumeGateThreshold
+    })
+    chainNodes.push(detectionDestination, ...reader.nodes, gate)
+    // Analysis is a sidechain so the speech-band filters never color outgoing
+    // audio. The untouched denoised signal passes through the controlled gain.
+    node.connect(reader.input)
+    node.connect(gate)
     node = gate
 
     const checkLevel = () => {
-      // If audio is below threshold, mute; otherwise pass through
-      gate.gain.setValueAtTime(
-        read() >= micSettings.volumeGateThreshold ? 1 : 0,
-        audioContext.currentTime
-      )
+      gateController.update()
     }
     // 25Hz via setInterval, not rAF: level detection needs far less than display
     // rate, and rAF is throttled/paused when the window is hidden — which would
@@ -537,7 +554,11 @@ async function buildAudioProcessor(stream, micSettings) {
     // compiled worklet module is reused by the next publish.
   }
 
-  return { stream: destination.stream, stop }
+  return {
+    stream: destination.stream,
+    detectionStream: detectionDestination?.stream ?? destination.stream,
+    stop
+  }
 }
 
 // Stop the currently active audio processing chain (if any), releasing its
@@ -555,68 +576,201 @@ function stopRawStream(stream) {
   stream?.getTracks().forEach((track) => track.stop())
 }
 
-// ─── Shared speech-band level measurement ─────────────────────────
-// One place that decides "how loud is the voice right now", shared by the volume
-// gate, the self/remote speaking detectors, and the settings meter so all three
-// judge voice loudness identically. Returns the analyser to wire into the graph
-// plus read() -> current level 0-100.
-//
-// It measures only the human-speech band (~94 Hz–4 kHz) instead of the full
-// 0–24 kHz spectrum: averaging every bin diluted quiet speech across the many
-// near-silent high-frequency bins so it never crossed threshold — and the RNNoise
-// suppressor made that worse by zeroing those bins. The byte mapping is tuned to
-// speech levels too (energy below ~-75 dB, a typical ambient floor, maps to 0), so
-// silence reads as silence even with suppression off. fftSize 512 gives ~94 Hz
-// bins; bin 0 is skipped (DC/rumble), so the lowest kept bin sits near the low end
-// of the voiced range. Bin indices come from the real sample rate.
-export function createSpeechLevelReader(audioContext) {
-  const analyser = audioContext.createAnalyser()
-  analyser.fftSize = 512
-  analyser.minDecibels = -75
-  analyser.maxDecibels = -25
-  analyser.smoothingTimeConstant = 0.5
+// ─── Shared speech level measurement ───────────────────────────────
+// Analyze a speech-band sidechain without modifying the audible signal. Time-domain
+// RMS is stable across different pitches and spectral shapes; averaging byte-mapped
+// FFT bins was not. The level is mapped from -70..-20 dBFS to 0..100 and smoothed
+// with real elapsed time, so meter (rAF) and detector/gate (25 Hz) respond alike.
+const SPEECH_LEVEL_FLOOR_DB = -70
+const SPEECH_LEVEL_CEILING_DB = -20
+const SPEECH_LEVEL_ATTACK_MS = 35
+const SPEECH_LEVEL_RELEASE_MS = 180
 
-  const data = new Uint8Array(analyser.frequencyBinCount)
-  const binHz = audioContext.sampleRate / analyser.fftSize
-  const loBin = Math.max(1, Math.floor(85 / binHz))
-  const hiBin = Math.min(data.length - 1, Math.ceil(4000 / binHz))
-  const bandBins = hiBin - loBin + 1
+export function createSpeechLevelReader(audioContext) {
+  const highpass = audioContext.createBiquadFilter()
+  highpass.type = 'highpass'
+  highpass.frequency.value = 85
+  highpass.Q.value = Math.SQRT1_2
+
+  const lowpass = audioContext.createBiquadFilter()
+  lowpass.type = 'lowpass'
+  lowpass.frequency.value = 4000
+  lowpass.Q.value = Math.SQRT1_2
+
+  const analyser = audioContext.createAnalyser()
+  analyser.fftSize = 1024
+  highpass.connect(lowpass)
+  lowpass.connect(analyser)
+
+  const data = new Float32Array(analyser.fftSize)
+  let smoothedLevel = 0
+  let lastReadAt = null
 
   const read = () => {
-    analyser.getByteFrequencyData(data)
-    let sum = 0
-    for (let i = loBin; i <= hiBin; i++) sum += data[i]
-    return (sum / bandBins / 255) * 100
+    analyser.getFloatTimeDomainData(data)
+    let sumSquares = 0
+    for (let i = 0; i < data.length; i++) sumSquares += data[i] * data[i]
+
+    const rms = Math.sqrt(sumSquares / data.length)
+    const db = rms > 0 ? 20 * Math.log10(rms) : SPEECH_LEVEL_FLOOR_DB
+    const rawLevel = Math.max(
+      0,
+      Math.min(
+        100,
+        ((db - SPEECH_LEVEL_FLOOR_DB) / (SPEECH_LEVEL_CEILING_DB - SPEECH_LEVEL_FLOOR_DB)) * 100
+      )
+    )
+
+    const now = performance.now()
+    if (lastReadAt == null) {
+      smoothedLevel = rawLevel
+    } else {
+      const elapsedMs = Math.max(1, now - lastReadAt)
+      const timeConstant =
+        rawLevel > smoothedLevel ? SPEECH_LEVEL_ATTACK_MS : SPEECH_LEVEL_RELEASE_MS
+      const alpha = 1 - Math.exp(-elapsedMs / timeConstant)
+      smoothedLevel += (rawLevel - smoothedLevel) * alpha
+      if (smoothedLevel < 0.05) smoothedLevel = 0
+    }
+    lastReadAt = now
+    return smoothedLevel
   }
 
-  return { analyser, read }
+  return {
+    input: highpass,
+    analyser,
+    nodes: [highpass, lowpass, analyser],
+    read
+  }
+}
+
+// Gate state shared by the live mic path and the settings test. A lower release
+// threshold plus a short hold bridges syllable gaps; gain ramps avoid clicks.
+export function createLevelGateController(
+  audioContext,
+  gate,
+  read,
+  { threshold = 15, hysteresis = 3, holdMs = 200, rampSeconds = 0.03 } = {}
+) {
+  let open = false
+  let lastVoiceAt = 0
+  gate.gain.setValueAtTime(0, audioContext.currentTime)
+
+  const setOpen = (next) => {
+    if (next === open) return
+    open = next
+    const now = audioContext.currentTime
+    const current = gate.gain.value
+    gate.gain.cancelScheduledValues(now)
+    gate.gain.setValueAtTime(current, now)
+    gate.gain.linearRampToValueAtTime(next ? 1 : 0, now + rampSeconds)
+  }
+
+  const update = (nextThreshold = threshold) => {
+    const level = read()
+    const now = performance.now()
+    const releaseThreshold = Math.max(0, nextThreshold - hysteresis)
+
+    if (!open) {
+      if (level >= nextThreshold) {
+        lastVoiceAt = now
+        setOpen(true)
+      }
+    } else if (level >= releaseThreshold) {
+      lastVoiceAt = now
+    } else if (now - lastVoiceAt >= holdMs) {
+      setOpen(false)
+    }
+
+    return { level, open }
+  }
+
+  return { update, isOpen: () => open }
+}
+
+// Build the same post-browser/post-RNNoise analysis sidechain used by the live
+// gate. The returned outputNode is also suitable for local test playback.
+export async function createMicLevelMonitor(audioContext, stream, micSettings) {
+  const source = audioContext.createMediaStreamSource(stream)
+  let outputNode = source
+  let rnnoiseNode = null
+
+  if (micSettings.useRnnoise) {
+    try {
+      rnnoiseNode = await createRnnoiseProcessor(audioContext)
+      source.connect(rnnoiseNode)
+      outputNode = rnnoiseNode
+    } catch (err) {
+      console.error('[Soup] RNNoise monitor init failed, using raw mic:', err)
+    }
+  }
+
+  const reader = createSpeechLevelReader(audioContext)
+  outputNode.connect(reader.input)
+
+  const stop = () => {
+    try {
+      outputNode.disconnect(reader.input)
+    } catch {
+      // Already disconnected during a settings rebuild.
+    }
+    for (const node of reader.nodes) {
+      try {
+        node.disconnect()
+      } catch {
+        // A partially initialized monitor is safe to tear down.
+      }
+    }
+    try {
+      rnnoiseNode?.destroy()
+    } catch {
+      // The worklet may already have torn itself down.
+    }
+    try {
+      source.disconnect()
+    } catch {
+      // Source may be the output node and already disconnected above.
+    }
+  }
+
+  return { source, outputNode, analyser: reader.analyser, read: reader.read, stop }
 }
 
 // ─── Detect speaking activity on an audio stream ──────────────────
 // Returns a stop function. Calls onChange(isSpeaking) whenever the
 // speaking state changes, and once more with false on stop.
-export function createSpeakingDetector(stream, onChange, { threshold = 12, holdMs = 200 } = {}) {
+export function createSpeakingDetector(
+  stream,
+  onChange,
+  { threshold = 12, hysteresis = 3, holdMs = 250 } = {}
+) {
   if (!stream.getAudioTracks().length) return () => {}
 
   const audioContext = new (window.AudioContext || window.webkitAudioContext)()
   const source = audioContext.createMediaStreamSource(stream)
-  const { analyser, read } = createSpeechLevelReader(audioContext)
-  source.connect(analyser)
+  const reader = createSpeechLevelReader(audioContext)
+  source.connect(reader.input)
 
   let speaking = false
-  let lastAbove = 0
+  let lastVoiceAt = 0
   let intervalId
 
   const tick = () => {
-    const level = read()
+    const level = reader.read()
     const now = performance.now()
+    const releaseThreshold = Math.max(0, threshold - hysteresis)
 
-    if (level >= threshold) lastAbove = now
-
-    const isSpeaking = now - lastAbove < holdMs
-    if (isSpeaking !== speaking) {
-      speaking = isSpeaking
-      onChange(speaking)
+    if (!speaking) {
+      if (level >= threshold) {
+        speaking = true
+        lastVoiceAt = now
+        onChange(true)
+      }
+    } else if (level >= releaseThreshold) {
+      lastVoiceAt = now
+    } else if (now - lastVoiceAt >= holdMs) {
+      speaking = false
+      onChange(false)
     }
   }
   // 25Hz via setInterval, not rAF: this runs once per remote participant plus
@@ -633,6 +787,13 @@ export function createSpeakingDetector(stream, onChange, { threshold = 12, holdM
       source.disconnect()
     } catch {
       // Cleanup may run after the context has already disconnected the node.
+    }
+    for (const node of reader.nodes) {
+      try {
+        node.disconnect()
+      } catch {
+        // Analysis nodes may already be detached.
+      }
     }
     // close() rejects (async) if the context is already closed — e.g. this
     // cleanup runs twice during teardown. Skip when closed and swallow the
@@ -747,9 +908,11 @@ async function doPublish(micSettings, onStream) {
   // previous chain first so its AudioContext and worklet don't leak.
   stopAudioProcessor()
   let processedStream = stream
+  let detectionStream = stream
   try {
     const processed = await buildAudioProcessor(stream, micSettings)
     processedStream = processed.stream
+    detectionStream = processed.detectionStream
     audioProcessorStop = processed.stop
   } catch (err) {
     console.error('[Soup] Failed to build audio processor:', err)
@@ -757,7 +920,7 @@ async function doPublish(micSettings, onStream) {
   }
 
   onStream?.(processedStream)
-  startSelfSpeakingDetector(processedStream)
+  startSelfSpeakingDetector(detectionStream)
 
   for (const track of processedStream.getTracks()) {
     const producer = await producerTransport.produce({
@@ -820,16 +983,18 @@ export async function republish(micSettings, onStream) {
   // previous chain first so its AudioContext and worklet don't leak.
   stopAudioProcessor()
   let processedStream = stream
+  let detectionStream = stream
   try {
     const processed = await buildAudioProcessor(stream, micSettings)
     processedStream = processed.stream
+    detectionStream = processed.detectionStream
     audioProcessorStop = processed.stop
   } catch (err) {
     console.error('[Soup] republish audio processor failed:', err)
   }
 
   onStream?.(processedStream)
-  startSelfSpeakingDetector(processedStream)
+  startSelfSpeakingDetector(detectionStream)
 
   const newTracks = processedStream.getTracks()
 
