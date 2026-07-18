@@ -969,17 +969,52 @@ function findVideoCodec(mime) {
 // maybeDowngradeScreenCodec): future shares then start on H.264 directly instead
 // of re-running ~9s of libaom pain each time. This is the capability check —
 // driven by the encoder the machine actually produced, not GPU-model sniffing.
-// ponytail: sticky once set; cleared by resetScreenCodecPreference() when the
-// encoder landscape changes (e.g. the hardware-acceleration toggle) so AV1 is
-// re-probed.
+// ponytail: sticky for this renderer session once set; cleared by
+// resetScreenCodecPreference() when the encoder landscape changes (e.g. the
+// hardware-acceleration toggle) so AV1 is re-probed.
 const SCREEN_H264_KEY = 'screenPreferH264'
+const SCREEN_H264_CACHE_VERSION_KEY = 'screenPreferH264Version'
 
-// Forget a persisted "AV1 is software here → use H.264" verdict so the next
+// This is an optimization, not durable hardware capability knowledge. GPU
+// process startup, driver state, and feature flags can differ across app
+// launches (especially the first launch after an update), so a software result
+// must not permanently pin future processes to H.264. Keep the optimization for
+// later shares in this renderer, but force every fresh renderer to probe AV1.
+function clearScreenCodecPreferenceStorage() {
+  try {
+    // Remove values written by older builds which incorrectly persisted this
+    // decision across app restarts.
+    localStorage.removeItem(SCREEN_H264_KEY)
+    localStorage.removeItem(SCREEN_H264_CACHE_VERSION_KEY)
+    sessionStorage.removeItem(SCREEN_H264_KEY)
+  } catch {
+    // localStorage is unavailable only in unusual/private renderer contexts;
+    // the normal codec probe still works without the optimization cache.
+  }
+}
+
+clearScreenCodecPreferenceStorage()
+
+function hasScreenCodecPreference() {
+  try {
+    return sessionStorage.getItem(SCREEN_H264_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+// Forget the session's "AV1 is software here → use H.264" verdict so the next
 // share re-probes AV1 from scratch. Call when something that changes which
 // encoders exist has changed — notably toggling hardware acceleration, after
 // which AV1 that was software may now be hardware (or vice-versa).
 export function resetScreenCodecPreference() {
-  localStorage.removeItem(SCREEN_H264_KEY)
+  try {
+    sessionStorage.removeItem(SCREEN_H264_KEY)
+    localStorage.removeItem(SCREEN_H264_KEY)
+    localStorage.removeItem(SCREEN_H264_CACHE_VERSION_KEY)
+  } catch {
+    // Ignore storage failures; the next renderer session will still probe AV1.
+  }
 }
 
 // Screen share: AV1 for efficiency (Discord-level sharpness at lower bitrate,
@@ -988,10 +1023,10 @@ export function resetScreenCodecPreference() {
 // hardware or software can't be known up front (mediaCapabilities.encodingInfo
 // lies on Windows — reports AV1 powerEfficient even when the WebRTC encoder is
 // libaom), so the first share probes it: getStats names the real encoder ~3s in,
-// and a software result downgrades the share to H.264 and persists the choice
-// (SCREEN_H264_KEY) so later shares skip the probe.
+// and a software result downgrades the share to H.264 and remembers that choice
+// for later shares in this renderer session (SCREEN_H264_KEY).
 function pickVideoCodec() {
-  if (localStorage.getItem(SCREEN_H264_KEY) === '1') {
+  if (hasScreenCodecPreference()) {
     return findVideoCodec('video/h264') ?? findVideoCodec('video/vp9')
   }
   return findVideoCodec('video/av1') ?? findVideoCodec('video/vp9')
@@ -1149,11 +1184,12 @@ function startEncoderStatsLog(producer, onStats) {
 // The share starts on AV1 (best quality-per-bit when hardware-encoded); the first
 // stats sample (~3s) names the encoder the machine actually produced. Software
 // AV1/VP9 (libaom/libvpx — the heaviest encoders Chromium ships) downgrades to
-// H.264 immediately and persists the choice (SCREEN_H264_KEY): H.264 is hardware
-// via MediaFoundation where the GPU process supports it, else openh264, the
-// cheapest software encoder. A hardware encoder only downgrades under sustained
-// cpu limitation. We re-produce ONCE, reusing the live capture track so the user
-// doesn't re-pick a source. The SFU already tolerates a brief two-producer overlap
+// H.264 immediately and remembers the choice for this renderer session
+// (SCREEN_H264_KEY): H.264 is hardware via MediaFoundation where the GPU process
+// supports it, else openh264, the cheapest software encoder. A hardware encoder
+// only downgrades under sustained cpu limitation. We re-produce ONCE, reusing the
+// live capture track so the user doesn't re-pick a source. The SFU already
+// tolerates a brief two-producer overlap
 // (see consumeProducer's stale-consumer cleanup), so we produce the replacement
 // before closing the original — a failed downgrade leaves the AV1 share running
 // rather than killing it.
@@ -1317,10 +1353,16 @@ async function maybeDowngradeScreenCodec(ctx, stats) {
     // and used to poison the response FIFO.
     ctx.producer = next
     localProducerIds.add(next.id)
-    // Only a measured-software encoder proves the machine can't accelerate
-    // AV1/VP9 — remember that so pickVideoCodec() starts future shares on
-    // H.264 directly. A hardware encoder that got cpu-limited stays probe-able.
-    if (softwareEncoder) localStorage.setItem(SCREEN_H264_KEY, '1')
+    // Only a measured-software encoder proves this renderer should avoid
+    // repeating the expensive AV1 attempt. Keep that decision session-scoped;
+    // a new app process must be allowed to discover newly working HW AV1.
+    if (softwareEncoder) {
+      try {
+        sessionStorage.setItem(SCREEN_H264_KEY, '1')
+      } catch {
+        // The next share will simply probe again if sessionStorage is unavailable.
+      }
+    }
     await setDegradationPreference(
       next,
       ctx.optimizeFor === 'motion' ? 'maintain-framerate' : 'maintain-resolution'
