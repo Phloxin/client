@@ -18,6 +18,8 @@ import { motion, AnimatePresence } from 'motion/react'
 import ImageViewer from './ImageViewer'
 import EmojiPicker from './EmojiPicker'
 import { renderMarkdown } from '../lib/markdown'
+import { useClientMenu } from './ClientContextMenu'
+import { useClientActions } from '../context/ClientActionsContext'
 import { useAnimationCategory, useSettings } from '../context/SettingsContext'
 import { useAnimatedPresence } from '../lib/animation'
 import { menuPop, overlayPop, scrimFade } from '../lib/motionPresets'
@@ -60,10 +62,21 @@ function formatDateLabel(ts) {
   return d.toLocaleDateString([], { month: 'long', day: 'numeric', year: 'numeric' })
 }
 
+// Replace [start, end) in a textarea with `text`. execCommand is deprecated but
+// is the only route that keeps the native undo stack intact for a React-
+// controlled textarea — when it no-ops (it returns false, and Chromium refuses
+// it outright in some builds) fall back to writing the value through the native
+// setter so React's onChange still fires, losing only the undo entry.
+function replaceRange(el, start, end, text) {
+  el.setSelectionRange(start, end)
+  if (document.execCommand('insertText', false, text)) return
+  const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set
+  setValue.call(el, el.value.slice(0, start) + text + el.value.slice(end))
+  el.dispatchEvent(new Event('input', { bubbles: true }))
+}
+
 // Formatting hotkeys for the composer and message editor: wrap (or unwrap) the
 // selection in a markdown marker. Returns true when the key was handled.
-// execCommand is deprecated but is the only route that keeps the native undo
-// stack intact for a React-controlled textarea.
 const FORMAT_MARKERS = { b: '**', i: '*', u: '__', e: '`' }
 function handleFormatHotkey(e, el) {
   if (!(e.ctrlKey || e.metaKey) || e.altKey || !el) return false
@@ -80,11 +93,10 @@ function handleFormatHotkey(e, el) {
   if (wrapped) {
     // Already wrapped → toggle off: reselect including the markers, replace
     // with the bare text, and restore the selection.
-    el.setSelectionRange(start - marker.length, end + marker.length)
-    document.execCommand('insertText', false, selected)
+    replaceRange(el, start - marker.length, end + marker.length, selected)
     el.setSelectionRange(start - marker.length, end - marker.length)
   } else {
-    document.execCommand('insertText', false, marker + selected + marker)
+    replaceRange(el, start, end, marker + selected + marker)
     el.setSelectionRange(start + marker.length, end + marker.length)
   }
   return true
@@ -675,6 +687,24 @@ function ChatPanel({
 
   const resolveAvatar = (entry) => clients?.find((c) => c.id === entry.authorId)?.avatar
 
+  // The message author's roster entry, or undefined if they've since left — in
+  // which case their name/avatar stay inert (no summary link, no menu).
+  const resolveClient = (entry) => clients?.find((c) => c.id === entry.authorId)
+
+  // One shared context menu for the whole feed (only one can be open at a time),
+  // opened by right-clicking any message's author name or avatar. Same menu the
+  // sidebar roster shows, minus the voice-only volume control.
+  const clientActions = useClientActions()
+  const { menu: authorMenu, openMenu: openAuthorMenu } = useClientMenu(clientActions)
+  const authorProps = (entry) => {
+    const c = resolveClient(entry)
+    if (!c) return {}
+    return {
+      onContextMenu: (e) => openAuthorMenu(e, c, { isSelf: c.id === selfId, rosterMode: true }),
+      onClick: () => clientActions.onShowClientSummary?.(c.id)
+    }
+  }
+
   const confirmDelete = () => {
     const id = pendingDeleteId
     setPendingDeleteId(null)
@@ -691,6 +721,7 @@ function ChatPanel({
       onDragOver={handleDragOver}
       onDrop={handleDrop}
     >
+      {authorMenu}
       {dragging && (
         <div className="chat-drop-overlay">
           <div className="chat-drop-overlay-inner">Drop files to attach</div>
@@ -806,7 +837,13 @@ function ChatPanel({
                 {grouped ? (
                   <span className="chat-avatar-spacer" aria-hidden="true" />
                 ) : (
-                  <span className="chat-avatar" aria-hidden="true">
+                  // aria-hidden: the avatar duplicates the author name beside it,
+                  // which carries the accessible link/menu affordance.
+                  <span
+                    className={`chat-avatar${resolveClient(entry) ? ' chat-avatar-actionable' : ''}`}
+                    aria-hidden="true"
+                    {...authorProps(entry)}
+                  >
                     {resolveAvatar(entry) ? (
                       <img className="chat-avatar-img" src={resolveAvatar(entry)} alt="" />
                     ) : (
@@ -817,7 +854,25 @@ function ChatPanel({
                 <div className="chat-message-body">
                   {!grouped && (
                     <div className="chat-message-header">
-                      <span className="chat-message-author">{resolveName(entry)}</span>
+                      {resolveClient(entry) ? (
+                        <span
+                          className="chat-message-author chat-message-author-link"
+                          role="button"
+                          tabIndex={0}
+                          title={`View ${resolveName(entry)}'s profile`}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault()
+                              clientActions.onShowClientSummary?.(entry.authorId)
+                            }
+                          }}
+                          {...authorProps(entry)}
+                        >
+                          {resolveName(entry)}
+                        </span>
+                      ) : (
+                        <span className="chat-message-author">{resolveName(entry)}</span>
+                      )}
                       <span className="chat-message-time">{formatTime(entry.ts)}</span>
                       {edited && <span className="chat-message-edited">(edited)</span>}
                     </div>

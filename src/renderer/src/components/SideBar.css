@@ -343,6 +343,34 @@ html[data-transparency='true'] .control-dock {
   color: var(--color-text);
 }
 
+/* Roster-only shortcut to this user's DM channel (double-clicking the row does
+   the same). Revealed on hover/focus so idle rows stay clean. */
+.client-dm-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  padding: 2px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 0.12s,
+    color 0.12s;
+}
+
+.client-indicator:hover .client-dm-btn,
+.client-dm-btn:focus-visible {
+  opacity: 1;
+}
+
+.client-dm-btn:hover {
+  color: var(--color-primary);
+}
+
 /* Row layout: name, group tags, spacer, group badges, streaming icon. The
    spacer (flex-grow) pushes the badges/streaming icon to the right edge; under
    pressure the shrink factors give way in order: tags (10000) collapse first,

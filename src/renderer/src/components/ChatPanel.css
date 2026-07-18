@@ -372,6 +372,31 @@
   color: var(--color-text);
 }
 
+/* Author name/avatar link to the sender's profile (and right-click to their
+   context menu) — only when they're still on the roster. */
+.chat-message-author-link {
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+
+.chat-message-author-link:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.chat-message-author-link:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.chat-avatar-actionable {
+  cursor: pointer;
+}
+
+.chat-avatar-actionable:hover {
+  filter: brightness(1.12);
+}
+
 .chat-message-time {
   font-size: var(--font-size-xs);
   color: var(--color-text-muted);

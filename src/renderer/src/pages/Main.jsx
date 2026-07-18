@@ -5,6 +5,7 @@ import { overlayPop, scrimFade } from '../lib/motionPresets'
 import './Main.css'
 import '../App.css'
 import { useAuth } from '../context/AuthContext'
+import { ClientActionsProvider } from '../context/ClientActionsContext'
 import SideBar from '../components/SideBar'
 import VideoGrid from '../components/VideoGrid'
 import ChatPanel from '../components/ChatPanel'
@@ -734,7 +735,8 @@ function Main() {
       }
       try {
         const res = await authFetch(`${apiBase()}/server/clients/${clientId}/roles/${roleId}`, {
-          method: 'PUT'        })
+          method: 'PUT'
+        })
         await throwIfError(res)
         apply()
       } catch (err) {
@@ -762,7 +764,8 @@ function Main() {
       }
       try {
         const res = await authFetch(`${apiBase()}/server/clients/${clientId}/roles/${roleId}`, {
-          method: 'DELETE'        })
+          method: 'DELETE'
+        })
         await throwIfError(res)
         apply()
       } catch (err) {
@@ -802,7 +805,8 @@ function Main() {
       const clientName = clients.find((c) => c.id === clientId)?.name ?? 'user'
       try {
         const res = await authFetch(`${apiBase()}/server/clients/${clientId}/vanity/${vanityId}`, {
-          method: assign ? 'PUT' : 'DELETE'        })
+          method: assign ? 'PUT' : 'DELETE'
+        })
         await throwIfError(res)
         setClients((prev) =>
           prev.map((c) => {
@@ -852,7 +856,8 @@ function Main() {
       if (!userId) return
       try {
         const res = await authFetch(`${apiBase()}/server/clients/${userId}/ban`, {
-          method: 'DELETE'        })
+          method: 'DELETE'
+        })
         await throwIfError(res)
         refreshBans()
       } catch (err) {
@@ -1031,7 +1036,8 @@ function Main() {
   const handleDeleteChannel = async (id) => {
     try {
       const res = await authFetch(`${apiBase()}/channels/${id}`, {
-        method: 'DELETE'      })
+        method: 'DELETE'
+      })
       await throwIfError(res)
       setChannels((prev) => prev.filter((ch) => ch.id !== id))
     } catch (err) {
@@ -1111,7 +1117,8 @@ function Main() {
   const handleDeleteChannelOverwrite = async (channelId, targetId) => {
     try {
       const res = await authFetch(`${apiBase()}/channels/${channelId}/permissions/${targetId}`, {
-        method: 'DELETE'      })
+        method: 'DELETE'
+      })
       await throwIfError(res)
       showSuccess('Channel permission removed')
     } catch (err) {
@@ -1481,9 +1488,7 @@ function Main() {
         // updated local state (and toasted), so the diff here is empty and
         // this stays silent — no double toast.
         if (data.id === selfIdRef.current && 'role_ids' in data) {
-          const before = new Set(
-            clientsRef.current.find((c) => c.id === data.id)?.role_ids || []
-          )
+          const before = new Set(clientsRef.current.find((c) => c.id === data.id)?.role_ids || [])
           const after = new Set(data.role_ids || [])
           const roleName = (id) => rolesRef.current.find((r) => r.id === id)?.name ?? 'a role'
           const added = [...after].find((id) => !before.has(id))
@@ -1495,9 +1500,7 @@ function Main() {
         // red when they remove us. Our own toggles were already applied (and
         // toasted green) by handleToggleVanity, so the diff here stays empty.
         if (data.id === selfIdRef.current && 'vanity' in data) {
-          const before = new Set(
-            clientsRef.current.find((c) => c.id === data.id)?.vanity_ids || []
-          )
+          const before = new Set(clientsRef.current.find((c) => c.id === data.id)?.vanity_ids || [])
           const after = new Set((data.vanity || []).map((v) => v.id))
           const groupName = (id) =>
             (data.vanity || []).find((v) => v.id === id)?.name ??
@@ -1506,7 +1509,8 @@ function Main() {
           const added = [...after].find((id) => !before.has(id))
           const removed = [...before].find((id) => !after.has(id))
           if (added != null) showSuccess(`You were added to the "${groupName(added)}" group`)
-          else if (removed != null) showError(`You were removed from the "${groupName(removed)}" group`)
+          else if (removed != null)
+            showError(`You were removed from the "${groupName(removed)}" group`)
         }
         // ClientModified also carries profile changes (avatar / nickname). Merge
         // whatever fields are present so we don't clobber the others; `in` guards
@@ -2065,243 +2069,268 @@ function Main() {
   const summaryChannelMemberCount =
     summaryChannel != null ? clients.filter((c) => c.channel_id === summaryChannel.id).length : 0
 
-  return (
-    <div className="app-shell">
-      <Toast message={toast?.message} variant={toast?.variant} onDismiss={dismissToast} />
-      {rolesGroupsOpen && (
-        <RolesGroupsMenu
-          roles={roles}
-          vanity={vanity}
-          onCreateVanity={handleCreateVanityGroup}
-          onClose={() => setRolesGroupsOpen(false)}
-        />
-      )}
-      <TitleBar
-        title={titleText}
-        icon={IconUsersGroup}
-        notifications={notifications}
-        onClearNotifications={() => setNotifications([])}
-        onOpenNotification={handleOpenNotification}
-        dmNotifications={dmNotifications}
-        onOpenDmNotification={handleOpenDmNotification}
-        onClearDmNotifications={() => setDmNotifications([])}
-      />
-      <div className="layout">
-        <SideBar
-          channels={channels}
-          clients={clients}
-          self={client}
-          onStreamsUpdate={handleStreamsUpdate}
-          onStatusChange={sendStatus}
-          onSelfChannelChange={(channelId) => sendVoiceState({ channel_id: channelId })}
-          // provide a renderer-level openSettings hook
-          onOpenSettings={openSettings}
-          servers={servers}
-          connectedServer={connectedServer}
-          onConnect={handleConnect}
-          onDisconnect={handleDisconnect}
-          onAddServer={handleAddServer}
-          onEditServer={handleEditServer}
-          onRemoveServer={handleRemoveServer}
-          onNotify={showSuccess}
-          onCreateChannel={handleCreateChannel}
-          onDeleteChannel={handleDeleteChannel}
-          onReorderChannel={handleReorderChannel}
-          onMoveClient={handleMoveClientToChannel}
-          onPreviewChannel={handlePreviewChannel}
-          onShowChannelSummary={handleShowChannelSummary}
-          onOpenDm={handleOpenDm}
-          onPoke={handlePoke}
-          onKick={handleKickUser}
-          onKickFromChannel={handleKickFromChannel}
-          onGag={handleGagUser}
-          onBan={handleBanUser}
-          onError={showError}
-          onUnban={handleUnbanUser}
-          onSetAvatar={handleSetAvatar}
-          onShowClientSummary={handleShowClientSummary}
-          roles={roles}
-          onAssignRole={handleAssignRole}
-          onRemoveRole={handleRemoveRole}
-          vanity={vanity}
-          onToggleVanity={handleToggleVanity}
-          onOpenRolesGroups={() => setRolesGroupsOpen(true)}
-          bannedUsers={bannedUsers}
-          canKickMembers={canKickMembers}
-          canBanMembers={canBanMembers}
-          canMuteMembers={canMuteMembers}
-          previewChannelId={previewChannelId}
-          unreadChannelIds={unreadChannelIds}
-        />
+  // Handed to ClientActionsProvider so a client context menu can be opened from
+  // anywhere (currently the sidebar roster and chat message authors).
+  const clientActions = {
+    onOpenDm: handleOpenDm,
+    onPoke: handlePoke,
+    onKick: handleKickUser,
+    onKickFromChannel: handleKickFromChannel,
+    onGag: handleGagUser,
+    onBan: handleBanUser,
+    onUnban: handleUnbanUser,
+    onSetAvatar: handleSetAvatar,
+    onShowClientSummary: handleShowClientSummary,
+    roles,
+    onAssignRole: handleAssignRole,
+    onRemoveRole: handleRemoveRole,
+    vanity,
+    onToggleVanity: handleToggleVanity,
+    onOpenRolesGroups: () => setRolesGroupsOpen(true),
+    canKickMembers,
+    canBanMembers,
+    canMuteMembers
+  }
 
-        <main className="chat-area">
-          {/* Summary views have no header bar: their banner card acts as the header.
+  return (
+    <ClientActionsProvider value={clientActions}>
+      <div className="app-shell">
+        <Toast message={toast?.message} variant={toast?.variant} onDismiss={dismissToast} />
+        {rolesGroupsOpen && (
+          <RolesGroupsMenu
+            roles={roles}
+            vanity={vanity}
+            onCreateVanity={handleCreateVanityGroup}
+            onClose={() => setRolesGroupsOpen(false)}
+          />
+        )}
+        <TitleBar
+          title={titleText}
+          icon={IconUsersGroup}
+          notifications={notifications}
+          onClearNotifications={() => setNotifications([])}
+          onOpenNotification={handleOpenNotification}
+          dmNotifications={dmNotifications}
+          onOpenDmNotification={handleOpenDmNotification}
+          onClearDmNotifications={() => setDmNotifications([])}
+        />
+        <div className="layout">
+          <SideBar
+            channels={channels}
+            clients={clients}
+            self={client}
+            onStreamsUpdate={handleStreamsUpdate}
+            onStatusChange={sendStatus}
+            onSelfChannelChange={(channelId) => sendVoiceState({ channel_id: channelId })}
+            // provide a renderer-level openSettings hook
+            onOpenSettings={openSettings}
+            servers={servers}
+            connectedServer={connectedServer}
+            onConnect={handleConnect}
+            onDisconnect={handleDisconnect}
+            onAddServer={handleAddServer}
+            onEditServer={handleEditServer}
+            onRemoveServer={handleRemoveServer}
+            onNotify={showSuccess}
+            onCreateChannel={handleCreateChannel}
+            onDeleteChannel={handleDeleteChannel}
+            onReorderChannel={handleReorderChannel}
+            onMoveClient={handleMoveClientToChannel}
+            onPreviewChannel={handlePreviewChannel}
+            onShowChannelSummary={handleShowChannelSummary}
+            onOpenDm={handleOpenDm}
+            onPoke={handlePoke}
+            onKick={handleKickUser}
+            onKickFromChannel={handleKickFromChannel}
+            onGag={handleGagUser}
+            onBan={handleBanUser}
+            onError={showError}
+            onUnban={handleUnbanUser}
+            onSetAvatar={handleSetAvatar}
+            onShowClientSummary={handleShowClientSummary}
+            roles={roles}
+            onAssignRole={handleAssignRole}
+            onRemoveRole={handleRemoveRole}
+            vanity={vanity}
+            onToggleVanity={handleToggleVanity}
+            onOpenRolesGroups={() => setRolesGroupsOpen(true)}
+            bannedUsers={bannedUsers}
+            canKickMembers={canKickMembers}
+            canBanMembers={canBanMembers}
+            canMuteMembers={canMuteMembers}
+            previewChannelId={previewChannelId}
+            unreadChannelIds={unreadChannelIds}
+          />
+
+          <main className="chat-area">
+            {/* Summary views have no header bar: their banner card acts as the header.
               Leaving a view = clicking back to your joined channel in the sidebar. */}
-          {summaryChannelId == null && summaryClientId == null && (
-          <div className="chat-header">
-            <div className="header-content">
-              {previewChannelId != null ? (
-                // Peeking into another channel's chat: no view tabs (no streams),
-                // just the channel name.
-                <span className="view-preview-title">
-                  {previewChannel?.type === 'dm' ? (
-                    <IconUser size={18} stroke={2} />
-                  ) : (
-                    <IconMessage size={18} stroke={2} />
-                  )}
-                  {previewChannelName}
-                </span>
-              ) : connected ? (
-                <>
-                  <div className="chat-title">
-                    <span className="chat-title-icon">
-                      {joinedChannel ? (
-                        <IconVolume size={17} stroke={2} />
+            {summaryChannelId == null && summaryClientId == null && (
+              <div className="chat-header">
+                <div className="header-content">
+                  {previewChannelId != null ? (
+                    // Peeking into another channel's chat: no view tabs (no streams),
+                    // just the channel name.
+                    <span className="view-preview-title">
+                      {previewChannel?.type === 'dm' ? (
+                        <IconUser size={18} stroke={2} />
                       ) : (
-                        <IconUsersGroup size={17} stroke={2} />
+                        <IconMessage size={18} stroke={2} />
                       )}
+                      {previewChannelName}
                     </span>
-                    <span className="chat-title-text">
-                      <span className="chat-title-name">
-                        {joinedChannel?.name ?? connectedServer?.nickname ?? 'Connected'}
-                      </span>
-                      <span className="chat-title-sub">
-                        {joinedChannel
-                          ? `${joinedChannelUserCount} in voice`
-                          : 'Not in a voice channel'}
-                      </span>
-                    </span>
-                  </div>
-                  <SegmentedTabs
-                    ariaLabel="Main view"
-                    active={viewMode}
-                    onChange={setViewMode}
-                    tabs={[
-                      {
-                        id: 'log',
-                        label: 'Chat',
-                        icon: <IconMessage size={15} stroke={2} />
-                      },
-                      {
-                        id: 'video',
-                        label: 'Streams',
-                        icon: <IconVideo size={15} stroke={2} />,
-                        disabled: poppedOut,
-                        title: poppedOut ? 'Video is open in a separate window' : undefined
-                      }
-                    ]}
-                  />
-                </>
+                  ) : connected ? (
+                    <>
+                      <div className="chat-title">
+                        <span className="chat-title-icon">
+                          {joinedChannel ? (
+                            <IconVolume size={17} stroke={2} />
+                          ) : (
+                            <IconUsersGroup size={17} stroke={2} />
+                          )}
+                        </span>
+                        <span className="chat-title-text">
+                          <span className="chat-title-name">
+                            {joinedChannel?.name ?? connectedServer?.nickname ?? 'Connected'}
+                          </span>
+                          <span className="chat-title-sub">
+                            {joinedChannel
+                              ? `${joinedChannelUserCount} in voice`
+                              : 'Not in a voice channel'}
+                          </span>
+                        </span>
+                      </div>
+                      <SegmentedTabs
+                        ariaLabel="Main view"
+                        active={viewMode}
+                        onChange={setViewMode}
+                        tabs={[
+                          {
+                            id: 'log',
+                            label: 'Chat',
+                            icon: <IconMessage size={15} stroke={2} />
+                          },
+                          {
+                            id: 'video',
+                            label: 'Streams',
+                            icon: <IconVideo size={15} stroke={2} />,
+                            disabled: poppedOut,
+                            title: poppedOut ? 'Video is open in a separate window' : undefined
+                          }
+                        ]}
+                      />
+                    </>
+                  ) : (
+                    <span aria-hidden="true" />
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Keyed so switching channel/tab remounts and replays the switch animation. */}
+            <div
+              className="chat-switch-region"
+              key={
+                !connected
+                  ? 'disconnected'
+                  : summaryChannelId != null
+                    ? `channel-summary-${summaryChannelId}`
+                    : summaryClientId != null
+                      ? `summary-${summaryClientId}`
+                      : previewChannelId != null
+                        ? `preview-${previewChannelId}`
+                        : viewMode
+              }
+            >
+              {!connected ? (
+                <IdleAnimation connecting={connecting} />
+              ) : summaryChannelId != null ? (
+                <ChannelSummary
+                  channel={summaryChannel}
+                  memberCount={summaryChannelMemberCount}
+                  onSaveDescription={handleSetChannelDescription}
+                  onSetIcon={handleSetChannelIcon}
+                  roles={roles}
+                  clients={clients}
+                  canManagePermissions={canManageChannels}
+                  onSetOverwrite={handleSetChannelOverwrite}
+                  onDeleteOverwrite={handleDeleteChannelOverwrite}
+                />
+              ) : summaryClientId != null ? (
+                <ClientSummary
+                  client={summaryClient}
+                  roles={roles}
+                  vanity={vanity}
+                  isSelf={summaryClient?.id === client?.id}
+                  onSetAvatar={handleSetAvatar}
+                />
+              ) : previewChannelId != null || viewMode === 'log' ? (
+                <ChatPanel
+                  feed={feed.filter(
+                    (e) => e.type === 'system' || e.channelId === activeChatChannelId
+                  )}
+                  clients={clients}
+                  selfId={client?.id}
+                  onSend={handleSendMessage}
+                  onEditMessage={handleEditMessage}
+                  onDeleteMessage={handleDeleteMessage}
+                  onReactMessage={handleReactMessage}
+                  onTyping={handleTyping}
+                  typingUsers={typingUsers}
+                  disabled={activeChatChannelId == null}
+                  channelKey={activeChatChannelId}
+                  onLoadOlder={loadOlderMessages}
+                  hasMoreOlder={
+                    activeChatChannelId != null && !exhaustedChannels.has(activeChatChannelId)
+                  }
+                />
               ) : (
-                <span aria-hidden="true" />
+                <VideoGrid
+                  streams={allVideoStreams}
+                  clients={clients}
+                  selectedStreamClientId={selectedStreamClientId}
+                  onSelect={setSelectedStreamClientId}
+                  onPopout={handlePopout}
+                  watchedStreamClientIds={watchedStreamClientIds}
+                  onSetStreamWatched={handleSetStreamWatched}
+                  volume={streamVolume}
+                  muted={streamMuted}
+                  onVolumeChange={setStreamVolume}
+                  onMutedChange={setStreamMuted}
+                />
               )}
             </div>
-          </div>
-          )}
-
-          {/* Keyed so switching channel/tab remounts and replays the switch animation. */}
-          <div
-            className="chat-switch-region"
-            key={
-              !connected
-                ? 'disconnected'
-                : summaryChannelId != null
-                  ? `channel-summary-${summaryChannelId}`
-                  : summaryClientId != null
-                    ? `summary-${summaryClientId}`
-                    : previewChannelId != null
-                      ? `preview-${previewChannelId}`
-                      : viewMode
-            }
-          >
-            {!connected ? (
-              <IdleAnimation connecting={connecting} />
-            ) : summaryChannelId != null ? (
-              <ChannelSummary
-                channel={summaryChannel}
-                memberCount={summaryChannelMemberCount}
-                onSaveDescription={handleSetChannelDescription}
-                onSetIcon={handleSetChannelIcon}
-                roles={roles}
-                clients={clients}
-                canManagePermissions={canManageChannels}
-                onSetOverwrite={handleSetChannelOverwrite}
-                onDeleteOverwrite={handleDeleteChannelOverwrite}
-              />
-            ) : summaryClientId != null ? (
-              <ClientSummary
-                client={summaryClient}
-                roles={roles}
-                vanity={vanity}
-                isSelf={summaryClient?.id === client?.id}
-                onSetAvatar={handleSetAvatar}
-              />
-            ) : previewChannelId != null || viewMode === 'log' ? (
-              <ChatPanel
-                feed={feed.filter(
-                  (e) => e.type === 'system' || e.channelId === activeChatChannelId
-                )}
-                clients={clients}
-                selfId={client?.id}
-                onSend={handleSendMessage}
-                onEditMessage={handleEditMessage}
-                onDeleteMessage={handleDeleteMessage}
-                onReactMessage={handleReactMessage}
-                onTyping={handleTyping}
-                typingUsers={typingUsers}
-                disabled={activeChatChannelId == null}
-                channelKey={activeChatChannelId}
-                onLoadOlder={loadOlderMessages}
-                hasMoreOlder={
-                  activeChatChannelId != null && !exhaustedChannels.has(activeChatChannelId)
-                }
-              />
-            ) : (
-              <VideoGrid
-                streams={allVideoStreams}
-                clients={clients}
-                selectedStreamClientId={selectedStreamClientId}
-                onSelect={setSelectedStreamClientId}
-                onPopout={handlePopout}
-                watchedStreamClientIds={watchedStreamClientIds}
-                onSetStreamWatched={handleSetStreamWatched}
-                volume={streamVolume}
-                muted={streamMuted}
-                onVolumeChange={setStreamVolume}
-                onMutedChange={setStreamMuted}
-              />
-            )}
-          </div>
-        </main>
-        <AnimatePresence>
-          {showSettings && (
-            <motion.div
-              className="settings-overlay"
-              onClick={closeSettings}
-              {...scrimFade(overlayAnim)}
-            >
+          </main>
+          <AnimatePresence>
+            {showSettings && (
               <motion.div
-                className="settings-modal"
-                onClick={(e) => e.stopPropagation()}
-                {...overlayPop(overlayAnim)}
+                className="settings-overlay"
+                onClick={closeSettings}
+                {...scrimFade(overlayAnim)}
               >
-                <button
-                  className="settings-close-btn"
-                  onClick={closeSettings}
-                  title="Close settings"
+                <motion.div
+                  className="settings-modal"
+                  onClick={(e) => e.stopPropagation()}
+                  {...overlayPop(overlayAnim)}
                 >
-                  <IconX size={18} />
-                </button>
-                <Settings />
+                  <button
+                    className="settings-close-btn"
+                    onClick={closeSettings}
+                    title="Close settings"
+                  >
+                    <IconX size={18} />
+                  </button>
+                  <Settings />
+                </motion.div>
               </motion.div>
-            </motion.div>
-          )}
-        </AnimatePresence>
+            )}
+          </AnimatePresence>
+        </div>
+        {connected && connectionStatus === 'reconnecting' && (
+          <ConnectionOverlay onAbort={handleDisconnect} />
+        )}
       </div>
-      {connected && connectionStatus === 'reconnecting' && (
-        <ConnectionOverlay onAbort={handleDisconnect} />
-      )}
-    </div>
+    </ClientActionsProvider>
   )
 }
 

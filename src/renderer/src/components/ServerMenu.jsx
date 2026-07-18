@@ -118,7 +118,7 @@ function ServerMenu({
     const host = form.host.trim()
     const username = form.username.trim()
     if (!nickname || !host || !username) {
-      setFormError('Nickname, address, and username are required.')
+      setFormError('Server nickname, address, and username are required.')
       return
     }
     if (editingId) {
@@ -309,7 +309,7 @@ function ServerMenu({
                   />
                 )}
                 <label className="add-server-field">
-                  <span>Nickname</span>
+                  <span>Server Nickname</span>
                   <input
                     type="text"
                     value={form.nickname}
