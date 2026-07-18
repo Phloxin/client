@@ -396,14 +396,13 @@ app.whenReady().then(() => {
     }))
   })
 
-  // Remember which source the user picked for the upcoming share.
-  ipcMain.on('set-screen-source', (_, sourceId) => {
-    selectedScreenSourceId = sourceId
-  })
-
-  // Remember the audio mode for the upcoming share (see soup.js shareScreen).
-  ipcMain.on('set-screen-audio-mode', (_, mode) => {
-    selectedAudioMode = typeof mode === 'string' ? mode : 'none'
+  // Atomically prepare the source + audio mode and acknowledge it before the
+  // renderer calls getDisplayMedia. Two fire-and-forget IPC messages could race
+  // the display-media request and reuse a previous share's source/audio mode.
+  ipcMain.handle('prepare-screen-share', (_, options = {}) => {
+    selectedScreenSourceId = typeof options.sourceId === 'string' ? options.sourceId : null
+    selectedAudioMode = typeof options.audioMode === 'string' ? options.audioMode : 'none'
+    return true
   })
 
   // Enable screen capture via getDisplayMedia in renderer. Honors the source

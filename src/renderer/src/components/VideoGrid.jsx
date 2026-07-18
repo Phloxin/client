@@ -55,12 +55,12 @@ function bestUniformTileWidth(W, H, n, gap = GRID_GAP) {
 function VideoGrid({
   streams,
   clients,
-  selectedStreamId,
+  selectedStreamClientId,
   onSelect,
   onPopout,
   onFocusAudio,
   onSetStreamRoles,
-  watchedStreamIds = EMPTY_WATCHED,
+  watchedStreamClientIds = EMPTY_WATCHED,
   onSetStreamWatched,
   volume,
   muted,
@@ -117,7 +117,18 @@ function VideoGrid({
 
   // No fallback: when nothing is selected, selectedStream is null and we render
   // the spread-out grid view instead of the single-focus view.
-  const selectedStream = sortedStreams.find((s) => s.consumerId === selectedStreamId) || null
+  // Focus/watch intent is keyed by the publishing client, not by the transient
+  // mediasoup consumer id. Codec fallback re-produces the same logical stream
+  // with a new consumer id, and must not stop playback or mute its audio.
+  const selectedStream = sortedStreams.find((s) => s.clientId === selectedStreamClientId) || null
+
+  const watchedStreams = sortedStreams.filter((s) => watchedStreamClientIds.has(s.clientId))
+  const soleWatchedClientId =
+    watchedStreamClientIds.size === 1 ? watchedStreamClientIds.values().next().value : null
+  // Audio follows viewer intent, not the momentary set of live video consumers.
+  // A codec replacement closes the old video before its successor arrives while
+  // the independent ScreenShareAudio producer remains live.
+  const audibleClientId = selectedStreamClientId ?? soleWatchedClientId
 
   // Reset the zoom whenever focus moves (or clears) so returning to a stream
   // always starts at the normal fit view — zoom is never persisted.
@@ -216,14 +227,15 @@ function VideoGrid({
     window.addEventListener('mouseup', onUp)
   }
 
-  // Only the focused stream's screen-share audio should be audible -
-  // re-apply whenever the focus changes or the volume/mute state changes.
+  // Only one screen-share audio track should be audible. Visual focus wins; in
+  // grid view a sole watched stream is also audible so clicking the play button
+  // cannot result in perfectly good video with hard-muted audio.
   // When popped out, onFocusAudio routes this to the opener window's soup
   // instance (which owns the actual audio playback); otherwise apply locally.
   useEffect(() => {
     const applyFocusAudio = onFocusAudio || setFocusedScreenAudio
-    applyFocusAudio(selectedStream?.clientId ?? null, { volume: volume / 100, muted })
-  }, [selectedStream?.clientId, volume, muted])
+    applyFocusAudio(audibleClientId, { volume: volume / 100, muted })
+  }, [audibleClientId, volume, muted])
 
   // Ration video bandwidth: the focused stream gets full quality, the rest get
   // a cheaper layer (medium in grid view, tiny in the carousel), and a collapsed
@@ -234,9 +246,7 @@ function VideoGrid({
   // else stays paused. The carousel-collapsed state additionally hides the
   // non-focused streams in focus view.
   const allVisible = !selectedStream || !carouselCollapsed
-  const visibleIds = allVisible
-    ? sortedStreams.filter((s) => watchedStreamIds.has(s.consumerId)).map((s) => s.consumerId)
-    : []
+  const visibleIds = allVisible ? watchedStreams.map((s) => s.consumerId) : []
   const visibleStreamKey = visibleIds.join(',')
   useEffect(() => {
     const applyRoles = onSetStreamRoles || setVideoStreamRoles
@@ -299,21 +309,21 @@ function VideoGrid({
           ? IconVolume2
           : IconVolume
 
-  const isStopped = (s) => !watchedStreamIds.has(s.consumerId)
+  const isStopped = (s) => !watchedStreamClientIds.has(s.clientId)
 
   // The top-right watch/close button: stop consuming a stream, or resume it.
   const toggleStopped = (s, e) => {
     e.stopPropagation()
     const watch = isStopped(s) // currently stopped → play it; currently playing → stop it
-    onSetStreamWatched?.(s.consumerId, watch)
+    onSetStreamWatched?.(s.clientId, watch)
     // Can't watch a stream big once it's stopped — drop focus if it was focused.
-    if (!watch && selectedStream?.consumerId === s.consumerId) onSelect?.(null)
+    if (!watch && selectedStream?.clientId === s.clientId) onSelect?.(null)
   }
 
   // Clicking a tile body focuses it (resuming it first if it was closed).
   const focusStream = (s) => {
-    if (isStopped(s)) onSetStreamWatched?.(s.consumerId, true)
-    onSelect?.(s.consumerId)
+    if (isStopped(s)) onSetStreamWatched?.(s.clientId, true)
+    onSelect?.(s.clientId)
   }
 
   // A carousel thumbnail or grid tile. Shows live video (or a "stopped"
@@ -383,6 +393,7 @@ function VideoGrid({
             <video
               autoPlay
               playsInline
+              muted
               style={
                 view.z > 1
                   ? {
@@ -490,9 +501,13 @@ function VideoGrid({
             </button>
           </div>
 
-          <div className={`video-carousel${carouselCollapsed ? ' collapsed' : ''}`}>
-            {sortedStreams.map((s) => renderTile(s, 'thumbnail'))}
-          </div>
+          {!carouselCollapsed && (
+            <div className="video-carousel">
+              {sortedStreams
+                .filter((s) => s.clientId !== selectedStream.clientId)
+                .map((s) => renderTile(s, 'thumbnail'))}
+            </div>
+          )}
         </>
       ) : (
         /* No stream focused: spread every stream across the whole grid area.

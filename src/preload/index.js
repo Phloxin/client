@@ -10,6 +10,7 @@ ipcRenderer.on('audiocapture:port', (e) => {
 
 // Custom APIs for renderer
 const api = {
+  platform: process.platform,
   screenAudio: {
     getCapabilities: () => ipcRenderer.invoke('audiocapture:get-capabilities'),
     listApps: () => ipcRenderer.invoke('audiocapture:list-apps'),

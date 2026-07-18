@@ -93,6 +93,10 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   })
 
   const joinedRef = useRef(false)
+  // Owner-bound handle for the local screen/camera capture. Track-ended events
+  // can arrive after a successor share starts, so they must never call the
+  // singleton/global stop path or clear the successor's tile.
+  const activeShareRef = useRef(null)
   const menuRef = useRef(null)
   // Latest mic settings, read by the (re)publish path so a background reconnect
   // re-publishes with current settings rather than those captured at join time.
@@ -200,6 +204,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   // the mic re-publishes. Screen share is NOT auto-restored (re-capturing the
   // screen requires a fresh user gesture).
   const handleReconnecting = () => {
+    activeShareRef.current = null
     setSharing(false)
     setVideoStreams([])
     setSpeakingClients({})
@@ -224,6 +229,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   useEffect(
     () => () => {
       if (joinedRef.current) {
+        activeShareRef.current = null
         disconnect()
         onJoinedChange?.(channel.id, false)
       }
@@ -233,15 +239,18 @@ const VoiceChannel = forwardRef(function VoiceChannel(
 
   // Remove a remote video tile whose consumer was closed (e.g. the
   // remote client restarted screen share, replacing its old producer)
-  const handleConsumerClosed = (consumerId) => {
+  const handleConsumerClosed = (consumerId, { replaced = false } = {}) => {
+    // The SFU announces a codec replacement's old producer first. Keep its tile
+    // as a short-lived placeholder; handleVideoStream swaps in the successor.
+    if (replaced) return
     setVideoStreams((prev) => prev.filter((s) => s.consumerId !== consumerId))
   }
 
   // Native audio capture died mid-share; the video share continues.
   const handleScreenAudioError = (message) => {
     setError(
-      `Screen share audio stopped (${message}). Video is still sharing - ` +
-        `restart the share to retry audio, or pick "Entire system" audio if it keeps failing.`
+      `Screen share audio is unavailable (${message}). Video is still sharing - ` +
+        `restart the share to retry or choose another supported audio source.`
     )
   }
 
@@ -250,7 +259,9 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     // channel may not have caught up with this client's channel move yet.
     // The label is resolved at render time from clientId instead.
     setVideoStreams((prev) => [
-      ...prev,
+      ...prev.filter(
+        (existing) => existing.kind !== 'video' || existing.clientId !== clientId || existing.isSelf
+      ),
       {
         stream,
         consumerId,
@@ -295,7 +306,8 @@ const VoiceChannel = forwardRef(function VoiceChannel(
         onReconnectRejoin: () => patchChannel(channel.id),
         onVideoStream: handleVideoStream,
         onClientSpeaking: handleClientSpeaking,
-        onConsumerClosed: handleConsumerClosed
+        onConsumerClosed: handleConsumerClosed,
+        onScreenAudioError: handleScreenAudioError
       })
     } catch (err) {
       setError(err.message)
@@ -360,6 +372,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   // Stop being the active channel locally, without disconnecting the
   // websocket (used when switching to a different channel).
   const deactivate = () => {
+    activeShareRef.current = null
     setJoined(false)
     setSharing(false)
     setVideoStreams([])
@@ -367,6 +380,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   }
 
   const handleLeave = () => {
+    activeShareRef.current = null
     disconnect()
     setJoined(false)
     setSharing(false)
@@ -377,8 +391,10 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   }
 
   // Remove the local (self) screen-share tile after the share ends
-  const clearSelfStream = () => {
-    setVideoStreams((prev) => prev.filter((item) => !item.isSelf))
+  const clearSelfStream = (consumerId = null) => {
+    setVideoStreams((prev) =>
+      prev.filter((item) => !item.isSelf || (consumerId !== null && item.consumerId !== consumerId))
+    )
   }
 
   // Capture and publish the chosen source after the user picks one
@@ -411,15 +427,32 @@ const VoiceChannel = forwardRef(function VoiceChannel(
         // Tell the main process which source and audio mode the display-media
         // handler should use. sourceId is null on Wayland, where the OS portal
         // does the picking when getDisplayMedia runs.
-        window.electron.ipcRenderer.send('set-screen-audio-mode', options.audioMode ?? 'none')
-        window.electron.ipcRenderer.send('set-screen-source', sourceId ?? null)
+        await window.electron.ipcRenderer.invoke('prepare-screen-share', {
+          sourceId: sourceId ?? null,
+          audioMode: options.audioMode ?? 'none'
+        })
         screen = await shareScreen({ ...options, onEncoderStats })
       }
       if (screen?.stream) {
-        screen.stream.getVideoTracks()[0].onended = () => {
-          stopScreenShare()
+        activeShareRef.current = screen
+        screen.stream.getVideoTracks()[0].addEventListener(
+          'ended',
+          () => {
+            if (activeShareRef.current !== screen) return
+            activeShareRef.current = null
+            void screen.stop?.()
+            setSharing(false)
+            clearSelfStream(screen.id)
+          },
+          { once: true }
+        )
+
+        if (screen.stream.getVideoTracks()[0].readyState === 'ended') {
+          activeShareRef.current = null
+          await screen.stop?.()
           setSharing(false)
-          clearSelfStream()
+          clearSelfStream(screen.id)
+          return
         }
 
         setVideoStreams((prev) => [
@@ -448,9 +481,12 @@ const VoiceChannel = forwardRef(function VoiceChannel(
 
   const handleScreenShare = async () => {
     if (sharing) {
-      await stopScreenShare()
+      const activeShare = activeShareRef.current
+      activeShareRef.current = null
+      if (activeShare?.stop) await activeShare.stop()
+      else await stopScreenShare()
       setSharing(false)
-      clearSelfStream()
+      clearSelfStream(activeShare?.id ?? null)
     } else {
       // Let the user choose a screen/window before capturing
       setShowSourcePicker(true)

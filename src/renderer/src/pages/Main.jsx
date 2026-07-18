@@ -171,11 +171,14 @@ function Main() {
 
   //Client UI Hooks
   const [allVideoStreams, setAllVideoStreams] = useState([])
-  const [selectedStreamId, setSelectedStreamId] = useState(null)
+  // Logical stream intent is keyed by client id. A codec downgrade creates a
+  // new producer/consumer id for the same client's stream; using that transient
+  // id here used to clear focus, stop watching, and hard-mute stream audio.
+  const [selectedStreamClientId, setSelectedStreamClientId] = useState(null)
   const [poppedOut, setPoppedOut] = useState(false)
   const [streamVolume, setStreamVolume] = useState(100)
   const [streamMuted, setStreamMuted] = useState(false)
-  const [watchedStreamIds, setWatchedStreamIds] = useState(() => new Set())
+  const [watchedStreamClientIds, setWatchedStreamClientIds] = useState(() => new Set())
   const [notifications, setNotifications] = useState([])
   const [dmNotifications, setDmNotifications] = useState([])
   const [readStates, setReadStates] = useState({})
@@ -190,10 +193,10 @@ function Main() {
   const popoutWindowRef = useRef(null)
   const popoutListenersRef = useRef(new Set())
   const allVideoStreamsRef = useRef([])
-  const selectedStreamIdRef = useRef(null)
+  const selectedStreamClientIdRef = useRef(null)
   const streamVolumeRef = useRef(100)
   const streamMutedRef = useRef(false)
-  const watchedStreamIdsRef = useRef(new Set())
+  const watchedStreamClientIdsRef = useRef(new Set())
 
   const lastTypingSentRef = useRef(0)
   const lastEventSeqRef = useRef(null)
@@ -230,8 +233,8 @@ function Main() {
     allVideoStreamsRef.current = allVideoStreams
   }, [allVideoStreams])
   useEffect(() => {
-    selectedStreamIdRef.current = selectedStreamId
-  }, [selectedStreamId])
+    selectedStreamClientIdRef.current = selectedStreamClientId
+  }, [selectedStreamClientId])
   useEffect(() => {
     streamVolumeRef.current = streamVolume
   }, [streamVolume])
@@ -239,33 +242,44 @@ function Main() {
     streamMutedRef.current = streamMuted
   }, [streamMuted])
   useEffect(() => {
-    watchedStreamIdsRef.current = watchedStreamIds
-  }, [watchedStreamIds])
+    watchedStreamClientIdsRef.current = watchedStreamClientIds
+  }, [watchedStreamClientIds])
 
   // Notify the popout window whenever the data it mirrors changes.
   useEffect(() => {
     popoutListenersRef.current.forEach((cb) => cb())
-  }, [allVideoStreams, clients, selectedStreamId, streamVolume, streamMuted, watchedStreamIds])
+  }, [
+    allVideoStreams,
+    clients,
+    selectedStreamClientId,
+    streamVolume,
+    streamMuted,
+    watchedStreamClientIds
+  ])
 
   // Toggle whether a stream is watched (consumed); shared with the popout.
-  const handleSetStreamWatched = (consumerId, watched) =>
-    setWatchedStreamIds((prev) => {
-      if (watched === prev.has(consumerId)) return prev
+  const handleSetStreamWatched = (clientId, watched) =>
+    setWatchedStreamClientIds((prev) => {
+      if (watched === prev.has(clientId)) return prev
       const next = new Set(prev)
-      if (watched) next.add(consumerId)
-      else next.delete(consumerId)
+      if (watched) next.add(clientId)
+      else next.delete(clientId)
       return next
     })
 
-  // Drop watched ids for streams that have gone away, so a later stream can't
-  // inherit a stale "watching" state (and the set doesn't grow unbounded).
+  // Replacement handoffs retain a placeholder tile (the SFU marks their
+  // ProducerClosed event), so any client absent here genuinely stopped sharing.
+  // Clear intent immediately: a later unrelated share must require a new click.
   useEffect(() => {
-    setWatchedStreamIds((prev) => {
+    const liveClientIds = new Set(allVideoStreams.map((stream) => stream.clientId))
+    setWatchedStreamClientIds((prev) => {
       if (prev.size === 0) return prev
-      const live = new Set(allVideoStreams.map((s) => s.consumerId))
-      if ([...prev].every((id) => live.has(id))) return prev
-      return new Set([...prev].filter((id) => live.has(id)))
+      if ([...prev].every((id) => liveClientIds.has(id))) return prev
+      return new Set([...prev].filter((id) => liveClientIds.has(id)))
     })
+    setSelectedStreamClientId((current) =>
+      current != null && !liveClientIds.has(current) ? null : current
+    )
   }, [allVideoStreams])
 
   // Clear notification + unread history on connect/disconnect only — switching
@@ -283,12 +297,12 @@ function Main() {
       getData: () => ({
         streams: allVideoStreamsRef.current,
         clients: clientsRef.current,
-        selectedStreamId: selectedStreamIdRef.current,
+        selectedStreamClientId: selectedStreamClientIdRef.current,
         volume: streamVolumeRef.current,
         muted: streamMutedRef.current,
-        watchedStreamIds: watchedStreamIdsRef.current
+        watchedStreamClientIds: watchedStreamClientIdsRef.current
       }),
-      select: (id) => setSelectedStreamId(id),
+      select: (id) => setSelectedStreamClientId(id),
       setVolume: (v) => setStreamVolume(v),
       setMuted: (m) => setStreamMuted(m),
       setStreamWatched: (id, watched) => handleSetStreamWatched(id, watched),
@@ -869,13 +883,6 @@ function Main() {
     [client, token]
   )
 
-  // No stream is focused by default (the grid view shows them all). Only clear the focus if the currently focused stream goes away.
-  useEffect(() => {
-    if (selectedStreamId && !allVideoStreams.some((s) => s.consumerId === selectedStreamId)) {
-      setSelectedStreamId(null)
-    }
-  }, [allVideoStreams, selectedStreamId])
-
   // Fetch a channel's recent history and replace that channel's feed entries with it.
   // Routed through the main process (GET with a JSON body). `shouldApply`
   // bails if the result is stale (user switched channels before it arrived).
@@ -1227,6 +1234,8 @@ function Main() {
     setClients([])
     setFeed([])
     setAllVideoStreams([])
+    setSelectedStreamClientId(null)
+    setWatchedStreamClientIds(new Set())
     setConnectedServer(null)
     setServerHost(null)
     setPreviewChannelId(null)
@@ -2251,10 +2260,10 @@ function Main() {
               <VideoGrid
                 streams={allVideoStreams}
                 clients={clients}
-                selectedStreamId={selectedStreamId}
-                onSelect={setSelectedStreamId}
+                selectedStreamClientId={selectedStreamClientId}
+                onSelect={setSelectedStreamClientId}
                 onPopout={handlePopout}
-                watchedStreamIds={watchedStreamIds}
+                watchedStreamClientIds={watchedStreamClientIds}
                 onSetStreamWatched={handleSetStreamWatched}
                 volume={streamVolume}
                 muted={streamMuted}
