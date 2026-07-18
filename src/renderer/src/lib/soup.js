@@ -492,22 +492,20 @@ async function buildAudioProcessor(stream, micSettings) {
   }
 
   if (needsGate) {
-    const analyser = audioContext.createAnalyser()
+    // Same speech-band metric the speaking detector uses, so the gate opens on the
+    // same quiet speech the indicator lights up on. These used to diverge: the gate
+    // averaged the full spectrum and cut quiet voices before they were ever sent.
+    const { analyser, read } = createSpeechLevelReader(audioContext)
     const gate = audioContext.createGain()
     chainNodes.push(analyser, gate)
-    analyser.fftSize = 256
     node.connect(analyser)
     analyser.connect(gate)
     node = gate
 
-    const dataArray = new Uint8Array(analyser.frequencyBinCount)
     const checkLevel = () => {
-      analyser.getByteFrequencyData(dataArray)
-      const average = dataArray.reduce((a, b) => a + b) / dataArray.length
-      const normalized = (average / 255) * 100
       // If audio is below threshold, mute; otherwise pass through
       gate.gain.setValueAtTime(
-        normalized >= micSettings.volumeGateThreshold ? 1 : 0,
+        read() >= micSettings.volumeGateThreshold ? 1 : 0,
         audioContext.currentTime
       )
     }
@@ -557,27 +555,60 @@ function stopRawStream(stream) {
   stream?.getTracks().forEach((track) => track.stop())
 }
 
+// ─── Shared speech-band level measurement ─────────────────────────
+// One place that decides "how loud is the voice right now", shared by the volume
+// gate, the self/remote speaking detectors, and the settings meter so all three
+// judge voice loudness identically. Returns the analyser to wire into the graph
+// plus read() -> current level 0-100.
+//
+// It measures only the human-speech band (~94 Hz–4 kHz) instead of the full
+// 0–24 kHz spectrum: averaging every bin diluted quiet speech across the many
+// near-silent high-frequency bins so it never crossed threshold — and the RNNoise
+// suppressor made that worse by zeroing those bins. The byte mapping is tuned to
+// speech levels too (energy below ~-75 dB, a typical ambient floor, maps to 0), so
+// silence reads as silence even with suppression off. fftSize 512 gives ~94 Hz
+// bins; bin 0 is skipped (DC/rumble), so the lowest kept bin sits near the low end
+// of the voiced range. Bin indices come from the real sample rate.
+export function createSpeechLevelReader(audioContext) {
+  const analyser = audioContext.createAnalyser()
+  analyser.fftSize = 512
+  analyser.minDecibels = -75
+  analyser.maxDecibels = -25
+  analyser.smoothingTimeConstant = 0.5
+
+  const data = new Uint8Array(analyser.frequencyBinCount)
+  const binHz = audioContext.sampleRate / analyser.fftSize
+  const loBin = Math.max(1, Math.floor(85 / binHz))
+  const hiBin = Math.min(data.length - 1, Math.ceil(4000 / binHz))
+  const bandBins = hiBin - loBin + 1
+
+  const read = () => {
+    analyser.getByteFrequencyData(data)
+    let sum = 0
+    for (let i = loBin; i <= hiBin; i++) sum += data[i]
+    return (sum / bandBins / 255) * 100
+  }
+
+  return { analyser, read }
+}
+
 // ─── Detect speaking activity on an audio stream ──────────────────
 // Returns a stop function. Calls onChange(isSpeaking) whenever the
 // speaking state changes, and once more with false on stop.
-export function createSpeakingDetector(stream, onChange, { threshold = 8, holdMs = 150 } = {}) {
+export function createSpeakingDetector(stream, onChange, { threshold = 12, holdMs = 200 } = {}) {
   if (!stream.getAudioTracks().length) return () => {}
 
   const audioContext = new (window.AudioContext || window.webkitAudioContext)()
   const source = audioContext.createMediaStreamSource(stream)
-  const analyser = audioContext.createAnalyser()
-  analyser.fftSize = 256
+  const { analyser, read } = createSpeechLevelReader(audioContext)
   source.connect(analyser)
 
-  const data = new Uint8Array(analyser.frequencyBinCount)
   let speaking = false
   let lastAbove = 0
   let intervalId
 
   const tick = () => {
-    analyser.getByteFrequencyData(data)
-    const avg = data.reduce((a, b) => a + b, 0) / data.length
-    const level = (avg / 255) * 100
+    const level = read()
     const now = performance.now()
 
     if (level >= threshold) lastAbove = now

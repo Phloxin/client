@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { createSpeechLevelReader } from '../lib/soup'
 
 const HOLD_MS = 180
 const RAMP_S = 0.03
@@ -14,6 +15,7 @@ function VolumeGateMeter({ threshold, onThresholdChange, micSettings, gateEnable
   const audioCtxRef = useRef(null)
   const streamRef = useRef(null)
   const sourceRef = useRef(null)
+  const readRef = useRef(null)
   const testGainRef = useRef(null)
   const lastAboveRef = useRef(0)
   const testPlayingRef = useRef(false)
@@ -82,12 +84,15 @@ function VolumeGateMeter({ threshold, onThresholdChange, micSettings, gateEnable
           }
         })
 
-        const node = ctx.createAnalyser()
-        node.fftSize = 256
-        node.smoothingTimeConstant = 0.6
+        // Same speech-band metric as the gate/detector (see soup.js) so the meter
+        // level and threshold marker read on the gate's scale. (This raw stream has
+        // no RNNoise, unlike the live gate — matching that too is future work.)
+        const reader = createSpeechLevelReader(ctx)
+        const node = reader.analyser
         source = ctx.createMediaStreamSource(stream)
         source.connect(node)
 
+        readRef.current = reader.read
         setAnalyserNode(node)
         audioCtxRef.current = ctx
         streamRef.current = stream
@@ -114,6 +119,7 @@ function VolumeGateMeter({ threshold, onThresholdChange, micSettings, gateEnable
       audioCtxRef.current = null
       streamRef.current = null
       sourceRef.current = null
+      readRef.current = null
     }
   }, [
     micSettings.deviceId,
@@ -125,12 +131,10 @@ function VolumeGateMeter({ threshold, onThresholdChange, micSettings, gateEnable
   // ── Level-meter polling loop ──────────────────────────────────────
   useEffect(() => {
     if (!analyserNode) return
-    const data = new Uint8Array(analyserNode.frequencyBinCount)
+    const read = readRef.current
 
     const loop = () => {
-      analyserNode.getByteFrequencyData(data)
-      const avg = data.reduce((a, b) => a + b, 0) / data.length
-      setAudioLevel(Math.min(100, (avg / 255) * 100))
+      setAudioLevel(Math.min(100, read()))
       meterRafRef.current = requestAnimationFrame(loop)
     }
 
@@ -162,13 +166,9 @@ function VolumeGateMeter({ threshold, onThresholdChange, micSettings, gateEnable
     testPlayingRef.current = true
     setTestPlaying(true)
 
-    const data = new Uint8Array(node.frequencyBinCount)
-
     const tick = () => {
       if (gateEnabledRef.current) {
-        node.getByteFrequencyData(data)
-        const avg = data.reduce((a, b) => a + b, 0) / data.length
-        const level = Math.min(100, (avg / 255) * 100)
+        const level = Math.min(100, readRef.current())
         const now = performance.now()
 
         if (level >= thresholdRef.current) lastAboveRef.current = now

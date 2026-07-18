@@ -26,10 +26,15 @@ const DEFAULT_SETTINGS = {
   bitrate: AUDIO_BITRATE,
   deviceId: 'default',
   useVolumeGate: false,
-  volumeGateThreshold: 30,
+  // On the speech-band metric (see createSpeechLevelReader in soup.js); opens on
+  // clear-and-up speech, stays closed on silence/quiet background post-RNNoise.
+  volumeGateThreshold: 15,
   useRnnoise: true,
   outputDeviceId: 'default',
-  outputVolume: 100
+  outputVolume: 100,
+  // Bumped when a change makes an existing stored value mean something different;
+  // read by migrateMicSettings to rewrite old saves.
+  settingsVersion: 1
 }
 
 const DEFAULT_APPEARANCE = {
@@ -72,6 +77,19 @@ function migrateAnimations(settings) {
   if (next.userJoin === 'slide') next.userJoin = 'pop'
   if (next.channelList === 'slide') next.channelList = 'pop'
   return next
+}
+
+// The volume gate switched from a full-spectrum average to a speech-band metric
+// (see createSpeechLevelReader in soup.js). Old thresholds were on an incompatible,
+// nonlinear scale, so any pre-v1 save has its gate threshold reset to the new
+// default — users can re-tune against the meter, which now shares the same metric.
+function migrateMicSettings(saved) {
+  const merged = { ...DEFAULT_SETTINGS, ...saved }
+  if (!saved.settingsVersion) {
+    merged.volumeGateThreshold = DEFAULT_SETTINGS.volumeGateThreshold
+    merged.settingsVersion = DEFAULT_SETTINGS.settingsVersion
+  }
+  return merged
 }
 
 export function SettingsProvider({ children }) {
@@ -152,8 +170,8 @@ export function SettingsProvider({ children }) {
     try {
       const saved = localStorage.getItem('micSettings')
       // Merge over defaults so settings stored before a new key was added still
-      // pick up a sensible value for it.
-      return saved ? { ...DEFAULT_SETTINGS, ...JSON.parse(saved) } : DEFAULT_SETTINGS
+      // pick up a sensible value for it, then run scale migrations.
+      return saved ? migrateMicSettings(JSON.parse(saved)) : DEFAULT_SETTINGS
     } catch {
       return DEFAULT_SETTINGS
     }
