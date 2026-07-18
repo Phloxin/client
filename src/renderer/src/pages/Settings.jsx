@@ -457,15 +457,28 @@ function Settings() {
                     <div className="settings-toggle-copy">
                       <label htmlFor={`sound-${category.id}`}>{category.label}</label>
                     </div>
-                    <button
-                      type="button"
-                      className="sound-preview-btn"
-                      title={`Play ${category.label}`}
-                      aria-label={`Play ${category.label}`}
-                      onClick={() => playUiSound(category.events[0], 0.5, true)}
-                    >
-                      <IconPlayerPlayFilled size={14} />
-                    </button>
+                    <div className="sound-preview-group">
+                      {category.events.map((ev) => {
+                        // 'mic-unmute' → 'unmute', 'new-message' → 'message'. A
+                        // toggle can control two sounds; each gets its own button.
+                        const evLabel = ev.split('-').slice(1).join(' ') || ev
+                        return (
+                          <button
+                            key={ev}
+                            type="button"
+                            className="sound-preview-btn"
+                            title={`Play ${evLabel}`}
+                            aria-label={`Play ${evLabel}`}
+                            onClick={() => playUiSound(ev, 0.5, true)}
+                          >
+                            <IconPlayerPlayFilled size={14} />
+                            {category.events.length > 1 && (
+                              <span className="sound-preview-label">{evLabel}</span>
+                            )}
+                          </button>
+                        )
+                      })}
+                    </div>
                     <label className="toggle-switch">
                       <input
                         type="checkbox"

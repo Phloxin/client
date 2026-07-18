@@ -327,8 +327,25 @@
 }
 
 /* Preview button for a notification sound — sits just left of its toggle. */
-.sound-preview-btn {
+.sound-preview-group {
   margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sound-preview-btn:has(.sound-preview-label) {
+  width: auto;
+  padding: 0 8px;
+  gap: 5px;
+}
+
+.sound-preview-label {
+  font-size: var(--font-size-sm);
+  text-transform: capitalize;
+}
+
+.sound-preview-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
