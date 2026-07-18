@@ -440,12 +440,28 @@ function getRnnoiseBinary() {
 // survives for the next publish. RNNoise is trained on 48 kHz audio, so the
 // rate is pinned.
 let micContext = null
-let micWorkletLoaded = false
+const rnnoiseWorkletLoads = new WeakMap()
+
+function ensureRnnoiseWorklet(audioContext) {
+  let load = rnnoiseWorkletLoads.get(audioContext)
+  if (!load) {
+    load = audioContext.audioWorklet.addModule(rnnoiseWorkletPath).catch((err) => {
+      rnnoiseWorkletLoads.delete(audioContext)
+      throw err
+    })
+    rnnoiseWorkletLoads.set(audioContext, load)
+  }
+  return load
+}
+
+async function createRnnoiseProcessor(audioContext) {
+  const [binary] = await Promise.all([getRnnoiseBinary(), ensureRnnoiseWorklet(audioContext)])
+  return new RnnoiseWorkletNode(audioContext, { maxChannels: 1, wasmBinary: binary })
+}
 
 async function getMicContext() {
   if (!micContext || micContext.state === 'closed') {
     micContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 })
-    micWorkletLoaded = false
   }
   if (micContext.state === 'suspended') await micContext.resume()
   return micContext
@@ -455,7 +471,10 @@ async function getMicContext() {
 // Wires the captured mic stream through optional RNNoise denoising (an
 // AudioWorklet that suppresses keyboard/typing and steady background noise
 // while preserving voice) and the optional volume gate, in that order.
-// Returns the processed stream plus a stop() that tears the chain down.
+// Returns the processed stream plus a stop() that tears the chain down. The
+// processed stream is also the source of truth for the local speaking indicator,
+// so it reflects everything that can affect what peers receive (including
+// RNNoise and a closed volume gate).
 async function buildAudioProcessor(stream, micSettings) {
   const needsRnnoise = micSettings.useRnnoise
   const needsGate = micSettings.useVolumeGate
@@ -476,12 +495,7 @@ async function buildAudioProcessor(stream, micSettings) {
 
   if (needsRnnoise) {
     try {
-      const binary = await getRnnoiseBinary()
-      if (!micWorkletLoaded) {
-        await audioContext.audioWorklet.addModule(rnnoiseWorkletPath)
-        micWorkletLoaded = true
-      }
-      rnnoiseNode = new RnnoiseWorkletNode(audioContext, { maxChannels: 1, wasmBinary: binary })
+      rnnoiseNode = await createRnnoiseProcessor(audioContext)
       node.connect(rnnoiseNode)
       node = rnnoiseNode
       console.log('[Soup] RNNoise denoiser applied')
@@ -492,24 +506,20 @@ async function buildAudioProcessor(stream, micSettings) {
   }
 
   if (needsGate) {
-    const analyser = audioContext.createAnalyser()
+    const reader = createSpeechLevelReader(audioContext)
     const gate = audioContext.createGain()
-    chainNodes.push(analyser, gate)
-    analyser.fftSize = 256
-    node.connect(analyser)
-    analyser.connect(gate)
+    const gateController = createLevelGateController(audioContext, gate, reader.read, {
+      threshold: micSettings.volumeGateThreshold
+    })
+    chainNodes.push(...reader.nodes, gate)
+    // Analysis is a sidechain so the speech-band filters never color outgoing
+    // audio. The untouched denoised signal passes through the controlled gain.
+    node.connect(reader.input)
+    node.connect(gate)
     node = gate
 
-    const dataArray = new Uint8Array(analyser.frequencyBinCount)
     const checkLevel = () => {
-      analyser.getByteFrequencyData(dataArray)
-      const average = dataArray.reduce((a, b) => a + b) / dataArray.length
-      const normalized = (average / 255) * 100
-      // If audio is below threshold, mute; otherwise pass through
-      gate.gain.setValueAtTime(
-        normalized >= micSettings.volumeGateThreshold ? 1 : 0,
-        audioContext.currentTime
-      )
+      gateController.update()
     }
     // 25Hz via setInterval, not rAF: level detection needs far less than display
     // rate, and rAF is throttled/paused when the window is hidden — which would
@@ -557,35 +567,280 @@ function stopRawStream(stream) {
   stream?.getTracks().forEach((track) => track.stop())
 }
 
+// Chromium binds its audio processing (AGC / noise suppression / echo
+// cancellation) to the shared capture source for a device, not to the individual
+// track. A getUserMedia on a device that is still open silently inherits the
+// processing the source was created with, so the new constraints are dropped and
+// the old settings persist until every handle closes (i.e. an app restart).
+// applyConstraints() does not reconfigure these flags either.
+//
+// So: serialize every mic acquisition, release the previous capture first, and
+// let the source actually tear down before asking for a new one.
+export function micConstraints(micSettings) {
+  return {
+    deviceId:
+      micSettings.deviceId && micSettings.deviceId !== 'default'
+        ? { exact: micSettings.deviceId }
+        : undefined,
+    echoCancellation: micSettings.echoCancellation,
+    // RNNoise replaces the browser suppressor - never run both (they're
+    // mutually exclusive in the UI; this guards against any stale state).
+    noiseSuppression: micSettings.useRnnoise ? false : micSettings.noiseSuppression,
+    autoGainControl: micSettings.autoGainControl,
+    sampleRate: micSettings.sampleRate,
+    channelCount: micSettings.channelCount
+  }
+}
+
+// track.stop() returns before Chromium has torn the capture source down; a short
+// hop lets the release land so the next open is cold.
+// ponytail: fixed delay, not a readback of source state — there is no API to
+// observe it. If constraints still stick occasionally, raise this.
+const MIC_SOURCE_RELEASE_MS = 50
+
+let micAcquireChain = Promise.resolve()
+
+// Only one capture can define the device's processing, and while joined to a
+// channel that capture belongs to the call. Anything else that wants mic audio
+// (the settings meter) has to read this one rather than open its own — a second
+// capture would inherit stale processing *and* poison the next republish.
+const rawMicStreamListeners = new Set()
+
+export function getRawMicStream() {
+  return rawMicStream
+}
+
+// Fires whenever the live capture is swapped (republish) or released (teardown),
+// so readers can rebuild their graph on the new track. Returns an unsubscribe.
+export function onRawMicStreamChange(listener) {
+  rawMicStreamListeners.add(listener)
+  return () => rawMicStreamListeners.delete(listener)
+}
+
+function setRawMicStream(stream) {
+  if (rawMicStream === stream) return
+  rawMicStream = stream
+  rawMicStreamListeners.forEach((listener) => {
+    try {
+      listener(stream)
+    } catch (err) {
+      console.error('[Soup] rawMicStream listener failed:', err)
+    }
+  })
+}
+
+// Acquire a mic capture with `micSettings` applied for real. `previousStream` is
+// the caller's own capture to release first — pass it rather than stopping it
+// yourself, so the release and the re-open stay ordered.
+export function acquireMicCapture(micSettings, previousStream) {
+  const run = async () => {
+    stopRawStream(previousStream)
+    await new Promise((resolve) => setTimeout(resolve, MIC_SOURCE_RELEASE_MS))
+    return navigator.mediaDevices.getUserMedia({ audio: micConstraints(micSettings) })
+  }
+  // .then(run, run) rather than .finally so a failed acquisition doesn't poison
+  // the chain for the next caller.
+  micAcquireChain = micAcquireChain.then(run, run)
+  return micAcquireChain
+}
+
+// ─── Shared speech level measurement ───────────────────────────────
+// Analyze a speech-band sidechain without modifying the audible signal. Time-domain
+// RMS is stable across different pitches and spectral shapes; averaging byte-mapped
+// FFT bins was not. The level is mapped from -60..-5 dBFS to 0..100 so whispering,
+// normal speech, and loud speech occupy distinct parts of the meter instead of
+// clustering near its upper end. Smoothing uses real elapsed time, so meter (rAF)
+// and detector/gate (25 Hz) respond alike.
+const SPEECH_LEVEL_FLOOR_DB = -60
+const SPEECH_LEVEL_CEILING_DB = -5
+const SPEECH_LEVEL_ATTACK_MS = 35
+const SPEECH_LEVEL_RELEASE_MS = 180
+
+export function createSpeechLevelReader(audioContext) {
+  const highpass = audioContext.createBiquadFilter()
+  highpass.type = 'highpass'
+  highpass.frequency.value = 85
+  highpass.Q.value = Math.SQRT1_2
+
+  const lowpass = audioContext.createBiquadFilter()
+  lowpass.type = 'lowpass'
+  lowpass.frequency.value = 4000
+  lowpass.Q.value = Math.SQRT1_2
+
+  const analyser = audioContext.createAnalyser()
+  analyser.fftSize = 1024
+  highpass.connect(lowpass)
+  lowpass.connect(analyser)
+
+  const data = new Float32Array(analyser.fftSize)
+  let smoothedLevel = 0
+  let lastReadAt = null
+
+  const read = () => {
+    analyser.getFloatTimeDomainData(data)
+    let sumSquares = 0
+    for (let i = 0; i < data.length; i++) sumSquares += data[i] * data[i]
+
+    const rms = Math.sqrt(sumSquares / data.length)
+    const db = rms > 0 ? 20 * Math.log10(rms) : SPEECH_LEVEL_FLOOR_DB
+    const rawLevel = Math.max(
+      0,
+      Math.min(
+        100,
+        ((db - SPEECH_LEVEL_FLOOR_DB) / (SPEECH_LEVEL_CEILING_DB - SPEECH_LEVEL_FLOOR_DB)) * 100
+      )
+    )
+
+    const now = performance.now()
+    if (lastReadAt == null) {
+      smoothedLevel = rawLevel
+    } else {
+      const elapsedMs = Math.max(1, now - lastReadAt)
+      const timeConstant =
+        rawLevel > smoothedLevel ? SPEECH_LEVEL_ATTACK_MS : SPEECH_LEVEL_RELEASE_MS
+      const alpha = 1 - Math.exp(-elapsedMs / timeConstant)
+      smoothedLevel += (rawLevel - smoothedLevel) * alpha
+      if (smoothedLevel < 0.05) smoothedLevel = 0
+    }
+    lastReadAt = now
+    return smoothedLevel
+  }
+
+  return {
+    input: highpass,
+    analyser,
+    nodes: [highpass, lowpass, analyser],
+    read
+  }
+}
+
+// Gate state shared by the live mic path and the settings test. A lower release
+// threshold plus a short hold bridges syllable gaps; gain ramps avoid clicks.
+export function createLevelGateController(
+  audioContext,
+  gate,
+  read,
+  { threshold = 15, hysteresis = 3, holdMs = 200, rampSeconds = 0.03 } = {}
+) {
+  let open = false
+  let lastVoiceAt = 0
+  gate.gain.setValueAtTime(0, audioContext.currentTime)
+
+  const setOpen = (next) => {
+    if (next === open) return
+    open = next
+    const now = audioContext.currentTime
+    const current = gate.gain.value
+    gate.gain.cancelScheduledValues(now)
+    gate.gain.setValueAtTime(current, now)
+    gate.gain.linearRampToValueAtTime(next ? 1 : 0, now + rampSeconds)
+  }
+
+  const update = (nextThreshold = threshold) => {
+    const level = read()
+    const now = performance.now()
+    const releaseThreshold = Math.max(0, nextThreshold - hysteresis)
+
+    if (!open) {
+      if (level >= nextThreshold) {
+        lastVoiceAt = now
+        setOpen(true)
+      }
+    } else if (level >= releaseThreshold) {
+      lastVoiceAt = now
+    } else if (now - lastVoiceAt >= holdMs) {
+      setOpen(false)
+    }
+
+    return { level, open }
+  }
+
+  return { update, isOpen: () => open }
+}
+
+// Build the same post-browser/post-RNNoise analysis sidechain used by the live
+// gate. The returned outputNode is also suitable for local test playback.
+export async function createMicLevelMonitor(audioContext, stream, micSettings) {
+  const source = audioContext.createMediaStreamSource(stream)
+  let outputNode = source
+  let rnnoiseNode = null
+
+  if (micSettings.useRnnoise) {
+    try {
+      rnnoiseNode = await createRnnoiseProcessor(audioContext)
+      source.connect(rnnoiseNode)
+      outputNode = rnnoiseNode
+    } catch (err) {
+      console.error('[Soup] RNNoise monitor init failed, using raw mic:', err)
+    }
+  }
+
+  const reader = createSpeechLevelReader(audioContext)
+  outputNode.connect(reader.input)
+
+  const stop = () => {
+    try {
+      outputNode.disconnect(reader.input)
+    } catch {
+      // Already disconnected during a settings rebuild.
+    }
+    for (const node of reader.nodes) {
+      try {
+        node.disconnect()
+      } catch {
+        // A partially initialized monitor is safe to tear down.
+      }
+    }
+    try {
+      rnnoiseNode?.destroy()
+    } catch {
+      // The worklet may already have torn itself down.
+    }
+    try {
+      source.disconnect()
+    } catch {
+      // Source may be the output node and already disconnected above.
+    }
+  }
+
+  return { source, outputNode, analyser: reader.analyser, read: reader.read, stop }
+}
+
 // ─── Detect speaking activity on an audio stream ──────────────────
 // Returns a stop function. Calls onChange(isSpeaking) whenever the
 // speaking state changes, and once more with false on stop.
-export function createSpeakingDetector(stream, onChange, { threshold = 8, holdMs = 150 } = {}) {
+export function createSpeakingDetector(
+  stream,
+  onChange,
+  { threshold = 12, hysteresis = 3, holdMs = 250 } = {}
+) {
   if (!stream.getAudioTracks().length) return () => {}
 
   const audioContext = new (window.AudioContext || window.webkitAudioContext)()
   const source = audioContext.createMediaStreamSource(stream)
-  const analyser = audioContext.createAnalyser()
-  analyser.fftSize = 256
-  source.connect(analyser)
+  const reader = createSpeechLevelReader(audioContext)
+  source.connect(reader.input)
 
-  const data = new Uint8Array(analyser.frequencyBinCount)
   let speaking = false
-  let lastAbove = 0
+  let lastVoiceAt = 0
   let intervalId
 
   const tick = () => {
-    analyser.getByteFrequencyData(data)
-    const avg = data.reduce((a, b) => a + b, 0) / data.length
-    const level = (avg / 255) * 100
+    const level = reader.read()
     const now = performance.now()
+    const releaseThreshold = Math.max(0, threshold - hysteresis)
 
-    if (level >= threshold) lastAbove = now
-
-    const isSpeaking = now - lastAbove < holdMs
-    if (isSpeaking !== speaking) {
-      speaking = isSpeaking
-      onChange(speaking)
+    if (!speaking) {
+      if (level >= threshold) {
+        speaking = true
+        lastVoiceAt = now
+        onChange(true)
+      }
+    } else if (level >= releaseThreshold) {
+      lastVoiceAt = now
+    } else if (now - lastVoiceAt >= holdMs) {
+      speaking = false
+      onChange(false)
     }
   }
   // 25Hz via setInterval, not rAF: this runs once per remote participant plus
@@ -602,6 +857,13 @@ export function createSpeakingDetector(stream, onChange, { threshold = 8, holdMs
       source.disconnect()
     } catch {
       // Cleanup may run after the context has already disconnected the node.
+    }
+    for (const node of reader.nodes) {
+      try {
+        node.disconnect()
+      } catch {
+        // Analysis nodes may already be detached.
+      }
     }
     // close() rejects (async) if the context is already closed — e.g. this
     // cleanup runs twice during teardown. Skip when closed and swallow the
@@ -687,21 +949,7 @@ async function doPublish(micSettings, onStream) {
 
   let stream
   try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        deviceId:
-          micSettings.deviceId && micSettings.deviceId !== 'default'
-            ? { exact: micSettings.deviceId }
-            : undefined,
-        echoCancellation: micSettings.echoCancellation,
-        // RNNoise replaces the browser suppressor - never run both (they're
-        // mutually exclusive in the UI; this guards against any stale state).
-        noiseSuppression: micSettings.useRnnoise ? false : micSettings.noiseSuppression,
-        autoGainControl: micSettings.autoGainControl,
-        sampleRate: micSettings.sampleRate,
-        channelCount: micSettings.channelCount
-      }
-    })
+    stream = await acquireMicCapture(micSettings, rawMicStream)
   } catch (err) {
     console.error('[Soup] getUserMedia failed:', err.name, err.message)
     throw new Error(`Failed to get audio device: ${err.message}`)
@@ -710,7 +958,7 @@ async function doPublish(micSettings, onStream) {
   // Track the raw capture so its OS mic handle can be released on teardown —
   // the processed track handed to the producer is usually a different track, so
   // stopping only that would leave the mic open.
-  rawMicStream = stream
+  setRawMicStream(stream)
 
   // Apply the local processing chain (RNNoise / volume gate). Stop any
   // previous chain first so its AudioContext and worklet don't leak.
@@ -726,6 +974,9 @@ async function doPublish(micSettings, onStream) {
   }
 
   onStream?.(processedStream)
+  // Detect our own speech from the exact processed track being encoded. In
+  // particular, quiet audio rejected by RNNoise or the volume gate must not
+  // light the local indicator when peers cannot receive it.
   startSelfSpeakingDetector(processedStream)
 
   for (const track of processedStream.getTracks()) {
@@ -757,29 +1008,17 @@ export async function republish(micSettings, onStream) {
   if (!producerTransport) throw new Error('Not connected to voice')
 
   const audioProducers = producers.filter((p) => p.kind === 'audio')
-  // The raw capture backing the current producer(s). Held until the new track
-  // has replaced it below, then stopped — waiting avoids killing a live
-  // passthrough track (where the raw track IS the produced track).
+  // The raw capture backing the current producer(s). Released *before* the new
+  // one opens — it has to be, or Chromium hands back the old processing config
+  // and the settings the user just applied are silently ignored (see
+  // acquireMicCapture). Cost is a sub-second gap in outgoing audio in the
+  // passthrough case, where the raw track IS the produced track.
   const previousRawStream = rawMicStream
 
   // Get a fresh stream with updated constraints
   let stream
   try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        deviceId:
-          micSettings.deviceId && micSettings.deviceId !== 'default'
-            ? { exact: micSettings.deviceId }
-            : undefined,
-        echoCancellation: micSettings.echoCancellation,
-        // RNNoise replaces the browser suppressor - never run both (they're
-        // mutually exclusive in the UI; this guards against any stale state).
-        noiseSuppression: micSettings.useRnnoise ? false : micSettings.noiseSuppression,
-        autoGainControl: micSettings.autoGainControl,
-        sampleRate: micSettings.sampleRate,
-        channelCount: micSettings.channelCount
-      }
-    })
+    stream = await acquireMicCapture(micSettings, previousRawStream)
   } catch (err) {
     console.error('[Soup] republish getUserMedia failed:', err.name, err.message)
     throw new Error(`Failed to get audio device: ${err.message}`)
@@ -798,6 +1037,7 @@ export async function republish(micSettings, onStream) {
   }
 
   onStream?.(processedStream)
+  // Keep the self indicator tied to the replacement track peers receive.
   startSelfSpeakingDetector(processedStream)
 
   const newTracks = processedStream.getTracks()
@@ -816,7 +1056,7 @@ export async function republish(micSettings, onStream) {
 
   // Adopt the new capture as the current raw stream; the previous one is
   // released below once its track is no longer attached to a producer.
-  rawMicStream = stream
+  setRawMicStream(stream)
 
   if (audioProducers.length === 0) {
     // No existing producer to reuse (first publish hasn't happened yet) -
@@ -839,8 +1079,6 @@ export async function republish(micSettings, onStream) {
       console.log(`[Soup] Republished ${track.kind} [id:${producer.id}]`)
     }
 
-    // No producer was reusing it, so the old capture (if any) is free to stop.
-    stopRawStream(previousRawStream)
     console.log('[Soup] Audio republished with new settings')
     return
   }
@@ -877,9 +1115,6 @@ export async function republish(micSettings, onStream) {
     console.log(`[Soup] Replaced track on producer [id:${producer.id}]`)
   }
 
-  // Every producer now carries the new track — the old raw capture is detached
-  // and its OS mic handle can finally be released.
-  stopRawStream(previousRawStream)
   console.log('[Soup] Audio republished with new settings')
 }
 
@@ -2023,7 +2258,7 @@ export function resetMediaState() {
   // Release the raw mic capture — the producers above are closed, so no live
   // producer references it anymore (nothing to keep the OS mic open for).
   stopRawStream(rawMicStream)
-  rawMicStream = null
+  setRawMicStream(null)
   // Idle the shared mic context between sessions; getMicContext() resumes it.
   if (micContext?.state === 'running') micContext.suspend().catch(() => {})
   subscribePromise = null

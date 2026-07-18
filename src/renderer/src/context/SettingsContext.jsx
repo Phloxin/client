@@ -14,6 +14,7 @@ const DEFAULT_SOUND_SETTINGS = Object.fromEntries(SOUND_CATEGORIES.map((c) => [c
 const AUDIO_SAMPLE_RATE = 48000
 const AUDIO_CHANNEL_COUNT = 1
 const AUDIO_BITRATE = 128000
+const MIC_SETTINGS_VERSION = 3
 
 const DEFAULT_SETTINGS = {
   echoCancellation: false,
@@ -26,10 +27,14 @@ const DEFAULT_SETTINGS = {
   bitrate: AUDIO_BITRATE,
   deviceId: 'default',
   useVolumeGate: false,
-  volumeGateThreshold: 30,
+  // On the shared speech-band RMS scale (see createSpeechLevelReader in soup.js).
+  volumeGateThreshold: 15,
   useRnnoise: true,
   outputDeviceId: 'default',
-  outputVolume: 100
+  outputVolume: 100,
+  // Bumped when a change makes an existing stored value mean something different;
+  // read by migrateMicSettings to rewrite old saves.
+  settingsVersion: MIC_SETTINGS_VERSION
 }
 
 const DEFAULT_APPEARANCE = {
@@ -72,6 +77,18 @@ function migrateAnimations(settings) {
   if (next.userJoin === 'slide') next.userJoin = 'pop'
   if (next.channelList === 'slide') next.channelList = 'pop'
   return next
+}
+
+// Reset thresholds saved against an older meter scale. Version 2 introduced the
+// shared speech-band RMS metric; version 3 gives speech more usable headroom by
+// moving its dBFS range, so an old numeric threshold is no longer comparable.
+function migrateMicSettings(saved) {
+  const merged = { ...DEFAULT_SETTINGS, ...saved }
+  if ((Number(saved.settingsVersion) || 0) < MIC_SETTINGS_VERSION) {
+    merged.volumeGateThreshold = DEFAULT_SETTINGS.volumeGateThreshold
+    merged.settingsVersion = DEFAULT_SETTINGS.settingsVersion
+  }
+  return merged
 }
 
 export function SettingsProvider({ children }) {
@@ -152,8 +169,8 @@ export function SettingsProvider({ children }) {
     try {
       const saved = localStorage.getItem('micSettings')
       // Merge over defaults so settings stored before a new key was added still
-      // pick up a sensible value for it.
-      return saved ? { ...DEFAULT_SETTINGS, ...JSON.parse(saved) } : DEFAULT_SETTINGS
+      // pick up a sensible value for it, then run scale migrations.
+      return saved ? migrateMicSettings(JSON.parse(saved)) : DEFAULT_SETTINGS
     } catch {
       return DEFAULT_SETTINGS
     }
