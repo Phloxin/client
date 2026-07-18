@@ -567,6 +567,83 @@ function stopRawStream(stream) {
   stream?.getTracks().forEach((track) => track.stop())
 }
 
+// Chromium binds its audio processing (AGC / noise suppression / echo
+// cancellation) to the shared capture source for a device, not to the individual
+// track. A getUserMedia on a device that is still open silently inherits the
+// processing the source was created with, so the new constraints are dropped and
+// the old settings persist until every handle closes (i.e. an app restart).
+// applyConstraints() does not reconfigure these flags either.
+//
+// So: serialize every mic acquisition, release the previous capture first, and
+// let the source actually tear down before asking for a new one.
+export function micConstraints(micSettings) {
+  return {
+    deviceId:
+      micSettings.deviceId && micSettings.deviceId !== 'default'
+        ? { exact: micSettings.deviceId }
+        : undefined,
+    echoCancellation: micSettings.echoCancellation,
+    // RNNoise replaces the browser suppressor - never run both (they're
+    // mutually exclusive in the UI; this guards against any stale state).
+    noiseSuppression: micSettings.useRnnoise ? false : micSettings.noiseSuppression,
+    autoGainControl: micSettings.autoGainControl,
+    sampleRate: micSettings.sampleRate,
+    channelCount: micSettings.channelCount
+  }
+}
+
+// track.stop() returns before Chromium has torn the capture source down; a short
+// hop lets the release land so the next open is cold.
+// ponytail: fixed delay, not a readback of source state — there is no API to
+// observe it. If constraints still stick occasionally, raise this.
+const MIC_SOURCE_RELEASE_MS = 50
+
+let micAcquireChain = Promise.resolve()
+
+// Only one capture can define the device's processing, and while joined to a
+// channel that capture belongs to the call. Anything else that wants mic audio
+// (the settings meter) has to read this one rather than open its own — a second
+// capture would inherit stale processing *and* poison the next republish.
+const rawMicStreamListeners = new Set()
+
+export function getRawMicStream() {
+  return rawMicStream
+}
+
+// Fires whenever the live capture is swapped (republish) or released (teardown),
+// so readers can rebuild their graph on the new track. Returns an unsubscribe.
+export function onRawMicStreamChange(listener) {
+  rawMicStreamListeners.add(listener)
+  return () => rawMicStreamListeners.delete(listener)
+}
+
+function setRawMicStream(stream) {
+  if (rawMicStream === stream) return
+  rawMicStream = stream
+  rawMicStreamListeners.forEach((listener) => {
+    try {
+      listener(stream)
+    } catch (err) {
+      console.error('[Soup] rawMicStream listener failed:', err)
+    }
+  })
+}
+
+// Acquire a mic capture with `micSettings` applied for real. `previousStream` is
+// the caller's own capture to release first — pass it rather than stopping it
+// yourself, so the release and the re-open stay ordered.
+export function acquireMicCapture(micSettings, previousStream) {
+  const run = async () => {
+    stopRawStream(previousStream)
+    await new Promise((resolve) => setTimeout(resolve, MIC_SOURCE_RELEASE_MS))
+    return navigator.mediaDevices.getUserMedia({ audio: micConstraints(micSettings) })
+  }
+  // .then(run, run) rather than .finally so a failed acquisition doesn't poison
+  // the chain for the next caller.
+  micAcquireChain = micAcquireChain.then(run, run)
+  return micAcquireChain
+}
+
 // ─── Shared speech level measurement ───────────────────────────────
 // Analyze a speech-band sidechain without modifying the audible signal. Time-domain
 // RMS is stable across different pitches and spectral shapes; averaging byte-mapped
@@ -872,21 +949,7 @@ async function doPublish(micSettings, onStream) {
 
   let stream
   try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        deviceId:
-          micSettings.deviceId && micSettings.deviceId !== 'default'
-            ? { exact: micSettings.deviceId }
-            : undefined,
-        echoCancellation: micSettings.echoCancellation,
-        // RNNoise replaces the browser suppressor - never run both (they're
-        // mutually exclusive in the UI; this guards against any stale state).
-        noiseSuppression: micSettings.useRnnoise ? false : micSettings.noiseSuppression,
-        autoGainControl: micSettings.autoGainControl,
-        sampleRate: micSettings.sampleRate,
-        channelCount: micSettings.channelCount
-      }
-    })
+    stream = await acquireMicCapture(micSettings, rawMicStream)
   } catch (err) {
     console.error('[Soup] getUserMedia failed:', err.name, err.message)
     throw new Error(`Failed to get audio device: ${err.message}`)
@@ -895,7 +958,7 @@ async function doPublish(micSettings, onStream) {
   // Track the raw capture so its OS mic handle can be released on teardown —
   // the processed track handed to the producer is usually a different track, so
   // stopping only that would leave the mic open.
-  rawMicStream = stream
+  setRawMicStream(stream)
 
   // Apply the local processing chain (RNNoise / volume gate). Stop any
   // previous chain first so its AudioContext and worklet don't leak.
@@ -945,29 +1008,17 @@ export async function republish(micSettings, onStream) {
   if (!producerTransport) throw new Error('Not connected to voice')
 
   const audioProducers = producers.filter((p) => p.kind === 'audio')
-  // The raw capture backing the current producer(s). Held until the new track
-  // has replaced it below, then stopped — waiting avoids killing a live
-  // passthrough track (where the raw track IS the produced track).
+  // The raw capture backing the current producer(s). Released *before* the new
+  // one opens — it has to be, or Chromium hands back the old processing config
+  // and the settings the user just applied are silently ignored (see
+  // acquireMicCapture). Cost is a sub-second gap in outgoing audio in the
+  // passthrough case, where the raw track IS the produced track.
   const previousRawStream = rawMicStream
 
   // Get a fresh stream with updated constraints
   let stream
   try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        deviceId:
-          micSettings.deviceId && micSettings.deviceId !== 'default'
-            ? { exact: micSettings.deviceId }
-            : undefined,
-        echoCancellation: micSettings.echoCancellation,
-        // RNNoise replaces the browser suppressor - never run both (they're
-        // mutually exclusive in the UI; this guards against any stale state).
-        noiseSuppression: micSettings.useRnnoise ? false : micSettings.noiseSuppression,
-        autoGainControl: micSettings.autoGainControl,
-        sampleRate: micSettings.sampleRate,
-        channelCount: micSettings.channelCount
-      }
-    })
+    stream = await acquireMicCapture(micSettings, previousRawStream)
   } catch (err) {
     console.error('[Soup] republish getUserMedia failed:', err.name, err.message)
     throw new Error(`Failed to get audio device: ${err.message}`)
@@ -1005,7 +1056,7 @@ export async function republish(micSettings, onStream) {
 
   // Adopt the new capture as the current raw stream; the previous one is
   // released below once its track is no longer attached to a producer.
-  rawMicStream = stream
+  setRawMicStream(stream)
 
   if (audioProducers.length === 0) {
     // No existing producer to reuse (first publish hasn't happened yet) -
@@ -1028,8 +1079,6 @@ export async function republish(micSettings, onStream) {
       console.log(`[Soup] Republished ${track.kind} [id:${producer.id}]`)
     }
 
-    // No producer was reusing it, so the old capture (if any) is free to stop.
-    stopRawStream(previousRawStream)
     console.log('[Soup] Audio republished with new settings')
     return
   }
@@ -1066,9 +1115,6 @@ export async function republish(micSettings, onStream) {
     console.log(`[Soup] Replaced track on producer [id:${producer.id}]`)
   }
 
-  // Every producer now carries the new track — the old raw capture is detached
-  // and its OS mic handle can finally be released.
-  stopRawStream(previousRawStream)
   console.log('[Soup] Audio republished with new settings')
 }
 
@@ -2170,7 +2216,7 @@ export function resetMediaState() {
   // Release the raw mic capture — the producers above are closed, so no live
   // producer references it anymore (nothing to keep the OS mic open for).
   stopRawStream(rawMicStream)
-  rawMicStream = null
+  setRawMicStream(null)
   // Idle the shared mic context between sessions; getMicContext() resumes it.
   if (micContext?.state === 'running') micContext.suspend().catch(() => {})
   subscribePromise = null

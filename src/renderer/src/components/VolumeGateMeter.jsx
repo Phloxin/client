@@ -1,11 +1,26 @@
 import { useState, useEffect, useRef } from 'react'
-import { createLevelGateController, createMicLevelMonitor } from '../lib/soup'
+import {
+  acquireMicCapture,
+  createLevelGateController,
+  createMicLevelMonitor,
+  getRawMicStream,
+  onRawMicStreamChange
+} from '../lib/soup'
 
 function VolumeGateMeter({ threshold, onThresholdChange, micSettings, gateEnabled }) {
   const [audioLevel, setAudioLevel] = useState(0)
   const [analyserNode, setAnalyserNode] = useState(null)
   const [testPlaying, setTestPlaying] = useState(false)
   const [testGateOpen, setTestGateOpen] = useState(false)
+
+  // The call's capture, when joined to a voice channel. Chromium binds audio
+  // processing to the first capture open on a device, so opening a second one
+  // here would both show stale processing and poison the call's next republish.
+  // While joined we read the call's capture instead — which means the meter
+  // previews *applied* settings, not the draft. Not previewable while in a
+  // channel; that's the tradeoff for the meter telling the truth.
+  const [liveMicStream, setLiveMicStream] = useState(() => getRawMicStream())
+  useEffect(() => onRawMicStreamChange(setLiveMicStream), [])
 
   const meterRafRef = useRef(null)
   const testRafRef = useRef(null)
@@ -62,32 +77,36 @@ function VolumeGateMeter({ threshold, onThresholdChange, micSettings, gateEnable
     micSettings.echoCancellation,
     micSettings.noiseSuppression,
     micSettings.autoGainControl,
-    micSettings.useRnnoise
+    micSettings.useRnnoise,
+    liveMicStream
   ])
 
   // ── Initialize audio context + analyser ──────────────────────────
   useEffect(() => {
     let ctx, stream, monitor
+    // Only a capture this component opened may be stopped on teardown; the
+    // call's belongs to soup and stopping it would cut the user's mic.
+    let ownsStream = false
     let cancelled = false
+    const releaseStream = () => {
+      if (ownsStream) stream?.getTracks().forEach((track) => track.stop())
+    }
     const init = async () => {
       try {
         ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 })
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            deviceId:
-              micSettings.deviceId && micSettings.deviceId !== 'default'
-                ? { exact: micSettings.deviceId }
-                : undefined,
-            echoCancellation: micSettings.echoCancellation,
-            noiseSuppression: micSettings.useRnnoise ? false : micSettings.noiseSuppression,
-            autoGainControl: micSettings.autoGainControl,
-            sampleRate: micSettings.sampleRate,
-            channelCount: micSettings.channelCount
-          }
-        })
+        if (liveMicStream) {
+          stream = liveMicStream
+        } else {
+          // Not in a channel: this meter owns the only capture. Goes through the
+          // shared acquire so the previous one is fully released before the new
+          // one opens, otherwise Chromium reuses its processing config and
+          // toggling AGC here changes nothing.
+          stream = await acquireMicCapture(micSettings)
+          ownsStream = true
+        }
 
         if (cancelled) {
-          stream.getTracks().forEach((track) => track.stop())
+          releaseStream()
           if (ctx.state !== 'closed') await ctx.close().catch(() => {})
           return
         }
@@ -99,7 +118,7 @@ function VolumeGateMeter({ threshold, onThresholdChange, micSettings, gateEnable
 
         if (cancelled) {
           monitor.stop()
-          stream.getTracks().forEach((track) => track.stop())
+          releaseStream()
           if (ctx.state !== 'closed') await ctx.close().catch(() => {})
           return
         }
@@ -113,7 +132,7 @@ function VolumeGateMeter({ threshold, onThresholdChange, micSettings, gateEnable
       } catch (err) {
         if (!cancelled) console.error('[VolumeGateMeter] init failed', err)
         monitor?.stop()
-        stream?.getTracks().forEach((track) => track.stop())
+        releaseStream()
         if (ctx?.state !== 'closed') ctx?.close().catch(() => {})
       }
     }
@@ -126,7 +145,7 @@ function VolumeGateMeter({ threshold, onThresholdChange, micSettings, gateEnable
       cancelAnimationFrame(testRafRef.current)
       monitor?.stop()
       try {
-        stream?.getTracks().forEach((t) => t.stop())
+        releaseStream()
       } catch {}
       try {
         ctx?.close()
@@ -143,7 +162,8 @@ function VolumeGateMeter({ threshold, onThresholdChange, micSettings, gateEnable
     micSettings.autoGainControl,
     micSettings.useRnnoise,
     micSettings.sampleRate,
-    micSettings.channelCount
+    micSettings.channelCount,
+    liveMicStream
   ])
 
   // ── Level-meter polling loop ──────────────────────────────────────
@@ -227,6 +247,12 @@ function VolumeGateMeter({ threshold, onThresholdChange, micSettings, gateEnable
         <div className="vg-fill" style={{ width: `${audioLevel}%` }} />
         <div className="vg-marker" style={{ left: `${threshold}%` }} />
       </div>
+      {liveMicStream && (
+        <p className="settings-section-desc" style={{ marginTop: 8 }}>
+          You&apos;re in a voice channel, so this meter shows your live mic. Capture settings
+          (gain, noise, echo) preview only after you hit Apply.
+        </p>
+      )}
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 }}>
         <button className="vg-test-btn" onClick={() => (testPlaying ? stopTest() : startTest())}>
           {testPlaying ? 'Stop Test' : 'Test Mic'}
