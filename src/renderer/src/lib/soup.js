@@ -471,13 +471,15 @@ async function getMicContext() {
 // Wires the captured mic stream through optional RNNoise denoising (an
 // AudioWorklet that suppresses keyboard/typing and steady background noise
 // while preserving voice) and the optional volume gate, in that order.
-// Returns the processed stream, a post-RNNoise/pre-gate detector stream, and a
-// stop() that tears the chain down.
+// Returns the processed stream plus a stop() that tears the chain down. The
+// processed stream is also the source of truth for the local speaking indicator,
+// so it reflects everything that can affect what peers receive (including
+// RNNoise and a closed volume gate).
 async function buildAudioProcessor(stream, micSettings) {
   const needsRnnoise = micSettings.useRnnoise
   const needsGate = micSettings.useVolumeGate
   if (!needsRnnoise && !needsGate) {
-    return { stream, detectionStream: stream, stop: () => {} }
+    return { stream, stop: () => {} }
   }
 
   const audioContext = await getMicContext()
@@ -503,20 +505,13 @@ async function buildAudioProcessor(stream, micSettings) {
     }
   }
 
-  // The local speaking detector should judge the same denoised signal as the
-  // gate, but before the gate can erase quiet speech. Without this side branch,
-  // a closed/chattering gate also forces the self indicator off.
-  let detectionDestination = null
   if (needsGate) {
-    detectionDestination = audioContext.createMediaStreamDestination()
-    node.connect(detectionDestination)
-
     const reader = createSpeechLevelReader(audioContext)
     const gate = audioContext.createGain()
     const gateController = createLevelGateController(audioContext, gate, reader.read, {
       threshold: micSettings.volumeGateThreshold
     })
-    chainNodes.push(detectionDestination, ...reader.nodes, gate)
+    chainNodes.push(...reader.nodes, gate)
     // Analysis is a sidechain so the speech-band filters never color outgoing
     // audio. The untouched denoised signal passes through the controlled gain.
     node.connect(reader.input)
@@ -554,11 +549,7 @@ async function buildAudioProcessor(stream, micSettings) {
     // compiled worklet module is reused by the next publish.
   }
 
-  return {
-    stream: destination.stream,
-    detectionStream: detectionDestination?.stream ?? destination.stream,
-    stop
-  }
+  return { stream: destination.stream, stop }
 }
 
 // Stop the currently active audio processing chain (if any), releasing its
@@ -908,11 +899,9 @@ async function doPublish(micSettings, onStream) {
   // previous chain first so its AudioContext and worklet don't leak.
   stopAudioProcessor()
   let processedStream = stream
-  let detectionStream = stream
   try {
     const processed = await buildAudioProcessor(stream, micSettings)
     processedStream = processed.stream
-    detectionStream = processed.detectionStream
     audioProcessorStop = processed.stop
   } catch (err) {
     console.error('[Soup] Failed to build audio processor:', err)
@@ -920,7 +909,10 @@ async function doPublish(micSettings, onStream) {
   }
 
   onStream?.(processedStream)
-  startSelfSpeakingDetector(detectionStream)
+  // Detect our own speech from the exact processed track being encoded. In
+  // particular, quiet audio rejected by RNNoise or the volume gate must not
+  // light the local indicator when peers cannot receive it.
+  startSelfSpeakingDetector(processedStream)
 
   for (const track of processedStream.getTracks()) {
     const producer = await producerTransport.produce({
@@ -983,18 +975,17 @@ export async function republish(micSettings, onStream) {
   // previous chain first so its AudioContext and worklet don't leak.
   stopAudioProcessor()
   let processedStream = stream
-  let detectionStream = stream
   try {
     const processed = await buildAudioProcessor(stream, micSettings)
     processedStream = processed.stream
-    detectionStream = processed.detectionStream
     audioProcessorStop = processed.stop
   } catch (err) {
     console.error('[Soup] republish audio processor failed:', err)
   }
 
   onStream?.(processedStream)
-  startSelfSpeakingDetector(detectionStream)
+  // Keep the self indicator tied to the replacement track peers receive.
+  startSelfSpeakingDetector(processedStream)
 
   const newTracks = processedStream.getTracks()
 
