@@ -570,10 +570,12 @@ function stopRawStream(stream) {
 // ─── Shared speech level measurement ───────────────────────────────
 // Analyze a speech-band sidechain without modifying the audible signal. Time-domain
 // RMS is stable across different pitches and spectral shapes; averaging byte-mapped
-// FFT bins was not. The level is mapped from -70..-20 dBFS to 0..100 and smoothed
-// with real elapsed time, so meter (rAF) and detector/gate (25 Hz) respond alike.
-const SPEECH_LEVEL_FLOOR_DB = -70
-const SPEECH_LEVEL_CEILING_DB = -20
+// FFT bins was not. The level is mapped from -60..-5 dBFS to 0..100 so whispering,
+// normal speech, and loud speech occupy distinct parts of the meter instead of
+// clustering near its upper end. Smoothing uses real elapsed time, so meter (rAF)
+// and detector/gate (25 Hz) respond alike.
+const SPEECH_LEVEL_FLOOR_DB = -60
+const SPEECH_LEVEL_CEILING_DB = -5
 const SPEECH_LEVEL_ATTACK_MS = 35
 const SPEECH_LEVEL_RELEASE_MS = 180
 

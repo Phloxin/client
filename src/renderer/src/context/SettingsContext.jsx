@@ -14,7 +14,7 @@ const DEFAULT_SOUND_SETTINGS = Object.fromEntries(SOUND_CATEGORIES.map((c) => [c
 const AUDIO_SAMPLE_RATE = 48000
 const AUDIO_CHANNEL_COUNT = 1
 const AUDIO_BITRATE = 128000
-const MIC_SETTINGS_VERSION = 2
+const MIC_SETTINGS_VERSION = 3
 
 const DEFAULT_SETTINGS = {
   echoCancellation: false,
@@ -79,8 +79,9 @@ function migrateAnimations(settings) {
   return next
 }
 
-// Reset thresholds saved against either legacy FFT scale. Version 2 uses the
-// shared speech-band RMS metric and an RNNoise-aware settings meter.
+// Reset thresholds saved against an older meter scale. Version 2 introduced the
+// shared speech-band RMS metric; version 3 gives speech more usable headroom by
+// moving its dBFS range, so an old numeric threshold is no longer comparable.
 function migrateMicSettings(saved) {
   const merged = { ...DEFAULT_SETTINGS, ...saved }
   if ((Number(saved.settingsVersion) || 0) < MIC_SETTINGS_VERSION) {
