@@ -10,6 +10,13 @@ export function setServerHost(host) {
   currentHost = host
 }
 
+// The host (`ip:port`) of the server we're currently connected to, or null when
+// disconnected. Used to scope per-server client state (e.g. saved per-user
+// volumes) since user ids are only unique within a single server.
+export function getServerHost() {
+  return currentHost
+}
+
 // HTTP API base, e.g. https://1.2.3.4:3000
 export function apiBase() {
   return `https://${currentHost}`
@@ -36,5 +43,8 @@ export async function throwIfError(res) {
 // URLs (self-set avatars, pending uploads) pass through untouched.
 export function cdnUrl(path) {
   if (!path || !path.startsWith('/')) return path
+  // Do not turn stale server data into a request to `https://null/...` while a
+  // connection attempt is being torn down or switched to another host.
+  if (!currentHost) return null
   return `${apiBase()}${path}`
 }

@@ -25,6 +25,7 @@ import {
 import { playUiSound } from '../lib/sounds'
 import { setServerHost, apiBase, wsBase, cdnUrl, throwIfError } from '../lib/serverConfig'
 import { authFetch, getFreshToken, setOnSessionExpired } from '../lib/auth'
+import { httpFetch } from '../lib/http'
 import SegmentedTabs from '../components/SegmentedTabs'
 import {
   IconVideo,
@@ -1179,6 +1180,10 @@ function Main() {
   // Connect to a saved server: point all endpoints at its host, then log in with
   // its stored credentials. Setting the token triggers the data-loading effect.
   const handleConnect = async (server) => {
+    // A host is global because the REST/WebSocket helpers are shared. Tear down
+    // the previous session before changing it, otherwise old channel data and
+    // reconnect callbacks can issue requests against the new host (or null).
+    if (token || connectedServer) handleDisconnect()
     setServerHost(server.host)
     setConnecting(true)
 
@@ -1188,7 +1193,7 @@ function Main() {
       device_name: 'Pylon Desktop'
     }
     const login = () =>
-      fetch(`${apiBase()}/login`, {
+      httpFetch(`${apiBase()}/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(credentials)
@@ -1200,7 +1205,7 @@ function Main() {
       // Preserve the existing first-connect experience: an unauthorized login
       // may be a first-time account, so try registration and then retry login.
       if (result.response.status === 401) {
-        const registerResponse = await fetch(`${apiBase()}/register`, {
+        const registerResponse = await httpFetch(`${apiBase()}/register`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(credentials)

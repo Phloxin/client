@@ -4,6 +4,7 @@ import { useAnimationCategory } from '../context/SettingsContext'
 import { menuPop, overlayPop, scrimFade } from '../lib/motionPresets'
 import SegmentedTabs from './SegmentedTabs'
 import './ServerMenu.css'
+import { httpFetch } from '../lib/http'
 import {
   IconChevronDown,
   IconPlus,
@@ -111,8 +112,9 @@ function ServerMenu({
   // Register mode shows the confirm-password field and the "Register" action.
   const isRegister = !editingId && mode === 'register'
 
-  // Login / edit: no server round-trip, just persist the entry (matches the old
-  // behavior — lets a fresh install re-add an existing account).
+  // Editing only persists the change. Adding an existing login also starts the
+  // connection immediately; otherwise the Login tab deceptively only saves the
+  // server and no /login request is made until the user clicks it again.
   const handleSave = () => {
     const nickname = form.nickname.trim()
     const host = form.host.trim()
@@ -121,13 +123,22 @@ function ServerMenu({
       setFormError('Server nickname, address, and username are required.')
       return
     }
-    if (editingId) {
-      onEditServer({ id: editingId, nickname, host, username, password: form.password })
-    } else {
-      onAddServer({ id: crypto.randomUUID(), nickname, host, username, password: form.password })
+    const server = {
+      id: editingId || crypto.randomUUID(),
+      nickname,
+      host,
+      username,
+      password: form.password
     }
+    if (editingId) onEditServer(server)
+    else onAddServer(server)
     setShowAddModal(false)
-    setOpen(true)
+    if (!editingId && mode === 'login') {
+      setOpen(false)
+      onConnect(server)
+    } else {
+      setOpen(true)
+    }
   }
 
   // Register: validate locally (passwords match + length limits), then POST to
@@ -163,7 +174,7 @@ function ServerMenu({
     setRegistering(true)
     let res
     try {
-      res = await fetch(`https://${host}/register`, {
+      res = await httpFetch(`https://${host}/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password, device_name: DEVICE_NAME })
@@ -183,10 +194,15 @@ function ServerMenu({
       return
     }
 
-    onAddServer({ id: crypto.randomUUID(), nickname, host, username, password })
+    const server = { id: crypto.randomUUID(), nickname, host, username, password }
+    onAddServer(server)
     onNotify?.(`Registered "${username}" on ${nickname}`)
     setShowAddModal(false)
-    setOpen(true)
+    // Continue with the server we just registered against. Do not leave the
+    // user at the dropdown, where clicking the first saved server can log in to
+    // a different host than the one used for registration.
+    setOpen(false)
+    onConnect(server)
   }
 
   const submit = () => (isRegister ? handleRegister() : handleSave())
@@ -381,7 +397,7 @@ function ServerMenu({
                   onClick={submit}
                   disabled={registering}
                 >
-                  {editingId ? 'Save Changes' : isRegister ? 'Register' : 'Save'}
+                  {editingId ? 'Save Changes' : isRegister ? 'Register' : 'Login'}
                 </button>
               </div>
             </motion.div>

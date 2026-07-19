@@ -4,7 +4,7 @@ import { loadRnnoise, RnnoiseWorkletNode } from '@sapphi-red/web-noise-suppresso
 import rnnoiseWasmPath from '@sapphi-red/web-noise-suppressor/rnnoise.wasm?url'
 import rnnoiseSimdWasmPath from '@sapphi-red/web-noise-suppressor/rnnoise_simd.wasm?url'
 import rnnoiseWorkletPath from '@sapphi-red/web-noise-suppressor/rnnoiseWorklet.js?url'
-import { apiBase, wsBase } from './serverConfig'
+import { apiBase, wsBase, getServerHost } from './serverConfig'
 import { authFetch } from './auth'
 import { startScreenAudio, onScreenAudioError } from './screenAudio'
 
@@ -68,8 +68,14 @@ let focusedVolume = 1
 let focusedMuted = false
 
 // Per-client local volume/mute overrides for mic audio (right-click controls
-// in the sidebar) - keyed by clientId.
+// in the sidebar) - keyed by clientId. Persisted to localStorage per server
+// host (user ids are only unique per server) so a client's volume/mute survives
+// app restarts. The in-memory Map mirrors the currently-connected host's slice
+// of that store; ensureOverridesForCurrentHost() reloads it whenever the host
+// changes (connect, disconnect, or switching servers).
+const CLIENT_AUDIO_OVERRIDES_KEY = 'clientAudioOverrides'
 let clientAudioOverrides = new Map()
+let clientAudioOverridesHost
 
 // ─── Reconnection state ──────────────────────────────────────────
 // The voice socket can't "resume": when it drops, the server tears down our
@@ -2331,6 +2337,7 @@ export function setSoundMuted(muted) {
 // volume/mute overrides to every remote stream's gain node. A per-client
 // override volume above 1 boosts that client louder than their natural level.
 function applyAllAudioState() {
+  ensureOverridesForCurrentHost()
   for (const entry of remoteConsumers.values()) {
     if (entry.kind !== 'audio' || !entry.gain) continue
 
@@ -2359,18 +2366,70 @@ export function setFocusedScreenAudio(clientId, { volume, muted } = {}) {
   applyAllAudioState()
 }
 
+// Read the full persisted { [host]: { [clientId]: { volume, muted } } } blob.
+function readPersistedAudioOverrides() {
+  try {
+    return JSON.parse(localStorage.getItem(CLIENT_AUDIO_OVERRIDES_KEY) || '{}') || {}
+  } catch {
+    return {}
+  }
+}
+
+// Write the current host's in-memory overrides back to localStorage, pruning
+// no-op entries (100% volume, unmuted) so resetting a client truly forgets it
+// rather than leaving dead entries behind.
+function persistCurrentHostOverrides() {
+  const host = getServerHost()
+  if (!host) return
+  const all = readPersistedAudioOverrides()
+  const slice = {}
+  for (const [clientId, state] of clientAudioOverrides) {
+    if (state.volume !== 1 || state.muted) slice[clientId] = state
+  }
+  if (Object.keys(slice).length) all[host] = slice
+  else delete all[host]
+  try {
+    localStorage.setItem(CLIENT_AUDIO_OVERRIDES_KEY, JSON.stringify(all))
+  } catch {
+    // localStorage is unavailable only in unusual renderer contexts; overrides
+    // still work for this session, they just won't survive a restart.
+  }
+}
+
+// Reload clientAudioOverrides from storage whenever the connected host changes,
+// so the Map always reflects the current server's saved volumes and never leaks
+// one server's overrides onto another (user ids are only unique per server).
+function ensureOverridesForCurrentHost() {
+  const host = getServerHost()
+  if (host === clientAudioOverridesHost) return
+  clientAudioOverridesHost = host
+  clientAudioOverrides = new Map()
+  if (!host) return
+  const slice = readPersistedAudioOverrides()[host] || {}
+  for (const [clientId, state] of Object.entries(slice)) {
+    clientAudioOverrides.set(clientId, {
+      volume: typeof state.volume === 'number' ? state.volume : 1,
+      muted: !!state.muted
+    })
+  }
+}
+
 // Called by the sidebar's per-client right-click controls to locally
-// lower the volume of, or fully mute, a specific client's mic audio.
+// lower the volume of, or fully mute, a specific client's mic audio. The new
+// value is persisted per server so it survives app restarts.
 export function setClientAudioState(clientId, { volume, muted } = {}) {
+  ensureOverridesForCurrentHost()
   const current = clientAudioOverrides.get(clientId) || { volume: 1, muted: false }
   clientAudioOverrides.set(clientId, {
     volume: volume != null ? volume : current.volume,
     muted: muted != null ? muted : current.muted
   })
+  persistCurrentHostOverrides()
   applyAllAudioState()
 }
 
 export function getClientAudioState(clientId) {
+  ensureOverridesForCurrentHost()
   return clientAudioOverrides.get(clientId) || { volume: 1, muted: false }
 }
 
