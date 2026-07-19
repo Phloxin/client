@@ -5,7 +5,7 @@ import VoiceChannel from './VoiceChannel'
 import ClientIndicator from './ClientIndicator'
 import ServerMenu from './ServerMenu'
 import { setMicMuted, setSoundMuted } from '../lib/soup'
-import { playUiSound } from '../lib/sounds'
+import { playUiSound, setSoundsDeafened } from '../lib/sounds'
 import { useAnimationCategory, useSettings } from '../context/SettingsContext'
 import { useAnimatedPresence, useBlockShift } from '../lib/animation'
 import { keyboardEventToAccelerator, normalizeAccelerator } from '../../../shared/keybinds'
@@ -336,6 +336,9 @@ function Sidebar({
 
   useEffect(() => {
     setSoundMuted(soundMuted)
+    // Deafening also silences notification sounds (message/channel/stream); the
+    // sounds module gates on this the way soup.js gates remote audio.
+    setSoundsDeafened(soundMuted)
   }, [soundMuted])
 
   // Let other clients know our mic-mute / deafen status
