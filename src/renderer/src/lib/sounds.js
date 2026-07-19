@@ -1,9 +1,11 @@
 // ─── Local UI feedback sounds ────────────────────────────────────
 // Short blips played for the current user in response to their own actions
 // (e.g. toggling mic/sound mute in the sidebar). These are deliberately
-// independent of the voice pipeline's master volume and output-device routing
-// in soup.js: they're direct UI feedback for the local user, not remote audio,
-// so they should still be heard even while "sound muted" (deafened).
+// independent of the voice pipeline's master volume and deafen state in soup.js:
+// they're direct UI feedback for the local user, not remote audio, so they should
+// still be heard even while "sound muted" (deafened). They DO, however, follow the
+// user's chosen output device (see setSoundOutputDevice below) so notifications
+// come out the same speakers/headset as everything else.
 import muteSound from '../assets/soundpack/mute.mp3'
 import unmuteSound from '../assets/soundpack/unmute.mp3'
 import channelJoinSound from '../assets/soundpack/channel-join.mp3'
@@ -63,6 +65,33 @@ export function setSoundCategoriesEnabled(map) {
 // fetched/decoded once).
 const cache = {}
 
+// Current output-device sink id for these sounds. Mirrored in from SettingsContext
+// the same way soup.js's playback context gets it, so UI/notification sounds follow
+// the user's chosen output device instead of always hitting the system default.
+// HTMLMediaElement.setSinkId takes the literal 'default' for the default device
+// (unlike AudioContext, which wants '' — see applyOutputDeviceToContext in soup.js).
+let outputSinkId = 'default'
+
+// Route a single Audio element to the current output device. No-op when the
+// element is already on that sink (the common case, so repeat plays aren't
+// delayed) or when setSinkId is unsupported. Resolves once routing is applied.
+function applySink(el) {
+  if (typeof el.setSinkId !== 'function' || el.sinkId === outputSinkId) {
+    return Promise.resolve()
+  }
+  return el.setSinkId(outputSinkId).catch((err) => {
+    console.error('[sounds] setSinkId failed:', err)
+  })
+}
+
+// Push the user's chosen output device into this module. Re-routes any already
+// created (cached) elements so a device change takes effect immediately, not
+// just for sounds played for the first time afterward.
+export function setSoundOutputDevice(deviceId) {
+  outputSinkId = deviceId || 'default'
+  for (const el of Object.values(cache)) applySink(el)
+}
+
 // Play a named sound event. `volume` is 0..1. Skips playback when the event's
 // category is disabled. Playback rejections (e.g. autoplay policy before the
 // first user gesture) are swallowed — these are non-critical.
@@ -80,5 +109,12 @@ export function playUiSound(name, volume = 0.5, force = false) {
   }
   el.volume = volume
   el.currentTime = 0
-  el.play().catch(() => {})
+  // Route to the chosen output device before playing. setSinkId is async, so
+  // start playback once routing is applied — otherwise the very first play of a
+  // freshly created element would briefly leak out the default device. applySink
+  // resolves synchronously-fast when the sink is already correct, so this doesn't
+  // add latency to repeat plays.
+  applySink(el).then(() => {
+    el.play().catch(() => {})
+  })
 }

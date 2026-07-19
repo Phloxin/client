@@ -1,6 +1,6 @@
 import { createContext, useContext, useState, useEffect } from 'react'
 import { setOutputDevice, setMasterVolume } from '../lib/soup'
-import { SOUND_CATEGORIES, setSoundCategoriesEnabled } from '../lib/sounds'
+import { SOUND_CATEGORIES, setSoundCategoriesEnabled, setSoundOutputDevice } from '../lib/sounds'
 import { applyAppearanceSettings, applyAnimationSettings } from '../lib/uiSettings'
 import { prefersReducedMotion } from '../lib/animation'
 
@@ -204,7 +204,9 @@ export function SettingsProvider({ children }) {
   // Push playback (output) settings into the media layer so they apply to any
   // audio already playing as well as future streams — on load and on change.
   useEffect(() => {
-    setOutputDevice(micSettings.outputDeviceId || 'default')
+    const device = micSettings.outputDeviceId || 'default'
+    setOutputDevice(device)
+    setSoundOutputDevice(device)
   }, [micSettings.outputDeviceId])
 
   useEffect(() => {
