@@ -100,7 +100,10 @@ function Sidebar({
 
   // Which list the sidebar body shows: the channel tree or a flat roster of every
   // connected client. Toggled by the segmented control in the section header.
-  const [sidebarView, setSidebarView] = useState('channels')
+  const [pickedView, setPickedView] = useState('channels')
+  // Disconnecting hides the tabs, so fall back to channels rather than stranding
+  // the user on a roster they can no longer switch away from.
+  const sidebarView = connectedServer ? pickedView : 'channels'
 
   // Create-channel modal (opened from the section "+" or a channel's right-click
   // "Add Channel"). user_limit of 0 means unlimited.
@@ -452,97 +455,100 @@ function Sidebar({
         />
       </div>
 
-      <div className="channel-section-label">
-        <SegmentedTabs
-          className="sidebar-view-tabs"
-          ariaLabel="Sidebar view"
-          active={sidebarView}
-          onChange={(v) => {
-            setFilterOpen(false)
-            setSearch('')
-            setSidebarView(v)
-          }}
-          tabs={[
-            { id: 'channels', label: 'Channels' },
-            { id: 'users', label: 'Users' }
-          ]}
-        />
-        {connectedServer &&
-          (sidebarView === 'users' ? (
-            <button
-              type="button"
-              className={`channel-add-btn${filterIds.size > 0 ? ' active' : ''}`}
-              title={filterIds.size > 0 ? `Filtering by ${filterIds.size}` : 'Filter users'}
-              // Keep the outside-click handler from closing on mousedown only for
-              // onClick to immediately toggle it back open.
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={() => setFilterOpen((v) => !v)}
-            >
-              <IconFilter size={16} stroke={2.2} />
-            </button>
-          ) : (
-            <button
-              type="button"
-              className="channel-add-btn"
-              title="Add channel"
-              onClick={() => openCreateChannel()}
-            >
-              <IconPlus size={16} stroke={2.2} />
-            </button>
-          ))}
-        {filterOpen && sidebarView === 'users' && (
-          <div className="client-context-menu user-filter-menu" ref={filterRef}>
-            <div className="client-context-menu-header">Filter by</div>
-            {roles.length === 0 && vanity.length === 0 && (
-              <div className="client-role-empty">No roles or groups</div>
-            )}
-            {roles.map((r) => (
+      {/* Nothing to switch between while disconnected — no channels, no roster. */}
+      {connectedServer && (
+        <div className="channel-section-label">
+          <SegmentedTabs
+            className="sidebar-view-tabs"
+            ariaLabel="Sidebar view"
+            active={sidebarView}
+            onChange={(v) => {
+              setFilterOpen(false)
+              setSearch('')
+              setPickedView(v)
+            }}
+            tabs={[
+              { id: 'channels', label: 'Channels' },
+              { id: 'users', label: 'Users' }
+            ]}
+          />
+          {connectedServer &&
+            (sidebarView === 'users' ? (
               <button
-                key={`r${r.id}`}
                 type="button"
-                className="client-context-menu-item"
-                onClick={() => toggleFilter(`r${r.id}`)}
+                className={`channel-add-btn${filterIds.size > 0 ? ' active' : ''}`}
+                title={filterIds.size > 0 ? `Filtering by ${filterIds.size}` : 'Filter users'}
+                // Keep the outside-click handler from closing on mousedown only for
+                // onClick to immediately toggle it back open.
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={() => setFilterOpen((v) => !v)}
               >
-                <IconCheck
-                  size={16}
-                  style={{ visibility: filterIds.has(`r${r.id}`) ? 'visible' : 'hidden' }}
-                />
-                <RoleIcon role={r} size={16} />
-                {r.name}
+                <IconFilter size={16} stroke={2.2} />
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="channel-add-btn"
+                title="Add channel"
+                onClick={() => openCreateChannel()}
+              >
+                <IconPlus size={16} stroke={2.2} />
               </button>
             ))}
-            {vanity.map((g) => (
-              <button
-                key={`g${g.id}`}
-                type="button"
-                className="client-context-menu-item"
-                onClick={() => toggleFilter(`g${g.id}`)}
-              >
-                <IconCheck
-                  size={16}
-                  style={{ visibility: filterIds.has(`g${g.id}`) ? 'visible' : 'hidden' }}
-                />
-                {g.avatar ? (
-                  <img src={g.avatar} alt="" className="client-group-icon" />
-                ) : (
-                  <IconUsersGroup size={16} />
-                )}
-                {g.name}
-              </button>
-            ))}
-            {filterIds.size > 0 && (
-              <button
-                type="button"
-                className="client-context-menu-item danger"
-                onClick={() => setFilterIds(new Set())}
-              >
-                <IconX size={16} />
-                Clear filters
-              </button>
-            )}
-          </div>
-        )}
-      </div>
+          {filterOpen && sidebarView === 'users' && (
+            <div className="client-context-menu user-filter-menu" ref={filterRef}>
+              <div className="client-context-menu-header">Filter by</div>
+              {roles.length === 0 && vanity.length === 0 && (
+                <div className="client-role-empty">No roles or groups</div>
+              )}
+              {roles.map((r) => (
+                <button
+                  key={`r${r.id}`}
+                  type="button"
+                  className="client-context-menu-item"
+                  onClick={() => toggleFilter(`r${r.id}`)}
+                >
+                  <IconCheck
+                    size={16}
+                    style={{ visibility: filterIds.has(`r${r.id}`) ? 'visible' : 'hidden' }}
+                  />
+                  <RoleIcon role={r} size={16} />
+                  {r.name}
+                </button>
+              ))}
+              {vanity.map((g) => (
+                <button
+                  key={`g${g.id}`}
+                  type="button"
+                  className="client-context-menu-item"
+                  onClick={() => toggleFilter(`g${g.id}`)}
+                >
+                  <IconCheck
+                    size={16}
+                    style={{ visibility: filterIds.has(`g${g.id}`) ? 'visible' : 'hidden' }}
+                  />
+                  {g.avatar ? (
+                    <img src={g.avatar} alt="" className="client-group-icon" />
+                  ) : (
+                    <IconUsersGroup size={16} />
+                  )}
+                  {g.name}
+                </button>
+              ))}
+              {filterIds.size > 0 && (
+                <button
+                  type="button"
+                  className="client-context-menu-item danger"
+                  onClick={() => setFilterIds(new Set())}
+                >
+                  <IconX size={16} />
+                  Clear filters
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Keep the channel list mounted across view switches. Unmounting it would
           run VoiceChannel's unmount cleanup, which calls disconnect() and tears

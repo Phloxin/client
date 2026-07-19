@@ -23,6 +23,7 @@ import { useClientActions } from '../context/ClientActionsContext'
 import { useAnimationCategory, useSettings } from '../context/SettingsContext'
 import { useAnimatedPresence } from '../lib/animation'
 import { menuPop, overlayPop, scrimFade } from '../lib/motionPresets'
+import { useMenuPosition } from '../lib/menuPosition'
 import './ChatPanel.css'
 
 // The message box grows with its content up to this many lines, then scrolls.
@@ -426,6 +427,7 @@ function ChatPanel({
   const lastMsgIdRef = useRef(null)
   const msgMenuRef = useRef(null)
   const fileInputRef = useRef(null)
+  const msgMenuStyle = useMenuPosition(msgMenuRef, msgMenu)
   const highlightRef = useRef(null)
   const emojiRef = useRef(null)
   const listRef = useRef(null)
@@ -1174,7 +1176,7 @@ function ChatPanel({
         <div
           className="client-context-menu chat-message-menu"
           ref={msgMenuRef}
-          style={{ top: msgMenu.y, left: msgMenu.x }}
+          style={msgMenuStyle}
         >
           {msgMenu.text && (
             <button

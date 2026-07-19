@@ -6,6 +6,7 @@ import ImageViewer from './ImageViewer'
 import { cdnUrl } from '../lib/serverConfig'
 import { fileToAvatarDataUrl } from '../lib/avatarFile'
 import { useImageColors, bannerGradient } from '../lib/imageColors'
+import { useMenuPosition } from '../lib/menuPosition'
 
 // Inline editor for the channel description. Mirrors ChatPanel's MessageEditor:
 // auto-grows, Enter saves, Shift+Enter newlines, Escape cancels. Empty is allowed
@@ -91,6 +92,7 @@ function ChannelSummary({
   const [iconMenu, setIconMenu] = useState(null)
   const iconMenuRef = useRef(null)
   const iconInputRef = useRef(null)
+  const iconMenuStyle = useMenuPosition(iconMenuRef, iconMenu)
   const hasIcon = !!channel?.channel_icon
   // Banner colors sampled from the icon ({ average, vibrant } or null). Null
   // (no icon / unreadable image) renders the plain card with no banner.
@@ -230,11 +232,7 @@ function ChannelSummary({
       )}
 
       {iconMenu && (
-        <div
-          className="channel-context-menu"
-          ref={iconMenuRef}
-          style={{ top: iconMenu.y, left: iconMenu.x }}
-        >
+        <div className="channel-context-menu" ref={iconMenuRef} style={iconMenuStyle}>
           <button type="button" className="channel-context-item" onClick={replaceIcon}>
             <IconPhotoUp size={16} /> Replace Icon
           </button>
