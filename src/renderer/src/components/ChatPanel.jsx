@@ -667,6 +667,17 @@ function ChatPanel({
         return
       }
     }
+    // Up-arrow in an empty composer jumps straight to editing your own most
+    // recent message (matching Discord/Slack). Only fires when the last message
+    // in the feed is ours, so we never steal caret navigation from a draft.
+    if (e.key === 'ArrowUp' && !text && !attachments.length && !disabled) {
+      const last = [...feed].reverse().find((entry) => entry.type === 'message')
+      if (last && selfId != null && last.authorId === selfId) {
+        e.preventDefault()
+        setEditingId(last.id)
+        return
+      }
+    }
     if (handleFormatHotkey(e, inputRef.current)) return
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
