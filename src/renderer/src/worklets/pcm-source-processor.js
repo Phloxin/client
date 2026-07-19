@@ -30,6 +30,7 @@ class PcmSourceProcessor extends AudioWorkletProcessor {
     this.overruns = 0
     this.lastStats = 0
     this.ended = false
+    this.receivedFirstFrame = false
 
     this.port.onmessage = (e) => {
       const msg = e.data
@@ -50,6 +51,10 @@ class PcmSourceProcessor extends AudioWorkletProcessor {
 
   push(interleaved) {
     const frames = Math.floor(interleaved.length / CHANNELS)
+    if (frames > 0 && !this.receivedFirstFrame) {
+      this.receivedFirstFrame = true
+      this.port.postMessage({ type: 'ready' })
+    }
     // Overrun: make room by dropping the oldest audio
     const excess = this.buffered + frames - this.ringFrames
     if (excess > 0) {

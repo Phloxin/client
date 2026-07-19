@@ -28,14 +28,12 @@ const RESOLUTIONS = [
 // independently. Other platforms keep the simpler On/Off control.
 function audioOptionsFor(tab, caps) {
   const off = { value: 'none', label: 'Off' }
-  if (!caps || caps.backend === 'none') {
-    return [
-      {
-        value: 'system-legacy',
-        label: caps?.platform === 'linux' ? 'Entire system' : 'On'
-      },
-      off
-    ]
+  if (!caps) return [off]
+  if (caps.backend === 'none') {
+    // Electron's display-media `loopback` source is currently Windows-only.
+    // Offering it on Linux/macOS produced a video-only stream while the picker
+    // misleadingly said audio was enabled.
+    return caps.platform === 'win32' ? [{ value: 'system-legacy', label: 'On' }, off] : [off]
   }
 
   if (caps.platform === 'linux') {
@@ -44,15 +42,15 @@ function audioOptionsFor(tab, caps) {
       ? { value: 'system-exclude-self', label: 'Entire system (except Pylon)' }
       : caps.system
         ? { value: 'system', label: 'Entire system' }
-        : { value: 'system-legacy', label: 'Entire system' }
+        : null
+
+    const nativeOptions = [system, caps.perApp ? app : null].filter(Boolean)
 
     // A window share defaults to per-app audio. Screen shares (and Wayland,
     // where the portal has not picked a source yet) default to system audio.
     return tab === 'windows' && caps.perApp
-      ? [app, system, off]
-      : caps.perApp
-        ? [system, app, off]
-        : [system, off]
+      ? [app, ...(system ? [system] : []), off]
+      : [...nativeOptions, off]
   }
 
   const onValue =
@@ -127,7 +125,13 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
       })
       .catch(() => {
         if (!cancelled)
-          setCaps({ backend: 'none', perApp: false, excludeSelf: false, system: false })
+          setCaps({
+            backend: 'none',
+            perApp: false,
+            excludeSelf: false,
+            system: false,
+            platform: window.api.platform
+          })
       })
     return () => {
       cancelled = true
@@ -399,9 +403,10 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
 
           {activeTab !== 'devices' && capsLoaded && caps.backend === 'none' && (
             <div className="picker-audio-warning" title={caps.reason || undefined}>
-              Per-app audio filtering is unavailable on this machine
-              {caps.reason ? ` (${caps.reason})` : ''} — &quot;Entire system&quot; captures all
-              system audio.
+              {caps.platform === 'win32'
+                ? 'Per-app audio filtering is unavailable; system audio uses Windows loopback.'
+                : 'Screen audio capture is unavailable; this share will be video-only.'}
+              {caps.reason ? ` (${caps.reason})` : ''}
             </div>
           )}
 

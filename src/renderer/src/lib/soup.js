@@ -4,9 +4,9 @@ import { loadRnnoise, RnnoiseWorkletNode } from '@sapphi-red/web-noise-suppresso
 import rnnoiseWasmPath from '@sapphi-red/web-noise-suppressor/rnnoise.wasm?url'
 import rnnoiseSimdWasmPath from '@sapphi-red/web-noise-suppressor/rnnoise_simd.wasm?url'
 import rnnoiseWorkletPath from '@sapphi-red/web-noise-suppressor/rnnoiseWorklet.js?url'
-import { apiBase, wsBase } from './serverConfig'
+import { apiBase, wsBase, getServerHost } from './serverConfig'
 import { authFetch } from './auth'
-import { startScreenAudio, stopScreenAudio, onScreenAudioError } from './screenAudio'
+import { startScreenAudio, onScreenAudioError } from './screenAudio'
 
 // ─── State ──────────────────────────────────────────────────────
 let device
@@ -15,9 +15,9 @@ let producerTransport
 let consumerTransport
 let producers = []
 let localProducerIds = new Set()
-let screenProducer = null
-let screenAudioProducer = null
-let currentChannel = null
+let screenShareCtx = null
+let shareClaimQueue = Promise.resolve()
+let shareProduceQueue = Promise.resolve()
 // ICE servers from the server's Authenticated reply; transports are only
 // created after auth, so this is always populated before use.
 let iceServers = []
@@ -68,8 +68,14 @@ let focusedVolume = 1
 let focusedMuted = false
 
 // Per-client local volume/mute overrides for mic audio (right-click controls
-// in the sidebar) - keyed by clientId.
+// in the sidebar) - keyed by clientId. Persisted to localStorage per server
+// host (user ids are only unique per server) so a client's volume/mute survives
+// app restarts. The in-memory Map mirrors the currently-connected host's slice
+// of that store; ensureOverridesForCurrentHost() reloads it whenever the host
+// changes (connect, disconnect, or switching servers).
+const CLIENT_AUDIO_OVERRIDES_KEY = 'clientAudioOverrides'
 let clientAudioOverrides = new Map()
+let clientAudioOverridesHost
 
 // ─── Reconnection state ──────────────────────────────────────────
 // The voice socket can't "resume": when it drops, the server tears down our
@@ -88,6 +94,49 @@ let everAuthenticated = false // only auto-reconnect drops that follow a real au
 
 // ─── Pending response handlers ───────────────────────────────────
 const pendingHandlers = []
+const VOICE_REQUEST_TIMEOUT_MS = 15000
+let pendingRequestTimer = null
+
+function armPendingRequestTimeout() {
+  if (pendingRequestTimer !== null) clearTimeout(pendingRequestTimer)
+  pendingRequestTimer = null
+  const pending = pendingHandlers[0]
+  if (!pending) return
+
+  // Only the queue head is awaiting a response. Later FIFO entries get their
+  // full timeout after earlier requests complete instead of expiring while they
+  // are merely waiting their turn.
+  pendingRequestTimer = setTimeout(() => {
+    if (pendingHandlers[0] !== pending) return
+    const error = new Error(`Voice request timed out (${pending.type})`)
+    rejectPendingRequests(error)
+    forceVoiceReconnect(error.message)
+  }, VOICE_REQUEST_TIMEOUT_MS)
+}
+
+function rejectPendingRequests(error) {
+  if (pendingRequestTimer !== null) clearTimeout(pendingRequestTimer)
+  pendingRequestTimer = null
+  for (const pending of pendingHandlers.splice(0)) {
+    pending.reject(error)
+  }
+}
+
+// Fire-and-forget: send without queuing a response handler. `send()` matches
+// replies positionally and force-reconnects the socket if the queue head goes
+// unanswered for 15s, so a message the server may not implement must NOT go
+// through it — one unanswered request would drop the call.
+// ponytail: switch this to send() once the server implements CloseConsumer AND
+// is confirmed to reply to it; until then silence is the expected outcome.
+function notify(type, data = null) {
+  if (ws?.readyState !== WebSocket.OPEN) return
+  try {
+    ws.send(JSON.stringify(data ? { type, data } : { type }))
+    console.log(`[Soup] Sent (no reply expected): ${type}`, data)
+  } catch (err) {
+    console.warn(`[Soup] Failed to send ${type}:`, err)
+  }
+}
 
 // ─── Send a message and wait for a response ──────────────────────
 function send(type, data = null) {
@@ -103,27 +152,153 @@ function send(type, data = null) {
     // permission) instead of resolving it — otherwise callers proceed on a
     // response with no payload (undefined id) and start a phantom local-only
     // producer. Shape is the externally-tagged { UserError: "..." }.
-    pendingHandlers.push((message) => {
-      const userError =
-        message?.UserError ?? (message?.type === 'UserError' ? message.data : null)
-      if (userError != null) reject(new Error(typeof userError === 'string' ? userError : 'Request failed'))
-      else resolve(message)
-    })
+    const pending = {
+      type,
+      reject,
+      handle: (message) => {
+        const userError =
+          message?.UserError ?? (message?.type === 'UserError' ? message.data : null)
+        if (userError != null)
+          reject(new Error(typeof userError === 'string' ? userError : 'Request failed'))
+        else resolve(message)
+      }
+    }
+    pendingHandlers.push(pending)
+    if (pendingHandlers.length === 1) armPendingRequestTimeout()
     const message = data ? { type, data } : { type }
-    ws.send(JSON.stringify(message))
+    try {
+      ws.send(JSON.stringify(message))
+    } catch (err) {
+      const index = pendingHandlers.indexOf(pending)
+      if (index !== -1) pendingHandlers.splice(index, 1)
+      if (index === 0) armPendingRequestTimeout()
+      reject(err)
+      return
+    }
     console.log(`[Soup] Sent: ${type}`, message)
   })
 }
 
-// ─── Send a fire-and-forget notification (no response expected) ──
-// Use for telling the server we've closed a producer/consumer we own.
-// Does NOT push onto pendingHandlers, so an unanswered message can't
-// desync the response queue for subsequent send() calls.
-function notify(type, data = null) {
-  if (ws?.readyState !== WebSocket.OPEN) return
-  const message = data ? { type, data } : { type }
-  ws.send(JSON.stringify(message))
-  console.log(`[Soup] Notify: ${type}`, message)
+// The SFU responds to CloseProducer like every other request, so it must use the
+// same FIFO response queue. Sending it fire-and-forget leaves that response to
+// satisfy an unrelated later request and corrupts signaling state.
+async function closeServerProducer(id) {
+  try {
+    await send('CloseProducer', { id })
+  } catch (err) {
+    console.warn(`[Soup] Failed to close server producer ${id}:`, err)
+  }
+}
+
+// ─── Stream viewers ─────────────────────────────────────────────
+// Who is watching which screen share. The server tells us via NewConsumer (also
+// replayed on join, so a late arrival learns the existing audience) and
+// ConsumerClosed. ConsumerClosed identifies the consumer only by id, so we keep
+// the id→(producer, client) mapping needed to undo it.
+// Remote video producers we know about but may not be consuming. Tiles are
+// driven by this — a stream is listed as soon as it exists, whether or not we
+// have chosen to watch it.
+const knownVideoProducers = new Map() // producerId -> { clientId, producedType }
+
+const consumerOwners = new Map() // consumerId -> { producerId, clientId }
+const producerViewers = new Map() // producerId -> Set<clientId>
+let viewerSubscribers = []
+
+const notifyViewers = () => {
+  // Hand out a plain snapshot: subscribers are React components that must not
+  // hold a reference to a Map we keep mutating underneath them.
+  const snapshot = new Map([...producerViewers].map(([p, set]) => [p, [...set]]))
+  for (const cb of viewerSubscribers) cb(snapshot)
+}
+
+const addViewer = ({ id, producer_id, client_id }) => {
+  if (consumerOwners.has(id)) return
+  consumerOwners.set(id, { producerId: producer_id, clientId: client_id })
+  if (!producerViewers.has(producer_id)) producerViewers.set(producer_id, new Set())
+  producerViewers.get(producer_id).add(client_id)
+  notifyViewers()
+}
+
+const removeViewer = (consumerId) => {
+  const owner = consumerOwners.get(consumerId)
+  if (!owner) return
+  consumerOwners.delete(consumerId)
+  const set = producerViewers.get(owner.producerId)
+  if (!set) return
+  // A client can hold several consumers of one producer (e.g. a re-consume
+  // racing the old one's close), so only drop the name once the last is gone.
+  const stillWatching = [...consumerOwners.values()].some(
+    (o) => o.producerId === owner.producerId && o.clientId === owner.clientId
+  )
+  if (!stillWatching) set.delete(owner.clientId)
+  if (set.size === 0) producerViewers.delete(owner.producerId)
+  notifyViewers()
+}
+
+const clearViewers = () => {
+  consumerOwners.clear()
+  producerViewers.clear()
+  notifyViewers()
+}
+
+// Subscribe to the viewer map (producerId -> clientId[]). Returns an unsubscribe.
+// Fires immediately with the current snapshot so a late subscriber isn't blank
+// until the next event — NewConsumer replays happen at join, before mount.
+export function subscribeStreamViewers(cb) {
+  viewerSubscribers.push(cb)
+  cb(new Map([...producerViewers].map(([p, set]) => [p, [...set]])))
+  return () => {
+    viewerSubscribers = viewerSubscribers.filter((fn) => fn !== cb)
+  }
+}
+
+// Bind consumer lifetime to the set of streams the user has explicitly chosen to
+// watch (the play/stop buttons), NOT to whether a tile happens to be on screen.
+// A consumer is our public "I am watching this" signal, so it must mean exactly
+// that; binding it to visibility instead would also churn full renegotiations
+// every time the carousel collapsed or the chat tab was selected.
+export function setWatchedProducers(producerIds = []) {
+  const wanted = new Set(producerIds.filter((id) => knownVideoProducers.has(id)))
+
+  // The server takes a batch, so collect the whole diff and send one message —
+  // switching away from a multi-stream view closes several at once.
+  const closedIds = []
+  for (const [producerId, entry] of remoteConsumers) {
+    if (entry.kind !== 'video' || wanted.has(producerId)) continue
+    closedIds.push(entry.consumerId)
+    closeVideoConsumer(producerId)
+  }
+  if (closedIds.length > 0) notify('CloseConsumer', { ids: closedIds })
+
+  for (const producerId of wanted) {
+    if (remoteConsumers.has(producerId)) continue
+    const { clientId, producedType } = knownVideoProducers.get(producerId)
+    consumeProducer(producerId, 'video', activeCallbacks.onVideoStream, clientId, producedType).catch(
+      (err) => console.error(`[Soup] Failed to consume producer ${producerId}:`, err)
+    )
+  }
+}
+
+// Local half of "stop watching". The server is told separately, in one batched
+// CloseConsumer by the caller — a local consumer.close() alone is invisible to
+// it, and we'd never drop out of anyone else's viewer list.
+function closeVideoConsumer(producerId) {
+  const entry = remoteConsumers.get(producerId)
+  if (!entry) return
+  remoteConsumers.delete(producerId)
+  entry.consumer.close()
+  if (entry.cleanup) {
+    entry.cleanup()
+    remoteCleanups = remoteCleanups.filter((fn) => fn !== entry.cleanup)
+  }
+  // The producer still exists — only our subscription ended. Keep the tile and
+  // blank its stream so it returns to the stopped state rather than vanishing.
+  activeCallbacks.onVideoStream?.({
+    stream: null,
+    kind: 'video',
+    producerId,
+    clientId: entry.clientId
+  })
 }
 
 // ─── Connect to signaling server ────────────────────────────────
@@ -195,14 +370,49 @@ async function openSocket() {
       }
       console.log(`[Soup] New producer: ${id} (${kind}, ${produced_type})`)
       activeCallbacks.onNewProducer?.({ producerId: id, kind })
-      consumeProducer(id, kind, activeCallbacks.onVideoStream, client_id, produced_type)
+
+      // Audio must be audible the moment it exists, so it still consumes eagerly.
+      if (kind !== 'video') {
+        consumeProducer(id, kind, activeCallbacks.onVideoStream, client_id, produced_type).catch(
+          (err) => console.error(`[Soup] Failed to consume producer ${id}:`, err)
+        )
+        return
+      }
+
+      // Video does NOT consume here. Consuming is what tells the server (and
+      // therefore everyone else) that we're watching, so it has to wait for an
+      // actual click — otherwise every client in the channel counts as a viewer
+      // of every stream. We just register the producer and announce a tile with
+      // no stream yet; setWatchedProducers() consumes on demand.
+      knownVideoProducers.set(id, { clientId: client_id, producedType: produced_type })
+      activeCallbacks.onVideoStream?.({
+        stream: null,
+        kind,
+        producerId: id,
+        clientId: client_id
+      })
+      return
+    }
+
+    // Audience bookkeeping for screen shares. NewConsumer covers both "someone
+    // started watching" and the replay a client receives on joining a channel,
+    // so it must be idempotent (addViewer dedupes by consumer id).
+    if (message.type === 'NewConsumer') {
+      addViewer(message.data)
+      return
+    }
+
+    if (message.type === 'ConsumerClosed') {
+      removeViewer(message.data.id)
       return
     }
 
     // A remote producer we were consuming has closed (e.g. the other
     // client stopped screen sharing) — close our consumer and remove its tile.
     if (message.type === 'ProducerClosed') {
-      const { id } = message.data
+      const { id, replaced = false } = message.data
+      const known = knownVideoProducers.get(id)
+      knownVideoProducers.delete(id)
       const entry = remoteConsumers.get(id)
       if (entry) {
         entry.consumer.close()
@@ -211,10 +421,16 @@ async function openSocket() {
           entry.cleanup()
           remoteCleanups = remoteCleanups.filter((fn) => fn !== entry.cleanup)
         }
-        if (entry.kind === 'video') {
-          activeCallbacks.onConsumerClosed?.(entry.consumerId)
-        }
         console.log(`[Soup] Remote producer closed [id:${id}], consumer removed`)
+      }
+      // Tiles are producer-driven now, so the tile must go whether or not we
+      // were consuming — an unwatched stream has no consumer to close.
+      if (entry?.kind === 'video' || known) {
+        activeCallbacks.onStreamEnded?.(id, {
+          replaced,
+          clientId: entry?.clientId ?? known?.clientId,
+          producedType: entry?.producedType ?? known?.producedType
+        })
       }
       return
     }
@@ -232,8 +448,9 @@ async function openSocket() {
 
     // Route response to pending handler (resolves, or rejects on a UserError)
     if (pendingHandlers.length > 0) {
-      const handler = pendingHandlers.shift()
-      handler(message)
+      const pending = pendingHandlers.shift()
+      armPendingRequestTimeout()
+      pending.handle(message)
       return
     }
 
@@ -243,10 +460,9 @@ async function openSocket() {
   socket.onclose = (event) => {
     if (ws !== socket) return // a newer socket has already taken over
     console.log('[Soup] WebSocket disconnected — code:', event.code, 'reason:', event.reason)
-    currentChannel = null
-    // Drop any in-flight request resolvers so the next connection's responses
-    // can't resolve stale handlers and desync the response queue.
-    pendingHandlers.length = 0
+    // Reject every waiter before reconnecting. Silently dropping these handlers
+    // left callers (including screen-share teardown) pending forever.
+    rejectPendingRequests(new Error(`Voice socket closed (${event.code || 'no code'})`))
     resetMediaState()
 
     if (intentionalClose || !everAuthenticated) {
@@ -392,12 +608,28 @@ function getRnnoiseBinary() {
 // survives for the next publish. RNNoise is trained on 48 kHz audio, so the
 // rate is pinned.
 let micContext = null
-let micWorkletLoaded = false
+const rnnoiseWorkletLoads = new WeakMap()
+
+function ensureRnnoiseWorklet(audioContext) {
+  let load = rnnoiseWorkletLoads.get(audioContext)
+  if (!load) {
+    load = audioContext.audioWorklet.addModule(rnnoiseWorkletPath).catch((err) => {
+      rnnoiseWorkletLoads.delete(audioContext)
+      throw err
+    })
+    rnnoiseWorkletLoads.set(audioContext, load)
+  }
+  return load
+}
+
+async function createRnnoiseProcessor(audioContext) {
+  const [binary] = await Promise.all([getRnnoiseBinary(), ensureRnnoiseWorklet(audioContext)])
+  return new RnnoiseWorkletNode(audioContext, { maxChannels: 1, wasmBinary: binary })
+}
 
 async function getMicContext() {
   if (!micContext || micContext.state === 'closed') {
     micContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 })
-    micWorkletLoaded = false
   }
   if (micContext.state === 'suspended') await micContext.resume()
   return micContext
@@ -407,7 +639,10 @@ async function getMicContext() {
 // Wires the captured mic stream through optional RNNoise denoising (an
 // AudioWorklet that suppresses keyboard/typing and steady background noise
 // while preserving voice) and the optional volume gate, in that order.
-// Returns the processed stream plus a stop() that tears the chain down.
+// Returns the processed stream plus a stop() that tears the chain down. The
+// processed stream is also the source of truth for the local speaking indicator,
+// so it reflects everything that can affect what peers receive (including
+// RNNoise and a closed volume gate).
 async function buildAudioProcessor(stream, micSettings) {
   const needsRnnoise = micSettings.useRnnoise
   const needsGate = micSettings.useVolumeGate
@@ -428,12 +663,7 @@ async function buildAudioProcessor(stream, micSettings) {
 
   if (needsRnnoise) {
     try {
-      const binary = await getRnnoiseBinary()
-      if (!micWorkletLoaded) {
-        await audioContext.audioWorklet.addModule(rnnoiseWorkletPath)
-        micWorkletLoaded = true
-      }
-      rnnoiseNode = new RnnoiseWorkletNode(audioContext, { maxChannels: 1, wasmBinary: binary })
+      rnnoiseNode = await createRnnoiseProcessor(audioContext)
       node.connect(rnnoiseNode)
       node = rnnoiseNode
       console.log('[Soup] RNNoise denoiser applied')
@@ -444,24 +674,20 @@ async function buildAudioProcessor(stream, micSettings) {
   }
 
   if (needsGate) {
-    const analyser = audioContext.createAnalyser()
+    const reader = createSpeechLevelReader(audioContext)
     const gate = audioContext.createGain()
-    chainNodes.push(analyser, gate)
-    analyser.fftSize = 256
-    node.connect(analyser)
-    analyser.connect(gate)
+    const gateController = createLevelGateController(audioContext, gate, reader.read, {
+      threshold: micSettings.volumeGateThreshold
+    })
+    chainNodes.push(...reader.nodes, gate)
+    // Analysis is a sidechain so the speech-band filters never color outgoing
+    // audio. The untouched denoised signal passes through the controlled gain.
+    node.connect(reader.input)
+    node.connect(gate)
     node = gate
 
-    const dataArray = new Uint8Array(analyser.frequencyBinCount)
     const checkLevel = () => {
-      analyser.getByteFrequencyData(dataArray)
-      const average = dataArray.reduce((a, b) => a + b) / dataArray.length
-      const normalized = (average / 255) * 100
-      // If audio is below threshold, mute; otherwise pass through
-      gate.gain.setValueAtTime(
-        normalized >= micSettings.volumeGateThreshold ? 1 : 0,
-        audioContext.currentTime
-      )
+      gateController.update()
     }
     // 25Hz via setInterval, not rAF: level detection needs far less than display
     // rate, and rAF is throttled/paused when the window is hidden — which would
@@ -477,11 +703,15 @@ async function buildAudioProcessor(stream, micSettings) {
     if (gateTimer) clearInterval(gateTimer)
     try {
       rnnoiseNode?.destroy()
-    } catch {}
+    } catch {
+      // The worklet may already have torn itself down.
+    }
     for (const chainNode of chainNodes) {
       try {
         chainNode.disconnect()
-      } catch {}
+      } catch {
+        // A partially built or already-stopped chain is safe to ignore.
+      }
     }
     // The shared context stays open (suspended on media reset) so the
     // compiled worklet module is reused by the next publish.
@@ -505,35 +735,280 @@ function stopRawStream(stream) {
   stream?.getTracks().forEach((track) => track.stop())
 }
 
+// Chromium binds its audio processing (AGC / noise suppression / echo
+// cancellation) to the shared capture source for a device, not to the individual
+// track. A getUserMedia on a device that is still open silently inherits the
+// processing the source was created with, so the new constraints are dropped and
+// the old settings persist until every handle closes (i.e. an app restart).
+// applyConstraints() does not reconfigure these flags either.
+//
+// So: serialize every mic acquisition, release the previous capture first, and
+// let the source actually tear down before asking for a new one.
+export function micConstraints(micSettings) {
+  return {
+    deviceId:
+      micSettings.deviceId && micSettings.deviceId !== 'default'
+        ? { exact: micSettings.deviceId }
+        : undefined,
+    echoCancellation: micSettings.echoCancellation,
+    // RNNoise replaces the browser suppressor - never run both (they're
+    // mutually exclusive in the UI; this guards against any stale state).
+    noiseSuppression: micSettings.useRnnoise ? false : micSettings.noiseSuppression,
+    autoGainControl: micSettings.autoGainControl,
+    sampleRate: micSettings.sampleRate,
+    channelCount: micSettings.channelCount
+  }
+}
+
+// track.stop() returns before Chromium has torn the capture source down; a short
+// hop lets the release land so the next open is cold.
+// ponytail: fixed delay, not a readback of source state — there is no API to
+// observe it. If constraints still stick occasionally, raise this.
+const MIC_SOURCE_RELEASE_MS = 50
+
+let micAcquireChain = Promise.resolve()
+
+// Only one capture can define the device's processing, and while joined to a
+// channel that capture belongs to the call. Anything else that wants mic audio
+// (the settings meter) has to read this one rather than open its own — a second
+// capture would inherit stale processing *and* poison the next republish.
+const rawMicStreamListeners = new Set()
+
+export function getRawMicStream() {
+  return rawMicStream
+}
+
+// Fires whenever the live capture is swapped (republish) or released (teardown),
+// so readers can rebuild their graph on the new track. Returns an unsubscribe.
+export function onRawMicStreamChange(listener) {
+  rawMicStreamListeners.add(listener)
+  return () => rawMicStreamListeners.delete(listener)
+}
+
+function setRawMicStream(stream) {
+  if (rawMicStream === stream) return
+  rawMicStream = stream
+  rawMicStreamListeners.forEach((listener) => {
+    try {
+      listener(stream)
+    } catch (err) {
+      console.error('[Soup] rawMicStream listener failed:', err)
+    }
+  })
+}
+
+// Acquire a mic capture with `micSettings` applied for real. `previousStream` is
+// the caller's own capture to release first — pass it rather than stopping it
+// yourself, so the release and the re-open stay ordered.
+export function acquireMicCapture(micSettings, previousStream) {
+  const run = async () => {
+    stopRawStream(previousStream)
+    await new Promise((resolve) => setTimeout(resolve, MIC_SOURCE_RELEASE_MS))
+    return navigator.mediaDevices.getUserMedia({ audio: micConstraints(micSettings) })
+  }
+  // .then(run, run) rather than .finally so a failed acquisition doesn't poison
+  // the chain for the next caller.
+  micAcquireChain = micAcquireChain.then(run, run)
+  return micAcquireChain
+}
+
+// ─── Shared speech level measurement ───────────────────────────────
+// Analyze a speech-band sidechain without modifying the audible signal. Time-domain
+// RMS is stable across different pitches and spectral shapes; averaging byte-mapped
+// FFT bins was not. The level is mapped from -60..-5 dBFS to 0..100 so whispering,
+// normal speech, and loud speech occupy distinct parts of the meter instead of
+// clustering near its upper end. Smoothing uses real elapsed time, so meter (rAF)
+// and detector/gate (25 Hz) respond alike.
+const SPEECH_LEVEL_FLOOR_DB = -60
+const SPEECH_LEVEL_CEILING_DB = -5
+const SPEECH_LEVEL_ATTACK_MS = 35
+const SPEECH_LEVEL_RELEASE_MS = 180
+
+export function createSpeechLevelReader(audioContext) {
+  const highpass = audioContext.createBiquadFilter()
+  highpass.type = 'highpass'
+  highpass.frequency.value = 85
+  highpass.Q.value = Math.SQRT1_2
+
+  const lowpass = audioContext.createBiquadFilter()
+  lowpass.type = 'lowpass'
+  lowpass.frequency.value = 4000
+  lowpass.Q.value = Math.SQRT1_2
+
+  const analyser = audioContext.createAnalyser()
+  analyser.fftSize = 1024
+  highpass.connect(lowpass)
+  lowpass.connect(analyser)
+
+  const data = new Float32Array(analyser.fftSize)
+  let smoothedLevel = 0
+  let lastReadAt = null
+
+  const read = () => {
+    analyser.getFloatTimeDomainData(data)
+    let sumSquares = 0
+    for (let i = 0; i < data.length; i++) sumSquares += data[i] * data[i]
+
+    const rms = Math.sqrt(sumSquares / data.length)
+    const db = rms > 0 ? 20 * Math.log10(rms) : SPEECH_LEVEL_FLOOR_DB
+    const rawLevel = Math.max(
+      0,
+      Math.min(
+        100,
+        ((db - SPEECH_LEVEL_FLOOR_DB) / (SPEECH_LEVEL_CEILING_DB - SPEECH_LEVEL_FLOOR_DB)) * 100
+      )
+    )
+
+    const now = performance.now()
+    if (lastReadAt == null) {
+      smoothedLevel = rawLevel
+    } else {
+      const elapsedMs = Math.max(1, now - lastReadAt)
+      const timeConstant =
+        rawLevel > smoothedLevel ? SPEECH_LEVEL_ATTACK_MS : SPEECH_LEVEL_RELEASE_MS
+      const alpha = 1 - Math.exp(-elapsedMs / timeConstant)
+      smoothedLevel += (rawLevel - smoothedLevel) * alpha
+      if (smoothedLevel < 0.05) smoothedLevel = 0
+    }
+    lastReadAt = now
+    return smoothedLevel
+  }
+
+  return {
+    input: highpass,
+    analyser,
+    nodes: [highpass, lowpass, analyser],
+    read
+  }
+}
+
+// Gate state shared by the live mic path and the settings test. A lower release
+// threshold plus a short hold bridges syllable gaps; gain ramps avoid clicks.
+export function createLevelGateController(
+  audioContext,
+  gate,
+  read,
+  { threshold = 15, hysteresis = 3, holdMs = 200, rampSeconds = 0.03 } = {}
+) {
+  let open = false
+  let lastVoiceAt = 0
+  gate.gain.setValueAtTime(0, audioContext.currentTime)
+
+  const setOpen = (next) => {
+    if (next === open) return
+    open = next
+    const now = audioContext.currentTime
+    const current = gate.gain.value
+    gate.gain.cancelScheduledValues(now)
+    gate.gain.setValueAtTime(current, now)
+    gate.gain.linearRampToValueAtTime(next ? 1 : 0, now + rampSeconds)
+  }
+
+  const update = (nextThreshold = threshold) => {
+    const level = read()
+    const now = performance.now()
+    const releaseThreshold = Math.max(0, nextThreshold - hysteresis)
+
+    if (!open) {
+      if (level >= nextThreshold) {
+        lastVoiceAt = now
+        setOpen(true)
+      }
+    } else if (level >= releaseThreshold) {
+      lastVoiceAt = now
+    } else if (now - lastVoiceAt >= holdMs) {
+      setOpen(false)
+    }
+
+    return { level, open }
+  }
+
+  return { update, isOpen: () => open }
+}
+
+// Build the same post-browser/post-RNNoise analysis sidechain used by the live
+// gate. The returned outputNode is also suitable for local test playback.
+export async function createMicLevelMonitor(audioContext, stream, micSettings) {
+  const source = audioContext.createMediaStreamSource(stream)
+  let outputNode = source
+  let rnnoiseNode = null
+
+  if (micSettings.useRnnoise) {
+    try {
+      rnnoiseNode = await createRnnoiseProcessor(audioContext)
+      source.connect(rnnoiseNode)
+      outputNode = rnnoiseNode
+    } catch (err) {
+      console.error('[Soup] RNNoise monitor init failed, using raw mic:', err)
+    }
+  }
+
+  const reader = createSpeechLevelReader(audioContext)
+  outputNode.connect(reader.input)
+
+  const stop = () => {
+    try {
+      outputNode.disconnect(reader.input)
+    } catch {
+      // Already disconnected during a settings rebuild.
+    }
+    for (const node of reader.nodes) {
+      try {
+        node.disconnect()
+      } catch {
+        // A partially initialized monitor is safe to tear down.
+      }
+    }
+    try {
+      rnnoiseNode?.destroy()
+    } catch {
+      // The worklet may already have torn itself down.
+    }
+    try {
+      source.disconnect()
+    } catch {
+      // Source may be the output node and already disconnected above.
+    }
+  }
+
+  return { source, outputNode, analyser: reader.analyser, read: reader.read, stop }
+}
+
 // ─── Detect speaking activity on an audio stream ──────────────────
 // Returns a stop function. Calls onChange(isSpeaking) whenever the
 // speaking state changes, and once more with false on stop.
-export function createSpeakingDetector(stream, onChange, { threshold = 8, holdMs = 150 } = {}) {
+export function createSpeakingDetector(
+  stream,
+  onChange,
+  { threshold = 12, hysteresis = 3, holdMs = 250 } = {}
+) {
   if (!stream.getAudioTracks().length) return () => {}
 
   const audioContext = new (window.AudioContext || window.webkitAudioContext)()
   const source = audioContext.createMediaStreamSource(stream)
-  const analyser = audioContext.createAnalyser()
-  analyser.fftSize = 256
-  source.connect(analyser)
+  const reader = createSpeechLevelReader(audioContext)
+  source.connect(reader.input)
 
-  const data = new Uint8Array(analyser.frequencyBinCount)
   let speaking = false
-  let lastAbove = 0
+  let lastVoiceAt = 0
   let intervalId
 
   const tick = () => {
-    analyser.getByteFrequencyData(data)
-    const avg = data.reduce((a, b) => a + b, 0) / data.length
-    const level = (avg / 255) * 100
+    const level = reader.read()
     const now = performance.now()
+    const releaseThreshold = Math.max(0, threshold - hysteresis)
 
-    if (level >= threshold) lastAbove = now
-
-    const isSpeaking = now - lastAbove < holdMs
-    if (isSpeaking !== speaking) {
-      speaking = isSpeaking
-      onChange(speaking)
+    if (!speaking) {
+      if (level >= threshold) {
+        speaking = true
+        lastVoiceAt = now
+        onChange(true)
+      }
+    } else if (level >= releaseThreshold) {
+      lastVoiceAt = now
+    } else if (now - lastVoiceAt >= holdMs) {
+      speaking = false
+      onChange(false)
     }
   }
   // 25Hz via setInterval, not rAF: this runs once per remote participant plus
@@ -548,7 +1023,16 @@ export function createSpeakingDetector(stream, onChange, { threshold = 8, holdMs
     if (speaking) onChange(false)
     try {
       source.disconnect()
-    } catch {}
+    } catch {
+      // Cleanup may run after the context has already disconnected the node.
+    }
+    for (const node of reader.nodes) {
+      try {
+        node.disconnect()
+      } catch {
+        // Analysis nodes may already be detached.
+      }
+    }
     // close() rejects (async) if the context is already closed — e.g. this
     // cleanup runs twice during teardown. Skip when closed and swallow the
     // rejection so it never surfaces as an uncaught promise error.
@@ -633,21 +1117,7 @@ async function doPublish(micSettings, onStream) {
 
   let stream
   try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        deviceId:
-          micSettings.deviceId && micSettings.deviceId !== 'default'
-            ? { exact: micSettings.deviceId }
-            : undefined,
-        echoCancellation: micSettings.echoCancellation,
-        // RNNoise replaces the browser suppressor - never run both (they're
-        // mutually exclusive in the UI; this guards against any stale state).
-        noiseSuppression: micSettings.useRnnoise ? false : micSettings.noiseSuppression,
-        autoGainControl: micSettings.autoGainControl,
-        sampleRate: micSettings.sampleRate,
-        channelCount: micSettings.channelCount
-      }
-    })
+    stream = await acquireMicCapture(micSettings, rawMicStream)
   } catch (err) {
     console.error('[Soup] getUserMedia failed:', err.name, err.message)
     throw new Error(`Failed to get audio device: ${err.message}`)
@@ -656,7 +1126,7 @@ async function doPublish(micSettings, onStream) {
   // Track the raw capture so its OS mic handle can be released on teardown —
   // the processed track handed to the producer is usually a different track, so
   // stopping only that would leave the mic open.
-  rawMicStream = stream
+  setRawMicStream(stream)
 
   // Apply the local processing chain (RNNoise / volume gate). Stop any
   // previous chain first so its AudioContext and worklet don't leak.
@@ -672,6 +1142,9 @@ async function doPublish(micSettings, onStream) {
   }
 
   onStream?.(processedStream)
+  // Detect our own speech from the exact processed track being encoded. In
+  // particular, quiet audio rejected by RNNoise or the volume gate must not
+  // light the local indicator when peers cannot receive it.
   startSelfSpeakingDetector(processedStream)
 
   for (const track of processedStream.getTracks()) {
@@ -703,29 +1176,17 @@ export async function republish(micSettings, onStream) {
   if (!producerTransport) throw new Error('Not connected to voice')
 
   const audioProducers = producers.filter((p) => p.kind === 'audio')
-  // The raw capture backing the current producer(s). Held until the new track
-  // has replaced it below, then stopped — waiting avoids killing a live
-  // passthrough track (where the raw track IS the produced track).
+  // The raw capture backing the current producer(s). Released *before* the new
+  // one opens — it has to be, or Chromium hands back the old processing config
+  // and the settings the user just applied are silently ignored (see
+  // acquireMicCapture). Cost is a sub-second gap in outgoing audio in the
+  // passthrough case, where the raw track IS the produced track.
   const previousRawStream = rawMicStream
 
   // Get a fresh stream with updated constraints
   let stream
   try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        deviceId:
-          micSettings.deviceId && micSettings.deviceId !== 'default'
-            ? { exact: micSettings.deviceId }
-            : undefined,
-        echoCancellation: micSettings.echoCancellation,
-        // RNNoise replaces the browser suppressor - never run both (they're
-        // mutually exclusive in the UI; this guards against any stale state).
-        noiseSuppression: micSettings.useRnnoise ? false : micSettings.noiseSuppression,
-        autoGainControl: micSettings.autoGainControl,
-        sampleRate: micSettings.sampleRate,
-        channelCount: micSettings.channelCount
-      }
-    })
+    stream = await acquireMicCapture(micSettings, previousRawStream)
   } catch (err) {
     console.error('[Soup] republish getUserMedia failed:', err.name, err.message)
     throw new Error(`Failed to get audio device: ${err.message}`)
@@ -744,6 +1205,7 @@ export async function republish(micSettings, onStream) {
   }
 
   onStream?.(processedStream)
+  // Keep the self indicator tied to the replacement track peers receive.
   startSelfSpeakingDetector(processedStream)
 
   const newTracks = processedStream.getTracks()
@@ -762,7 +1224,7 @@ export async function republish(micSettings, onStream) {
 
   // Adopt the new capture as the current raw stream; the previous one is
   // released below once its track is no longer attached to a producer.
-  rawMicStream = stream
+  setRawMicStream(stream)
 
   if (audioProducers.length === 0) {
     // No existing producer to reuse (first publish hasn't happened yet) -
@@ -785,8 +1247,6 @@ export async function republish(micSettings, onStream) {
       console.log(`[Soup] Republished ${track.kind} [id:${producer.id}]`)
     }
 
-    // No producer was reusing it, so the old capture (if any) is free to stop.
-    stopRawStream(previousRawStream)
     console.log('[Soup] Audio republished with new settings')
     return
   }
@@ -823,9 +1283,6 @@ export async function republish(micSettings, onStream) {
     console.log(`[Soup] Replaced track on producer [id:${producer.id}]`)
   }
 
-  // Every producer now carries the new track — the old raw capture is detached
-  // and its OS mic handle can finally be released.
-  stopRawStream(previousRawStream)
   console.log('[Soup] Audio republished with new settings')
 }
 
@@ -834,15 +1291,25 @@ export async function republish(micSettings, onStream) {
 // close the audio producer, surface the reason to the active channel UI.
 onScreenAudioError(({ message }) => {
   console.error('[Soup] Screen audio capture failed:', message)
-  if (screenAudioProducer) {
-    const audioProducerId = screenAudioProducer.id
-    screenAudioProducer.close()
+  const ctx = screenShareCtx
+  if (!ctx || ctx.type !== 'screen') return
+
+  const audioProducer = ctx.audioProducer
+  ctx.audioProducer = null
+  if (audioProducer) {
+    const audioProducerId = audioProducer.id
+    audioProducer.close()
     localProducerIds.delete(audioProducerId)
-    notify('CloseProducer', { id: audioProducerId })
-    screenAudioProducer = null
+    void closeServerProducer(audioProducerId)
   }
-  stopScreenAudio().catch(() => {})
-  if (screenProducer) {
+
+  const nativeAudio = ctx.nativeAudio
+  const audioTrack = ctx.audioTrack
+  ctx.nativeAudio = null
+  ctx.audioTrack = null
+  audioTrack?.stop()
+  nativeAudio?.stop().catch(() => {})
+  if (isActiveShare(ctx) && ctx.producer) {
     activeCallbacks.onScreenAudioError?.(message)
   }
 })
@@ -865,17 +1332,29 @@ const VIDEO_SCALABILITY_MODE = 'L3T3_KEY'
 // downgraded to H.264 (no layers) anyway, the layers only ever served
 // machines that were about to lose them. Trade-off: no per-viewer fps/res
 // tiering for screen shares — setVideoStreamRoles() still pauses hidden
-// streams, and its layer preferences clamp harmlessly on a single layer.
+// streams; layer preferences are skipped for consumers that report no layers.
 
-// Ceiling for the (single-layer) screen-share encoding, scaled to resolution. The
-// whole budget now feeds one full-res stream, so these can be lower than the old
-// split-across-layers caps and still look sharp. A cap, not a target — congestion
-// control sends less on a constrained link — it only bites when the link can't
-// keep up.
-function maxBitrateFor(height) {
-  if (height >= 1440) return 12_000_000
-  if (height >= 1080) return 8_000_000
-  return 5_000_000
+// Ceiling for the single full-resolution screen encoding. Sixty FPS needs more
+// bits than 30 FPS, and the H.264 hardware fallback needs more than AV1/VP9 for
+// comparable screen-text quality. These remain congestion-control ceilings, not
+// forced targets; Transport-CC can send below them on a constrained link.
+function screenEncodingFor({ width, height, fps, codec, optimizeFor }) {
+  const pixels = Math.max(1, width * height)
+  // Scale continuously from the 720p-ish floor through the 1440p ceiling.
+  // Exact resolution tiers under-budgeted slightly cropped/aligned windows and
+  // ultrawides despite nearly identical (or greater) pixel counts.
+  const base = Math.min(12_000_000, Math.max(5_000_000, (8_000_000 * pixels) / (1920 * 1080)))
+  const frameRateFactor = fps >= 50 ? 1.45 : 1
+  const motionFactor = optimizeFor === 'motion' ? 1.05 : 1
+  const mime = codec?.mimeType ?? ''
+  const codecFactor = /h264/i.test(mime) ? 1.2 : /vp9/i.test(mime) ? 1.08 : 1
+  const maxBitrate = Math.min(
+    // The SFU currently caps the aggregate producer transport at 25 Mbps.
+    // Leave room for screen audio, microphone audio, and RTX bursts.
+    20_000_000,
+    Math.round((base * frameRateFactor * motionFactor * codecFactor) / 250_000) * 250_000
+  )
+  return { maxBitrate, maxFramerate: Math.max(1, Math.round(fps)) }
 }
 
 // A video codec from the loaded device's sending capabilities, by mime type.
@@ -893,29 +1372,64 @@ function findVideoCodec(mime) {
 // maybeDowngradeScreenCodec): future shares then start on H.264 directly instead
 // of re-running ~9s of libaom pain each time. This is the capability check —
 // driven by the encoder the machine actually produced, not GPU-model sniffing.
-// ponytail: sticky once set; cleared by resetScreenCodecPreference() when the
-// encoder landscape changes (e.g. the hardware-acceleration toggle) so AV1 is
-// re-probed.
+// ponytail: sticky for this renderer session once set; cleared by
+// resetScreenCodecPreference() when the encoder landscape changes (e.g. the
+// hardware-acceleration toggle) so AV1 is re-probed.
 const SCREEN_H264_KEY = 'screenPreferH264'
+const SCREEN_H264_CACHE_VERSION_KEY = 'screenPreferH264Version'
 
-// Forget a persisted "AV1 is software here → use H.264" verdict so the next
+// This is an optimization, not durable hardware capability knowledge. GPU
+// process startup, driver state, and feature flags can differ across app
+// launches (especially the first launch after an update), so a software result
+// must not permanently pin future processes to H.264. Keep the optimization for
+// later shares in this renderer, but force every fresh renderer to probe AV1.
+function clearScreenCodecPreferenceStorage() {
+  try {
+    // Remove values written by older builds which incorrectly persisted this
+    // decision across app restarts.
+    localStorage.removeItem(SCREEN_H264_KEY)
+    localStorage.removeItem(SCREEN_H264_CACHE_VERSION_KEY)
+    sessionStorage.removeItem(SCREEN_H264_KEY)
+  } catch {
+    // localStorage is unavailable only in unusual/private renderer contexts;
+    // the normal codec probe still works without the optimization cache.
+  }
+}
+
+clearScreenCodecPreferenceStorage()
+
+function hasScreenCodecPreference() {
+  try {
+    return sessionStorage.getItem(SCREEN_H264_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+// Forget the session's "AV1 is software here → use H.264" verdict so the next
 // share re-probes AV1 from scratch. Call when something that changes which
 // encoders exist has changed — notably toggling hardware acceleration, after
 // which AV1 that was software may now be hardware (or vice-versa).
 export function resetScreenCodecPreference() {
-  localStorage.removeItem(SCREEN_H264_KEY)
+  try {
+    sessionStorage.removeItem(SCREEN_H264_KEY)
+    localStorage.removeItem(SCREEN_H264_KEY)
+    localStorage.removeItem(SCREEN_H264_CACHE_VERSION_KEY)
+  } catch {
+    // Ignore storage failures; the next renderer session will still probe AV1.
+  }
 }
 
 // Screen share: AV1 for efficiency (Discord-level sharpness at lower bitrate,
-// one plain encoding — see the SVC note above maxBitrateFor), VP9 fallback.
+// one plain encoding — see the SVC note above screenEncodingFor), VP9 fallback.
 // Whether AV1 encodes in
 // hardware or software can't be known up front (mediaCapabilities.encodingInfo
 // lies on Windows — reports AV1 powerEfficient even when the WebRTC encoder is
 // libaom), so the first share probes it: getStats names the real encoder ~3s in,
-// and a software result downgrades the share to H.264 and persists the choice
-// (SCREEN_H264_KEY) so later shares skip the probe.
+// and a software result downgrades the share to H.264 and remembers that choice
+// for later shares in this renderer session (SCREEN_H264_KEY).
 function pickVideoCodec() {
-  if (localStorage.getItem(SCREEN_H264_KEY) === '1') {
+  if (hasScreenCodecPreference()) {
     return findVideoCodec('video/h264') ?? findVideoCodec('video/vp9')
   }
   return findVideoCodec('video/av1') ?? findVideoCodec('video/vp9')
@@ -982,12 +1496,31 @@ function startEncoderStatsLog(producer, onStats) {
   encoderStatsStop?.()
   const sender = producer.rtpSender
   if (!sender?.getStats) return
-  let prev = null // last { totalEncodeTime, framesEncoded } for per-frame encode cost
+  let prev = null
   const id = setInterval(async () => {
     try {
       const stats = await sender.getStats()
+      let fallbackRemoteInbound = null
+      const remoteInboundByLocalId = new Map()
+      let candidatePair = null
+      for (const report of stats.values()) {
+        if (report.type === 'remote-inbound-rtp') {
+          fallbackRemoteInbound ??= report
+          if (report.localId) remoteInboundByLocalId.set(report.localId, report)
+        } else if (
+          report.type === 'candidate-pair' &&
+          report.state === 'succeeded' &&
+          report.nominated
+        ) {
+          candidatePair = report
+        }
+      }
+
       for (const s of stats.values()) {
-        if (s.type !== 'outbound-rtp' || s.kind !== 'video') continue
+        // Chromium may expose a separate outbound RTX report. It has kind=video
+        // but no encoded frames; mixing it into the primary report corrupts all
+        // byte/frame deltas and can trigger a false codec downgrade.
+        if (s.type !== 'outbound-rtp' || s.kind !== 'video' || s.framesEncoded == null) continue
         // ms of encoder time per encoded frame — the clearest HW-vs-SW signal
         // besides the implementation name (software AV1 sits an order of
         // magnitude above hardware).
@@ -996,13 +1529,26 @@ function startEncoderStatsLog(producer, onStats) {
             ? ((s.totalEncodeTime - prev.totalEncodeTime) * 1000) /
               (s.framesEncoded - prev.framesEncoded)
             : null
-        prev = { totalEncodeTime: s.totalEncodeTime ?? 0, framesEncoded: s.framesEncoded ?? 0 }
+        const elapsedMs = prev ? s.timestamp - prev.timestamp : 0
+        const sendKbps =
+          prev && elapsedMs > 0 ? (8 * ((s.bytesSent ?? 0) - prev.bytesSent)) / elapsedMs : null
+        const remoteInbound = remoteInboundByLocalId.get(s.id) ?? fallbackRemoteInbound
+        const rttMs =
+          remoteInbound?.roundTripTime != null ? remoteInbound.roundTripTime * 1000 : null
+        prev = {
+          totalEncodeTime: s.totalEncodeTime ?? 0,
+          framesEncoded: s.framesEncoded ?? 0,
+          bytesSent: s.bytesSent ?? 0,
+          timestamp: s.timestamp
+        }
         if (import.meta.env.DEV) {
           console.log(
             `[Soup] encoder: ${s.encoderImplementation ?? '?'} | limited by: ` +
               `${s.qualityLimitationReason ?? '?'} | ${s.frameWidth ?? '?'}x${s.frameHeight ?? '?'}` +
               `@${Math.round(s.framesPerSecond ?? 0)}fps` +
-              (encodeMsPerFrame != null ? ` | ${encodeMsPerFrame.toFixed(1)}ms/frame` : '')
+              (encodeMsPerFrame != null ? ` | ${encodeMsPerFrame.toFixed(1)}ms/frame` : '') +
+              (sendKbps != null ? ` | ${sendKbps.toFixed(0)}kbps` : '') +
+              (rttMs != null ? ` | RTT ${rttMs.toFixed(0)}ms` : '')
           )
         }
         onStats?.({
@@ -1013,101 +1559,224 @@ function startEncoderStatsLog(producer, onStats) {
           width: s.frameWidth,
           height: s.frameHeight,
           fps: s.framesPerSecond,
-          encodeMsPerFrame
+          encodeMsPerFrame,
+          sendKbps,
+          packetsSent: s.packetsSent,
+          retransmittedPacketsSent: s.retransmittedPacketsSent,
+          nackCount: s.nackCount,
+          pliCount: s.pliCount,
+          rttMs,
+          packetsLost: remoteInbound?.packetsLost,
+          fractionLost: remoteInbound?.fractionLost,
+          availableOutgoingBitrate: candidatePair?.availableOutgoingBitrate
         })
       }
     } catch {
       // getStats can reject transiently around teardown — ignore.
     }
   }, 3000)
-  encoderStatsStop = () => {
+  const stop = () => {
     clearInterval(id)
-    encoderStatsStop = null
+    if (encoderStatsStop === stop) encoderStatsStop = null
   }
-  return encoderStatsStop
+  encoderStatsStop = stop
+  return stop
 }
 
 // ─── Adaptive screen-share codec downgrade ───────────────────────
 // The share starts on AV1 (best quality-per-bit when hardware-encoded); the first
 // stats sample (~3s) names the encoder the machine actually produced. Software
 // AV1/VP9 (libaom/libvpx — the heaviest encoders Chromium ships) downgrades to
-// H.264 immediately and persists the choice (SCREEN_H264_KEY): H.264 is hardware
-// via MediaFoundation where the GPU process supports it, else openh264, the
-// cheapest software encoder. A hardware encoder only downgrades under sustained
-// cpu limitation. We re-produce ONCE, reusing the live capture track so the user
-// doesn't re-pick a source. The SFU already tolerates a brief two-producer overlap
+// H.264 immediately and remembers the choice for this renderer session
+// (SCREEN_H264_KEY): H.264 is hardware via MediaFoundation where the GPU process
+// supports it, else openh264, the cheapest software encoder. A hardware encoder
+// only downgrades under sustained cpu limitation. We re-produce ONCE, reusing the
+// live capture track so the user doesn't re-pick a source. The SFU already
+// tolerates a brief two-producer overlap
 // (see consumeProducer's stale-consumer cleanup), so we produce the replacement
 // before closing the original — a failed downgrade leaves the AV1 share running
 // rather than killing it.
 const CPU_STRIKES_TO_DOWNGRADE = 3 // ~3 polls × 3s ≈ 9s of sustained cpu limiting
-let screenShareCtx = null // { track, height, optimizeFor, onEncoderStats } while sharing
-let screenCpuStrikes = 0
-let screenDowngraded = false // one-shot per share; no flap back to AV1
 
-// Composed stats sink for the screen producer: feeds the UI badge and the downgrade.
-function screenStatsHandler(stats) {
-  screenShareCtx?.onEncoderStats?.(stats)
-  maybeDowngradeScreenCodec(stats)
+function enqueueShareClaim(operation) {
+  const result = shareClaimQueue.then(operation, operation)
+  shareClaimQueue = result.catch(() => {})
+  return result
 }
 
-async function maybeDowngradeScreenCodec(stats) {
-  if (screenDowngraded || !screenShareCtx || !screenProducer) return
-  const current = screenProducer.rtpParameters?.codecs?.[0]?.mimeType ?? ''
+function enqueueShareProduce(operation) {
+  const result = shareProduceQueue.then(operation, operation)
+  shareProduceQueue = result.catch(() => {})
+  return result
+}
+
+function shareSupersededError() {
+  const error = new Error('Screen share request was superseded')
+  error.code = 'SCREEN_SHARE_SUPERSEDED'
+  return error
+}
+
+function isShareSupersededError(error) {
+  return error?.code === 'SCREEN_SHARE_SUPERSEDED'
+}
+
+function isActiveShare(ctx) {
+  return screenShareCtx === ctx && !ctx.stopped
+}
+
+// Serialize mediasoup produce operations for the single local video-share slot.
+// If ownership changes during the await, close only the producer just created;
+// never call a global teardown that could belong to the successor share.
+function produceForShare(ctx, options) {
+  return enqueueShareProduce(async () => {
+    if (!isActiveShare(ctx)) throw shareSupersededError()
+    const producer = await ctx.transport.produce(options)
+    if (!isActiveShare(ctx)) {
+      producer.close()
+      await closeServerProducer(producer.id)
+      throw shareSupersededError()
+    }
+    return producer
+  })
+}
+
+async function stopShareContext(ctx, { notifyServer = true } = {}) {
+  if (!ctx || ctx.stopped) return ctx?.stopPromise
+  ctx.stopped = true
+  if (screenShareCtx === ctx) screenShareCtx = null
+
+  ctx.statsStop?.()
+  ctx.statsStop = null
+
+  const videoProducer = ctx.producer
+  const audioProducer = ctx.audioProducer
+  ctx.producer = null
+  ctx.audioProducer = null
+
+  const producerIds = []
+  if (videoProducer) {
+    videoProducer.close()
+    localProducerIds.delete(videoProducer.id)
+    producerIds.push(videoProducer.id)
+  }
+  if (audioProducer) {
+    audioProducer.close()
+    localProducerIds.delete(audioProducer.id)
+    producerIds.push(audioProducer.id)
+  }
+
+  const ownedTracks = new Set(ctx.stream?.getTracks?.() ?? [])
+  if (ctx.track) ownedTracks.add(ctx.track)
+  if (ctx.audioTrack) ownedTracks.add(ctx.audioTrack)
+  const nativeAudio = ctx.nativeAudio
+  ctx.stream = null
+  ctx.track = null
+  ctx.audioTrack = null
+  ctx.nativeAudio = null
+  for (const track of ownedTracks) track.stop()
+
+  if (notifyServer) void Promise.all(producerIds.map((id) => closeServerProducer(id)))
+
+  ctx.stopPromise = (async () => {
+    if (!nativeAudio) return
+    await nativeAudio
+      .stop()
+      .catch((error) =>
+        console.warn('[Soup] Failed to stop owned native screen audio cleanly:', error)
+      )
+  })()
+  return ctx.stopPromise
+}
+
+function claimShareContext(ctx) {
+  return enqueueShareClaim(async () => {
+    if (screenShareCtx) await stopShareContext(screenShareCtx)
+    screenShareCtx = ctx
+  })
+}
+
+// Composed stats sink for the screen producer: feeds the UI badge and the downgrade.
+function screenStatsHandler(ctx, stats) {
+  if (!isActiveShare(ctx)) return
+  ctx.onEncoderStats?.(stats)
+  maybeDowngradeScreenCodec(ctx, stats)
+}
+
+async function maybeDowngradeScreenCodec(ctx, stats) {
+  if (!isActiveShare(ctx) || ctx.downgraded || !ctx.producer) return
+  const current = ctx.producer.rtpParameters?.codecs?.[0]?.mimeType ?? ''
   if (/h264/i.test(current)) return // already on the lightest codec
 
   const softwareEncoder = stats.hardware === false
   if (softwareEncoder) {
     // Verified software AV1/VP9 is never worth keeping — downgrade now.
-    screenCpuStrikes = CPU_STRIKES_TO_DOWNGRADE
+    ctx.cpuStrikes = CPU_STRIKES_TO_DOWNGRADE
   } else {
     // Hardware (or not-yet-known) encoder: only downgrade under sustained cpu
     // limitation. Decay rather than reset — a loaded encoder oscillates between
     // 'cpu' and 'bandwidth', and a hard reset let that oscillation dodge the
     // downgrade forever.
-    screenCpuStrikes =
-      stats.qualityLimitationReason === 'cpu'
-        ? screenCpuStrikes + 1
-        : Math.max(0, screenCpuStrikes - 1)
+    ctx.cpuStrikes =
+      stats.qualityLimitationReason === 'cpu' ? ctx.cpuStrikes + 1 : Math.max(0, ctx.cpuStrikes - 1)
   }
-  if (screenCpuStrikes < CPU_STRIKES_TO_DOWNGRADE) return
-  screenDowngraded = true // commit — win or lose, don't re-evaluate
+  if (ctx.cpuStrikes < CPU_STRIKES_TO_DOWNGRADE) return
+  ctx.downgraded = true // commit — win or lose, don't re-evaluate
 
   const h264 = findVideoCodec('video/h264')
   if (!h264) return // nothing lighter to switch to
 
-  const ctx = screenShareCtx
-  const oldId = screenProducer.id
+  const previous = ctx.producer
+  const oldId = previous.id
   try {
     // No scalabilityMode on H.264: MediaFoundation hardware encoders reject
     // 'L1T3' in setParameters, breaking setDegradationPreference below.
-    const next = await producerTransport.produce({
+    const next = await produceForShare(ctx, {
       track: ctx.track,
       codec: h264,
-      encodings: [{ maxBitrate: maxBitrateFor(ctx.height) }],
+      encodings: [
+        screenEncodingFor({
+          width: ctx.width,
+          height: ctx.height,
+          fps: ctx.fps,
+          codec: h264,
+          optimizeFor: ctx.optimizeFor
+        })
+      ],
       // Same shared-track rule as shareScreen: closing a producer must never
       // stop the capture track (stopScreenShare owns that).
       stopTracks: false,
       codecOptions: { videoGoogleStartBitrate: 2500 },
       appData: { produced: 'ScreenShare' }
     })
-    screenProducer.close()
+
+    previous.close()
     localProducerIds.delete(oldId)
-    notify('CloseProducer', { id: oldId })
-    screenProducer = next
+    // Producing the same ScreenShare media type atomically replaces the old
+    // server producer; asking the SFU to close oldId now would return NotFound
+    // and used to poison the response FIFO.
+    ctx.producer = next
     localProducerIds.add(next.id)
-    // Only a measured-software encoder proves the machine can't accelerate
-    // AV1/VP9 — remember that so pickVideoCodec() starts future shares on
-    // H.264 directly. A hardware encoder that got cpu-limited stays probe-able.
-    if (softwareEncoder) localStorage.setItem(SCREEN_H264_KEY, '1')
+    // Only a measured-software encoder proves this renderer should avoid
+    // repeating the expensive AV1 attempt. Keep that decision session-scoped;
+    // a new app process must be allowed to discover newly working HW AV1.
+    if (softwareEncoder) {
+      try {
+        sessionStorage.setItem(SCREEN_H264_KEY, '1')
+      } catch {
+        // The next share will simply probe again if sessionStorage is unavailable.
+      }
+    }
     await setDegradationPreference(
       next,
       ctx.optimizeFor === 'motion' ? 'maintain-framerate' : 'maintain-resolution'
     )
-    startEncoderStatsLog(next, screenStatsHandler)
+    if (!isActiveShare(ctx) || ctx.producer !== next) return
+    ctx.statsStop = startEncoderStatsLog(next, (nextStats) => screenStatsHandler(ctx, nextStats))
     console.log(
       `[Soup] Screen codec downgraded to H264 (${softwareEncoder ? 'software encoder' : 'cpu limited'}) [id:${next.id}]`
     )
   } catch (err) {
+    if (isShareSupersededError(err)) return
     console.warn('[Soup] Screen codec downgrade failed; staying on AV1:', err)
   }
 }
@@ -1153,125 +1822,217 @@ export async function shareScreen({
   onEncoderStats = undefined
 } = {}) {
   if (!producerTransport) throw new Error('Not connected to voice')
-  // A share started while one is live (mid-flight double-toggle, or a prior
-  // share whose audio setup failed after the video producer went live) must
-  // not overwrite screenProducer and leak a still-encoding producer.
-  if (screenProducer) await stopScreenShare()
   if (audio !== undefined && audioMode === 'none' && audio) audioMode = 'system-legacy'
 
-  const stream = await navigator.mediaDevices.getDisplayMedia({
-    video: {
-      frameRate: fps,
-      width: { ideal: width },
-      height: { ideal: height }
-    },
-    audio: audioMode === 'system-legacy'
-  })
-
-  const track = stream.getVideoTracks()[0]
-  track.contentHint = optimizeFor === 'motion' ? 'motion' : 'detail'
+  // Claim ownership before getDisplayMedia. A Stop/new share during the picker
+  // invalidates this context; when the old prompt eventually resolves it can
+  // release only its own returned tracks without touching the successor.
+  const ctx = {
+    type: 'screen',
+    transport: producerTransport,
+    stream: null,
+    track: null,
+    audioTrack: null,
+    nativeAudio: null,
+    producer: null,
+    audioProducer: null,
+    statsStop: null,
+    stopPromise: null,
+    stopped: false,
+    width,
+    height,
+    fps,
+    optimizeFor,
+    onEncoderStats,
+    cpuStrikes: 0,
+    downgraded: false
+  }
+  await claimShareContext(ctx)
 
   try {
-    screenProducer = await producerTransport.produce({
+    const stream = await navigator.mediaDevices.getDisplayMedia({
+      video: {
+        frameRate: { ideal: fps, max: fps },
+        width: { ideal: width, max: width },
+        height: { ideal: height, max: height }
+      },
+      audio: audioMode === 'system-legacy'
+    })
+
+    if (!isActiveShare(ctx)) {
+      stream.getTracks().forEach((ownedTrack) => ownedTrack.stop())
+      throw shareSupersededError()
+    }
+    ctx.stream = stream
+
+    const track = stream.getVideoTracks()[0]
+    if (!track) throw new Error('The selected source did not provide a video track')
+    ctx.track = track
+    track.onended = () => {
+      void stopShareContext(ctx)
+    }
+    track.contentHint = optimizeFor === 'motion' ? 'motion' : 'detail'
+
+    const settings = track.getSettings()
+    ctx.width = settings.width > 0 ? settings.width : width
+    ctx.height = settings.height > 0 ? settings.height : height
+    ctx.fps = settings.frameRate > 0 ? Math.min(settings.frameRate, fps) : fps
+    const screenCodec = pickVideoCodec()
+    const screenEncoding = screenEncodingFor({
+      width: ctx.width,
+      height: ctx.height,
+      fps: ctx.fps,
+      codec: screenCodec,
+      optimizeFor
+    })
+    console.log(
+      `[Soup] Screen capture selected ${ctx.width}x${ctx.height}@${ctx.fps}fps, ` +
+        `ceiling ${Math.round(screenEncoding.maxBitrate / 1000)}kbps`
+    )
+
+    const videoProducer = await produceForShare(ctx, {
       track,
       // Request the codec explicitly: AV1, else VP9 — or H.264 once the probe
       // learned AV1 is software here (see pickVideoCodec). One plain encoding,
-      // no scalabilityMode (see the SVC note above maxBitrateFor).
-      codec: pickVideoCodec(),
-      encodings: [{ maxBitrate: maxBitrateFor(height) }],
+      // no scalabilityMode (see the SVC note above screenEncodingFor).
+      codec: screenCodec,
+      encodings: [screenEncoding],
       // The adaptive downgrade re-produces this SAME track, so producers must
       // not stop it on close() (the default stopTracks:true killed the
-      // replacement producer — black stream at 0fps). stopScreenShare() and
-      // resetMediaState() stop the capture track explicitly instead.
+      // replacement producer — black stream at 0fps).
       stopTracks: false,
-      codecOptions: {
-        // Start conservatively (kbps) and let BWE ramp — a high start bitrate
-        // over-probes the link and causes the initial overshoot/freeze.
-        videoGoogleStartBitrate: 2500
-      },
+      codecOptions: { videoGoogleStartBitrate: 2500 },
       appData: { produced: 'ScreenShare' }
     })
+    ctx.producer = videoProducer
+    localProducerIds.add(videoProducer.id)
+    logNegotiatedVideoCodec(videoProducer)
+
+    await setDegradationPreference(
+      videoProducer,
+      optimizeFor === 'motion' ? 'maintain-framerate' : 'maintain-resolution'
+    )
+    if (!isActiveShare(ctx) || ctx.producer !== videoProducer || track.readyState === 'ended') {
+      throw shareSupersededError()
+    }
+
+    ctx.statsStop = startEncoderStatsLog(videoProducer, (stats) => screenStatsHandler(ctx, stats))
+    console.log(`[Soup] Screen sharing [id:${videoProducer.id}]`)
+
+    // Screenshare audio: native capture for per-app/system modes, or the legacy
+    // loopback track riding getDisplayMedia. Audio failure keeps video live.
+    let audioTrack = null
+    let nativeAudio = null
+    if (audioMode === 'system-legacy') {
+      audioTrack = stream.getAudioTracks()[0] ?? null
+      if (!audioTrack) {
+        const message = 'The selected capture source did not provide a system-audio track'
+        console.error(`[Soup] ${message}; sharing video-only`)
+        activeCallbacks.onScreenAudioError?.(message)
+      }
+    } else if (audioMode !== 'none') {
+      try {
+        nativeAudio = await startScreenAudio({
+          mode: audioMode,
+          targets: audioTargets ?? undefined
+        })
+        if (!isActiveShare(ctx)) {
+          await nativeAudio.stop().catch(() => {})
+          throw shareSupersededError()
+        }
+        ctx.nativeAudio = nativeAudio
+        audioTrack = nativeAudio.track
+        console.log(`[Soup] Native screen audio capture started [backend:${nativeAudio.backend}]`)
+      } catch (err) {
+        if (isShareSupersededError(err) || !isActiveShare(ctx)) throw shareSupersededError()
+        console.error('[Soup] Native screen audio failed, sharing video-only:', err)
+        activeCallbacks.onScreenAudioError?.(err.message)
+      }
+    }
+
+    if (audioTrack) {
+      ctx.audioTrack = audioTrack
+      try {
+        audioTrack.contentHint = 'music'
+        const audioProducer = await produceForShare(ctx, {
+          track: audioTrack,
+          // Stereo + a real bitrate: captured app/system audio is music/media,
+          // not speech, and the old mono default audibly degraded it.
+          codecOptions: {
+            opusStereo: true,
+            opusDtx: false,
+            opusFec: true,
+            opusMaxAverageBitrate: 160000,
+            opusPtime: 20
+          },
+          encodings: [{ maxBitrate: 160000 }],
+          appData: { produced: 'ScreenShareAudio' }
+        })
+
+        if (audioTrack.readyState === 'ended') {
+          const failureAlreadyReported = ctx.audioTrack !== audioTrack
+          audioProducer.close()
+          await closeServerProducer(audioProducer.id)
+          if (ctx.audioTrack === audioTrack) ctx.audioTrack = null
+          if (ctx.nativeAudio === nativeAudio) ctx.nativeAudio = null
+          audioTrack.stop()
+          await nativeAudio?.stop().catch(() => {})
+          if (!isActiveShare(ctx)) throw shareSupersededError()
+          const message = 'Screen audio capture ended while starting'
+          console.error(`[Soup] ${message}; sharing video-only`)
+          if (!failureAlreadyReported) activeCallbacks.onScreenAudioError?.(message)
+        } else {
+          ctx.audioProducer = audioProducer
+          localProducerIds.add(audioProducer.id)
+          audioTrack.addEventListener(
+            'ended',
+            () => {
+              if (!isActiveShare(ctx) || ctx.audioTrack !== audioTrack) return
+              ctx.audioTrack = null
+              if (ctx.nativeAudio === nativeAudio) ctx.nativeAudio = null
+              if (ctx.audioProducer === audioProducer) ctx.audioProducer = null
+              audioProducer.close()
+              localProducerIds.delete(audioProducer.id)
+              void closeServerProducer(audioProducer.id)
+              void nativeAudio?.stop().catch(() => {})
+              if (isActiveShare(ctx) && ctx.producer) {
+                activeCallbacks.onScreenAudioError?.('Screen audio capture ended')
+              }
+            },
+            { once: true }
+          )
+          console.log(`[Soup] Screen audio sharing [id:${audioProducer.id}]`)
+        }
+      } catch (err) {
+        if (isShareSupersededError(err) || !isActiveShare(ctx)) throw shareSupersededError()
+        const failureAlreadyReported = ctx.audioTrack !== audioTrack
+        if (ctx.audioTrack === audioTrack) ctx.audioTrack = null
+        if (ctx.nativeAudio === nativeAudio) ctx.nativeAudio = null
+        audioTrack.stop()
+        await nativeAudio
+          ?.stop()
+          .catch((stopErr) =>
+            console.warn('[Soup] Failed to stop owned screen audio after produce failure:', stopErr)
+          )
+        if (!isActiveShare(ctx)) throw shareSupersededError()
+        console.error('[Soup] Screen audio produce failed, sharing video-only:', err)
+        if (!failureAlreadyReported) activeCallbacks.onScreenAudioError?.(err.message)
+      }
+    }
+
+    if (!isActiveShare(ctx) || !ctx.producer) throw shareSupersededError()
+
+    // Local preview is video-only; playing captured audio locally would echo it.
+    const previewStream = new MediaStream([track])
+    return {
+      id: ctx.producer.id,
+      stream: previewStream,
+      codec: codecLabel(ctx.producer.rtpParameters),
+      stop: () => stopShareContext(ctx)
+    }
   } catch (err) {
-    // Produce refused (e.g. no STREAM permission in this channel). Release the
-    // capture so we don't leave the OS screen-share running with no producer.
-    stream.getTracks().forEach((t) => t.stop())
+    await stopShareContext(ctx)
     throw err
-  }
-
-  localProducerIds.add(screenProducer.id)
-  logNegotiatedVideoCodec(screenProducer)
-  // Follow the picker's Optimize-for choice: 'detail' keeps text sharp (fps drops
-  // first under pressure), 'motion' favors framerate for video-heavy shares.
-  await setDegradationPreference(
-    screenProducer,
-    optimizeFor === 'motion' ? 'maintain-framerate' : 'maintain-resolution'
-  )
-  // Arm the adaptive downgrade: retain the track + params so a sustained-CPU stall
-  // can re-produce as H.264 without the user re-picking a source.
-  screenShareCtx = { track, height, optimizeFor, onEncoderStats }
-  screenCpuStrikes = 0
-  screenDowngraded = false
-  startEncoderStatsLog(screenProducer, screenStatsHandler)
-  console.log(`[Soup] Screen sharing [id:${screenProducer.id}]`)
-
-  // Screenshare audio: native capture for the per-app/system modes, or the
-  // legacy loopback track riding the getDisplayMedia stream. Native capture
-  // failure degrades to a video-only share rather than failing the whole thing.
-  let audioTrack = null
-  if (audioMode === 'system-legacy') {
-    audioTrack = stream.getAudioTracks()[0] ?? null
-  } else if (audioMode !== 'none') {
-    try {
-      const nativeAudio = await startScreenAudio({
-        mode: audioMode,
-        targets: audioTargets ?? undefined
-      })
-      audioTrack = nativeAudio.track
-      console.log(`[Soup] Native screen audio capture started [backend:${nativeAudio.backend}]`)
-    } catch (err) {
-      console.error('[Soup] Native screen audio failed, sharing video-only:', err)
-      activeCallbacks.onScreenAudioError?.(err.message)
-    }
-  }
-
-  if (audioTrack) {
-    try {
-      screenAudioProducer = await producerTransport.produce({
-        track: audioTrack,
-        // Stereo + a real bitrate: captured app/system audio is music/media,
-        // not speech, and the old mono default audibly degraded it.
-        codecOptions: {
-          opusStereo: true,
-          opusDtx: true,
-          opusFec: true
-        },
-        encodings: [{ maxBitrate: 160000 }],
-        appData: { produced: 'ScreenShareAudio' }
-      })
-      localProducerIds.add(screenAudioProducer.id)
-      console.log(`[Soup] Screen audio sharing [id:${screenAudioProducer.id}]`)
-    } catch (err) {
-      // Match the native-capture failure path: degrade to video-only rather
-      // than rejecting the whole share — that would strand the live video
-      // producer with the UI thinking no share started.
-      audioTrack.stop()
-      console.error('[Soup] Screen audio produce failed, sharing video-only:', err)
-      activeCallbacks.onScreenAudioError?.(err.message)
-    }
-  }
-
-  track.onended = () => {
-    stopScreenShare()
-  }
-
-  // Local preview is video-only - the audio track is already produced above,
-  // and playing it back locally too would echo/duplicate it for this client.
-  const previewStream = new MediaStream([track])
-
-  return {
-    id: screenProducer.id,
-    stream: previewStream,
-    codec: codecLabel(screenProducer.rtpParameters)
   }
 }
 
@@ -1282,94 +2043,88 @@ export async function shareScreen({
 // fps/resolution/audio picker settings don't apply here.
 export async function shareCamera(deviceId, onEncoderStats) {
   if (!producerTransport) throw new Error('Not connected to voice')
-  // Same guard as shareScreen: never overwrite a live producer.
-  if (screenProducer) await stopScreenShare()
+  const ctx = {
+    type: 'camera',
+    transport: producerTransport,
+    stream: null,
+    track: null,
+    audioTrack: null,
+    nativeAudio: null,
+    producer: null,
+    audioProducer: null,
+    statsStop: null,
+    stopPromise: null,
+    stopped: false
+  }
+  await claimShareContext(ctx)
 
-  const stream = await navigator.mediaDevices.getUserMedia({
-    video: deviceId ? { deviceId: { exact: deviceId } } : true,
-    audio: false
-  })
-
-  const track = stream.getVideoTracks()[0]
-  track.contentHint = 'motion'
-
-  // H.264 gets NO scalabilityMode (MediaFoundation hardware encoders reject
-  // 'L1T3' in setParameters, which would break setDegradationPreference below);
-  // VP9/AV1 fallbacks keep the full spatial+temporal mode.
-  const cameraCodec = pickCameraCodec()
-  const cameraScalabilityMode = /h264/i.test(cameraCodec?.mimeType ?? '')
-    ? undefined
-    : VIDEO_SCALABILITY_MODE
   try {
-    screenProducer = await producerTransport.produce({
-      track,
-      // Webcam prefers hardware H.264, falling back to VP9/AV1 — see pickCameraCodec.
-      codec: cameraCodec,
-      // Webcams capture at native (typically 720p–1080p) resolution; cap at the
-      // 1080p tier and let BWE ramp from a conservative start, same as shareScreen.
-      encodings: [
-        { maxBitrate: 6_000_000, ...(cameraScalabilityMode ? { scalabilityMode: cameraScalabilityMode } : {}) }
-      ],
-      codecOptions: {
-        videoGoogleStartBitrate: 2500
-      },
-      appData: { produced: 'ScreenShare' }
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: deviceId ? { deviceId: { exact: deviceId } } : true,
+      audio: false
     })
+    if (!isActiveShare(ctx)) {
+      stream.getTracks().forEach((ownedTrack) => ownedTrack.stop())
+      throw shareSupersededError()
+    }
+    ctx.stream = stream
+
+    const track = stream.getVideoTracks()[0]
+    if (!track) throw new Error('The selected camera did not provide a video track')
+    ctx.track = track
+    track.onended = () => {
+      void stopShareContext(ctx)
+    }
+    track.contentHint = 'motion'
+
+    // H.264 gets NO scalabilityMode (MediaFoundation hardware encoders reject
+    // 'L1T3' in setParameters); VP9/AV1 fallbacks keep spatial+temporal layers.
+    const cameraCodec = pickCameraCodec()
+    const cameraScalabilityMode = /h264/i.test(cameraCodec?.mimeType ?? '')
+      ? undefined
+      : VIDEO_SCALABILITY_MODE
+    const cameraProducer = await produceForShare(ctx, {
+      track,
+      codec: cameraCodec,
+      encodings: [
+        {
+          maxBitrate: 6_000_000,
+          ...(cameraScalabilityMode ? { scalabilityMode: cameraScalabilityMode } : {})
+        }
+      ],
+      codecOptions: { videoGoogleStartBitrate: 2500 },
+      appData: { produced: 'Camera' }
+    })
+    ctx.producer = cameraProducer
+    localProducerIds.add(cameraProducer.id)
+    logNegotiatedVideoCodec(cameraProducer, cameraScalabilityMode)
+
+    await setDegradationPreference(cameraProducer, 'maintain-framerate')
+    if (!isActiveShare(ctx) || ctx.producer !== cameraProducer) throw shareSupersededError()
+    ctx.statsStop = startEncoderStatsLog(cameraProducer, onEncoderStats)
+    console.log(`[Soup] Camera sharing [id:${cameraProducer.id}]`)
+
+    const previewStream = new MediaStream([track])
+    return {
+      id: cameraProducer.id,
+      stream: previewStream,
+      codec: codecLabel(cameraProducer.rtpParameters),
+      stop: () => stopShareContext(ctx)
+    }
   } catch (err) {
-    // Produce refused (e.g. no STREAM permission) — release the camera capture.
-    stream.getTracks().forEach((t) => t.stop())
+    await stopShareContext(ctx)
     throw err
-  }
-
-  localProducerIds.add(screenProducer.id)
-  logNegotiatedVideoCodec(screenProducer, cameraScalabilityMode)
-  // Camera content is motion, so keep framerate smooth (resolution drops first).
-  await setDegradationPreference(screenProducer, 'maintain-framerate')
-  startEncoderStatsLog(screenProducer, onEncoderStats)
-  console.log(`[Soup] Camera sharing [id:${screenProducer.id}]`)
-
-  track.onended = () => {
-    stopScreenShare()
-  }
-
-  const previewStream = new MediaStream([track])
-
-  return {
-    id: screenProducer.id,
-    stream: previewStream,
-    codec: codecLabel(screenProducer.rtpParameters)
   }
 }
 
 // ─── Stop screen share ───────────────────────────────────────────
 export async function stopScreenShare() {
-  if (!screenProducer) return
-  encoderStatsStop?.()
-  // Screen producers are created with stopTracks:false (the downgrade reuses
-  // the track), so the OS capture must be released here explicitly. Camera
-  // shares have no ctx and keep the default: close() stops their track.
-  screenShareCtx?.track?.stop()
-  screenShareCtx = null
-  const producerId = screenProducer.id
-  screenProducer.close()
-  localProducerIds.delete(producerId)
-  // Tell the server we're done with this producer so it can close the
-  // server-side mediasoup Producer and any consumers peers have for it.
-  notify('CloseProducer', { id: producerId })
-  screenProducer = null
-
-  if (screenAudioProducer) {
-    const audioProducerId = screenAudioProducer.id
-    screenAudioProducer.close()
-    localProducerIds.delete(audioProducerId)
-    notify('CloseProducer', { id: audioProducerId })
-    screenAudioProducer = null
-  }
-
-  // Tear down the native capture session (no-op for legacy/video-only shares).
-  stopScreenAudio().catch(() => {})
-
-  console.log('[Soup] Screen share stopped')
+  return enqueueShareClaim(async () => {
+    const ctx = screenShareCtx
+    if (!ctx) return
+    await stopShareContext(ctx)
+    console.log('[Soup] Screen share stopped')
+  })
 }
 
 // ─── Subscribe: receive remote audio ────────────────────────────
@@ -1431,6 +2186,14 @@ export async function consumeProducer(producerId, kind, onStream, clientId, prod
     rtpParameters: consumerParams.rtp_parameters
   })
 
+  const encodings = consumer.rtpParameters?.encodings ?? []
+  const hasSelectableLayers =
+    encodings.length > 1 ||
+    encodings.some((encoding) => {
+      const match = /^L(\d+)T(\d+)/i.exec(encoding.scalabilityMode ?? '')
+      return match && (Number(match[1]) > 1 || Number(match[2]) > 1)
+    })
+
   const stream = new MediaStream([consumer.track])
 
   // log track state
@@ -1491,10 +2254,14 @@ export async function consumeProducer(producerId, kind, onStream, clientId, prod
     cleanup = () => {
       try {
         srcNode.disconnect()
-      } catch {}
+      } catch {
+        // The media source may already be disconnected during transport reset.
+      }
       try {
         gainNode.disconnect()
-      } catch {}
+      } catch {
+        // The gain node may already be disconnected during transport reset.
+      }
       audioEl.pause()
       audioEl.srcObject = null
       audioEl.remove()
@@ -1507,14 +2274,28 @@ export async function consumeProducer(producerId, kind, onStream, clientId, prod
     // share before a ProducerClosed notice arrived), close out the stale
     // consumer/tile before adding the new one.
     for (const [pid, entry] of remoteConsumers) {
-      if (entry.kind === 'video' && entry.clientId === clientId) {
+      if (entry.kind === 'video' && entry.clientId === clientId && pid !== producerId) {
         entry.consumer.close()
         remoteConsumers.delete(pid)
-        activeCallbacks.onConsumerClosed?.(entry.consumerId)
+        knownVideoProducers.delete(pid)
+        activeCallbacks.onStreamEnded?.(pid, {
+          replaced: true,
+          clientId: entry.clientId,
+          producedType: entry.producedType
+        })
         break
       }
     }
-    onStream?.({ stream, kind, consumerId: consumer.id, clientId, codec: codecLabel(consumer.rtpParameters) })
+    onStream?.({
+      stream,
+      kind,
+      consumerId: consumer.id,
+      // Carried so the UI can look this tile up in the viewer map, which the
+      // server keys by producer (one producer, many consumers watching it).
+      producerId,
+      clientId,
+      codec: codecLabel(consumer.rtpParameters)
+    })
   }
 
   remoteConsumers.set(producerId, {
@@ -1528,7 +2309,7 @@ export async function consumeProducer(producerId, kind, onStream, clientId, prod
     gain: gainNode,
     // Video is consumed paused above, so seed its bookkeeping as hidden/paused
     // — setVideoStreamRoles() will resume it only when a view role asks for it.
-    ...(kind === 'video' ? { serverPaused: true, viewRole: 'hidden' } : {})
+    ...(kind === 'video' ? { serverPaused: true, viewRole: 'hidden', hasSelectableLayers } : {})
   })
 
   if (kind === 'audio') {
@@ -1550,8 +2331,7 @@ export async function consumeProducer(producerId, kind, onStream, clientId, prod
 //       → serverConsumer.setPreferredLayers({ spatialLayer, temporalLayer })
 //   PauseConsumer  { id } → serverConsumer.pause()
 //   ResumeConsumer { id } → serverConsumer.resume()   (already implemented)
-// All three must send a response, since send() awaits one (an unanswered
-// message desyncs the response queue — see notify()).
+// All three must send a response, since send() awaits one.
 const VIEW_LAYERS = {
   focused: { spatialLayer: 2, temporalLayer: 2 },
   // The unfocused grid fills the whole area with medium tiles, so it gets a
@@ -1564,6 +2344,7 @@ const VIEW_LAYERS = {
 // Ask the server to forward only the given SVC layers for this consumer.
 // No-ops if the preference is unchanged.
 function setConsumerPreferredLayers(entry, { spatialLayer, temporalLayer }) {
+  if (!entry.hasSelectableLayers) return
   if (entry.preferredSpatial === spatialLayer && entry.preferredTemporal === temporalLayer) return
   entry.preferredSpatial = spatialLayer
   entry.preferredTemporal = temporalLayer
@@ -1622,8 +2403,11 @@ export function setVideoStreamRoles({ focusedConsumerId = null, visibleConsumerI
     if (role === 'hidden') {
       pauseVideoConsumer(entry)
     } else {
-      resumeVideoConsumer(entry) // no-op unless server-paused
+      // Set the forwarding tier while still paused, then resume. Requests are
+      // serialized by the signaling FIFO, so a layered consumer cannot briefly
+      // burst at its default highest layer before the preference takes effect.
       setConsumerPreferredLayers(entry, VIEW_LAYERS[role])
+      resumeVideoConsumer(entry) // no-op unless server-paused
     }
   }
 }
@@ -1632,28 +2416,25 @@ export function setVideoStreamRoles({ focusedConsumerId = null, visibleConsumerI
 export function resetMediaState() {
   selfSpeakingStop?.()
   selfSpeakingStop = null
+  const activeShare = screenShareCtx
+  if (activeShare) void stopShareContext(activeShare, { notifyServer: false })
   producerTransport?.close()
   producerTransport = null
   consumerTransport?.close()
   consumerTransport = null
   encoderStatsStop?.()
-  // Screen producers use stopTracks:false — release the capture explicitly.
-  screenShareCtx?.track?.stop()
-  screenShareCtx = null
-  screenProducer?.close()
-  screenProducer = null
-  screenAudioProducer?.close()
-  screenAudioProducer = null
-  stopScreenAudio().catch(() => {})
   producers = []
   localProducerIds.clear()
+  knownVideoProducers.clear()
+  // Audience is per-channel and replayed by NewConsumer on the next join, so a
+  // channel switch must start from empty rather than showing the old room's.
+  clearViewers()
   device = null
-  currentChannel = null
   stopAudioProcessor()
   // Release the raw mic capture — the producers above are closed, so no live
   // producer references it anymore (nothing to keep the OS mic open for).
   stopRawStream(rawMicStream)
-  rawMicStream = null
+  setRawMicStream(null)
   // Idle the shared mic context between sessions; getMicContext() resumes it.
   if (micContext?.state === 'running') micContext.suspend().catch(() => {})
   subscribePromise = null
@@ -1726,6 +2507,7 @@ export function setSoundMuted(muted) {
 // volume/mute overrides to every remote stream's gain node. A per-client
 // override volume above 1 boosts that client louder than their natural level.
 function applyAllAudioState() {
+  ensureOverridesForCurrentHost()
   for (const entry of remoteConsumers.values()) {
     if (entry.kind !== 'audio' || !entry.gain) continue
 
@@ -1748,21 +2530,76 @@ export function setFocusedScreenAudio(clientId, { volume, muted } = {}) {
   focusedClientId = clientId
   if (volume != null) focusedVolume = volume
   if (muted != null) focusedMuted = muted
+  if (clientId != null && playbackContext?.state === 'suspended') {
+    playbackContext.resume().catch(() => {})
+  }
   applyAllAudioState()
 }
 
+// Read the full persisted { [host]: { [clientId]: { volume, muted } } } blob.
+function readPersistedAudioOverrides() {
+  try {
+    return JSON.parse(localStorage.getItem(CLIENT_AUDIO_OVERRIDES_KEY) || '{}') || {}
+  } catch {
+    return {}
+  }
+}
+
+// Write the current host's in-memory overrides back to localStorage, pruning
+// no-op entries (100% volume, unmuted) so resetting a client truly forgets it
+// rather than leaving dead entries behind.
+function persistCurrentHostOverrides() {
+  const host = getServerHost()
+  if (!host) return
+  const all = readPersistedAudioOverrides()
+  const slice = {}
+  for (const [clientId, state] of clientAudioOverrides) {
+    if (state.volume !== 1 || state.muted) slice[clientId] = state
+  }
+  if (Object.keys(slice).length) all[host] = slice
+  else delete all[host]
+  try {
+    localStorage.setItem(CLIENT_AUDIO_OVERRIDES_KEY, JSON.stringify(all))
+  } catch {
+    // localStorage is unavailable only in unusual renderer contexts; overrides
+    // still work for this session, they just won't survive a restart.
+  }
+}
+
+// Reload clientAudioOverrides from storage whenever the connected host changes,
+// so the Map always reflects the current server's saved volumes and never leaks
+// one server's overrides onto another (user ids are only unique per server).
+function ensureOverridesForCurrentHost() {
+  const host = getServerHost()
+  if (host === clientAudioOverridesHost) return
+  clientAudioOverridesHost = host
+  clientAudioOverrides = new Map()
+  if (!host) return
+  const slice = readPersistedAudioOverrides()[host] || {}
+  for (const [clientId, state] of Object.entries(slice)) {
+    clientAudioOverrides.set(clientId, {
+      volume: typeof state.volume === 'number' ? state.volume : 1,
+      muted: !!state.muted
+    })
+  }
+}
+
 // Called by the sidebar's per-client right-click controls to locally
-// lower the volume of, or fully mute, a specific client's mic audio.
+// lower the volume of, or fully mute, a specific client's mic audio. The new
+// value is persisted per server so it survives app restarts.
 export function setClientAudioState(clientId, { volume, muted } = {}) {
+  ensureOverridesForCurrentHost()
   const current = clientAudioOverrides.get(clientId) || { volume: 1, muted: false }
   clientAudioOverrides.set(clientId, {
     volume: volume != null ? volume : current.volume,
     muted: muted != null ? muted : current.muted
   })
+  persistCurrentHostOverrides()
   applyAllAudioState()
 }
 
 export function getClientAudioState(clientId) {
+  ensureOverridesForCurrentHost()
   return clientAudioOverrides.get(clientId) || { volume: 1, muted: false }
 }
 

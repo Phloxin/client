@@ -10,6 +10,7 @@
 // This lives outside React on purpose: rotation must not re-render (or worse,
 // tear down the events websocket, whose effect keys on the login token).
 import { apiBase } from './serverConfig'
+import { httpFetch } from './http'
 
 const REFRESH_EARLY_MS = 90_000 // refresh this long before access expiry
 const REFRESH_RETRY_MS = 30_000 // retry delay after a network-level refresh failure
@@ -78,7 +79,7 @@ async function doRefresh() {
   if (!tokens) throw new Error('Not authenticated')
   let res
   try {
-    res = await fetch(`${apiBase()}/auth/refresh`, {
+    res = await httpFetch(`${apiBase()}/auth/refresh`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ refresh_token: tokens.refresh_token })
@@ -113,7 +114,7 @@ export async function getFreshToken() {
 // refreshes once (serialized) and retries the request exactly once.
 export async function authFetch(url, options = {}) {
   const doFetch = (t) =>
-    fetch(url, { ...options, headers: { ...options.headers, Authorization: `Bearer ${t}` } })
+    httpFetch(url, { ...options, headers: { ...options.headers, Authorization: `Bearer ${t}` } })
   const token = await getFreshToken()
   const res = await doFetch(token)
   if (res.status !== 401) return res

@@ -5,6 +5,7 @@ import { overlayPop, scrimFade } from '../lib/motionPresets'
 import './Main.css'
 import '../App.css'
 import { useAuth } from '../context/AuthContext'
+import { ClientActionsProvider } from '../context/ClientActionsContext'
 import SideBar from '../components/SideBar'
 import VideoGrid from '../components/VideoGrid'
 import ChatPanel from '../components/ChatPanel'
@@ -19,11 +20,14 @@ import Settings from './Settings'
 import {
   disconnect as disconnectVoice,
   setFocusedScreenAudio,
-  setVideoStreamRoles
+  setVideoStreamRoles,
+  setWatchedProducers
 } from '../lib/soup'
 import { playUiSound } from '../lib/sounds'
 import { setServerHost, apiBase, wsBase, cdnUrl, throwIfError } from '../lib/serverConfig'
+import { validateMessage, statusOf } from '../lib/presence'
 import { authFetch, getFreshToken, setOnSessionExpired } from '../lib/auth'
+import { httpFetch } from '../lib/http'
 import SegmentedTabs from '../components/SegmentedTabs'
 import {
   IconVideo,
@@ -147,6 +151,10 @@ function Main() {
   const { token, applyAuthResponse, clearAuth, client } = useAuth()
   const [channels, setChannels] = useState([])
   const [clients, setClients] = useState([])
+  // PresenceApiObject by client_id. Kept separate from `clients` because presence
+  // is user-level and outlives a connection — an entry can exist for someone the
+  // roster no longer lists, and `clients` is replaced wholesale by Ready.
+  const [presences, setPresences] = useState({})
   const [feed, setFeed] = useState([])
   const [viewMode, setViewMode] = useState('log') // 'log' or 'video'
   const [servers, setServers] = useState([])
@@ -171,11 +179,14 @@ function Main() {
 
   //Client UI Hooks
   const [allVideoStreams, setAllVideoStreams] = useState([])
-  const [selectedStreamId, setSelectedStreamId] = useState(null)
+  // Logical stream intent is keyed by client id. A codec downgrade creates a
+  // new producer/consumer id for the same client's stream; using that transient
+  // id here used to clear focus, stop watching, and hard-mute stream audio.
+  const [selectedStreamClientId, setSelectedStreamClientId] = useState(null)
   const [poppedOut, setPoppedOut] = useState(false)
   const [streamVolume, setStreamVolume] = useState(100)
   const [streamMuted, setStreamMuted] = useState(false)
-  const [watchedStreamIds, setWatchedStreamIds] = useState(() => new Set())
+  const [watchedStreamClientIds, setWatchedStreamClientIds] = useState(() => new Set())
   const [notifications, setNotifications] = useState([])
   const [dmNotifications, setDmNotifications] = useState([])
   const [readStates, setReadStates] = useState({})
@@ -185,15 +196,17 @@ function Main() {
   const eventsWsRef = useRef(null)
   const channelsRef = useRef([])
   const clientsRef = useRef([])
+  const refreshPresencesRef = useRef(null)
+  const dndRef = useRef(false)
 
   //Stream Ref Hooks
   const popoutWindowRef = useRef(null)
   const popoutListenersRef = useRef(new Set())
   const allVideoStreamsRef = useRef([])
-  const selectedStreamIdRef = useRef(null)
+  const selectedStreamClientIdRef = useRef(null)
   const streamVolumeRef = useRef(100)
   const streamMutedRef = useRef(false)
-  const watchedStreamIdsRef = useRef(new Set())
+  const watchedStreamClientIdsRef = useRef(new Set())
 
   const lastTypingSentRef = useRef(0)
   const lastEventSeqRef = useRef(null)
@@ -230,8 +243,8 @@ function Main() {
     allVideoStreamsRef.current = allVideoStreams
   }, [allVideoStreams])
   useEffect(() => {
-    selectedStreamIdRef.current = selectedStreamId
-  }, [selectedStreamId])
+    selectedStreamClientIdRef.current = selectedStreamClientId
+  }, [selectedStreamClientId])
   useEffect(() => {
     streamVolumeRef.current = streamVolume
   }, [streamVolume])
@@ -239,33 +252,58 @@ function Main() {
     streamMutedRef.current = streamMuted
   }, [streamMuted])
   useEffect(() => {
-    watchedStreamIdsRef.current = watchedStreamIds
-  }, [watchedStreamIds])
+    watchedStreamClientIdsRef.current = watchedStreamClientIds
+  }, [watchedStreamClientIds])
 
   // Notify the popout window whenever the data it mirrors changes.
   useEffect(() => {
     popoutListenersRef.current.forEach((cb) => cb())
-  }, [allVideoStreams, clients, selectedStreamId, streamVolume, streamMuted, watchedStreamIds])
+  }, [
+    allVideoStreams,
+    clients,
+    selectedStreamClientId,
+    streamVolume,
+    streamMuted,
+    watchedStreamClientIds
+  ])
+
+  // Consumer lifetime follows the watch set: watching a stream subscribes to it,
+  // stopping unsubscribes. Driven here rather than in VideoGrid because the
+  // popout routes its play/stop back into this same state, so this one effect
+  // covers both windows. Watch intent is keyed by client, producers by id.
+  const watchedProducerKey = allVideoStreams
+    .filter((s) => !s.isSelf && watchedStreamClientIds.has(s.clientId))
+    .map((s) => s.producerId)
+    .filter(Boolean)
+    .sort()
+    .join(',')
+  useEffect(() => {
+    setWatchedProducers(watchedProducerKey ? watchedProducerKey.split(',') : [])
+  }, [watchedProducerKey])
 
   // Toggle whether a stream is watched (consumed); shared with the popout.
-  const handleSetStreamWatched = (consumerId, watched) =>
-    setWatchedStreamIds((prev) => {
-      if (watched === prev.has(consumerId)) return prev
+  const handleSetStreamWatched = (clientId, watched) =>
+    setWatchedStreamClientIds((prev) => {
+      if (watched === prev.has(clientId)) return prev
       const next = new Set(prev)
-      if (watched) next.add(consumerId)
-      else next.delete(consumerId)
+      if (watched) next.add(clientId)
+      else next.delete(clientId)
       return next
     })
 
-  // Drop watched ids for streams that have gone away, so a later stream can't
-  // inherit a stale "watching" state (and the set doesn't grow unbounded).
+  // Replacement handoffs retain a placeholder tile (the SFU marks their
+  // ProducerClosed event), so any client absent here genuinely stopped sharing.
+  // Clear intent immediately: a later unrelated share must require a new click.
   useEffect(() => {
-    setWatchedStreamIds((prev) => {
+    const liveClientIds = new Set(allVideoStreams.map((stream) => stream.clientId))
+    setWatchedStreamClientIds((prev) => {
       if (prev.size === 0) return prev
-      const live = new Set(allVideoStreams.map((s) => s.consumerId))
-      if ([...prev].every((id) => live.has(id))) return prev
-      return new Set([...prev].filter((id) => live.has(id)))
+      if ([...prev].every((id) => liveClientIds.has(id))) return prev
+      return new Set([...prev].filter((id) => liveClientIds.has(id)))
     })
+    setSelectedStreamClientId((current) =>
+      current != null && !liveClientIds.has(current) ? null : current
+    )
   }, [allVideoStreams])
 
   // Clear notification + unread history on connect/disconnect only — switching
@@ -283,12 +321,12 @@ function Main() {
       getData: () => ({
         streams: allVideoStreamsRef.current,
         clients: clientsRef.current,
-        selectedStreamId: selectedStreamIdRef.current,
+        selectedStreamClientId: selectedStreamClientIdRef.current,
         volume: streamVolumeRef.current,
         muted: streamMutedRef.current,
-        watchedStreamIds: watchedStreamIdsRef.current
+        watchedStreamClientIds: watchedStreamClientIdsRef.current
       }),
-      select: (id) => setSelectedStreamId(id),
+      select: (id) => setSelectedStreamClientId(id),
       setVolume: (v) => setStreamVolume(v),
       setMuted: (m) => setStreamMuted(m),
       setStreamWatched: (id, watched) => handleSetStreamWatched(id, watched),
@@ -360,6 +398,13 @@ function Main() {
   // tab is selected (mirrors the render condition below).
   const chatVisible = previewChannelId != null || viewMode === 'log'
 
+  // Do Not Disturb silences interruptions (notification/inbox toasts, the new
+  // message chime) but never suppresses the notification itself — unread counts
+  // still tick up so nothing is missed, it just waits for you. Declared here
+  // rather than beside its consumers because the ref-sync effect below reads it
+  // during render, in its dependency array.
+  const dnd = statusOf(presences[client?.id]) === 'do_not_disturb'
+
   useEffect(() => {
     selfIdRef.current = client?.id ?? null
   }, [client])
@@ -372,6 +417,10 @@ function Main() {
   useEffect(() => {
     chatVisibleRef.current = chatVisible
   }, [chatVisible])
+  // Read inside the socket handler, which closes over its first render.
+  useEffect(() => {
+    dndRef.current = dnd
+  }, [dnd])
   useEffect(() => {
     feedRef.current = feed
   }, [feed])
@@ -720,7 +769,8 @@ function Main() {
       }
       try {
         const res = await authFetch(`${apiBase()}/server/clients/${clientId}/roles/${roleId}`, {
-          method: 'PUT'        })
+          method: 'PUT'
+        })
         await throwIfError(res)
         apply()
       } catch (err) {
@@ -748,7 +798,8 @@ function Main() {
       }
       try {
         const res = await authFetch(`${apiBase()}/server/clients/${clientId}/roles/${roleId}`, {
-          method: 'DELETE'        })
+          method: 'DELETE'
+        })
         await throwIfError(res)
         apply()
       } catch (err) {
@@ -788,7 +839,8 @@ function Main() {
       const clientName = clients.find((c) => c.id === clientId)?.name ?? 'user'
       try {
         const res = await authFetch(`${apiBase()}/server/clients/${clientId}/vanity/${vanityId}`, {
-          method: assign ? 'PUT' : 'DELETE'        })
+          method: assign ? 'PUT' : 'DELETE'
+        })
         await throwIfError(res)
         setClients((prev) =>
           prev.map((c) => {
@@ -838,7 +890,8 @@ function Main() {
       if (!userId) return
       try {
         const res = await authFetch(`${apiBase()}/server/clients/${userId}/ban`, {
-          method: 'DELETE'        })
+          method: 'DELETE'
+        })
         await throwIfError(res)
         refreshBans()
       } catch (err) {
@@ -848,33 +901,45 @@ function Main() {
     [token, showError, refreshBans]
   )
 
-  // Set our own avatar: PATCH /client/self with data-URL image //Update locally -> Server broadcasts ClientModified to others
-  // avatar is a `data:image/...;base64,...` string, or null to remove it.
-  const handleSetAvatar = useCallback(
-    async (avatar) => {
-      if (avatar === undefined) return
+  // Edit our own profile: PATCH /client/self //Update locally -> Server broadcasts ClientModified to others.
+  // `patch` is { avatar } and/or { nickname }; `local` is how it maps onto our
+  // client row (the server calls it nickname, the roster renders it as `name`).
+  const patchSelf = useCallback(
+    async (patch, local, label) => {
       const selfId = client?.id
-      setClients((prev) => prev.map((c) => (c.id === selfId ? { ...c, avatar } : c)))
+      setClients((prev) => prev.map((c) => (c.id === selfId ? { ...c, ...local } : c)))
       try {
         const res = await authFetch(`${apiBase()}/client/self`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ avatar })
+          body: JSON.stringify(patch)
         })
         await throwIfError(res)
       } catch (err) {
-        showError(`Failed to set avatar: ${err.message}`)
+        showError(`Failed to set ${label}: ${err.message}`)
       }
     },
     [client, token]
   )
 
-  // No stream is focused by default (the grid view shows them all). Only clear the focus if the currently focused stream goes away.
-  useEffect(() => {
-    if (selectedStreamId && !allVideoStreams.some((s) => s.consumerId === selectedStreamId)) {
-      setSelectedStreamId(null)
-    }
-  }, [allVideoStreams, selectedStreamId])
+  // avatar is a `data:image/...;base64,...` string, or null to remove it.
+  const handleSetAvatar = useCallback(
+    (avatar) => {
+      if (avatar === undefined) return
+      patchSelf({ avatar }, { avatar }, 'avatar')
+    },
+    [patchSelf]
+  )
+
+  // Display name shown to other clients; decoupled from the login username.
+  const handleSetNickname = useCallback(
+    (nickname) => {
+      const name = nickname.trim()
+      if (!name) return
+      patchSelf({ nickname: name }, { name }, 'nickname')
+    },
+    [patchSelf]
+  )
 
   // Fetch a channel's recent history and replace that channel's feed entries with it.
   // Routed through the main process (GET with a JSON body). `shouldApply`
@@ -1024,7 +1089,8 @@ function Main() {
   const handleDeleteChannel = async (id) => {
     try {
       const res = await authFetch(`${apiBase()}/channels/${id}`, {
-        method: 'DELETE'      })
+        method: 'DELETE'
+      })
       await throwIfError(res)
       setChannels((prev) => prev.filter((ch) => ch.id !== id))
     } catch (err) {
@@ -1104,7 +1170,8 @@ function Main() {
   const handleDeleteChannelOverwrite = async (channelId, targetId) => {
     try {
       const res = await authFetch(`${apiBase()}/channels/${channelId}/permissions/${targetId}`, {
-        method: 'DELETE'      })
+        method: 'DELETE'
+      })
       await throwIfError(res)
       showSuccess('Channel permission removed')
     } catch (err) {
@@ -1165,6 +1232,10 @@ function Main() {
   // Connect to a saved server: point all endpoints at its host, then log in with
   // its stored credentials. Setting the token triggers the data-loading effect.
   const handleConnect = async (server) => {
+    // A host is global because the REST/WebSocket helpers are shared. Tear down
+    // the previous session before changing it, otherwise old channel data and
+    // reconnect callbacks can issue requests against the new host (or null).
+    if (token || connectedServer) handleDisconnect()
     setServerHost(server.host)
     setConnecting(true)
 
@@ -1174,7 +1245,7 @@ function Main() {
       device_name: 'Pylon Desktop'
     }
     const login = () =>
-      fetch(`${apiBase()}/login`, {
+      httpFetch(`${apiBase()}/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(credentials)
@@ -1186,7 +1257,7 @@ function Main() {
       // Preserve the existing first-connect experience: an unauthorized login
       // may be a first-time account, so try registration and then retry login.
       if (result.response.status === 401) {
-        const registerResponse = await fetch(`${apiBase()}/register`, {
+        const registerResponse = await httpFetch(`${apiBase()}/register`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(credentials)
@@ -1227,6 +1298,8 @@ function Main() {
     setClients([])
     setFeed([])
     setAllVideoStreams([])
+    setSelectedStreamClientId(null)
+    setWatchedStreamClientIds(new Set())
     setConnectedServer(null)
     setServerHost(null)
     setPreviewChannelId(null)
@@ -1348,7 +1421,12 @@ function Main() {
         sessionIdRef.current = reply.session_id ?? null
         lastEventSeqRef.current = null
         if (hadSession) reloadHistory()
+        // Ready follows and carries a presence snapshot, so no resync needed here.
       } else if (reply.kind === 'Resumed') {
+        // Replay should redeliver the PresenceUpdates we missed, but a resume that
+        // outlived the server's buffer would silently leave stale dots on screen.
+        // A resync is one small request — cheap insurance on a rare path.
+        refreshPresencesRef.current?.()
         // Resume accepted: the events we missed replay next as ordered, dup-free
         // dispatches, then live events continue. Keep our position; refresh id.
         if (reply.session_id != null) sessionIdRef.current = reply.session_id
@@ -1403,6 +1481,8 @@ function Main() {
       // is the websocket's equivalent of the old REST baseline fetch.
       if (ev === 'Ready') {
         setChannels(data.channels)
+        // Authoritative presence snapshot. Keyed by client_id; absent = offline.
+        setPresences(Object.fromEntries((data.presences || []).map((p) => [p.client_id, p])))
         // Voice state splits into self toggles (`self_mute`/`self_deaf`) and
         // server-forced state (`muted`/`deaf`, i.e. a moderator gag / server
         // deafen). Normalize the server-forced pair to `server_mute`/`server_deaf`
@@ -1416,6 +1496,14 @@ function Main() {
         setReadStates(reads)
         // Surface DMs that went unread while we were away in the inbox.
         seedUnreadDms(data.channels || [], reads, data.clients || [])
+        return
+      }
+
+      // Public presence broadcast. The object is authoritative for that user —
+      // replace it wholesale rather than merging, so a cleared status_message
+      // (null) doesn't leave the previous one behind.
+      if (ev === 'PresenceUpdate') {
+        setPresences((prev) => ({ ...prev, [data.client_id]: data }))
         return
       }
 
@@ -1472,9 +1560,7 @@ function Main() {
         // updated local state (and toasted), so the diff here is empty and
         // this stays silent — no double toast.
         if (data.id === selfIdRef.current && 'role_ids' in data) {
-          const before = new Set(
-            clientsRef.current.find((c) => c.id === data.id)?.role_ids || []
-          )
+          const before = new Set(clientsRef.current.find((c) => c.id === data.id)?.role_ids || [])
           const after = new Set(data.role_ids || [])
           const roleName = (id) => rolesRef.current.find((r) => r.id === id)?.name ?? 'a role'
           const added = [...after].find((id) => !before.has(id))
@@ -1486,9 +1572,7 @@ function Main() {
         // red when they remove us. Our own toggles were already applied (and
         // toasted green) by handleToggleVanity, so the diff here stays empty.
         if (data.id === selfIdRef.current && 'vanity' in data) {
-          const before = new Set(
-            clientsRef.current.find((c) => c.id === data.id)?.vanity_ids || []
-          )
+          const before = new Set(clientsRef.current.find((c) => c.id === data.id)?.vanity_ids || [])
           const after = new Set((data.vanity || []).map((v) => v.id))
           const groupName = (id) =>
             (data.vanity || []).find((v) => v.id === id)?.name ??
@@ -1497,7 +1581,8 @@ function Main() {
           const added = [...after].find((id) => !before.has(id))
           const removed = [...before].find((id) => !after.has(id))
           if (added != null) showSuccess(`You were added to the "${groupName(added)}" group`)
-          else if (removed != null) showError(`You were removed from the "${groupName(removed)}" group`)
+          else if (removed != null)
+            showError(`You were removed from the "${groupName(removed)}" group`)
         }
         // ClientModified also carries profile changes (avatar / nickname). Merge
         // whatever fields are present so we don't clobber the others; `in` guards
@@ -1560,7 +1645,8 @@ function Main() {
         // but ourselves — regardless of whether we're on the chat or video tab.
         if (
           data.author !== selfIdRef.current &&
-          data.channel_id === activeChatChannelIdRef.current
+          data.channel_id === activeChatChannelIdRef.current &&
+          !dndRef.current
         ) {
           playUiSound('new-message')
         }
@@ -1766,6 +1852,13 @@ function Main() {
         // Heartbeat acknowledgement — clears the outstanding beat; no event body.
         if (msg.op === 4) {
           awaitingAck = false
+          return
+        }
+
+        // Rejected command (e.g. an invalid presence update). This is a reply to
+        // one message, not a connection fault — surface it and keep the socket.
+        if (typeof msg.err === 'string') {
+          showError(msg.err)
           return
         }
 
@@ -1986,6 +2079,52 @@ function Main() {
   const sendStatus = (selfMute, selfDeaf) =>
     sendVoiceState({ self_mute: selfMute, self_deaf: selfDeaf })
 
+  // Change our own presence (op 5). Unlike voice state this is a genuine patch:
+  // an omitted field is preserved server-side, so send only what changed —
+  // `status_message: null` is meaningful (clears it) and must survive the trip.
+  const sendPresence = useCallback(
+    (patch) => {
+      if (patch.status == null && !('status_message' in patch)) return
+      if ('status_message' in patch) {
+        const { message, error } = validateMessage(patch.status_message)
+        if (error) {
+          showError(error)
+          return
+        }
+        patch = { ...patch, status_message: message }
+      }
+      if (eventsWsRef.current?.readyState !== WebSocket.OPEN) {
+        showError('Not connected — presence not updated')
+        return
+      }
+      eventsWsRef.current.send(JSON.stringify({ op: 5, data: patch }))
+      // No optimistic update: the server echoes PresenceUpdate to us too, and it
+      // arbitrates between our devices (last write wins). Guessing here would
+      // flicker whenever another device wins the race.
+    },
+    [showError]
+  )
+
+  // Full resync. The gateway is the live path; this is for recovering after a
+  // reconnect that resumed (no fresh Ready, so no new presence snapshot).
+  const refreshPresences = useCallback(async () => {
+    if (!token) return
+    try {
+      const res = await authFetch(`${apiBase()}/server/presences`)
+      const list = await (await throwIfError(res)).json()
+      setPresences(Object.fromEntries((list || []).map((p) => [p.client_id, p])))
+    } catch (err) {
+      console.warn('[Presence] resync failed:', err.message)
+    }
+  }, [token])
+
+  // Mirrored into a ref so the socket effect can call it without listing it as a
+  // dep — that effect owns the connection and must not re-run when a callback
+  // identity changes, or every render would drop and rebuild the WebSocket.
+  useEffect(() => {
+    refreshPresencesRef.current = refreshPresences
+  }, [refreshPresences])
+
   // Merge stream updates from a specific channel into the global streams list
   const handleStreamsUpdate = (channelId, streams) => {
     setAllVideoStreams((prev) => {
@@ -2056,243 +2195,273 @@ function Main() {
   const summaryChannelMemberCount =
     summaryChannel != null ? clients.filter((c) => c.channel_id === summaryChannel.id).length : 0
 
-  return (
-    <div className="app-shell">
-      <Toast message={toast?.message} variant={toast?.variant} onDismiss={dismissToast} />
-      {rolesGroupsOpen && (
-        <RolesGroupsMenu
-          roles={roles}
-          vanity={vanity}
-          onCreateVanity={handleCreateVanityGroup}
-          onClose={() => setRolesGroupsOpen(false)}
-        />
-      )}
-      <TitleBar
-        title={titleText}
-        icon={IconUsersGroup}
-        notifications={notifications}
-        onClearNotifications={() => setNotifications([])}
-        onOpenNotification={handleOpenNotification}
-        dmNotifications={dmNotifications}
-        onOpenDmNotification={handleOpenDmNotification}
-        onClearDmNotifications={() => setDmNotifications([])}
-      />
-      <div className="layout">
-        <SideBar
-          channels={channels}
-          clients={clients}
-          self={client}
-          onStreamsUpdate={handleStreamsUpdate}
-          onStatusChange={sendStatus}
-          onSelfChannelChange={(channelId) => sendVoiceState({ channel_id: channelId })}
-          // provide a renderer-level openSettings hook
-          onOpenSettings={openSettings}
-          servers={servers}
-          connectedServer={connectedServer}
-          onConnect={handleConnect}
-          onDisconnect={handleDisconnect}
-          onAddServer={handleAddServer}
-          onEditServer={handleEditServer}
-          onRemoveServer={handleRemoveServer}
-          onNotify={showSuccess}
-          onCreateChannel={handleCreateChannel}
-          onDeleteChannel={handleDeleteChannel}
-          onReorderChannel={handleReorderChannel}
-          onMoveClient={handleMoveClientToChannel}
-          onPreviewChannel={handlePreviewChannel}
-          onShowChannelSummary={handleShowChannelSummary}
-          onOpenDm={handleOpenDm}
-          onPoke={handlePoke}
-          onKick={handleKickUser}
-          onKickFromChannel={handleKickFromChannel}
-          onGag={handleGagUser}
-          onBan={handleBanUser}
-          onError={showError}
-          onUnban={handleUnbanUser}
-          onSetAvatar={handleSetAvatar}
-          onShowClientSummary={handleShowClientSummary}
-          roles={roles}
-          onAssignRole={handleAssignRole}
-          onRemoveRole={handleRemoveRole}
-          vanity={vanity}
-          onToggleVanity={handleToggleVanity}
-          onOpenRolesGroups={() => setRolesGroupsOpen(true)}
-          bannedUsers={bannedUsers}
-          canKickMembers={canKickMembers}
-          canBanMembers={canBanMembers}
-          canMuteMembers={canMuteMembers}
-          previewChannelId={previewChannelId}
-          unreadChannelIds={unreadChannelIds}
-        />
+  // Handed to ClientActionsProvider so a client context menu can be opened from
+  // anywhere (currently the sidebar roster and chat message authors).
+  const clientActions = {
+    onOpenDm: handleOpenDm,
+    onPoke: handlePoke,
+    onKick: handleKickUser,
+    onKickFromChannel: handleKickFromChannel,
+    onGag: handleGagUser,
+    onBan: handleBanUser,
+    onUnban: handleUnbanUser,
+    onSetAvatar: handleSetAvatar,
+    onSetNickname: handleSetNickname,
+    presences,
+    onSetPresence: sendPresence,
+    onShowClientSummary: handleShowClientSummary,
+    roles,
+    onAssignRole: handleAssignRole,
+    onRemoveRole: handleRemoveRole,
+    vanity,
+    onToggleVanity: handleToggleVanity,
+    onOpenRolesGroups: () => setRolesGroupsOpen(true),
+    canKickMembers,
+    canBanMembers,
+    canMuteMembers
+  }
 
-        <main className="chat-area">
-          {/* Summary views have no header bar: their banner card acts as the header.
+  return (
+    <ClientActionsProvider value={clientActions}>
+      <div className="app-shell">
+        <Toast message={toast?.message} variant={toast?.variant} onDismiss={dismissToast} />
+        {rolesGroupsOpen && (
+          <RolesGroupsMenu
+            roles={roles}
+            vanity={vanity}
+            onCreateVanity={handleCreateVanityGroup}
+            onClose={() => setRolesGroupsOpen(false)}
+          />
+        )}
+        <TitleBar
+          title={titleText}
+          icon={IconUsersGroup}
+          notifications={notifications}
+          onClearNotifications={() => setNotifications([])}
+          onOpenNotification={handleOpenNotification}
+          silentNotifications={dnd}
+          dmNotifications={dmNotifications}
+          onOpenDmNotification={handleOpenDmNotification}
+          onClearDmNotifications={() => setDmNotifications([])}
+        />
+        <div className="layout">
+          <SideBar
+            channels={channels}
+            clients={clients}
+            self={client}
+            onStreamsUpdate={handleStreamsUpdate}
+            onStatusChange={sendStatus}
+            onSelfChannelChange={(channelId) => sendVoiceState({ channel_id: channelId })}
+            // provide a renderer-level openSettings hook
+            onOpenSettings={openSettings}
+            servers={servers}
+            connectedServer={connectedServer}
+            onConnect={handleConnect}
+            onDisconnect={handleDisconnect}
+            onAddServer={handleAddServer}
+            onEditServer={handleEditServer}
+            onRemoveServer={handleRemoveServer}
+            onNotify={showSuccess}
+            onCreateChannel={handleCreateChannel}
+            onDeleteChannel={handleDeleteChannel}
+            onReorderChannel={handleReorderChannel}
+            onMoveClient={handleMoveClientToChannel}
+            onPreviewChannel={handlePreviewChannel}
+            onShowChannelSummary={handleShowChannelSummary}
+            onOpenDm={handleOpenDm}
+            onPoke={handlePoke}
+            onKick={handleKickUser}
+            onKickFromChannel={handleKickFromChannel}
+            onGag={handleGagUser}
+            onBan={handleBanUser}
+            onError={showError}
+            onUnban={handleUnbanUser}
+            onSetAvatar={handleSetAvatar}
+            onShowClientSummary={handleShowClientSummary}
+            roles={roles}
+            onAssignRole={handleAssignRole}
+            onRemoveRole={handleRemoveRole}
+            vanity={vanity}
+            onToggleVanity={handleToggleVanity}
+            onOpenRolesGroups={() => setRolesGroupsOpen(true)}
+            bannedUsers={bannedUsers}
+            canKickMembers={canKickMembers}
+            canBanMembers={canBanMembers}
+            canMuteMembers={canMuteMembers}
+            previewChannelId={previewChannelId}
+            summaryChannelId={summaryChannelId}
+            unreadChannelIds={unreadChannelIds}
+          />
+
+          <main className="chat-area">
+            {/* Summary views have no header bar: their banner card acts as the header.
               Leaving a view = clicking back to your joined channel in the sidebar. */}
-          {summaryChannelId == null && summaryClientId == null && (
-          <div className="chat-header">
-            <div className="header-content">
-              {previewChannelId != null ? (
-                // Peeking into another channel's chat: no view tabs (no streams),
-                // just the channel name.
-                <span className="view-preview-title">
-                  {previewChannel?.type === 'dm' ? (
-                    <IconUser size={18} stroke={2} />
-                  ) : (
-                    <IconMessage size={18} stroke={2} />
-                  )}
-                  {previewChannelName}
-                </span>
-              ) : connected ? (
-                <>
-                  <div className="chat-title">
-                    <span className="chat-title-icon">
-                      {joinedChannel ? (
-                        <IconVolume size={17} stroke={2} />
+            {summaryChannelId == null && summaryClientId == null && (
+              <div className="chat-header">
+                <div className="header-content">
+                  {previewChannelId != null ? (
+                    // Peeking into another channel's chat: no view tabs (no streams),
+                    // just the channel name.
+                    <span className="view-preview-title">
+                      {previewChannel?.type === 'dm' ? (
+                        <IconUser size={18} stroke={2} />
                       ) : (
-                        <IconUsersGroup size={17} stroke={2} />
+                        <IconMessage size={18} stroke={2} />
                       )}
+                      {previewChannelName}
                     </span>
-                    <span className="chat-title-text">
-                      <span className="chat-title-name">
-                        {joinedChannel?.name ?? connectedServer?.nickname ?? 'Connected'}
-                      </span>
-                      <span className="chat-title-sub">
-                        {joinedChannel
-                          ? `${joinedChannelUserCount} in voice`
-                          : 'Not in a voice channel'}
-                      </span>
-                    </span>
-                  </div>
-                  <SegmentedTabs
-                    ariaLabel="Main view"
-                    active={viewMode}
-                    onChange={setViewMode}
-                    tabs={[
-                      {
-                        id: 'log',
-                        label: 'Chat',
-                        icon: <IconMessage size={15} stroke={2} />
-                      },
-                      {
-                        id: 'video',
-                        label: 'Streams',
-                        icon: <IconVideo size={15} stroke={2} />,
-                        disabled: poppedOut,
-                        title: poppedOut ? 'Video is open in a separate window' : undefined
-                      }
-                    ]}
-                  />
-                </>
+                  ) : connected ? (
+                    <>
+                      <div className="chat-title">
+                        <span className="chat-title-icon">
+                          {joinedChannel ? (
+                            <IconVolume size={17} stroke={2} />
+                          ) : (
+                            <IconUsersGroup size={17} stroke={2} />
+                          )}
+                        </span>
+                        <span className="chat-title-text">
+                          <span className="chat-title-name">
+                            {joinedChannel?.name ?? connectedServer?.nickname ?? 'Connected'}
+                          </span>
+                          <span className="chat-title-sub">
+                            {joinedChannel
+                              ? `${joinedChannelUserCount} in voice`
+                              : 'Not in a voice channel'}
+                          </span>
+                        </span>
+                      </div>
+                      <SegmentedTabs
+                        ariaLabel="Main view"
+                        active={viewMode}
+                        onChange={setViewMode}
+                        tabs={[
+                          {
+                            id: 'log',
+                            label: 'Chat',
+                            icon: <IconMessage size={15} stroke={2} />
+                          },
+                          {
+                            id: 'video',
+                            label: 'Streams',
+                            icon: <IconVideo size={15} stroke={2} />,
+                            disabled: poppedOut,
+                            title: poppedOut ? 'Video is open in a separate window' : undefined
+                          }
+                        ]}
+                      />
+                    </>
+                  ) : (
+                    <span aria-hidden="true" />
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Keyed so switching channel/tab remounts and replays the switch animation. */}
+            <div
+              className="chat-switch-region"
+              key={
+                !connected
+                  ? 'disconnected'
+                  : summaryChannelId != null
+                    ? `channel-summary-${summaryChannelId}`
+                    : summaryClientId != null
+                      ? `summary-${summaryClientId}`
+                      : previewChannelId != null
+                        ? `preview-${previewChannelId}`
+                        : viewMode
+              }
+            >
+              {!connected ? (
+                <IdleAnimation connecting={connecting} />
+              ) : summaryChannelId != null ? (
+                <ChannelSummary
+                  channel={summaryChannel}
+                  memberCount={summaryChannelMemberCount}
+                  onSaveDescription={handleSetChannelDescription}
+                  onSetIcon={handleSetChannelIcon}
+                  roles={roles}
+                  clients={clients}
+                  canManagePermissions={canManageChannels}
+                  onSetOverwrite={handleSetChannelOverwrite}
+                  onDeleteOverwrite={handleDeleteChannelOverwrite}
+                />
+              ) : summaryClientId != null ? (
+                <ClientSummary
+                  client={summaryClient}
+                  roles={roles}
+                  vanity={vanity}
+                  isSelf={summaryClient?.id === client?.id}
+                  onSetAvatar={handleSetAvatar}
+                />
+              ) : previewChannelId != null || viewMode === 'log' ? (
+                <ChatPanel
+                  feed={feed.filter(
+                    (e) => e.type === 'system' || e.channelId === activeChatChannelId
+                  )}
+                  clients={clients}
+                  selfId={client?.id}
+                  onSend={handleSendMessage}
+                  onEditMessage={handleEditMessage}
+                  onDeleteMessage={handleDeleteMessage}
+                  onReactMessage={handleReactMessage}
+                  onTyping={handleTyping}
+                  typingUsers={typingUsers}
+                  disabled={activeChatChannelId == null}
+                  channelKey={activeChatChannelId}
+                  onLoadOlder={loadOlderMessages}
+                  hasMoreOlder={
+                    activeChatChannelId != null && !exhaustedChannels.has(activeChatChannelId)
+                  }
+                />
               ) : (
-                <span aria-hidden="true" />
+                <VideoGrid
+                  streams={allVideoStreams}
+                  clients={clients}
+                  selectedStreamClientId={selectedStreamClientId}
+                  onSelect={setSelectedStreamClientId}
+                  onPopout={handlePopout}
+                  watchedStreamClientIds={watchedStreamClientIds}
+                  onSetStreamWatched={handleSetStreamWatched}
+                  volume={streamVolume}
+                  muted={streamMuted}
+                  onVolumeChange={setStreamVolume}
+                  onMutedChange={setStreamMuted}
+                />
               )}
             </div>
-          </div>
-          )}
-
-          {/* Keyed so switching channel/tab remounts and replays the switch animation. */}
-          <div
-            className="chat-switch-region"
-            key={
-              !connected
-                ? 'disconnected'
-                : summaryChannelId != null
-                  ? `channel-summary-${summaryChannelId}`
-                  : summaryClientId != null
-                    ? `summary-${summaryClientId}`
-                    : previewChannelId != null
-                      ? `preview-${previewChannelId}`
-                      : viewMode
-            }
-          >
-            {!connected ? (
-              <IdleAnimation connecting={connecting} />
-            ) : summaryChannelId != null ? (
-              <ChannelSummary
-                channel={summaryChannel}
-                memberCount={summaryChannelMemberCount}
-                onSaveDescription={handleSetChannelDescription}
-                onSetIcon={handleSetChannelIcon}
-                roles={roles}
-                clients={clients}
-                canManagePermissions={canManageChannels}
-                onSetOverwrite={handleSetChannelOverwrite}
-                onDeleteOverwrite={handleDeleteChannelOverwrite}
-              />
-            ) : summaryClientId != null ? (
-              <ClientSummary
-                client={summaryClient}
-                roles={roles}
-                vanity={vanity}
-                isSelf={summaryClient?.id === client?.id}
-                onSetAvatar={handleSetAvatar}
-              />
-            ) : previewChannelId != null || viewMode === 'log' ? (
-              <ChatPanel
-                feed={feed.filter(
-                  (e) => e.type === 'system' || e.channelId === activeChatChannelId
-                )}
-                clients={clients}
-                selfId={client?.id}
-                onSend={handleSendMessage}
-                onEditMessage={handleEditMessage}
-                onDeleteMessage={handleDeleteMessage}
-                onReactMessage={handleReactMessage}
-                onTyping={handleTyping}
-                typingUsers={typingUsers}
-                disabled={activeChatChannelId == null}
-                channelKey={activeChatChannelId}
-                onLoadOlder={loadOlderMessages}
-                hasMoreOlder={
-                  activeChatChannelId != null && !exhaustedChannels.has(activeChatChannelId)
-                }
-              />
-            ) : (
-              <VideoGrid
-                streams={allVideoStreams}
-                clients={clients}
-                selectedStreamId={selectedStreamId}
-                onSelect={setSelectedStreamId}
-                onPopout={handlePopout}
-                watchedStreamIds={watchedStreamIds}
-                onSetStreamWatched={handleSetStreamWatched}
-                volume={streamVolume}
-                muted={streamMuted}
-                onVolumeChange={setStreamVolume}
-                onMutedChange={setStreamMuted}
-              />
-            )}
-          </div>
-        </main>
-        <AnimatePresence>
-          {showSettings && (
-            <motion.div
-              className="settings-overlay"
-              onClick={closeSettings}
-              {...scrimFade(overlayAnim)}
-            >
+          </main>
+          <AnimatePresence>
+            {showSettings && (
               <motion.div
-                className="settings-modal"
-                onClick={(e) => e.stopPropagation()}
-                {...overlayPop(overlayAnim)}
+                className="settings-overlay"
+                onClick={closeSettings}
+                {...scrimFade(overlayAnim)}
               >
-                <button
-                  className="settings-close-btn"
-                  onClick={closeSettings}
-                  title="Close settings"
+                <motion.div
+                  className="settings-modal"
+                  onClick={(e) => e.stopPropagation()}
+                  {...overlayPop(overlayAnim)}
                 >
-                  <IconX size={18} />
-                </button>
-                <Settings />
+                  <button
+                    className="settings-close-btn"
+                    onClick={closeSettings}
+                    title="Close settings"
+                  >
+                    <IconX size={18} />
+                  </button>
+                  <Settings />
+                </motion.div>
               </motion.div>
-            </motion.div>
-          )}
-        </AnimatePresence>
+            )}
+          </AnimatePresence>
+        </div>
+        {connected && connectionStatus === 'reconnecting' && (
+          <ConnectionOverlay onAbort={handleDisconnect} />
+        )}
       </div>
-      {connected && connectionStatus === 'reconnecting' && (
-        <ConnectionOverlay onAbort={handleDisconnect} />
-      )}
-    </div>
+    </ClientActionsProvider>
   )
 }
 

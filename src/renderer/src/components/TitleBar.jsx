@@ -16,6 +16,7 @@ function TitleBar({
   onClearNotifications,
   onOpenNotification,
   dmNotifications = [],
+  silentNotifications = false,
   onOpenDmNotification,
   onClearDmNotifications
 }) {
@@ -39,11 +40,13 @@ function TitleBar({
           notifications={notifications}
           onClear={onClearNotifications}
           onOpen={onOpenNotification}
+          silent={silentNotifications}
         />
         <Inbox
           notifications={dmNotifications}
           onOpen={onOpenDmNotification}
           onClear={onClearDmNotifications}
+          silent={silentNotifications}
         />
         <div className="title-bar-left-fill" aria-hidden="true" />
       </div>

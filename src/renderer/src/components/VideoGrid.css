@@ -322,6 +322,66 @@
   opacity: 1;
 }
 
+/* ── Viewer count (top-right of the focused frame) ───────────────────────── */
+
+/* Shares .video-controls' fade gate so it appears and disappears with the rest
+   of the overlay chrome. Kept interactive while the popover is open, otherwise
+   moving the pointer to the list would fade the thing you're reading. */
+.focus-viewers {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.video-focus:hover .focus-viewers,
+.video-focus:focus-within .focus-viewers,
+.focus-viewers:has(.focus-viewers-list) {
+  opacity: 1;
+}
+
+/* Wider than a square .vid-btn to fit the count beside the icon. */
+.focus-viewers-btn {
+  width: auto;
+  gap: 5px;
+  padding: 0 9px;
+}
+
+.focus-viewers-count {
+  font-size: 0.8rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.focus-viewers-list {
+  min-width: 132px;
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 6px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(4px);
+  color: #fff;
+  font-size: 0.82rem;
+}
+
+.focus-viewers-row {
+  padding: 3px 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.focus-viewers-empty {
+  padding: 3px 6px;
+  opacity: 0.6;
+}
+
 .vid-btn {
   display: flex;
   align-items: center;

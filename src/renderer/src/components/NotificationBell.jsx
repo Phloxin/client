@@ -15,7 +15,10 @@ const formatTime = (ts) =>
 // unread badge; clicking it opens a dropdown listing recent notifications. When
 // a new notification arrives it also bounces a transient toast out to the right
 // of the bell. `notifications` is newest-first and owned by the parent.
-function NotificationBell({ notifications = [], onClear, onOpen }) {
+// `silent` (Do Not Disturb) suppresses the toast and the bell jingle only — the
+// notification is still recorded and still counts toward the unread badge, so
+// nothing is lost, it just doesn't interrupt.
+function NotificationBell({ notifications = [], onClear, onOpen, silent = false }) {
   const [open, setOpen] = useState(false)
   const [toast, setToast] = useState(null)
   const [unread, setUnread] = useState(0)
@@ -38,12 +41,15 @@ function NotificationBell({ notifications = [], onClear, onOpen }) {
     lastIdRef.current = newestId
     if (!newest) return
 
+    // The badge is bumped regardless of DND — only the interruption is silenced.
+    if (!open) setUnread((n) => n + 1)
+    if (silent) return
+
     setToast(newest)
     setJingle((c) => c + 1) // ring the bell when a new notification arrives
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
     toastTimerRef.current = setTimeout(() => setToast(null), TOAST_MS)
-    if (!open) setUnread((n) => n + 1)
-  }, [notifications, open])
+  }, [notifications, open, silent])
 
   useEffect(
     () => () => {
@@ -88,7 +94,9 @@ function NotificationBell({ notifications = [], onClear, onOpen }) {
       </button>
 
       <AnimatePresence>
-        {toast && !open && (
+        {/* `!silent` also retracts a toast already on screen if DND is switched
+            on mid-display, rather than leaving it to time out. */}
+        {toast && !open && !silent && (
           <motion.div
             className="notif-toast"
             key={toast.id}

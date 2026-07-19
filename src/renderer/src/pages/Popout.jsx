@@ -14,7 +14,7 @@ function Popout() {
   )
 
   const [data, setData] = useState(
-    () => bridge?.getData?.() || { streams: [], clients: [], selectedStreamId: null }
+    () => bridge?.getData?.() || { streams: [], clients: [], selectedStreamClientId: null }
   )
 
   useEffect(() => {
@@ -33,7 +33,7 @@ function Popout() {
       <VideoGrid
         streams={data.streams}
         clients={data.clients}
-        selectedStreamId={data.selectedStreamId}
+        selectedStreamClientId={data.selectedStreamClientId}
         onSelect={(id) => bridge.select(id)}
         volume={data.volume}
         muted={data.muted}
@@ -41,7 +41,7 @@ function Popout() {
         onMutedChange={(m) => bridge.setMuted(m)}
         onFocusAudio={(clientId, opts) => bridge.setFocusedAudio(clientId, opts)}
         onSetStreamRoles={(payload) => bridge.setStreamRoles(payload)}
-        watchedStreamIds={data.watchedStreamIds}
+        watchedStreamClientIds={data.watchedStreamClientIds}
         onSetStreamWatched={(id, watched) => bridge.setStreamWatched(id, watched)}
       />
     </div>

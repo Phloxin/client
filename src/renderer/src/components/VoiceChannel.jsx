@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, forwardRef, useImperativeHandle } from 'react'
+﻿import { useState, useEffect, useRef, forwardRef, useImperativeHandle } from 'react'
 import {
   connect,
   publish,
@@ -93,6 +93,10 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   })
 
   const joinedRef = useRef(false)
+  // Owner-bound handle for the local screen/camera capture. Track-ended events
+  // can arrive after a successor share starts, so they must never call the
+  // singleton/global stop path or clear the successor's tile.
+  const activeShareRef = useRef(null)
   const menuRef = useRef(null)
   // Latest mic settings, read by the (re)publish path so a background reconnect
   // re-publishes with current settings rather than those captured at join time.
@@ -123,7 +127,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   // rather than inside the setVideoStreams updaters so the parent's setState
   // never runs during this component's render (that triggers React's
   // "update a component while rendering a different component" warning). Fires on
-  // mount with [] too, which handleStreamsUpdate reads as "no streams" — harmless.
+  // mount with [] too, which handleStreamsUpdate reads as "no streams" â€” harmless.
   useEffect(() => {
     onStreamsUpdate?.(videoStreams)
   }, [videoStreams])
@@ -195,11 +199,12 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     await publishMic()
   }
 
-  // Fired on an unexpected drop: tear down local media UI but stay "joined" —
+  // Fired on an unexpected drop: tear down local media UI but stay "joined" â€”
   // soup auto-reconnects, remote tiles re-arrive via replayed NewProducer, and
   // the mic re-publishes. Screen share is NOT auto-restored (re-capturing the
   // screen requires a fresh user gesture).
   const handleReconnecting = () => {
+    activeShareRef.current = null
     setSharing(false)
     setVideoStreams([])
     setSpeakingClients({})
@@ -217,13 +222,14 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   // Unmount cleanup. If this channel is being deleted out from under us *while
   // we're joined to it*, tear down the shared (singleton) voice session and clear
   // the sidebar's
-  // joined bookkeeping. Otherwise the soup connection is left orphaned — its
+  // joined bookkeeping. Otherwise the soup connection is left orphaned â€” its
   // callbacks point at this dead component and `joinedChannelId` still names the
-  // gone channel — so the next channel the user joins takes the "switch" path on
+  // gone channel â€” so the next channel the user joins takes the "switch" path on
   // a broken session and can't transmit audio or leave.
   useEffect(
     () => () => {
       if (joinedRef.current) {
+        activeShareRef.current = null
         disconnect()
         onJoinedChange?.(channel.id, false)
       }
@@ -231,29 +237,36 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     []
   )
 
-  // Remove a remote video tile whose consumer was closed (e.g. the
-  // remote client restarted screen share, replacing its old producer)
-  const handleConsumerClosed = (consumerId) => {
-    setVideoStreams((prev) => prev.filter((s) => s.consumerId !== consumerId))
+  // The remote producer itself went away (the sharer stopped). Keyed by producer
+  // rather than consumer because an unwatched stream still has a tile but no
+  // consumer to identify it by.
+  const handleStreamEnded = (producerId, { replaced = false } = {}) => {
+    // The SFU announces a codec replacement's old producer first. Keep its tile
+    // as a short-lived placeholder; handleVideoStream swaps in the successor.
+    if (replaced) return
+    setVideoStreams((prev) => prev.filter((s) => s.producerId !== producerId))
   }
 
   // Native audio capture died mid-share; the video share continues.
   const handleScreenAudioError = (message) => {
     setError(
-      `Screen share audio stopped (${message}). Video is still sharing - ` +
-        `restart the share to retry audio, or pick "Entire system" audio if it keeps failing.`
+      `Screen share audio is unavailable (${message}). Video is still sharing - ` +
+        `restart the share to retry or choose another supported audio source.`
     )
   }
 
-  const handleVideoStream = ({ stream, kind, consumerId, clientId, codec }) => {
+  const handleVideoStream = ({ stream, kind, consumerId, producerId, clientId, codec }) => {
     // Don't bake in the client's name here - the clients list for this
     // channel may not have caught up with this client's channel move yet.
     // The label is resolved at render time from clientId instead.
     setVideoStreams((prev) => [
-      ...prev,
+      ...prev.filter(
+        (existing) => existing.kind !== 'video' || existing.clientId !== clientId || existing.isSelf
+      ),
       {
         stream,
         consumerId,
+        producerId,
         kind,
         isSelf: false,
         clientId,
@@ -290,12 +303,13 @@ const VoiceChannel = forwardRef(function VoiceChannel(
           setSpeakingClients({})
         },
         onReconnecting: handleReconnecting,
-        // Server drops us from the channel when the socket dies — re-assert
+        // Server drops us from the channel when the socket dies â€” re-assert
         // membership before each reconnect's ticket fetch.
         onReconnectRejoin: () => patchChannel(channel.id),
         onVideoStream: handleVideoStream,
         onClientSpeaking: handleClientSpeaking,
-        onConsumerClosed: handleConsumerClosed
+        onStreamEnded: handleStreamEnded,
+        onScreenAudioError: handleScreenAudioError
       })
     } catch (err) {
       setError(err.message)
@@ -310,7 +324,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     setConnecting(true)
     setError(null)
 
-    // Rebind callbacks BEFORE the PATCH — TransportsDisconnected can arrive
+    // Rebind callbacks BEFORE the PATCH â€” TransportsDisconnected can arrive
     // as soon as the server processes the PATCH, so this channel's handler
     // must already be active to catch it. This also repoints the reconnect
     // callbacks at the new channel, so a drop after the switch recovers here.
@@ -320,7 +334,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
       onReconnectRejoin: () => patchChannel(channel.id),
       onVideoStream: handleVideoStream,
       onClientSpeaking: handleClientSpeaking,
-      onConsumerClosed: handleConsumerClosed,
+      onStreamEnded: handleStreamEnded,
       onTransportsDisconnected: handleConnectEstablished,
       onScreenAudioError: handleScreenAudioError
     })
@@ -334,8 +348,8 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   }
 
   // Take ownership of the live voice session after the server moved us into this
-  // channel (a moderator's PATCH /client). Unlike switchTo we don't PATCH — the
-  // server already moved us — we only repoint the shared session's callbacks here,
+  // channel (a moderator's PATCH /client). Unlike switchTo we don't PATCH â€” the
+  // server already moved us â€” we only repoint the shared session's callbacks here,
   // mark ourselves joined, and re-establish media. The server's MediaStateReset
   // may land before or after we adopt; publish() is single-flight, so calling it
   // here can't collide with a reset-driven republish. onClientSpeaking is rebound
@@ -347,7 +361,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
       onReconnectRejoin: () => patchChannel(channel.id),
       onVideoStream: handleVideoStream,
       onClientSpeaking: handleClientSpeaking,
-      onConsumerClosed: handleConsumerClosed,
+      onStreamEnded: handleStreamEnded,
       onTransportsDisconnected: handleConnectEstablished,
       onScreenAudioError: handleScreenAudioError
     })
@@ -360,6 +374,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   // Stop being the active channel locally, without disconnecting the
   // websocket (used when switching to a different channel).
   const deactivate = () => {
+    activeShareRef.current = null
     setJoined(false)
     setSharing(false)
     setVideoStreams([])
@@ -367,6 +382,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   }
 
   const handleLeave = () => {
+    activeShareRef.current = null
     disconnect()
     setJoined(false)
     setSharing(false)
@@ -377,14 +393,16 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   }
 
   // Remove the local (self) screen-share tile after the share ends
-  const clearSelfStream = () => {
-    setVideoStreams((prev) => prev.filter((item) => !item.isSelf))
+  const clearSelfStream = (consumerId = null) => {
+    setVideoStreams((prev) =>
+      prev.filter((item) => !item.isSelf || (consumerId !== null && item.consumerId !== consumerId))
+    )
   }
 
   // Capture and publish the chosen source after the user picks one
   // Encoder stats land ~3s after the share starts; tag the self tile with the live
   // codec + HW/SW so the sharer sees what's actually encoding (release builds have no
-  // console), including after an adaptive downgrade flips AV1 → H264. Idempotent —
+  // console), including after an adaptive downgrade flips AV1 â†’ H264. Idempotent â€”
   // bails when nothing changed so it stops re-rendering once settled.
   const handleSelfEncoderStats = (consumerId, { codec, hardware }) => {
     if (hardware == null && codec == null) return
@@ -411,15 +429,32 @@ const VoiceChannel = forwardRef(function VoiceChannel(
         // Tell the main process which source and audio mode the display-media
         // handler should use. sourceId is null on Wayland, where the OS portal
         // does the picking when getDisplayMedia runs.
-        window.electron.ipcRenderer.send('set-screen-audio-mode', options.audioMode ?? 'none')
-        window.electron.ipcRenderer.send('set-screen-source', sourceId ?? null)
+        await window.electron.ipcRenderer.invoke('prepare-screen-share', {
+          sourceId: sourceId ?? null,
+          audioMode: options.audioMode ?? 'none'
+        })
         screen = await shareScreen({ ...options, onEncoderStats })
       }
       if (screen?.stream) {
-        screen.stream.getVideoTracks()[0].onended = () => {
-          stopScreenShare()
+        activeShareRef.current = screen
+        screen.stream.getVideoTracks()[0].addEventListener(
+          'ended',
+          () => {
+            if (activeShareRef.current !== screen) return
+            activeShareRef.current = null
+            void screen.stop?.()
+            setSharing(false)
+            clearSelfStream(screen.id)
+          },
+          { once: true }
+        )
+
+        if (screen.stream.getVideoTracks()[0].readyState === 'ended') {
+          activeShareRef.current = null
+          await screen.stop?.()
           setSharing(false)
-          clearSelfStream()
+          clearSelfStream(screen.id)
+          return
         }
 
         setVideoStreams((prev) => [
@@ -427,6 +462,10 @@ const VoiceChannel = forwardRef(function VoiceChannel(
           {
             stream: screen.stream,
             consumerId: screen.id,
+            // Our own tile has no consumer â€” screen.id IS the producer id, which
+            // is what the viewer map is keyed by. This is the case that matters
+            // most: "who is watching me".
+            producerId: screen.id,
             kind: 'video',
             isSelf: true,
             clientId: self.id,
@@ -448,9 +487,12 @@ const VoiceChannel = forwardRef(function VoiceChannel(
 
   const handleScreenShare = async () => {
     if (sharing) {
-      await stopScreenShare()
+      const activeShare = activeShareRef.current
+      activeShareRef.current = null
+      if (activeShare?.stop) await activeShare.stop()
+      else await stopScreenShare()
       setSharing(false)
-      clearSelfStream()
+      clearSelfStream(activeShare?.id ?? null)
     } else {
       // Let the user choose a screen/window before capturing
       setShowSourcePicker(true)

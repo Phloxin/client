@@ -4,7 +4,10 @@
 // transferred straight into an AudioWorklet, which feeds a
 // MediaStreamAudioDestinationNode - the resulting track is produced to
 // mediasoup exactly like a getDisplayMedia audio track would be.
-import pcmSourceWorkletUrl from '../worklets/pcm-source-processor.js?url'
+// Force a real same-origin asset. Vite normally inlines this small file as a
+// data: URL in production; the app's CSP correctly blocks data: scripts, and
+// Chromium then reports only "Unable to load a worklet's module."
+import pcmSourceWorkletUrl from '../worklets/pcm-source-processor.js?url&no-inline'
 
 // One long-lived context for screenshare audio; the worklet module is added
 // once and reused across shares (unlike the per-publish mic contexts).
@@ -27,23 +30,88 @@ async function getContext() {
 // The preload relays the Electron MessagePort into the page via
 // window.postMessage({ type: 'audiocapture:port' }, '*', [port]).
 function waitForPcmPort(timeoutMs = 5000) {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      window.removeEventListener('message', onMessage)
-      reject(new Error('timed out waiting for audio capture port'))
-    }, timeoutMs)
-    const onMessage = (e) => {
+  let timer = null
+  let onMessage = null
+  let rejectWait = null
+  let receivedPort = null
+  let settled = false
+
+  const cleanup = () => {
+    if (timer !== null) clearTimeout(timer)
+    timer = null
+    if (onMessage) window.removeEventListener('message', onMessage)
+  }
+
+  const promise = new Promise((resolve, reject) => {
+    rejectWait = reject
+    onMessage = (e) => {
       if (e.source === window && e.data?.type === 'audiocapture:port' && e.ports[0]) {
-        clearTimeout(timer)
-        window.removeEventListener('message', onMessage)
-        resolve(e.ports[0])
+        settled = true
+        receivedPort = e.ports[0]
+        cleanup()
+        resolve(receivedPort)
       }
     }
     window.addEventListener('message', onMessage)
+    timer = setTimeout(() => {
+      settled = true
+      cleanup()
+      reject(new Error('timed out waiting for audio capture port'))
+    }, timeoutMs)
   })
+
+  return {
+    promise,
+    release() {
+      receivedPort = null
+    },
+    cancel() {
+      if (!settled) {
+        settled = true
+        cleanup()
+        rejectWait(new Error('audio capture port wait cancelled'))
+      }
+      receivedPort?.close()
+      receivedPort = null
+    }
+  }
 }
 
 let active = null
+let lifecycleQueue = Promise.resolve()
+
+// Native capture is process-global, so starts/stops must not overlap. Returning
+// an owner-bound stop handle lets a stale screen-share continuation clean up its
+// own session without a later call accidentally stopping the newer active one.
+function enqueueLifecycle(operation) {
+  const result = lifecycleQueue.then(operation, operation)
+  lifecycleQueue = result.catch(() => {})
+  return result
+}
+
+async function cleanupSession(session) {
+  if (!session || session.stopped) return
+  session.stopped = true
+  if (active === session) active = null
+  if (session.firstFrameTimer !== null) clearTimeout(session.firstFrameTimer)
+  session.firstFrameTimer = null
+
+  try {
+    if (session.backendStarted) await window.api.screenAudio.stop()
+  } finally {
+    try {
+      session.node?.port.postMessage({ type: 'end' })
+    } catch {
+      // The worklet port may already be closed after a host failure.
+    }
+    try {
+      session.node?.disconnect()
+    } catch {
+      // A partially connected or already-stopped node is safe to ignore.
+    }
+    session.track?.stop()
+  }
+}
 
 /**
  * Start native capture and return a MediaStreamTrack carrying it.
@@ -51,54 +119,90 @@ let active = null
  *   ('stub' | 'app' | 'system' | 'system-exclude-self', see the addon)
  * @returns {Promise<{ track: MediaStreamTrack, backend: string, stop: () => Promise<void> }>}
  */
-export async function startScreenAudio(options) {
-  await stopScreenAudio()
+export function startScreenAudio(options) {
+  return enqueueLifecycle(async () => {
+    if (active) await cleanupSession(active)
 
-  const ctx = await getContext()
-  // Arm the port listener before asking main to start, so the port relay
-  // can't race past us.
-  const portPromise = waitForPcmPort()
-  const { backend } = await window.api.screenAudio.start(options)
-  const pcmPort = await portPromise
-
-  const node = new AudioWorkletNode(ctx, 'pcm-source', {
-    numberOfInputs: 0,
-    numberOfOutputs: 1,
-    outputChannelCount: [2]
-  })
-  node.port.postMessage({ type: 'pcm-port', port: pcmPort }, [pcmPort])
-  node.port.onmessage = (e) => {
-    if (e.data?.type === 'stats' && (e.data.underruns > 0 || e.data.overruns > 0)) {
-      console.debug(
-        `[ScreenAudio] buffer stats: ${e.data.bufferedMs}ms buffered, ` +
-          `${e.data.underruns} underruns, ${e.data.overruns} overruns`
-      )
+    const ctx = await getContext()
+    // Arm the port listener before asking main to start, so the port relay
+    // can't race past us.
+    const portWait = waitForPcmPort()
+    // The host start can take longer than the port timeout. Mark an early port
+    // rejection as observed while preserving it for the later await below.
+    portWait.promise.catch(() => {})
+    const session = {
+      backendStarted: false,
+      firstFrameTimer: null,
+      node: null,
+      track: null,
+      stopped: false
     }
-  }
+    let backend
+    let pcmPort = null
 
-  const destination = ctx.createMediaStreamDestination()
-  node.connect(destination)
-
-  const track = destination.stream.getAudioTracks()[0]
-
-  const stop = async () => {
-    if (active?.node !== node) return
-    active = null
     try {
-      await window.api.screenAudio.stop()
-    } finally {
-      node.port.postMessage({ type: 'end' })
-      node.disconnect()
-      track.stop()
-    }
-  }
+      const startResult = await window.api.screenAudio.start(options)
+      session.backendStarted = true
+      backend = startResult.backend
+      pcmPort = await portWait.promise
 
-  active = { node, stop }
-  return { track, backend, stop }
+      const node = new AudioWorkletNode(ctx, 'pcm-source', {
+        numberOfInputs: 0,
+        numberOfOutputs: 1,
+        outputChannelCount: [2]
+      })
+      session.node = node
+
+      // A first-frame signal is useful diagnostics, but cannot be a readiness
+      // requirement: WASAPI process-loopback is event driven and may emit no
+      // packets while a correctly captured application is silent.
+      node.port.onmessage = (e) => {
+        if (e.data?.type === 'ready') {
+          if (session.firstFrameTimer !== null) clearTimeout(session.firstFrameTimer)
+          session.firstFrameTimer = null
+          console.debug('[ScreenAudio] first PCM frame received')
+        } else if (e.data?.type === 'stats' && (e.data.underruns > 0 || e.data.overruns > 0)) {
+          console.debug(
+            `[ScreenAudio] buffer stats: ${e.data.bufferedMs}ms buffered, ` +
+              `${e.data.underruns} underruns, ${e.data.overruns} overruns`
+          )
+        }
+      }
+
+      node.port.postMessage({ type: 'pcm-port', port: pcmPort }, [pcmPort])
+      portWait.release()
+      pcmPort = null // ownership transferred to the worklet
+
+      const destination = ctx.createMediaStreamDestination()
+      node.connect(destination)
+      session.track = destination.stream.getAudioTracks()[0]
+      session.firstFrameTimer = setTimeout(() => {
+        session.firstFrameTimer = null
+        console.warn(
+          '[ScreenAudio] capture is ready but has not delivered PCM yet; the selected source may be silent'
+        )
+      }, 5000)
+    } catch (err) {
+      // Remove the listener immediately so it cannot steal the next session's
+      // port, and close a port that was already delivered but not transferred.
+      // Also stop any backend that started before a port/worklet failure so the
+      // OS capture handle cannot leak.
+      portWait.cancel()
+      pcmPort?.close()
+      await cleanupSession(session).catch(() => {})
+      throw err
+    }
+
+    const stop = () => enqueueLifecycle(() => cleanupSession(session))
+    active = session
+    return { track: session.track, backend, stop }
+  })
 }
 
-export async function stopScreenAudio() {
-  if (active) await active.stop()
+export function stopScreenAudio() {
+  return enqueueLifecycle(async () => {
+    if (active) await cleanupSession(active)
+  })
 }
 
 export function getScreenAudioCapabilities() {

@@ -72,6 +72,16 @@ html[data-shadows='off'] {
   font-weight: normal;
 }
 
+/* The reset above flattens font-weight on everything, which beats the browser's
+   default bold for these two (author styles win over the UA stylesheet whatever
+   the specificity). Headings opt back in via their own classes; strong/b carry
+   meaning on their own, so restore them here — this is what makes **bold** in
+   chat markdown actually render bold. */
+strong,
+b {
+  font-weight: var(--font-weight-bold);
+}
+
 ul {
   list-style: none;
 }

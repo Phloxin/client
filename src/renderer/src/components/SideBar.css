@@ -27,6 +27,75 @@
   display: flex;
   align-items: center;
   gap: var(--spacing-sm);
+  /* Anchors the roster filter popover to the header's bottom-right. */
+  position: relative;
+}
+
+/* Reuses .client-context-menu's chrome (VoiceChannel.css) — only the anchoring
+   differs, since that one is positioned at a cursor. */
+.client-context-menu.user-filter-menu {
+  position: absolute;
+  top: 100%;
+  right: 4px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+/* Live roster search, sits between the view tabs and the user list. */
+.sidebar-search {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  margin: 0 4px 8px 2px;
+  padding: 0 8px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text-tertiary);
+}
+
+.sidebar-search:focus-within {
+  border-color: var(--color-primary);
+}
+
+.sidebar-search input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 0;
+  border: none;
+  background: transparent;
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+  outline: none;
+}
+
+/* Chrome's native clear glyph doesn't theme — hidden in favour of our own button. */
+.sidebar-search input::-webkit-search-cancel-button {
+  appearance: none;
+}
+
+.sidebar-search-clear {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  padding: 2px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+}
+
+.sidebar-search-clear:hover {
+  color: var(--color-text);
+}
+
+/* Filter button while at least one role/group is selected. */
+.channel-add-btn.active {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
 }
 
 .sidebar-view-tabs {
@@ -343,6 +412,34 @@ html[data-transparency='true'] .control-dock {
   color: var(--color-text);
 }
 
+/* Roster-only shortcut to this user's DM channel (double-clicking the row does
+   the same). Revealed on hover/focus so idle rows stay clean. */
+.client-dm-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  padding: 2px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 0.12s,
+    color 0.12s;
+}
+
+.client-indicator:hover .client-dm-btn,
+.client-dm-btn:focus-visible {
+  opacity: 1;
+}
+
+.client-dm-btn:hover {
+  color: var(--color-primary);
+}
+
 /* Row layout: name, group tags, spacer, group badges, streaming icon. The
    spacer (flex-grow) pushes the badges/streaming icon to the right edge; under
    pressure the shrink factors give way in order: tags (10000) collapse first,
@@ -423,4 +520,5 @@ html[data-transparency='true'] .control-dock {
 /* Roster rows sit flush (no channel indent). */
 .sidebar-user-list .client-indicator {
   padding-left: 8px;
+  flex-shrink: 0;
 }

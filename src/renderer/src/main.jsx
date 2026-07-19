@@ -30,6 +30,26 @@ const applySaved = (key, apply) => {
 applySaved('appearanceSettings', applyAppearanceSettings)
 applySaved('animationSettings', applyAnimationSettings)
 
+// Clicking a button focuses it without a focus ring, but Chromium flips into
+// "keyboard modality" on the next keypress — so a button you clicked suddenly
+// matches :focus-visible and sprouts a ring the moment you hit Escape to dismiss
+// whatever it opened. Drop focus from a *mouse*-focused button on Escape. Tab
+// focus is untouched (the flag is cleared by every keydown), and only buttons are
+// blurred, so Escape keeps its meaning inside text fields.
+let mouseFocused = false
+document.addEventListener('mousedown', () => (mouseFocused = true), true)
+document.addEventListener(
+  'keydown',
+  (e) => {
+    if (e.key === 'Escape' && mouseFocused) {
+      const el = document.activeElement
+      if (el?.matches('button, [role="button"]')) el.blur()
+    }
+    mouseFocused = false
+  },
+  true
+)
+
 // StrictMode intentionally left off: its dev-only double-render made dev diverge
 // from production (it double-invokes renders/effects, which prod never does).
 createRoot(document.getElementById('root')).render(
