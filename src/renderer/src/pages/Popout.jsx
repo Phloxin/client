@@ -14,7 +14,13 @@ function Popout() {
   )
 
   const [data, setData] = useState(
-    () => bridge?.getData?.() || { streams: [], clients: [], selectedStreamClientId: null }
+    () =>
+      bridge?.getData?.() || {
+        streams: [],
+        clients: [],
+        selectedStreamClientId: null,
+        streamViewers: new Map()
+      }
   )
 
   useEffect(() => {
@@ -43,6 +49,7 @@ function Popout() {
         onSetStreamRoles={(payload) => bridge.setStreamRoles(payload)}
         watchedStreamClientIds={data.watchedStreamClientIds}
         onSetStreamWatched={(id, watched) => bridge.setStreamWatched(id, watched)}
+        streamViewers={data.streamViewers}
       />
     </div>
   )

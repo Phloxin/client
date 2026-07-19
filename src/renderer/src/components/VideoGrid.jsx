@@ -63,6 +63,7 @@ function VideoGrid({
   onSetStreamRoles,
   watchedStreamClientIds = EMPTY_WATCHED,
   onSetStreamWatched,
+  streamViewers: streamViewersProp,
   volume,
   muted,
   onVolumeChange,
@@ -111,10 +112,15 @@ function VideoGrid({
     clients?.find((c) => c.id === s.clientId)?.name || s.fallbackLabel || `Stream ${s.consumerId}`
 
   // Audience for every live producer, pushed from the voice socket. Subscribed
-  // here rather than threaded down as a prop: the grid is the only consumer, and
-  // soup is already imported directly for stream roles.
-  const [streamViewers, setStreamViewers] = useState(() => new Map())
-  useEffect(() => subscribeStreamViewers(setStreamViewers), [])
+  // to soup directly in the main window, but the popout runs in a separate JS
+  // realm with an empty soup instance, so it supplies the opener's snapshot via
+  // the streamViewers prop; only subscribe when no prop is provided.
+  const [localStreamViewers, setLocalStreamViewers] = useState(() => new Map())
+  useEffect(() => {
+    if (streamViewersProp) return
+    return subscribeStreamViewers(setLocalStreamViewers)
+  }, [streamViewersProp])
+  const streamViewers = streamViewersProp ?? localStreamViewers
   const [viewersOpen, setViewersOpen] = useState(false)
 
   const sortedStreams = [...streams].sort((a, b) => {

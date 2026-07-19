@@ -39,6 +39,14 @@
   padding: var(--spacing-lg);
 }
 
+/* Hide the grid/carousel name overlays while fullscreen for an unobstructed
+   view. The focused stream's own name still fades in on hover, like the
+   volume/fullscreen controls. */
+.video-viewer.fullscreen .tile-label,
+.video-viewer.fullscreen .thumb-label {
+  display: none;
+}
+
 /* ── Unfocused grid view (spreads all streams across the area) ───────────── */
 
 .video-grid-layout {
@@ -274,6 +282,14 @@
   font-size: 0.95rem;
   background: linear-gradient(to top, rgba(0, 0, 0, 0.6) 0%, transparent 100%);
   pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+/* Fade in on hover, matching the volume/fullscreen controls and viewer count. */
+.video-focus:hover .focus-label,
+.video-focus:focus-within .focus-label {
+  opacity: 1;
 }
 
 /* Codec badge, top-left of the focused frame. */
