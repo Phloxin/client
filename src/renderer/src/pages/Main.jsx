@@ -20,7 +20,8 @@ import Settings from './Settings'
 import {
   disconnect as disconnectVoice,
   setFocusedScreenAudio,
-  setVideoStreamRoles
+  setVideoStreamRoles,
+  setWatchedProducers
 } from '../lib/soup'
 import { playUiSound } from '../lib/sounds'
 import { setServerHost, apiBase, wsBase, cdnUrl, throwIfError } from '../lib/serverConfig'
@@ -265,6 +266,20 @@ function Main() {
     streamMuted,
     watchedStreamClientIds
   ])
+
+  // Consumer lifetime follows the watch set: watching a stream subscribes to it,
+  // stopping unsubscribes. Driven here rather than in VideoGrid because the
+  // popout routes its play/stop back into this same state, so this one effect
+  // covers both windows. Watch intent is keyed by client, producers by id.
+  const watchedProducerKey = allVideoStreams
+    .filter((s) => !s.isSelf && watchedStreamClientIds.has(s.clientId))
+    .map((s) => s.producerId)
+    .filter(Boolean)
+    .sort()
+    .join(',')
+  useEffect(() => {
+    setWatchedProducers(watchedProducerKey ? watchedProducerKey.split(',') : [])
+  }, [watchedProducerKey])
 
   // Toggle whether a stream is watched (consumed); shared with the popout.
   const handleSetStreamWatched = (clientId, watched) =>

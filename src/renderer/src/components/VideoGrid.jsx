@@ -346,13 +346,16 @@ function VideoGrid({
   // A carousel thumbnail or grid tile. Shows live video (or a "stopped"
   // placeholder), the watch/close toggle, and the label.
   const renderTile = (s, variant) => {
-    const stopped = isStopped(s)
-    const selected = variant === 'thumbnail' && selectedStream?.consumerId === s.consumerId
+    // Watching is intent; the stream arrives a moment later once the consumer is
+    // created. Keep showing the placeholder until it does, rather than a blank
+    // <video>.
+    const stopped = isStopped(s) || !s.stream
+    const selected = variant === 'thumbnail' && selectedStream?.producerId === s.producerId
     const tileClass = variant === 'thumbnail' ? 'video-thumbnail' : 'video-grid-tile'
     const labelClass = variant === 'thumbnail' ? 'thumb-label' : 'tile-label'
     return (
       <div
-        key={s.consumerId}
+        key={s.producerId ?? s.consumerId}
         className={`${tileClass}${selected ? ' selected' : ''}${stopped ? ' stopped' : ''}`}
         role="button"
         tabIndex={0}
@@ -420,8 +423,8 @@ function VideoGrid({
                   : undefined
               }
               ref={(el) => {
-                if (el && el.srcObject !== selectedStream.stream)
-                  el.srcObject = selectedStream.stream
+                if (el && el.srcObject !== (selectedStream.stream ?? null))
+                  el.srcObject = selectedStream.stream ?? null
               }}
             />
             {/* Zoom minimap: the full frame with the visible region outlined.

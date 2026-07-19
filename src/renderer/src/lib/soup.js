@@ -122,6 +122,22 @@ function rejectPendingRequests(error) {
   }
 }
 
+// Fire-and-forget: send without queuing a response handler. `send()` matches
+// replies positionally and force-reconnects the socket if the queue head goes
+// unanswered for 15s, so a message the server may not implement must NOT go
+// through it — one unanswered request would drop the call.
+// ponytail: switch this to send() once the server implements CloseConsumer AND
+// is confirmed to reply to it; until then silence is the expected outcome.
+function notify(type, data = null) {
+  if (ws?.readyState !== WebSocket.OPEN) return
+  try {
+    ws.send(JSON.stringify(data ? { type, data } : { type }))
+    console.log(`[Soup] Sent (no reply expected): ${type}`, data)
+  } catch (err) {
+    console.warn(`[Soup] Failed to send ${type}:`, err)
+  }
+}
+
 // ─── Send a message and wait for a response ──────────────────────
 function send(type, data = null) {
   return new Promise((resolve, reject) => {
@@ -179,6 +195,11 @@ async function closeServerProducer(id) {
 // replayed on join, so a late arrival learns the existing audience) and
 // ConsumerClosed. ConsumerClosed identifies the consumer only by id, so we keep
 // the id→(producer, client) mapping needed to undo it.
+// Remote video producers we know about but may not be consuming. Tiles are
+// driven by this — a stream is listed as soon as it exists, whether or not we
+// have chosen to watch it.
+const knownVideoProducers = new Map() // producerId -> { clientId, producedType }
+
 const consumerOwners = new Map() // consumerId -> { producerId, clientId }
 const producerViewers = new Map() // producerId -> Set<clientId>
 let viewerSubscribers = []
@@ -229,6 +250,55 @@ export function subscribeStreamViewers(cb) {
   return () => {
     viewerSubscribers = viewerSubscribers.filter((fn) => fn !== cb)
   }
+}
+
+// Bind consumer lifetime to the set of streams the user has explicitly chosen to
+// watch (the play/stop buttons), NOT to whether a tile happens to be on screen.
+// A consumer is our public "I am watching this" signal, so it must mean exactly
+// that; binding it to visibility instead would also churn full renegotiations
+// every time the carousel collapsed or the chat tab was selected.
+export function setWatchedProducers(producerIds = []) {
+  const wanted = new Set(producerIds.filter((id) => knownVideoProducers.has(id)))
+
+  // The server takes a batch, so collect the whole diff and send one message —
+  // switching away from a multi-stream view closes several at once.
+  const closedIds = []
+  for (const [producerId, entry] of remoteConsumers) {
+    if (entry.kind !== 'video' || wanted.has(producerId)) continue
+    closedIds.push(entry.consumerId)
+    closeVideoConsumer(producerId)
+  }
+  if (closedIds.length > 0) notify('CloseConsumer', { ids: closedIds })
+
+  for (const producerId of wanted) {
+    if (remoteConsumers.has(producerId)) continue
+    const { clientId, producedType } = knownVideoProducers.get(producerId)
+    consumeProducer(producerId, 'video', activeCallbacks.onVideoStream, clientId, producedType).catch(
+      (err) => console.error(`[Soup] Failed to consume producer ${producerId}:`, err)
+    )
+  }
+}
+
+// Local half of "stop watching". The server is told separately, in one batched
+// CloseConsumer by the caller — a local consumer.close() alone is invisible to
+// it, and we'd never drop out of anyone else's viewer list.
+function closeVideoConsumer(producerId) {
+  const entry = remoteConsumers.get(producerId)
+  if (!entry) return
+  remoteConsumers.delete(producerId)
+  entry.consumer.close()
+  if (entry.cleanup) {
+    entry.cleanup()
+    remoteCleanups = remoteCleanups.filter((fn) => fn !== entry.cleanup)
+  }
+  // The producer still exists — only our subscription ended. Keep the tile and
+  // blank its stream so it returns to the stopped state rather than vanishing.
+  activeCallbacks.onVideoStream?.({
+    stream: null,
+    kind: 'video',
+    producerId,
+    clientId: entry.clientId
+  })
 }
 
 // ─── Connect to signaling server ────────────────────────────────
@@ -300,9 +370,27 @@ async function openSocket() {
       }
       console.log(`[Soup] New producer: ${id} (${kind}, ${produced_type})`)
       activeCallbacks.onNewProducer?.({ producerId: id, kind })
-      consumeProducer(id, kind, activeCallbacks.onVideoStream, client_id, produced_type).catch(
-        (err) => console.error(`[Soup] Failed to consume producer ${id}:`, err)
-      )
+
+      // Audio must be audible the moment it exists, so it still consumes eagerly.
+      if (kind !== 'video') {
+        consumeProducer(id, kind, activeCallbacks.onVideoStream, client_id, produced_type).catch(
+          (err) => console.error(`[Soup] Failed to consume producer ${id}:`, err)
+        )
+        return
+      }
+
+      // Video does NOT consume here. Consuming is what tells the server (and
+      // therefore everyone else) that we're watching, so it has to wait for an
+      // actual click — otherwise every client in the channel counts as a viewer
+      // of every stream. We just register the producer and announce a tile with
+      // no stream yet; setWatchedProducers() consumes on demand.
+      knownVideoProducers.set(id, { clientId: client_id, producedType: produced_type })
+      activeCallbacks.onVideoStream?.({
+        stream: null,
+        kind,
+        producerId: id,
+        clientId: client_id
+      })
       return
     }
 
@@ -323,6 +411,8 @@ async function openSocket() {
     // client stopped screen sharing) — close our consumer and remove its tile.
     if (message.type === 'ProducerClosed') {
       const { id, replaced = false } = message.data
+      const known = knownVideoProducers.get(id)
+      knownVideoProducers.delete(id)
       const entry = remoteConsumers.get(id)
       if (entry) {
         entry.consumer.close()
@@ -331,14 +421,16 @@ async function openSocket() {
           entry.cleanup()
           remoteCleanups = remoteCleanups.filter((fn) => fn !== entry.cleanup)
         }
-        if (entry.kind === 'video') {
-          activeCallbacks.onConsumerClosed?.(entry.consumerId, {
-            replaced,
-            clientId: entry.clientId,
-            producedType: entry.producedType
-          })
-        }
         console.log(`[Soup] Remote producer closed [id:${id}], consumer removed`)
+      }
+      // Tiles are producer-driven now, so the tile must go whether or not we
+      // were consuming — an unwatched stream has no consumer to close.
+      if (entry?.kind === 'video' || known) {
+        activeCallbacks.onStreamEnded?.(id, {
+          replaced,
+          clientId: entry?.clientId ?? known?.clientId,
+          producedType: entry?.producedType ?? known?.producedType
+        })
       }
       return
     }
@@ -2182,10 +2274,11 @@ export async function consumeProducer(producerId, kind, onStream, clientId, prod
     // share before a ProducerClosed notice arrived), close out the stale
     // consumer/tile before adding the new one.
     for (const [pid, entry] of remoteConsumers) {
-      if (entry.kind === 'video' && entry.clientId === clientId) {
+      if (entry.kind === 'video' && entry.clientId === clientId && pid !== producerId) {
         entry.consumer.close()
         remoteConsumers.delete(pid)
-        activeCallbacks.onConsumerClosed?.(entry.consumerId, {
+        knownVideoProducers.delete(pid)
+        activeCallbacks.onStreamEnded?.(pid, {
           replaced: true,
           clientId: entry.clientId,
           producedType: entry.producedType
@@ -2332,6 +2425,7 @@ export function resetMediaState() {
   encoderStatsStop?.()
   producers = []
   localProducerIds.clear()
+  knownVideoProducers.clear()
   // Audience is per-channel and replayed by NewConsumer on the next join, so a
   // channel switch must start from empty rather than showing the old room's.
   clearViewers()

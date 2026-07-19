@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, forwardRef, useImperativeHandle } from 'react'
+﻿import { useState, useEffect, useRef, forwardRef, useImperativeHandle } from 'react'
 import {
   connect,
   publish,
@@ -127,7 +127,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   // rather than inside the setVideoStreams updaters so the parent's setState
   // never runs during this component's render (that triggers React's
   // "update a component while rendering a different component" warning). Fires on
-  // mount with [] too, which handleStreamsUpdate reads as "no streams" — harmless.
+  // mount with [] too, which handleStreamsUpdate reads as "no streams" â€” harmless.
   useEffect(() => {
     onStreamsUpdate?.(videoStreams)
   }, [videoStreams])
@@ -199,7 +199,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     await publishMic()
   }
 
-  // Fired on an unexpected drop: tear down local media UI but stay "joined" —
+  // Fired on an unexpected drop: tear down local media UI but stay "joined" â€”
   // soup auto-reconnects, remote tiles re-arrive via replayed NewProducer, and
   // the mic re-publishes. Screen share is NOT auto-restored (re-capturing the
   // screen requires a fresh user gesture).
@@ -222,9 +222,9 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   // Unmount cleanup. If this channel is being deleted out from under us *while
   // we're joined to it*, tear down the shared (singleton) voice session and clear
   // the sidebar's
-  // joined bookkeeping. Otherwise the soup connection is left orphaned — its
+  // joined bookkeeping. Otherwise the soup connection is left orphaned â€” its
   // callbacks point at this dead component and `joinedChannelId` still names the
-  // gone channel — so the next channel the user joins takes the "switch" path on
+  // gone channel â€” so the next channel the user joins takes the "switch" path on
   // a broken session and can't transmit audio or leave.
   useEffect(
     () => () => {
@@ -237,13 +237,14 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     []
   )
 
-  // Remove a remote video tile whose consumer was closed (e.g. the
-  // remote client restarted screen share, replacing its old producer)
-  const handleConsumerClosed = (consumerId, { replaced = false } = {}) => {
+  // The remote producer itself went away (the sharer stopped). Keyed by producer
+  // rather than consumer because an unwatched stream still has a tile but no
+  // consumer to identify it by.
+  const handleStreamEnded = (producerId, { replaced = false } = {}) => {
     // The SFU announces a codec replacement's old producer first. Keep its tile
     // as a short-lived placeholder; handleVideoStream swaps in the successor.
     if (replaced) return
-    setVideoStreams((prev) => prev.filter((s) => s.consumerId !== consumerId))
+    setVideoStreams((prev) => prev.filter((s) => s.producerId !== producerId))
   }
 
   // Native audio capture died mid-share; the video share continues.
@@ -302,12 +303,12 @@ const VoiceChannel = forwardRef(function VoiceChannel(
           setSpeakingClients({})
         },
         onReconnecting: handleReconnecting,
-        // Server drops us from the channel when the socket dies — re-assert
+        // Server drops us from the channel when the socket dies â€” re-assert
         // membership before each reconnect's ticket fetch.
         onReconnectRejoin: () => patchChannel(channel.id),
         onVideoStream: handleVideoStream,
         onClientSpeaking: handleClientSpeaking,
-        onConsumerClosed: handleConsumerClosed,
+        onStreamEnded: handleStreamEnded,
         onScreenAudioError: handleScreenAudioError
       })
     } catch (err) {
@@ -323,7 +324,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     setConnecting(true)
     setError(null)
 
-    // Rebind callbacks BEFORE the PATCH — TransportsDisconnected can arrive
+    // Rebind callbacks BEFORE the PATCH â€” TransportsDisconnected can arrive
     // as soon as the server processes the PATCH, so this channel's handler
     // must already be active to catch it. This also repoints the reconnect
     // callbacks at the new channel, so a drop after the switch recovers here.
@@ -333,7 +334,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
       onReconnectRejoin: () => patchChannel(channel.id),
       onVideoStream: handleVideoStream,
       onClientSpeaking: handleClientSpeaking,
-      onConsumerClosed: handleConsumerClosed,
+      onStreamEnded: handleStreamEnded,
       onTransportsDisconnected: handleConnectEstablished,
       onScreenAudioError: handleScreenAudioError
     })
@@ -347,8 +348,8 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   }
 
   // Take ownership of the live voice session after the server moved us into this
-  // channel (a moderator's PATCH /client). Unlike switchTo we don't PATCH — the
-  // server already moved us — we only repoint the shared session's callbacks here,
+  // channel (a moderator's PATCH /client). Unlike switchTo we don't PATCH â€” the
+  // server already moved us â€” we only repoint the shared session's callbacks here,
   // mark ourselves joined, and re-establish media. The server's MediaStateReset
   // may land before or after we adopt; publish() is single-flight, so calling it
   // here can't collide with a reset-driven republish. onClientSpeaking is rebound
@@ -360,7 +361,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
       onReconnectRejoin: () => patchChannel(channel.id),
       onVideoStream: handleVideoStream,
       onClientSpeaking: handleClientSpeaking,
-      onConsumerClosed: handleConsumerClosed,
+      onStreamEnded: handleStreamEnded,
       onTransportsDisconnected: handleConnectEstablished,
       onScreenAudioError: handleScreenAudioError
     })
@@ -401,7 +402,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   // Capture and publish the chosen source after the user picks one
   // Encoder stats land ~3s after the share starts; tag the self tile with the live
   // codec + HW/SW so the sharer sees what's actually encoding (release builds have no
-  // console), including after an adaptive downgrade flips AV1 → H264. Idempotent —
+  // console), including after an adaptive downgrade flips AV1 â†’ H264. Idempotent â€”
   // bails when nothing changed so it stops re-rendering once settled.
   const handleSelfEncoderStats = (consumerId, { codec, hardware }) => {
     if (hardware == null && codec == null) return
@@ -461,7 +462,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
           {
             stream: screen.stream,
             consumerId: screen.id,
-            // Our own tile has no consumer — screen.id IS the producer id, which
+            // Our own tile has no consumer â€” screen.id IS the producer id, which
             // is what the viewer map is keyed by. This is the case that matters
             // most: "who is watching me".
             producerId: screen.id,
