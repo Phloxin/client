@@ -505,9 +505,11 @@ function Sidebar({
           {filterOpen && sidebarView === 'users' && (
             <div className="client-context-menu user-filter-menu" ref={filterRef}>
               <div className="client-context-menu-header">Filter by</div>
+              <div className="user-filter-scroll">
               {roles.length === 0 && vanity.length === 0 && (
                 <div className="client-role-empty">No roles or groups</div>
               )}
+              {roles.length > 0 && <div className="user-filter-section">Roles</div>}
               {roles.map((r) => (
                 <button
                   key={`r${r.id}`}
@@ -523,6 +525,7 @@ function Sidebar({
                   {r.name}
                 </button>
               ))}
+              {vanity.length > 0 && <div className="user-filter-section">Groups</div>}
               {vanity.map((g) => (
                 <button
                   key={`g${g.id}`}
@@ -552,6 +555,7 @@ function Sidebar({
                   Clear filters
                 </button>
               )}
+              </div>
             </div>
           )}
         </div>
