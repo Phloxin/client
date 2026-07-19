@@ -524,10 +524,15 @@ function ChatPanel({
   }
 
   // Grow the message box to fit its content, up to MAX_INPUT_LINES, then let it
-  // scroll. Runs on every text change (typing, emoji insert, send-clear).
+  // scroll. Runs on every text change (typing, emoji insert, send-clear). Measure
+  // whether the message list is pinned before changing the textarea height, then
+  // restore the bottom after flexbox gives the composer its additional space.
   useLayoutEffect(() => {
     const el = inputRef.current
     if (!el) return
+    const list = listRef.current
+    const keepLatestVisible =
+      list && list.scrollHeight - list.scrollTop - list.clientHeight < 80
     el.style.height = 'auto' // shrink first so scrollHeight reflects the content
     const cs = getComputedStyle(el)
     const lineHeight = parseFloat(cs.lineHeight) || 20
@@ -538,6 +543,18 @@ function ChatPanel({
     const fullHeight = el.scrollHeight + verticalBorder
     el.style.height = `${Math.min(fullHeight, maxHeight)}px`
     el.style.overflowY = fullHeight > maxHeight ? 'auto' : 'hidden'
+    if (keepLatestVisible) {
+      // Reading scrollHeight forces the flex layout to include the textarea's
+      // new height before the scroll is applied.
+      list.scrollTop = list.scrollHeight
+      metricsRef.current = {
+        scrollTop: list.scrollTop,
+        scrollHeight: list.scrollHeight,
+        clientHeight: list.clientHeight
+      }
+      setScrolledUp(false)
+      setNewBelow(false)
+    }
   }, [text])
 
   // Close the emoji picker on outside click
