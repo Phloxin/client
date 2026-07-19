@@ -23,6 +23,7 @@ import {
   IconPlus,
   IconX,
   IconFilter,
+  IconSearch,
   IconCheck,
   IconUsersGroup
 } from '@tabler/icons-react'
@@ -408,6 +409,7 @@ function Sidebar({
   // both lists. Empty = no filter; otherwise a client shows if it matches ANY pick.
   const [filterOpen, setFilterOpen] = useState(false)
   const [filterIds, setFilterIds] = useState(() => new Set())
+  const [search, setSearch] = useState('')
   const filterRef = useRef(null)
 
   const toggleFilter = (key) =>
@@ -427,14 +429,13 @@ function Sidebar({
     return () => document.removeEventListener('mousedown', close)
   }, [filterOpen])
 
-  useEffect(() => {
-    if (sidebarView !== 'users') setFilterOpen(false)
-  }, [sidebarView])
-
+  // Roster entry passes when it matches the role/group picks AND the search text.
+  const query = search.trim().toLowerCase()
   const matchesFilter = (c) =>
-    filterIds.size === 0 ||
-    (c.role_ids || []).some((id) => filterIds.has(`r${id}`)) ||
-    (c.vanity_ids || []).some((id) => filterIds.has(`g${id}`))
+    (filterIds.size === 0 ||
+      (c.role_ids || []).some((id) => filterIds.has(`r${id}`)) ||
+      (c.vanity_ids || []).some((id) => filterIds.has(`g${id}`))) &&
+    (query === '' || (c.name || '').toLowerCase().includes(query))
 
   return (
     <aside className="sidebar" ref={sidebarRef} style={{ width }}>
@@ -456,7 +457,11 @@ function Sidebar({
           className="sidebar-view-tabs"
           ariaLabel="Sidebar view"
           active={sidebarView}
-          onChange={setSidebarView}
+          onChange={(v) => {
+            setFilterOpen(false)
+            setSearch('')
+            setSidebarView(v)
+          }}
           tabs={[
             { id: 'channels', label: 'Channels' },
             { id: 'users', label: 'Users' }
@@ -615,6 +620,37 @@ function Sidebar({
       </div>
 
       {sidebarView === 'users' && (
+        <div className="sidebar-search">
+          <IconSearch size={15} stroke={2} />
+          <input
+            type="search"
+            value={search}
+            placeholder="Search users"
+            onChange={(e) => setSearch(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape' && search) {
+                // Clear before the app-level Escape closes something underneath.
+                e.preventDefault()
+                e.stopPropagation()
+                setSearch('')
+              }
+            }}
+          />
+          {search && (
+            <button
+              type="button"
+              className="sidebar-search-clear"
+              title="Clear search"
+              aria-label="Clear search"
+              onClick={() => setSearch('')}
+            >
+              <IconX size={14} stroke={2.2} />
+            </button>
+          )}
+        </div>
+      )}
+
+      {sidebarView === 'users' && (
         <div className="sidebar-user-list">
           {(() => {
             // Connected clients plus any banned users not currently connected.
@@ -628,8 +664,8 @@ function Sidebar({
             ]
               .filter(({ client: c }) => matchesFilter(c))
               .sort((a, b) => (a.client.name || '').localeCompare(b.client.name || ''))
-            if (entries.length === 0 && filterIds.size > 0) {
-              return <div className="sidebar-user-empty">No users match the filter</div>
+            if (entries.length === 0 && (filterIds.size > 0 || query)) {
+              return <div className="sidebar-user-empty">No matching users</div>
             }
             return entries.map(({ client: c, banned }) => (
               <ClientIndicator
