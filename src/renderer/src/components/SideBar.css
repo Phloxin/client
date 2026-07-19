@@ -451,4 +451,5 @@ html[data-transparency='true'] .control-dock {
 /* Roster rows sit flush (no channel indent). */
 .sidebar-user-list .client-indicator {
   padding-left: 8px;
+  flex-shrink: 0;
 }
