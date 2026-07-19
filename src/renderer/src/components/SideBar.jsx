@@ -71,6 +71,7 @@ function Sidebar({
   canBanMembers,
   canMuteMembers,
   previewChannelId,
+  summaryChannelId,
   unreadChannelIds
 }) {
   const { keybindSettings } = useSettings()
@@ -485,7 +486,7 @@ function Sidebar({
             canKickMembers={canKickMembers}
             canBanMembers={canBanMembers}
             canMuteMembers={canMuteMembers}
-            previewing={previewChannelId === ch.id}
+            previewing={previewChannelId === ch.id || summaryChannelId === ch.id}
             unread={!!unreadChannelIds?.has(ch.id)}
             onError={onError}
             onStreamsUpdate={(streams) => {

@@ -2164,6 +2164,7 @@ function Main() {
             canBanMembers={canBanMembers}
             canMuteMembers={canMuteMembers}
             previewChannelId={previewChannelId}
+            summaryChannelId={summaryChannelId}
             unreadChannelIds={unreadChannelIds}
           />
 
