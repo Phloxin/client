@@ -258,6 +258,11 @@ function ClientIndicator({
   const presenceTitle = presence?.status_message
     ? `${STATUS_LABELS[status]} — ${presence.status_message}`
     : STATUS_LABELS[status]
+  // In a voice channel everyone listed is by definition present, so a dot on
+  // every row is noise — only the two statuses that mean "here but unavailable"
+  // earn one. The Users roster still shows all four, since that's the view whose
+  // job is telling you who's around.
+  const showPresenceDot = rosterMode || status === 'away' || status === 'do_not_disturb'
 
   const {
     menu,
@@ -346,7 +351,9 @@ function ClientIndicator({
             initial
           )}
         </span>
-        <span className={`presence-dot presence-${status}`} title={presenceTitle} />
+        {showPresenceDot && (
+          <span className={`presence-dot presence-${status}`} title={presenceTitle} />
+        )}
       </span>
       <span className="client-name">{client.name}</span>
       {showTags && groups.length > 0 && (
