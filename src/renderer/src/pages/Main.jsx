@@ -24,7 +24,7 @@ import {
 } from '../lib/soup'
 import { playUiSound } from '../lib/sounds'
 import { setServerHost, apiBase, wsBase, cdnUrl, throwIfError } from '../lib/serverConfig'
-import { validateMessage } from '../lib/presence'
+import { validateMessage, statusOf } from '../lib/presence'
 import { authFetch, getFreshToken, setOnSessionExpired } from '../lib/auth'
 import { httpFetch } from '../lib/http'
 import SegmentedTabs from '../components/SegmentedTabs'
@@ -196,6 +196,7 @@ function Main() {
   const channelsRef = useRef([])
   const clientsRef = useRef([])
   const refreshPresencesRef = useRef(null)
+  const dndRef = useRef(false)
 
   //Stream Ref Hooks
   const popoutWindowRef = useRef(null)
@@ -382,6 +383,13 @@ function Main() {
   // tab is selected (mirrors the render condition below).
   const chatVisible = previewChannelId != null || viewMode === 'log'
 
+  // Do Not Disturb silences interruptions (notification/inbox toasts, the new
+  // message chime) but never suppresses the notification itself — unread counts
+  // still tick up so nothing is missed, it just waits for you. Declared here
+  // rather than beside its consumers because the ref-sync effect below reads it
+  // during render, in its dependency array.
+  const dnd = statusOf(presences[client?.id]) === 'do_not_disturb'
+
   useEffect(() => {
     selfIdRef.current = client?.id ?? null
   }, [client])
@@ -394,6 +402,10 @@ function Main() {
   useEffect(() => {
     chatVisibleRef.current = chatVisible
   }, [chatVisible])
+  // Read inside the socket handler, which closes over its first render.
+  useEffect(() => {
+    dndRef.current = dnd
+  }, [dnd])
   useEffect(() => {
     feedRef.current = feed
   }, [feed])
@@ -1618,7 +1630,8 @@ function Main() {
         // but ourselves — regardless of whether we're on the chat or video tab.
         if (
           data.author !== selfIdRef.current &&
-          data.channel_id === activeChatChannelIdRef.current
+          data.channel_id === activeChatChannelIdRef.current &&
+          !dndRef.current
         ) {
           playUiSound('new-message')
         }
@@ -2211,6 +2224,7 @@ function Main() {
           notifications={notifications}
           onClearNotifications={() => setNotifications([])}
           onOpenNotification={handleOpenNotification}
+          silentNotifications={dnd}
           dmNotifications={dmNotifications}
           onOpenDmNotification={handleOpenDmNotification}
           onClearDmNotifications={() => setDmNotifications([])}

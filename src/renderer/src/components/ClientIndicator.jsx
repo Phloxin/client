@@ -343,14 +343,16 @@ function ClientIndicator({
       onDoubleClick={handleDoubleClick}
     >
       {!rosterMode && statusIcon}
+      {/* The image/initial stays a direct child: .client-avatar is the 22px box
+          .client-avatar-img sizes itself against, and an intermediate wrapper
+          would collapse its height. The dot is absolutely positioned, so it sits
+          alongside without joining the flex layout. */}
       <span className="client-avatar">
-        <span aria-hidden="true">
-          {client.avatar ? (
-            <img className="client-avatar-img" src={client.avatar} alt="" />
-          ) : (
-            initial
-          )}
-        </span>
+        {client.avatar ? (
+          <img className="client-avatar-img" src={client.avatar} alt="" aria-hidden="true" />
+        ) : (
+          initial
+        )}
         {showPresenceDot && (
           <span className={`presence-dot presence-${status}`} title={presenceTitle} />
         )}
