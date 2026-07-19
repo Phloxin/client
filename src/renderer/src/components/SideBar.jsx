@@ -50,6 +50,7 @@ function Sidebar({
   onRemoveServer,
   onNotify,
   onViewServerTraffic,
+  onViewServerSummary,
   onCreateChannel,
   onDeleteChannel,
   onReorderChannel,
@@ -457,6 +458,7 @@ function Sidebar({
           onRemoveServer={onRemoveServer}
           onNotify={onNotify}
           onViewServerTraffic={onViewServerTraffic}
+          onViewServerSummary={onViewServerSummary}
         />
       </div>
 

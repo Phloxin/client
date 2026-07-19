@@ -42,7 +42,8 @@ function ServerMenu({
   onEditServer,
   onRemoveServer,
   onNotify,
-  onViewServerTraffic
+  onViewServerTraffic,
+  onViewServerSummary
 }) {
   // Right-click context menu on the trigger (connected only): { x, y } or null.
   const [ctxPos, setCtxPos] = useState(null)
@@ -304,8 +305,10 @@ function ServerMenu({
           <button
             type="button"
             className="channel-context-item"
-            disabled
-            title="Coming soon"
+            onClick={() => {
+              setCtxPos(null)
+              onViewServerSummary?.()
+            }}
           >
             <IconInfoCircle size={16} /> View server summary
           </button>

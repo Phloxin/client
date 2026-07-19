@@ -12,6 +12,7 @@ import ChatPanel from '../components/ChatPanel'
 import ClientSummary from '../components/ClientSummary'
 import ChannelSummary from '../components/ChannelSummary'
 import ServerTraffic from '../components/ServerTraffic'
+import ServerSummary from '../components/ServerSummary'
 import TitleBar from '../components/TitleBar'
 import ConnectionOverlay from '../components/ConnectionOverlay'
 import Toast from '../components/Toast'
@@ -344,6 +345,7 @@ function Main() {
     setReadStates({})
     setTraffic([])
     setShowTraffic(false)
+    setShowServerSummary(false)
   }, [token])
 
   // Expose a bridge the popout window reads via window.opener. Live MediaStream
@@ -426,6 +428,10 @@ function Main() {
   // by Esc or navigating elsewhere. When lurking, traffic is the default view
   // anyway, so this only matters while in a voice channel.
   const [showTraffic, setShowTraffic] = useState(false)
+  // Forced server-summary view (server menu). Same canvas-override rules as
+  // showTraffic: mutually exclusive with the preview/summary views, cleared by
+  // Esc or navigating elsewhere.
+  const [showServerSummary, setShowServerSummary] = useState(false)
 
   // The channel the local client currently has joined (chat is scoped to it)
   const selfChannelId = clients.find((c) => c.id === client?.id)?.channel_id ?? null
@@ -553,6 +559,7 @@ function Main() {
     setSummaryClientId(null)
     setSummaryChannelId(null)
     setShowTraffic(false)
+    setShowServerSummary(false)
     setPreviewChannelId(channelId === selfChannelId ? null : channelId)
   }
 
@@ -561,6 +568,7 @@ function Main() {
     setPreviewChannelId(null)
     setSummaryChannelId(null)
     setShowTraffic(false)
+    setShowServerSummary(false)
     setSummaryClientId(userId)
   }
 
@@ -570,6 +578,7 @@ function Main() {
     setPreviewChannelId(null)
     setSummaryClientId(null)
     setShowTraffic(false)
+    setShowServerSummary(false)
     setSummaryChannelId(channelId)
   }
 
@@ -580,7 +589,18 @@ function Main() {
     setPreviewChannelId(null)
     setSummaryClientId(null)
     setSummaryChannelId(null)
+    setShowServerSummary(false)
     setShowTraffic(true)
+  }
+
+  // Server menu → View server summary: force the server-summary card into the
+  // canvas, clearing any other override. Cleared like the traffic view.
+  const handleViewServerSummary = () => {
+    setPreviewChannelId(null)
+    setSummaryClientId(null)
+    setSummaryChannelId(null)
+    setShowTraffic(false)
+    setShowServerSummary(true)
   }
 
   // Open the DM an inbox alert points at: by sender id when known (resolves the
@@ -655,6 +675,7 @@ function Main() {
       if (!userId || userId === client?.id) return
       setSummaryClientId(null)
       setShowTraffic(false)
+      setShowServerSummary(false)
       try {
         const id = await ensureDmChannel(userId)
         // The preview-drop effect clears any previewed id not in `channels`, but
@@ -2222,12 +2243,13 @@ function Main() {
       else if (summaryClientId != null) setSummaryClientId(null)
       else if (previewChannelId != null) setPreviewChannelId(null)
       else if (showTraffic) setShowTraffic(false)
+      else if (showServerSummary) setShowServerSummary(false)
       else return
       e.preventDefault()
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [showSettings, rolesGroupsOpen, summaryChannelId, summaryClientId, previewChannelId, showTraffic])
+  }, [showSettings, rolesGroupsOpen, summaryChannelId, summaryClientId, previewChannelId, showTraffic, showServerSummary])
 
   const connected = !!token
   const titleText = connectedServer ? `${APP_TITLE} — ${connectedServer.nickname}` : APP_TITLE
@@ -2325,9 +2347,11 @@ function Main() {
               // Joining/leaving a voice channel is a navigation — drop the
               // forced traffic view so we land on that channel's chat.
               setShowTraffic(false)
+              setShowServerSummary(false)
               sendVoiceState({ channel_id: channelId })
             }}
             onViewServerTraffic={handleViewServerTraffic}
+            onViewServerSummary={handleViewServerSummary}
             // provide a renderer-level openSettings hook
             onOpenSettings={openSettings}
             servers={servers}
@@ -2372,7 +2396,7 @@ function Main() {
           <main className="chat-area">
             {/* Summary views have no header bar: their banner card acts as the header.
               Leaving a view = clicking back to your joined channel in the sidebar. */}
-            {summaryChannelId == null && summaryClientId == null && (
+            {summaryChannelId == null && summaryClientId == null && !showServerSummary && (
               <div className="chat-header">
                 <div className="header-content">
                   {showTraffic ? (
@@ -2455,7 +2479,9 @@ function Main() {
                     ? `channel-summary-${summaryChannelId}`
                     : summaryClientId != null
                       ? `summary-${summaryClientId}`
-                      : previewChannelId != null
+                      : showServerSummary
+                        ? 'server-summary'
+                        : previewChannelId != null
                         ? `preview-${previewChannelId}`
                         : showTraffic || !joinedChannel
                           ? 'lobby'
@@ -2484,6 +2510,8 @@ function Main() {
                   isSelf={summaryClient?.id === client?.id}
                   onSetAvatar={handleSetAvatar}
                 />
+              ) : showServerSummary ? (
+                <ServerSummary />
               ) : showTraffic || (previewChannelId == null && !joinedChannel) ? (
                 // Server-traffic log: shown on demand (server menu) or as the
                 // default when lurking (not in a voice channel, not peeking).
