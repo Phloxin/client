@@ -174,6 +174,63 @@ async function closeServerProducer(id) {
   }
 }
 
+// ─── Stream viewers ─────────────────────────────────────────────
+// Who is watching which screen share. The server tells us via NewConsumer (also
+// replayed on join, so a late arrival learns the existing audience) and
+// ConsumerClosed. ConsumerClosed identifies the consumer only by id, so we keep
+// the id→(producer, client) mapping needed to undo it.
+const consumerOwners = new Map() // consumerId -> { producerId, clientId }
+const producerViewers = new Map() // producerId -> Set<clientId>
+let viewerSubscribers = []
+
+const notifyViewers = () => {
+  // Hand out a plain snapshot: subscribers are React components that must not
+  // hold a reference to a Map we keep mutating underneath them.
+  const snapshot = new Map([...producerViewers].map(([p, set]) => [p, [...set]]))
+  for (const cb of viewerSubscribers) cb(snapshot)
+}
+
+const addViewer = ({ id, producer_id, client_id }) => {
+  if (consumerOwners.has(id)) return
+  consumerOwners.set(id, { producerId: producer_id, clientId: client_id })
+  if (!producerViewers.has(producer_id)) producerViewers.set(producer_id, new Set())
+  producerViewers.get(producer_id).add(client_id)
+  notifyViewers()
+}
+
+const removeViewer = (consumerId) => {
+  const owner = consumerOwners.get(consumerId)
+  if (!owner) return
+  consumerOwners.delete(consumerId)
+  const set = producerViewers.get(owner.producerId)
+  if (!set) return
+  // A client can hold several consumers of one producer (e.g. a re-consume
+  // racing the old one's close), so only drop the name once the last is gone.
+  const stillWatching = [...consumerOwners.values()].some(
+    (o) => o.producerId === owner.producerId && o.clientId === owner.clientId
+  )
+  if (!stillWatching) set.delete(owner.clientId)
+  if (set.size === 0) producerViewers.delete(owner.producerId)
+  notifyViewers()
+}
+
+const clearViewers = () => {
+  consumerOwners.clear()
+  producerViewers.clear()
+  notifyViewers()
+}
+
+// Subscribe to the viewer map (producerId -> clientId[]). Returns an unsubscribe.
+// Fires immediately with the current snapshot so a late subscriber isn't blank
+// until the next event — NewConsumer replays happen at join, before mount.
+export function subscribeStreamViewers(cb) {
+  viewerSubscribers.push(cb)
+  cb(new Map([...producerViewers].map(([p, set]) => [p, [...set]])))
+  return () => {
+    viewerSubscribers = viewerSubscribers.filter((fn) => fn !== cb)
+  }
+}
+
 // ─── Connect to signaling server ────────────────────────────────
 // Callbacks: onConnect (fired after each successful auth — initial and
 // reconnect), onDisconnect (intentional/unrecoverable teardown), onReconnecting
@@ -246,6 +303,19 @@ async function openSocket() {
       consumeProducer(id, kind, activeCallbacks.onVideoStream, client_id, produced_type).catch(
         (err) => console.error(`[Soup] Failed to consume producer ${id}:`, err)
       )
+      return
+    }
+
+    // Audience bookkeeping for screen shares. NewConsumer covers both "someone
+    // started watching" and the replay a client receives on joining a channel,
+    // so it must be idempotent (addViewer dedupes by consumer id).
+    if (message.type === 'NewConsumer') {
+      addViewer(message.data)
+      return
+    }
+
+    if (message.type === 'ConsumerClosed') {
+      removeViewer(message.data.id)
       return
     }
 
@@ -2127,6 +2197,9 @@ export async function consumeProducer(producerId, kind, onStream, clientId, prod
       stream,
       kind,
       consumerId: consumer.id,
+      // Carried so the UI can look this tile up in the viewer map, which the
+      // server keys by producer (one producer, many consumers watching it).
+      producerId,
       clientId,
       codec: codecLabel(consumer.rtpParameters)
     })
@@ -2259,6 +2332,9 @@ export function resetMediaState() {
   encoderStatsStop?.()
   producers = []
   localProducerIds.clear()
+  // Audience is per-channel and replayed by NewConsumer on the next join, so a
+  // channel switch must start from empty rather than showing the old room's.
+  clearViewers()
   device = null
   stopAudioProcessor()
   // Release the raw mic capture — the producers above are closed, so no live

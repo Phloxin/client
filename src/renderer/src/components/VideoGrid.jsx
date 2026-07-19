@@ -14,9 +14,10 @@ import {
   IconVolumeOff,
   IconExternalLink,
   IconPlayerPlayFilled,
-  IconPlayerStopFilled
+  IconPlayerStopFilled,
+  IconEye
 } from '@tabler/icons-react'
-import { setFocusedScreenAudio, setVideoStreamRoles } from '../lib/soup'
+import { setFocusedScreenAudio, setVideoStreamRoles, subscribeStreamViewers } from '../lib/soup'
 import { useSettings } from '../context/SettingsContext'
 
 // Stable empty default so the role effect doesn't churn when no watched set is
@@ -109,6 +110,13 @@ function VideoGrid({
   const resolveLabel = (s) =>
     clients?.find((c) => c.id === s.clientId)?.name || s.fallbackLabel || `Stream ${s.consumerId}`
 
+  // Audience for every live producer, pushed from the voice socket. Subscribed
+  // here rather than threaded down as a prop: the grid is the only consumer, and
+  // soup is already imported directly for stream roles.
+  const [streamViewers, setStreamViewers] = useState(() => new Map())
+  useEffect(() => subscribeStreamViewers(setStreamViewers), [])
+  const [viewersOpen, setViewersOpen] = useState(false)
+
   const sortedStreams = [...streams].sort((a, b) => {
     if (a.isSelf && !b.isSelf) return 1
     if (!a.isSelf && b.isSelf) return -1
@@ -122,6 +130,13 @@ function VideoGrid({
   // with a new consumer id, and must not stop playback or mute its audio.
   const selectedStream = sortedStreams.find((s) => s.clientId === selectedStreamClientId) || null
 
+  // The sharer isn't watching their own stream, so drop them if the server
+  // happens to report them; everyone else resolves to a name.
+  const focusedViewers = (streamViewers.get(selectedStream?.producerId) ?? [])
+    .filter((id) => id !== selectedStream?.clientId)
+    .map((id) => clients?.find((c) => c.id === id)?.name || 'Unknown')
+    .sort((a, b) => a.localeCompare(b))
+
   const watchedStreams = sortedStreams.filter((s) => watchedStreamClientIds.has(s.clientId))
   const soleWatchedClientId =
     watchedStreamClientIds.size === 1 ? watchedStreamClientIds.values().next().value : null
@@ -131,9 +146,11 @@ function VideoGrid({
   const audibleClientId = selectedStreamClientId ?? soleWatchedClientId
 
   // Reset the zoom whenever focus moves (or clears) so returning to a stream
-  // always starts at the normal fit view — zoom is never persisted.
+  // always starts at the normal fit view — zoom is never persisted. The viewer
+  // list is per-stream, so it closes here too rather than carrying over.
   useEffect(() => {
     setView({ z: 1, x: 0, y: 0 })
+    setViewersOpen(false)
   }, [selectedStream?.consumerId])
 
   // Scroll-to-zoom on the focused stream, anchored at the cursor. Native
@@ -446,6 +463,36 @@ function VideoGrid({
                 )}
               </div>
             )}
+            {/* Viewer count, top-right. Same hover gate as .video-controls. */}
+            <div className="focus-viewers" onClick={(e) => e.stopPropagation()}>
+              <button
+                type="button"
+                className="vid-btn focus-viewers-btn"
+                onClick={() => setViewersOpen((v) => !v)}
+                title={
+                  focusedViewers.length === 0
+                    ? 'Nobody is watching this stream'
+                    : `${focusedViewers.length} watching`
+                }
+                aria-expanded={viewersOpen}
+              >
+                <IconEye size={18} />
+                <span className="focus-viewers-count">{focusedViewers.length}</span>
+              </button>
+              {viewersOpen && (
+                <div className="focus-viewers-list">
+                  {focusedViewers.length === 0 ? (
+                    <div className="focus-viewers-empty">Nobody is watching</div>
+                  ) : (
+                    focusedViewers.map((name) => (
+                      <div key={name} className="focus-viewers-row">
+                        {name}
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
             <div className="focus-label">
               <span>{resolveLabel(selectedStream)}</span>
             </div>

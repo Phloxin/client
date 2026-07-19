@@ -14,6 +14,7 @@ import { setClientAudioState, getClientAudioState } from '../lib/soup'
 import { useClientMenu } from './ClientContextMenu'
 import { useSettings } from '../context/SettingsContext'
 import { useClientActions } from '../context/ClientActionsContext'
+import { statusOf, STATUS_LABELS } from '../lib/presence'
 
 // rosterMode renders a presence-only entry (the sidebar's Users tab): no mic/
 // status indicator and no right-click volume control, since those entries aren't
@@ -248,7 +249,15 @@ function ClientIndicator({
     setLocalMuted(false)
   }
 
-  const { onSetNickname } = useClientActions()
+  const { onSetNickname, onSetPresence, presences } = useClientActions()
+
+  // Absent presence = offline. A status message stays visible while offline, so
+  // it's appended independently of the status itself.
+  const presence = presences?.[client.id]
+  const status = statusOf(presence)
+  const presenceTitle = presence?.status_message
+    ? `${STATUS_LABELS[status]} — ${presence.status_message}`
+    : STATUS_LABELS[status]
 
   const {
     menu,
@@ -261,6 +270,9 @@ function ClientIndicator({
     // ponytail: pulled from context instead of prop-drilling through SideBar +
     // VoiceChannel like onSetAvatar does. Move the rest over if more pile up.
     onSetNickname,
+    onSetPresence,
+    // The menu edits our own presence; `presence` here is this row's client.
+    presence,
     onPoke,
     onKick,
     onKickFromChannel,
@@ -326,8 +338,15 @@ function ClientIndicator({
       onDoubleClick={handleDoubleClick}
     >
       {!rosterMode && statusIcon}
-      <span className="client-avatar" aria-hidden="true">
-        {client.avatar ? <img className="client-avatar-img" src={client.avatar} alt="" /> : initial}
+      <span className="client-avatar">
+        <span aria-hidden="true">
+          {client.avatar ? (
+            <img className="client-avatar-img" src={client.avatar} alt="" />
+          ) : (
+            initial
+          )}
+        </span>
+        <span className={`presence-dot presence-${status}`} title={presenceTitle} />
       </span>
       <span className="client-name">{client.name}</span>
       {showTags && groups.length > 0 && (

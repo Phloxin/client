@@ -16,8 +16,11 @@ import {
   IconUserCheck,
   IconUsersGroup,
   IconPlus,
-  IconPencil
+  IconPencil,
+  IconMessage2,
+  IconX
 } from '@tabler/icons-react'
+import { STATUSES, STATUS_LABELS, STATUS_MESSAGE_MAX, statusOf } from '../lib/presence'
 import { fileToAvatarDataUrl } from '../lib/avatarFile'
 import { RoleIcon } from '../lib/roleIcon'
 
@@ -35,6 +38,7 @@ function capabilities(client, o) {
   const canPoke = !isSelf && !!o.onPoke
   const canSetAvatar = isSelf && !!o.onSetAvatar
   const canSetNickname = isSelf && !!o.onSetNickname
+  const canSetPresence = isSelf && !!o.onSetPresence
   // Moderation on another user, permission-gated by our own role permissions
   // (the server enforces them too). Kick only boots a live session, so it's
   // channel-view only; ban + roles also work from the Users roster.
@@ -65,12 +69,19 @@ function capabilities(client, o) {
   // set. Don't open at all when nothing would be actionable.
   const canOpen = isBanned
     ? canUnban
-    : canVolume || canPoke || canSetAvatar || canSetNickname || canAssignGroup || canModerate
+    : canVolume ||
+      canPoke ||
+      canSetAvatar ||
+      canSetNickname ||
+      canSetPresence ||
+      canAssignGroup ||
+      canModerate
   return {
     canVolume,
     canPoke,
     canSetAvatar,
     canSetNickname,
+    canSetPresence,
     canKick,
     canKickFromChannel,
     canBan,
@@ -89,6 +100,9 @@ function ClientContextMenu({ client, pos, onClose, opts, caps }) {
   // Display-name editor, seeded with the name we're currently showing under.
   const [nickOpen, setNickOpen] = useState(false)
   const [nickText, setNickText] = useState(client.name ?? '')
+  // Status-message editor, seeded with the message currently set.
+  const [msgOpen, setMsgOpen] = useState(false)
+  const [msgText, setMsgText] = useState(opts.presence?.status_message ?? '')
   // Kick/ban composer: which action is being composed ('kick' | 'ban' | null),
   // its optional reason, and the ban duration in seconds (0 = permanent).
   const [modAction, setModAction] = useState(null)
@@ -104,6 +118,7 @@ function ClientContextMenu({ client, pos, onClose, opts, caps }) {
   const avatarInputRef = useRef(null)
 
   const { isBanned, roles = [], vanity = [], volume } = opts
+  const myStatus = statusOf(opts.presence)
 
   // Close on outside click or Escape. Escape is marked handled so the app-level
   // Escape (Main.jsx) doesn't also close a view underneath.
@@ -134,6 +149,13 @@ function ClientContextMenu({ client, pos, onClose, opts, caps }) {
     const name = nickText.trim()
     if (!name) return
     opts.onSetNickname?.(name)
+    onClose()
+  }
+
+  // Blank is rejected by the server, so treat an emptied box as "clear it" (null)
+  // rather than sending something we know will bounce.
+  const submitStatusMessage = () => {
+    opts.onSetPresence?.({ status_message: msgText.trim() || null })
     onClose()
   }
 
@@ -245,6 +267,78 @@ function ClientContextMenu({ client, pos, onClose, opts, caps }) {
         )
       ) : (
         <>
+          {caps.canSetPresence && (
+            <>
+              {STATUSES.map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  className="client-context-menu-item"
+                  onClick={() => {
+                    opts.onSetPresence?.({ status: s })
+                    onClose()
+                  }}
+                >
+                  <span className={`presence-dot presence-${s}`} />
+                  {STATUS_LABELS[s]}
+                  {myStatus === s && <IconCheck size={16} className="client-context-menu-trailing" />}
+                </button>
+              ))}
+              {msgOpen ? (
+                <div className="client-poke-row">
+                  <input
+                    className="client-poke-input"
+                    value={msgText}
+                    autoFocus
+                    maxLength={STATUS_MESSAGE_MAX * 2}
+                    placeholder="Status message"
+                    onChange={(e) => setMsgText(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        submitStatusMessage()
+                      } else if (e.key === 'Escape') {
+                        e.preventDefault()
+                        setMsgOpen(false)
+                      }
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="client-poke-send"
+                    onClick={submitStatusMessage}
+                    title="Save status message"
+                  >
+                    <IconCheck size={16} />
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  className="client-context-menu-item"
+                  onClick={() => setMsgOpen(true)}
+                >
+                  <IconMessage2 size={16} />
+                  {opts.presence?.status_message ? 'Edit status message' : 'Set status message'}
+                </button>
+              )}
+              {opts.presence?.status_message && (
+                <button
+                  type="button"
+                  className="client-context-menu-item danger"
+                  onClick={() => {
+                    // null is the explicit "clear it" value; omitting would preserve.
+                    opts.onSetPresence?.({ status_message: null })
+                    onClose()
+                  }}
+                >
+                  <IconX size={16} />
+                  Clear status message
+                </button>
+              )}
+              <div className="client-context-menu-divider" aria-hidden="true" />
+            </>
+          )}
           {caps.canSetNickname &&
             (nickOpen ? (
               <div className="client-poke-row">

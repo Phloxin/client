@@ -254,7 +254,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     )
   }
 
-  const handleVideoStream = ({ stream, kind, consumerId, clientId, codec }) => {
+  const handleVideoStream = ({ stream, kind, consumerId, producerId, clientId, codec }) => {
     // Don't bake in the client's name here - the clients list for this
     // channel may not have caught up with this client's channel move yet.
     // The label is resolved at render time from clientId instead.
@@ -265,6 +265,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
       {
         stream,
         consumerId,
+        producerId,
         kind,
         isSelf: false,
         clientId,
@@ -460,6 +461,10 @@ const VoiceChannel = forwardRef(function VoiceChannel(
           {
             stream: screen.stream,
             consumerId: screen.id,
+            // Our own tile has no consumer — screen.id IS the producer id, which
+            // is what the viewer map is keyed by. This is the case that matters
+            // most: "who is watching me".
+            producerId: screen.id,
             kind: 'video',
             isSelf: true,
             clientId: self.id,

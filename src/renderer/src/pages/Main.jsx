@@ -24,6 +24,7 @@ import {
 } from '../lib/soup'
 import { playUiSound } from '../lib/sounds'
 import { setServerHost, apiBase, wsBase, cdnUrl, throwIfError } from '../lib/serverConfig'
+import { validateMessage } from '../lib/presence'
 import { authFetch, getFreshToken, setOnSessionExpired } from '../lib/auth'
 import { httpFetch } from '../lib/http'
 import SegmentedTabs from '../components/SegmentedTabs'
@@ -149,6 +150,10 @@ function Main() {
   const { token, applyAuthResponse, clearAuth, client } = useAuth()
   const [channels, setChannels] = useState([])
   const [clients, setClients] = useState([])
+  // PresenceApiObject by client_id. Kept separate from `clients` because presence
+  // is user-level and outlives a connection — an entry can exist for someone the
+  // roster no longer lists, and `clients` is replaced wholesale by Ready.
+  const [presences, setPresences] = useState({})
   const [feed, setFeed] = useState([])
   const [viewMode, setViewMode] = useState('log') // 'log' or 'video'
   const [servers, setServers] = useState([])
@@ -190,6 +195,7 @@ function Main() {
   const eventsWsRef = useRef(null)
   const channelsRef = useRef([])
   const clientsRef = useRef([])
+  const refreshPresencesRef = useRef(null)
 
   //Stream Ref Hooks
   const popoutWindowRef = useRef(null)
@@ -1388,7 +1394,12 @@ function Main() {
         sessionIdRef.current = reply.session_id ?? null
         lastEventSeqRef.current = null
         if (hadSession) reloadHistory()
+        // Ready follows and carries a presence snapshot, so no resync needed here.
       } else if (reply.kind === 'Resumed') {
+        // Replay should redeliver the PresenceUpdates we missed, but a resume that
+        // outlived the server's buffer would silently leave stale dots on screen.
+        // A resync is one small request — cheap insurance on a rare path.
+        refreshPresencesRef.current?.()
         // Resume accepted: the events we missed replay next as ordered, dup-free
         // dispatches, then live events continue. Keep our position; refresh id.
         if (reply.session_id != null) sessionIdRef.current = reply.session_id
@@ -1443,6 +1454,8 @@ function Main() {
       // is the websocket's equivalent of the old REST baseline fetch.
       if (ev === 'Ready') {
         setChannels(data.channels)
+        // Authoritative presence snapshot. Keyed by client_id; absent = offline.
+        setPresences(Object.fromEntries((data.presences || []).map((p) => [p.client_id, p])))
         // Voice state splits into self toggles (`self_mute`/`self_deaf`) and
         // server-forced state (`muted`/`deaf`, i.e. a moderator gag / server
         // deafen). Normalize the server-forced pair to `server_mute`/`server_deaf`
@@ -1456,6 +1469,14 @@ function Main() {
         setReadStates(reads)
         // Surface DMs that went unread while we were away in the inbox.
         seedUnreadDms(data.channels || [], reads, data.clients || [])
+        return
+      }
+
+      // Public presence broadcast. The object is authoritative for that user —
+      // replace it wholesale rather than merging, so a cleared status_message
+      // (null) doesn't leave the previous one behind.
+      if (ev === 'PresenceUpdate') {
+        setPresences((prev) => ({ ...prev, [data.client_id]: data }))
         return
       }
 
@@ -1806,6 +1827,13 @@ function Main() {
           return
         }
 
+        // Rejected command (e.g. an invalid presence update). This is a reply to
+        // one message, not a connection fault — surface it and keep the socket.
+        if (typeof msg.err === 'string') {
+          showError(msg.err)
+          return
+        }
+
         // Events are wrapped as { op: 3, data: <event>, seq }, or arrive bare as
         // { ev, data }. Support both, and remember the latest sequence so the
         // heartbeat and any resume can report our position.
@@ -2023,6 +2051,52 @@ function Main() {
   const sendStatus = (selfMute, selfDeaf) =>
     sendVoiceState({ self_mute: selfMute, self_deaf: selfDeaf })
 
+  // Change our own presence (op 5). Unlike voice state this is a genuine patch:
+  // an omitted field is preserved server-side, so send only what changed —
+  // `status_message: null` is meaningful (clears it) and must survive the trip.
+  const sendPresence = useCallback(
+    (patch) => {
+      if (patch.status == null && !('status_message' in patch)) return
+      if ('status_message' in patch) {
+        const { message, error } = validateMessage(patch.status_message)
+        if (error) {
+          showError(error)
+          return
+        }
+        patch = { ...patch, status_message: message }
+      }
+      if (eventsWsRef.current?.readyState !== WebSocket.OPEN) {
+        showError('Not connected — presence not updated')
+        return
+      }
+      eventsWsRef.current.send(JSON.stringify({ op: 5, data: patch }))
+      // No optimistic update: the server echoes PresenceUpdate to us too, and it
+      // arbitrates between our devices (last write wins). Guessing here would
+      // flicker whenever another device wins the race.
+    },
+    [showError]
+  )
+
+  // Full resync. The gateway is the live path; this is for recovering after a
+  // reconnect that resumed (no fresh Ready, so no new presence snapshot).
+  const refreshPresences = useCallback(async () => {
+    if (!token) return
+    try {
+      const res = await authFetch(`${apiBase()}/server/presences`)
+      const list = await (await throwIfError(res)).json()
+      setPresences(Object.fromEntries((list || []).map((p) => [p.client_id, p])))
+    } catch (err) {
+      console.warn('[Presence] resync failed:', err.message)
+    }
+  }, [token])
+
+  // Mirrored into a ref so the socket effect can call it without listing it as a
+  // dep — that effect owns the connection and must not re-run when a callback
+  // identity changes, or every render would drop and rebuild the WebSocket.
+  useEffect(() => {
+    refreshPresencesRef.current = refreshPresences
+  }, [refreshPresences])
+
   // Merge stream updates from a specific channel into the global streams list
   const handleStreamsUpdate = (channelId, streams) => {
     setAllVideoStreams((prev) => {
@@ -2105,6 +2179,8 @@ function Main() {
     onUnban: handleUnbanUser,
     onSetAvatar: handleSetAvatar,
     onSetNickname: handleSetNickname,
+    presences,
+    onSetPresence: sendPresence,
     onShowClientSummary: handleShowClientSummary,
     roles,
     onAssignRole: handleAssignRole,

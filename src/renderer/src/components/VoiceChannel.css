@@ -475,7 +475,9 @@
   font-size: 11px;
   font-weight: var(--font-weight-bold);
   flex-shrink: 0;
-  overflow: hidden;
+  /* Anchors the presence dot. Not `overflow: hidden` — that would clip the dot;
+     the avatar image rounds itself instead. */
+  position: relative;
   transition: box-shadow 0.12s ease;
 }
 
@@ -483,6 +485,54 @@
   width: 100%;
   height: 100%;
   object-fit: cover;
+  border-radius: 50%;
+}
+
+/* Presence dot, notched into the avatar's bottom-right. The ring is the row
+   background so the dot reads as cut out of the avatar rather than sitting on it. */
+.presence-dot {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px var(--color-background);
+  background: var(--color-text-muted);
+}
+
+.presence-online {
+  background: var(--color-success, #3ba55d);
+}
+
+.presence-away {
+  background: var(--color-warning, #faa81a);
+}
+
+.presence-do_not_disturb {
+  background: var(--color-danger, #ed4245);
+}
+
+/* Offline and invisible are deliberately identical — a hollow ring. */
+.presence-offline {
+  background: transparent;
+  border: 2px solid var(--color-text-muted);
+}
+
+/* In the context menu's status picker the dot is an inline list bullet, not an
+   overlay, so it opts out of the absolute positioning above. */
+.client-context-menu-item .presence-dot {
+  position: static;
+  width: 10px;
+  height: 10px;
+  margin: 0 3px;
+  box-shadow: none;
+  flex-shrink: 0;
+}
+
+/* Pushes the "current status" checkmark to the right edge of its row. */
+.client-context-menu-trailing {
+  margin-left: auto;
 }
 
 /* Shown only while the client is streaming; inherits the row's text color. */
