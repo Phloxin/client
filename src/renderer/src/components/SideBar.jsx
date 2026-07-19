@@ -21,8 +21,12 @@ import {
   IconScreenShare,
   IconScreenShareOff,
   IconPlus,
-  IconX
+  IconX,
+  IconFilter,
+  IconCheck,
+  IconUsersGroup
 } from '@tabler/icons-react'
+import { RoleIcon } from '../lib/roleIcon'
 
 const MIN_WIDTH = 180
 const MAX_WIDTH = 550
@@ -400,6 +404,38 @@ function Sidebar({
     }
   }, [])
 
+  // Roster filter. Ids are prefixed ('r<id>' role, 'g<id>' group) so one Set covers
+  // both lists. Empty = no filter; otherwise a client shows if it matches ANY pick.
+  const [filterOpen, setFilterOpen] = useState(false)
+  const [filterIds, setFilterIds] = useState(() => new Set())
+  const filterRef = useRef(null)
+
+  const toggleFilter = (key) =>
+    setFilterIds((prev) => {
+      const next = new Set(prev)
+      if (!next.delete(key)) next.add(key)
+      return next
+    })
+
+  // Close the filter popover on outside click, and whenever we leave the Users view.
+  useEffect(() => {
+    if (!filterOpen) return
+    const close = (e) => {
+      if (filterRef.current && !filterRef.current.contains(e.target)) setFilterOpen(false)
+    }
+    document.addEventListener('mousedown', close)
+    return () => document.removeEventListener('mousedown', close)
+  }, [filterOpen])
+
+  useEffect(() => {
+    if (sidebarView !== 'users') setFilterOpen(false)
+  }, [sidebarView])
+
+  const matchesFilter = (c) =>
+    filterIds.size === 0 ||
+    (c.role_ids || []).some((id) => filterIds.has(`r${id}`)) ||
+    (c.vanity_ids || []).some((id) => filterIds.has(`g${id}`))
+
   return (
     <aside className="sidebar" ref={sidebarRef} style={{ width }}>
       <div className="server-header">
@@ -426,15 +462,80 @@ function Sidebar({
             { id: 'users', label: 'Users' }
           ]}
         />
-        {connectedServer && (
-          <button
-            type="button"
-            className="channel-add-btn"
-            title="Add channel"
-            onClick={() => openCreateChannel()}
-          >
-            <IconPlus size={16} stroke={2.2} />
-          </button>
+        {connectedServer &&
+          (sidebarView === 'users' ? (
+            <button
+              type="button"
+              className={`channel-add-btn${filterIds.size > 0 ? ' active' : ''}`}
+              title={filterIds.size > 0 ? `Filtering by ${filterIds.size}` : 'Filter users'}
+              // Keep the outside-click handler from closing on mousedown only for
+              // onClick to immediately toggle it back open.
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={() => setFilterOpen((v) => !v)}
+            >
+              <IconFilter size={16} stroke={2.2} />
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="channel-add-btn"
+              title="Add channel"
+              onClick={() => openCreateChannel()}
+            >
+              <IconPlus size={16} stroke={2.2} />
+            </button>
+          ))}
+        {filterOpen && sidebarView === 'users' && (
+          <div className="client-context-menu user-filter-menu" ref={filterRef}>
+            <div className="client-context-menu-header">Filter by</div>
+            {roles.length === 0 && vanity.length === 0 && (
+              <div className="client-role-empty">No roles or groups</div>
+            )}
+            {roles.map((r) => (
+              <button
+                key={`r${r.id}`}
+                type="button"
+                className="client-context-menu-item"
+                onClick={() => toggleFilter(`r${r.id}`)}
+              >
+                <IconCheck
+                  size={16}
+                  style={{ visibility: filterIds.has(`r${r.id}`) ? 'visible' : 'hidden' }}
+                />
+                <RoleIcon role={r} size={16} />
+                {r.name}
+              </button>
+            ))}
+            {vanity.map((g) => (
+              <button
+                key={`g${g.id}`}
+                type="button"
+                className="client-context-menu-item"
+                onClick={() => toggleFilter(`g${g.id}`)}
+              >
+                <IconCheck
+                  size={16}
+                  style={{ visibility: filterIds.has(`g${g.id}`) ? 'visible' : 'hidden' }}
+                />
+                {g.avatar ? (
+                  <img src={g.avatar} alt="" className="client-group-icon" />
+                ) : (
+                  <IconUsersGroup size={16} />
+                )}
+                {g.name}
+              </button>
+            ))}
+            {filterIds.size > 0 && (
+              <button
+                type="button"
+                className="client-context-menu-item danger"
+                onClick={() => setFilterIds(new Set())}
+              >
+                <IconX size={16} />
+                Clear filters
+              </button>
+            )}
+          </div>
         )}
       </div>
 
@@ -524,7 +625,12 @@ function Sidebar({
               ...bannedUsers
                 .filter((u) => !connectedIds.has(u.id))
                 .map((u) => ({ client: u, banned: true }))
-            ].sort((a, b) => (a.client.name || '').localeCompare(b.client.name || ''))
+            ]
+              .filter(({ client: c }) => matchesFilter(c))
+              .sort((a, b) => (a.client.name || '').localeCompare(b.client.name || ''))
+            if (entries.length === 0 && filterIds.size > 0) {
+              return <div className="sidebar-user-empty">No users match the filter</div>
+            }
             return entries.map(({ client: c, banned }) => (
               <ClientIndicator
                 key={c.id}

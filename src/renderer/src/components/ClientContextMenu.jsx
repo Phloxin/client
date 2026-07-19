@@ -15,7 +15,8 @@ import {
   IconCheck,
   IconUserCheck,
   IconUsersGroup,
-  IconPlus
+  IconPlus,
+  IconPencil
 } from '@tabler/icons-react'
 import { fileToAvatarDataUrl } from '../lib/avatarFile'
 import { RoleIcon } from '../lib/roleIcon'
@@ -33,6 +34,7 @@ function capabilities(client, o) {
   const canVolume = !isSelf && !rosterMode && !!o.volume
   const canPoke = !isSelf && !!o.onPoke
   const canSetAvatar = isSelf && !!o.onSetAvatar
+  const canSetNickname = isSelf && !!o.onSetNickname
   // Moderation on another user, permission-gated by our own role permissions
   // (the server enforces them too). Kick only boots a live session, so it's
   // channel-view only; ban + roles also work from the Users roster.
@@ -63,11 +65,12 @@ function capabilities(client, o) {
   // set. Don't open at all when nothing would be actionable.
   const canOpen = isBanned
     ? canUnban
-    : canVolume || canPoke || canSetAvatar || canAssignGroup || canModerate
+    : canVolume || canPoke || canSetAvatar || canSetNickname || canAssignGroup || canModerate
   return {
     canVolume,
     canPoke,
     canSetAvatar,
+    canSetNickname,
     canKick,
     canKickFromChannel,
     canBan,
@@ -83,6 +86,9 @@ function ClientContextMenu({ client, pos, onClose, opts, caps }) {
   // Poke composer state, scoped to the open menu.
   const [pokeOpen, setPokeOpen] = useState(false)
   const [pokeText, setPokeText] = useState('')
+  // Display-name editor, seeded with the name we're currently showing under.
+  const [nickOpen, setNickOpen] = useState(false)
+  const [nickText, setNickText] = useState(client.name ?? '')
   // Kick/ban composer: which action is being composed ('kick' | 'ban' | null),
   // its optional reason, and the ban duration in seconds (0 = permanent).
   const [modAction, setModAction] = useState(null)
@@ -121,6 +127,13 @@ function ClientContextMenu({ client, pos, onClose, opts, caps }) {
 
   const submitPoke = () => {
     opts.onPoke?.(client.id, pokeText)
+    onClose()
+  }
+
+  const submitNickname = () => {
+    const name = nickText.trim()
+    if (!name) return
+    opts.onSetNickname?.(name)
     onClose()
   }
 
@@ -232,6 +245,44 @@ function ClientContextMenu({ client, pos, onClose, opts, caps }) {
         )
       ) : (
         <>
+          {caps.canSetNickname &&
+            (nickOpen ? (
+              <div className="client-poke-row">
+                <input
+                  className="client-poke-input"
+                  value={nickText}
+                  autoFocus
+                  placeholder="Display name"
+                  onChange={(e) => setNickText(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault()
+                      submitNickname()
+                    } else if (e.key === 'Escape') {
+                      e.preventDefault()
+                      setNickOpen(false)
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  className="client-poke-send"
+                  onClick={submitNickname}
+                  title="Save display name"
+                >
+                  <IconCheck size={16} />
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                className="client-context-menu-item"
+                onClick={() => setNickOpen(true)}
+              >
+                <IconPencil size={16} />
+                Set display name
+              </button>
+            ))}
           {caps.canSetAvatar && (
             <>
               <input

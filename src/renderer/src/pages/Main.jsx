@@ -868,25 +868,44 @@ function Main() {
     [token, showError, refreshBans]
   )
 
-  // Set our own avatar: PATCH /client/self with data-URL image //Update locally -> Server broadcasts ClientModified to others
-  // avatar is a `data:image/...;base64,...` string, or null to remove it.
-  const handleSetAvatar = useCallback(
-    async (avatar) => {
-      if (avatar === undefined) return
+  // Edit our own profile: PATCH /client/self //Update locally -> Server broadcasts ClientModified to others.
+  // `patch` is { avatar } and/or { nickname }; `local` is how it maps onto our
+  // client row (the server calls it nickname, the roster renders it as `name`).
+  const patchSelf = useCallback(
+    async (patch, local, label) => {
       const selfId = client?.id
-      setClients((prev) => prev.map((c) => (c.id === selfId ? { ...c, avatar } : c)))
+      setClients((prev) => prev.map((c) => (c.id === selfId ? { ...c, ...local } : c)))
       try {
         const res = await authFetch(`${apiBase()}/client/self`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ avatar })
+          body: JSON.stringify(patch)
         })
         await throwIfError(res)
       } catch (err) {
-        showError(`Failed to set avatar: ${err.message}`)
+        showError(`Failed to set ${label}: ${err.message}`)
       }
     },
     [client, token]
+  )
+
+  // avatar is a `data:image/...;base64,...` string, or null to remove it.
+  const handleSetAvatar = useCallback(
+    (avatar) => {
+      if (avatar === undefined) return
+      patchSelf({ avatar }, { avatar }, 'avatar')
+    },
+    [patchSelf]
+  )
+
+  // Display name shown to other clients; decoupled from the login username.
+  const handleSetNickname = useCallback(
+    (nickname) => {
+      const name = nickname.trim()
+      if (!name) return
+      patchSelf({ nickname: name }, { name }, 'nickname')
+    },
+    [patchSelf]
   )
 
   // Fetch a channel's recent history and replace that channel's feed entries with it.
@@ -2085,6 +2104,7 @@ function Main() {
     onBan: handleBanUser,
     onUnban: handleUnbanUser,
     onSetAvatar: handleSetAvatar,
+    onSetNickname: handleSetNickname,
     onShowClientSummary: handleShowClientSummary,
     roles,
     onAssignRole: handleAssignRole,

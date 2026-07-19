@@ -27,6 +27,24 @@
   display: flex;
   align-items: center;
   gap: var(--spacing-sm);
+  /* Anchors the roster filter popover to the header's bottom-right. */
+  position: relative;
+}
+
+/* Reuses .client-context-menu's chrome (VoiceChannel.css) — only the anchoring
+   differs, since that one is positioned at a cursor. */
+.client-context-menu.user-filter-menu {
+  position: absolute;
+  top: 100%;
+  right: 4px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+/* Filter button while at least one role/group is selected. */
+.channel-add-btn.active {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
 }
 
 .sidebar-view-tabs {

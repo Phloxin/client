@@ -13,6 +13,7 @@ import {
 import { setClientAudioState, getClientAudioState } from '../lib/soup'
 import { useClientMenu } from './ClientContextMenu'
 import { useSettings } from '../context/SettingsContext'
+import { useClientActions } from '../context/ClientActionsContext'
 
 // rosterMode renders a presence-only entry (the sidebar's Users tab): no mic/
 // status indicator and no right-click volume control, since those entries aren't
@@ -247,6 +248,8 @@ function ClientIndicator({
     setLocalMuted(false)
   }
 
+  const { onSetNickname } = useClientActions()
+
   const {
     menu,
     openMenu,
@@ -255,6 +258,9 @@ function ClientIndicator({
     isSelf,
     rosterMode,
     isBanned,
+    // ponytail: pulled from context instead of prop-drilling through SideBar +
+    // VoiceChannel like onSetAvatar does. Move the rest over if more pile up.
+    onSetNickname,
     onPoke,
     onKick,
     onKickFromChannel,
