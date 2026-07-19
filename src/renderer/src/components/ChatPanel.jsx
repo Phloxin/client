@@ -102,11 +102,45 @@ function handleFormatHotkey(e, el) {
   return true
 }
 
+// Splits text into grapheme clusters so a ZWJ sequence, flag, or skin-tone
+// variant counts as one visual emoji rather than its component code points.
+// Created once — Segmenter construction isn't cheap.
+const graphemeSegmenter =
+  typeof Intl !== 'undefined' && Intl.Segmenter
+    ? new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+    : null
+
+// A grapheme renders as emoji if it carries a pictographic char, a regional-
+// indicator (a flag's halves), or an emoji-presentation selector (U+FE0F, which
+// promotes keycaps and other text-default glyphs). Plain letters/digits don't
+// match, so "1" or "hi" alone stay normal-sized.
+const EMOJI_RE = /\p{Extended_Pictographic}|\p{Regional_Indicator}|\uFE0F/u
+
+function emojiOnlySizeClass(text) {
+  const trimmed = (text || '').trim()
+  if (!trimmed || !graphemeSegmenter) return null
+  let count = 0
+  for (const { segment } of graphemeSegmenter.segment(trimmed)) {
+    if (/^\s+$/.test(segment)) continue // whitespace between emoji is allowed
+    if (!EMOJI_RE.test(segment)) return null // any other glyph → normal size
+    count++
+  }
+  if (count === 1) return 'emoji-jumbo'
+  if (count <= 3) return 'emoji-medium'
+  return null // 0 (unreachable) or 4+ → normal size
+}
+
 // Renders a message body as Discord-style markdown (links, bold/italic, inline
 // and fenced code, etc.). Memoized so the parse only re-runs when the text
-// changes, not on every feed re-render.
+// changes, not on every feed re-render. Emoji-only messages get a jumbo/medium
+// size class (see emojiOnlySizeClass).
 const MessageText = memo(function MessageText({ text, resolveMention }) {
-  return <div className="chat-message-text">{renderMarkdown(text, resolveMention)}</div>
+  const sizeClass = emojiOnlySizeClass(text)
+  return (
+    <div className={`chat-message-text${sizeClass ? ` ${sizeClass}` : ''}`}>
+      {renderMarkdown(text, resolveMention)}
+    </div>
+  )
 })
 
 // Inline editor swapped in for a message's text while it's being edited. Mirrors

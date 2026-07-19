@@ -411,6 +411,18 @@
   white-space: pre-wrap;
 }
 
+/* Emoji-only messages scale up, Discord-style: a lone emoji is largest, two or
+   three are medium, four+ stay at the normal text size (no class applied). */
+.chat-message-text.emoji-jumbo {
+  font-size: 3rem;
+  line-height: 1.25;
+}
+
+.chat-message-text.emoji-medium {
+  font-size: 2rem;
+  line-height: 1.3;
+}
+
 .chat-message-edited {
   font-size: var(--font-size-xs);
   color: var(--color-text-muted);
