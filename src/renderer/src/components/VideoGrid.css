@@ -474,15 +474,13 @@
   background: rgba(255, 255, 255, 0.2);
 }
 
-.volume-slider {
-  -webkit-appearance: none;
-  appearance: none;
+/* The slider, its 100% tick, and the % readout all collapse to zero width
+   until the control is hovered/focused, keeping the resting state compact. */
+.volume-slider-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
   width: 0;
-  height: 4px;
-  border-radius: 2px;
-  background: rgba(255, 255, 255, 0.3);
-  cursor: pointer;
-  outline: none;
   opacity: 0;
   margin-left: 0;
   pointer-events: none;
@@ -492,12 +490,59 @@
     margin-left 0.15s ease;
 }
 
-.volume-control:hover .volume-slider,
-.volume-control:focus-within .volume-slider {
+.volume-control:hover .volume-slider-wrap,
+.volume-control:focus-within .volume-slider-wrap {
   width: 80px;
   opacity: 1;
   margin-left: 10px;
   pointer-events: auto;
+}
+
+/* Marks the 100% baseline at the center of the track (max is 200%). */
+.volume-center-tick {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 2px;
+  height: 10px;
+  transform: translate(-50%, -50%);
+  background: rgba(255, 255, 255, 0.5);
+  border-radius: 1px;
+  pointer-events: none;
+}
+
+.volume-value {
+  width: 0;
+  overflow: hidden;
+  opacity: 0;
+  margin-left: 0;
+  font-size: var(--font-size-xs);
+  font-variant-numeric: tabular-nums;
+  color: #fff;
+  white-space: nowrap;
+  pointer-events: none;
+  transition:
+    width 0.15s ease,
+    opacity 0.15s ease,
+    margin-left 0.15s ease;
+}
+
+.volume-control:hover .volume-value,
+.volume-control:focus-within .volume-value {
+  width: 34px;
+  opacity: 1;
+  margin-left: 8px;
+}
+
+.volume-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.3);
+  cursor: pointer;
+  outline: none;
 }
 
 .volume-slider::-webkit-slider-thumb {

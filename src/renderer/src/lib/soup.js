@@ -1962,10 +1962,10 @@ export async function shareScreen({
             opusStereo: true,
             opusDtx: false,
             opusFec: true,
-            opusMaxAverageBitrate: 160000,
+            opusMaxAverageBitrate: 96000,
             opusPtime: 20
           },
-          encodings: [{ maxBitrate: 160000 }],
+          encodings: [{ maxBitrate: 96000 }],
           appData: { produced: 'ScreenShareAudio' }
         })
 
@@ -2088,11 +2088,11 @@ export async function shareCamera(deviceId, onEncoderStats) {
       codec: cameraCodec,
       encodings: [
         {
-          maxBitrate: 6_000_000,
+          maxBitrate: 2_500_000,
           ...(cameraScalabilityMode ? { scalabilityMode: cameraScalabilityMode } : {})
         }
       ],
-      codecOptions: { videoGoogleStartBitrate: 2500 },
+      codecOptions: { videoGoogleStartBitrate: 1500 },
       appData: { produced: 'Camera' }
     })
     ctx.producer = cameraProducer

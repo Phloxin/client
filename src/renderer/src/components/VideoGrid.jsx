@@ -323,6 +323,11 @@ function VideoGrid({
     if (next === 0 && !muted) onMutedChange(true)
   }
 
+  const resetVolume = () => {
+    onVolumeChange(100)
+    if (muted) onMutedChange(false)
+  }
+
   const VolumeIcon =
     muted || volume === 0
       ? IconVolumeOff
@@ -507,15 +512,20 @@ function VideoGrid({
             </div>
             <div className="video-controls" onClick={(e) => e.stopPropagation()}>
               <div className="volume-control">
-                <input
-                  type="range"
-                  className="volume-slider"
-                  min={0}
-                  max={100}
-                  value={muted ? 0 : volume}
-                  onChange={handleVolumeChange}
-                  title="Volume"
-                />
+                <div className="volume-slider-wrap">
+                  <span className="volume-center-tick" aria-hidden="true" />
+                  <input
+                    type="range"
+                    className="volume-slider"
+                    min={0}
+                    max={200}
+                    value={muted ? 0 : volume}
+                    onChange={handleVolumeChange}
+                    onDoubleClick={resetVolume}
+                    title="Volume — 100% is normal, drag right to boost (double-click to reset)"
+                  />
+                </div>
+                <span className="volume-value">{muted ? 0 : volume}%</span>
                 <button
                   type="button"
                   className="vid-btn"
