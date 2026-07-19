@@ -440,7 +440,10 @@ function ChatPanel({
   const channelKeyRef = useRef(channelKey)
   const prependingRef = useRef(false)
 
-  // After every feed change, decide where to leave the scroll position:
+  // After every rendered feed change, decide where to leave the scroll position.
+  // `feedPresence` intentionally trails `feed` by one layout commit, so using
+  // the source feed here can measure the old DOM before newly loaded history
+  // has mounted (leaving the initial chat view stuck at scrollTop 0).
   //  - switched channels        → snap to the bottom (newest)
   //  - just prepended older msgs → keep the same messages under the viewport
   //  - was already near bottom   → follow new messages down
@@ -449,7 +452,7 @@ function ChatPanel({
     const el = listRef.current
     if (!el) return
     const prev = metricsRef.current
-    const lastId = feed[feed.length - 1]?.id
+    const lastId = feedPresence[feedPresence.length - 1]?.item.id
     if (channelKeyRef.current !== channelKey) {
       channelKeyRef.current = channelKey
       prependingRef.current = false
@@ -471,7 +474,31 @@ function ChatPanel({
       scrollHeight: el.scrollHeight,
       clientHeight: el.clientHeight
     }
-  }, [feed, channelKey])
+  }, [feedPresence, channelKey])
+
+  // Images, videos, embeds, and late font layout can make an already-rendered
+  // row taller after the feed layout effect above has scrolled to the bottom.
+  // The scrollport itself can also shrink as the composer/outer flex layout
+  // settles. Keep the bottom pinned across both kinds of resize only if the
+  // last measured viewport was already there; handleScroll updates the metrics
+  // immediately when the user moves up, so their reading position is left alone.
+  useLayoutEffect(() => {
+    const el = listRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(() => {
+      const prev = metricsRef.current
+      if (prev.scrollHeight - prev.scrollTop - prev.clientHeight >= 80) return
+      el.scrollTop = el.scrollHeight
+      metricsRef.current = {
+        scrollTop: el.scrollTop,
+        scrollHeight: el.scrollHeight,
+        clientHeight: el.clientHeight
+      }
+    })
+    observer.observe(el)
+    for (const row of el.querySelectorAll(':scope > [data-anim-status]')) observer.observe(row)
+    return () => observer.disconnect()
+  }, [feedPresence, channelKey])
 
   // Near the top → pull the previous page (once at a time), remembering the
   // pre-prepend metrics so the layout effect can restore the viewport.
