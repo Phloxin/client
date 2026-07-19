@@ -13,6 +13,7 @@ import {
 import { useSettings, useAnimationCategory } from '../context/SettingsContext'
 import { useAnimatedPresence } from '../lib/animation'
 import { cdnUrl } from '../lib/serverConfig'
+import { useMenuPosition } from '../lib/menuPosition'
 import ClientIndicator from './ClientIndicator'
 import ScreenSourcePicker from './ScreenSourcePicker'
 import './VoiceChannel.css'
@@ -21,8 +22,12 @@ import {
   IconPlus,
   IconTrash,
   IconPointFilled,
-  IconInfoCircle
+  IconInfoCircle,
+  IconChevronDown,
+  IconChevronLeft
 } from '@tabler/icons-react'
+
+const STACK_MAX = 3
 
 const VoiceChannel = forwardRef(function VoiceChannel(
   {
@@ -85,6 +90,9 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   // True while a client entry is being dragged over this channel's header (drop
   // to move them here). Distinct from channel drag-to-reorder.
   const [clientDropActive, setClientDropActive] = useState(false)
+  // Collapse this channel's user list into a stacked avatar row. Session-only —
+  // channels always come back expanded.
+  const [collapsed, setCollapsed] = useState(false)
   const { micSettings } = useSettings()
 
   const clientAnimEnabled = useAnimationCategory('userJoin')
@@ -98,6 +106,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   // singleton/global stop path or clear the successor's tile.
   const activeShareRef = useRef(null)
   const menuRef = useRef(null)
+  const menuStyle = useMenuPosition(menuRef, menuPos)
   // Latest mic settings, read by the (re)publish path so a background reconnect
   // re-publishes with current settings rather than those captured at join time.
   const micSettingsRef = useRef(micSettings)
@@ -538,42 +547,75 @@ const VoiceChannel = forwardRef(function VoiceChannel(
           <IconDiamondsFilled className="channel-icon-placeholder" size={25} />
         )}
         <span className="channel-name">{channel.name}</span>
+        {collapsed && clients.length > 0 && (
+          <span className="channel-avatar-stack">
+            {clients.slice(0, STACK_MAX).map((c) => (
+              <span className="client-avatar" key={c.id} title={c.name}>
+                {c.avatar ? (
+                  <img className="client-avatar-img" src={c.avatar} alt="" aria-hidden="true" />
+                ) : (
+                  (c.name || '?').charAt(0).toUpperCase()
+                )}
+              </span>
+            ))}
+            {clients.length > STACK_MAX && (
+              <span className="channel-avatar-more">+{clients.length - STACK_MAX}</span>
+            )}
+          </span>
+        )}
+        {/* After the avatar stack so the dot keeps the same slot — hard against
+            the chevron — whether the channel is collapsed or expanded. */}
         {unread && (
           <IconPointFilled className="channel-unread-dot" size={12} aria-label="Unread messages" />
         )}
+        {clients.length > 0 && (
+          <button
+            type="button"
+            className="channel-collapse-btn"
+            title={collapsed ? 'Expand users' : 'Collapse users'}
+            aria-expanded={!collapsed}
+            onClick={(e) => {
+              e.stopPropagation()
+              setCollapsed((v) => !v)
+            }}
+          >
+            {collapsed ? <IconChevronLeft size={15} /> : <IconChevronDown size={15} />}
+          </button>
+        )}
       </div>
       {error && <div className="channel-error">{error}</div>}
-      {clientPresence.map(({ key, item: c, status }) => (
-        <ClientIndicator
-          key={key}
-          client={c}
-          animStatus={status}
-          speaking={!!speakingClients[c.id]}
-          micMuted={c.id === self?.id ? micMuted : !!c.self_mute}
-          deafened={c.id === self?.id ? deafened : !!c.self_deaf}
-          isSelf={c.id === self?.id}
-          streaming={streamingClientIds.has(c.id)}
-          draggableToChannel={!!onMoveClient}
-          onOpenDm={onOpenDm}
-          onPoke={onPoke}
-          onKick={onKick}
-          onKickFromChannel={onKickFromChannel}
-          onGag={onGag}
-          onBan={onBan}
-          onUnban={onUnban}
-          onSetAvatar={onSetAvatar}
-          onShowClientSummary={onShowClientSummary}
-          roles={roles}
-          onAssignRole={onAssignRole}
-          onRemoveRole={onRemoveRole}
-          vanity={vanity}
-          onToggleVanity={onToggleVanity}
-          onOpenRolesGroups={onOpenRolesGroups}
-          canKickMembers={canKickMembers}
-          canBanMembers={canBanMembers}
-          canMuteMembers={canMuteMembers}
-        />
-      ))}
+      {!collapsed &&
+        clientPresence.map(({ key, item: c, status }) => (
+          <ClientIndicator
+            key={key}
+            client={c}
+            animStatus={status}
+            speaking={!!speakingClients[c.id]}
+            micMuted={c.id === self?.id ? micMuted : !!c.self_mute}
+            deafened={c.id === self?.id ? deafened : !!c.self_deaf}
+            isSelf={c.id === self?.id}
+            streaming={streamingClientIds.has(c.id)}
+            draggableToChannel={!!onMoveClient}
+            onOpenDm={onOpenDm}
+            onPoke={onPoke}
+            onKick={onKick}
+            onKickFromChannel={onKickFromChannel}
+            onGag={onGag}
+            onBan={onBan}
+            onUnban={onUnban}
+            onSetAvatar={onSetAvatar}
+            onShowClientSummary={onShowClientSummary}
+            roles={roles}
+            onAssignRole={onAssignRole}
+            onRemoveRole={onRemoveRole}
+            vanity={vanity}
+            onToggleVanity={onToggleVanity}
+            onOpenRolesGroups={onOpenRolesGroups}
+            canKickMembers={canKickMembers}
+            canBanMembers={canBanMembers}
+            canMuteMembers={canMuteMembers}
+          />
+        ))}
       {showSourcePicker && (
         <ScreenSourcePicker
           onSelect={startShareWithSource}
@@ -582,11 +624,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
       )}
 
       {menuPos && (
-        <div
-          className="channel-context-menu"
-          ref={menuRef}
-          style={{ top: menuPos.y, left: menuPos.x }}
-        >
+        <div className="channel-context-menu" ref={menuRef} style={menuStyle}>
           <button
             type="button"
             className="channel-context-item"

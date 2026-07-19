@@ -83,7 +83,7 @@ function Inbox({ notifications = [], onOpen, onClear, silent = false }) {
         type="button"
         className="title-bar-btn notif-bell"
         onClick={toggle}
-        title="Direct messages"
+        title="Direct Messages"
       >
         <IconInbox size={16} />
         {unread > 0 && <span className="notif-badge">{unread > 9 ? '9+' : unread}</span>}

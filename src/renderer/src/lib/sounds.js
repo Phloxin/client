@@ -1,11 +1,16 @@
-// ─── Local UI feedback sounds ────────────────────────────────────
-// Short blips played for the current user in response to their own actions
-// (e.g. toggling mic/sound mute in the sidebar). These are deliberately
-// independent of the voice pipeline's master volume and deafen state in soup.js:
-// they're direct UI feedback for the local user, not remote audio, so they should
-// still be heard even while "sound muted" (deafened). They DO, however, follow the
-// user's chosen output device (see setSoundOutputDevice below) so notifications
-// come out the same speakers/headset as everything else.
+// ─── Local UI feedback & notification sounds ─────────────────────
+// Short blips played locally, independent of the voice pipeline's master volume
+// in soup.js. They DO follow the user's chosen output device (see
+// setSoundOutputDevice below) so they come out the same speakers/headset as
+// everything else. Two classes with different deafen behaviour:
+//   • Direct UI feedback for the local user's own actions (toggling mic/sound
+//     mute in the sidebar). These stay audible even while "sound muted"
+//     (deafened) — they're feedback for the very action being taken, not remote
+//     activity, so the deafen toggle's own blip must still be heard.
+//   • Notifications about other activity (incoming message, channel join/leave,
+//     stream started/stopped). Deafening means "I don't want to hear anything",
+//     so these are silenced while deafened (see DEAF_MUTED_CATEGORIES / the
+//     deafened flag mirrored in from the sidebar via setSoundsDeafened).
 import muteSound from '../assets/soundpack/mute.mp3'
 import unmuteSound from '../assets/soundpack/unmute.mp3'
 import channelJoinSound from '../assets/soundpack/channel-join.mp3'
@@ -45,6 +50,21 @@ export const SOUND_CATEGORIES = [
 const EVENT_CATEGORY = {}
 for (const cat of SOUND_CATEGORIES) {
   for (const ev of cat.events) EVENT_CATEGORY[ev] = cat.id
+}
+
+// Categories silenced while the local user is deafened. These are notifications
+// about other people's activity, so "sound muted" (deafen) should suppress them.
+// The mic/sound-mute blips are intentionally absent: they're feedback for the
+// user's own toggle and must stay audible even as deafen turns on.
+const DEAF_MUTED_CATEGORIES = new Set(['message', 'channel', 'stream'])
+
+// Whether the local user is currently deafened. Mirrored in from the sidebar
+// (setSoundsDeafened) the same way category prefs and the output device are, so
+// the non-React sounds module can gate notification playback without prop drilling.
+let deafened = false
+
+export function setSoundsDeafened(value) {
+  deafened = !!value
 }
 
 // Per-category enable flags. Everything is on until the settings layer pushes the
@@ -102,6 +122,9 @@ export function playUiSound(name, volume = 0.5, force = false) {
   if (!src) return
   const category = EVENT_CATEGORY[name]
   if (!force && category && enabledCategories[category] === false) return
+  // Notification sounds go silent while deafened; the user's own mute-toggle
+  // blips still play. `force` (Settings preview) bypasses this too.
+  if (!force && deafened && DEAF_MUTED_CATEGORIES.has(category)) return
   let el = cache[name]
   if (!el) {
     el = new Audio(src)

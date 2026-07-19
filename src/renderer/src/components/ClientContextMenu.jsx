@@ -23,6 +23,7 @@ import {
 import { STATUSES, STATUS_LABELS, STATUS_MESSAGE_MAX, statusOf } from '../lib/presence'
 import { fileToAvatarDataUrl } from '../lib/avatarFile'
 import { RoleIcon } from '../lib/roleIcon'
+import { useMenuPosition } from '../lib/menuPosition'
 
 // The right-click menu for a client, shared by every place a client is shown:
 // the sidebar roster, a voice channel's participant list, and a chat message's
@@ -116,6 +117,7 @@ function ClientContextMenu({ client, pos, onClose, opts, caps }) {
   const [customDuration, setCustomDuration] = useState(false)
   const menuRef = useRef(null)
   const avatarInputRef = useRef(null)
+  const menuStyle = useMenuPosition(menuRef, pos)
 
   const { isBanned, roles = [], vanity = [], volume } = opts
   const myStatus = statusOf(opts.presence)
@@ -246,7 +248,7 @@ function ClientContextMenu({ client, pos, onClose, opts, caps }) {
     <div
       className="client-context-menu"
       ref={menuRef}
-      style={{ top: pos.y, left: pos.x }}
+      style={menuStyle}
       onClick={(e) => e.stopPropagation()}
       onDoubleClick={(e) => e.stopPropagation()}
     >
@@ -281,7 +283,9 @@ function ClientContextMenu({ client, pos, onClose, opts, caps }) {
                 >
                   <span className={`presence-dot presence-${s}`} />
                   {STATUS_LABELS[s]}
-                  {myStatus === s && <IconCheck size={16} className="client-context-menu-trailing" />}
+                  {myStatus === s && (
+                    <IconCheck size={16} className="client-context-menu-trailing" />
+                  )}
                 </button>
               ))}
               {msgOpen ? (

@@ -21,7 +21,8 @@ import {
   disconnect as disconnectVoice,
   setFocusedScreenAudio,
   setVideoStreamRoles,
-  setWatchedProducers
+  setWatchedProducers,
+  subscribeStreamViewers
 } from '../lib/soup'
 import { playUiSound } from '../lib/sounds'
 import { setServerHost, apiBase, wsBase, cdnUrl, throwIfError } from '../lib/serverConfig'
@@ -206,6 +207,11 @@ function Main() {
   const selectedStreamClientIdRef = useRef(null)
   const streamVolumeRef = useRef(100)
   const streamMutedRef = useRef(false)
+  // The soup socket (and thus the viewer map) lives only in this window; the
+  // popout runs in a separate JS realm with an empty soup instance, so mirror
+  // the snapshot here and hand it over the bridge instead of letting the popout
+  // subscribe to its own (always-empty) copy.
+  const streamViewersRef = useRef(new Map())
   const watchedStreamClientIdsRef = useRef(new Set())
 
   const lastTypingSentRef = useRef(0)
@@ -254,6 +260,18 @@ function Main() {
   useEffect(() => {
     watchedStreamClientIdsRef.current = watchedStreamClientIds
   }, [watchedStreamClientIds])
+
+  // Mirror the live viewer map for the popout bridge. subscribeStreamViewers
+  // fires immediately with the current snapshot, and again on every change, so
+  // the popout's viewer count stays in sync.
+  useEffect(
+    () =>
+      subscribeStreamViewers((snapshot) => {
+        streamViewersRef.current = snapshot
+        popoutListenersRef.current.forEach((cb) => cb())
+      }),
+    []
+  )
 
   // Notify the popout window whenever the data it mirrors changes.
   useEffect(() => {
@@ -324,7 +342,8 @@ function Main() {
         selectedStreamClientId: selectedStreamClientIdRef.current,
         volume: streamVolumeRef.current,
         muted: streamMutedRef.current,
-        watchedStreamClientIds: watchedStreamClientIdsRef.current
+        watchedStreamClientIds: watchedStreamClientIdsRef.current,
+        streamViewers: streamViewersRef.current
       }),
       select: (id) => setSelectedStreamClientId(id),
       setVolume: (v) => setStreamVolume(v),

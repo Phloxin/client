@@ -213,35 +213,13 @@ function persistServers() {
   }
 }
 
-// Smallest the window may get before the sidebar starts being clipped. These
-// are content-area sizes (see `useContentSize` below), derived from the
-// renderer layout so the sidebar at its narrowest stays fully usable.
-//   .layout padding  = --spacing-sm (8px) on every edge
-//   sidebar MIN_WIDTH = 180px (SideBar.jsx, border-box so borders included)
-const LAYOUT_PADDING = 8
-const SIDEBAR_MIN_WIDTH = 180
-
-// Width: both side paddings + the sidebar is the clip floor (196), but we hold
-// the window to a wider 385px minimum so the chat area stays usable too.
-const MIN_CONTENT_WIDTH = Math.max(385, SIDEBAR_MIN_WIDTH + LAYOUT_PADDING * 2)
-
-// Height: top+bottom padding + the sidebar's fixed-height chrome - the server
-// header, the "Channels" label, and the bottom control-button wrapper - so the
-// control buttons stay visible even at the shortest allowed height. (The
-// channel list between them is the part that gives when space is tight.)
-const SIDEBAR_HEADER_HEIGHT = 49
-const SIDEBAR_SECTION_LABEL_HEIGHT = 42
-const SIDEBAR_CONTROLS_HEIGHT = 93
-// The custom title bar sits inside the content area now that the window is
-// frameless, so its height counts against the usable layout space. Keep in
-// sync with --title-bar-height in TitleBar.css.
-const TITLE_BAR_HEIGHT = 32
-const MIN_CONTENT_HEIGHT =
-  LAYOUT_PADDING * 2 +
-  TITLE_BAR_HEIGHT +
-  SIDEBAR_HEADER_HEIGHT +
-  SIDEBAR_SECTION_LABEL_HEIGHT +
-  SIDEBAR_CONTROLS_HEIGHT // 232
+// Smallest the window may get, as content-area sizes (see `useContentSize`
+// below). This is a usability floor, not a clipping one: nothing actually breaks
+// until roughly 385x232 (the sidebar's 180px minimum plus the layout padding and
+// its fixed-height chrome), but the chat area and video grid are unusable long
+// before that, so the window stops well above it.
+const MIN_CONTENT_WIDTH = 800
+const MIN_CONTENT_HEIGHT = 500
 
 function createWindow() {
   // A hidden BrowserWindow normally gets revealed after Chromium's first paint.

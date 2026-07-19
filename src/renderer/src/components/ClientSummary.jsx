@@ -2,6 +2,9 @@ import { useState, useRef, useEffect } from 'react'
 import './ClientSummary.css'
 import { IconUsersGroup, IconPhotoUp, IconTrash, IconZoomIn } from '@tabler/icons-react'
 import { RoleIcon } from '../lib/roleIcon'
+import { useClientActions } from '../context/ClientActionsContext'
+import { statusOf, STATUS_LABELS } from '../lib/presence'
+import { useMenuPosition } from '../lib/menuPosition'
 import { useImageColors, bannerGradient } from '../lib/imageColors'
 import { fileToAvatarDataUrl } from '../lib/avatarFile'
 import ImageViewer from './ImageViewer'
@@ -25,6 +28,7 @@ function ClientSummary({ client, roles = [], vanity = [], isSelf = false, onSetA
   const [avatarMenu, setAvatarMenu] = useState(null)
   const avatarMenuRef = useRef(null)
   const avatarInputRef = useRef(null)
+  const avatarMenuStyle = useMenuPosition(avatarMenuRef, avatarMenu)
 
   // Close the avatar context menu on an outside click.
   useEffect(() => {
@@ -79,6 +83,13 @@ function ClientSummary({ client, roles = [], vanity = [], isSelf = false, onSetA
   // Banner gradient sampled from the avatar, same as ChannelSummary's icon
   // banner. Null (no avatar / unreadable image) renders the plain card.
   const bannerColors = useImageColors(client?.avatar)
+
+  // Presence is user-level and lives in the shared map, not on the client record.
+  // STATUS_LABELS.offline is 'Invisible' — that's the wording for picking your own
+  // status; from the outside the two are indistinguishable, so read it as Offline.
+  const presence = useClientActions().presences?.[client?.id]
+  const status = statusOf(presence)
+  const statusLabel = status === 'offline' ? 'Offline' : STATUS_LABELS[status]
 
   return (
     <div className="client-summary">
@@ -168,7 +179,13 @@ function ClientSummary({ client, roles = [], vanity = [], isSelf = false, onSetA
 
       <section className="client-summary-section">
         <h3 className="client-summary-heading">Activity</h3>
-        <p className="client-summary-placeholder">Last online and other stats will appear here.</p>
+        <p className="client-summary-value client-summary-status">
+          <span className={`client-summary-status-dot presence-${status}`} aria-hidden="true" />
+          {statusLabel}
+          {presence?.status_message && (
+            <span className="client-summary-status-message">{presence.status_message}</span>
+          )}
+        </p>
       </section>
 
       {viewerOpen && hasAvatar && (
@@ -180,11 +197,7 @@ function ClientSummary({ client, roles = [], vanity = [], isSelf = false, onSetA
       )}
 
       {avatarMenu && (
-        <div
-          className="channel-context-menu"
-          ref={avatarMenuRef}
-          style={{ top: avatarMenu.y, left: avatarMenu.x }}
-        >
+        <div className="channel-context-menu" ref={avatarMenuRef} style={avatarMenuStyle}>
           <button type="button" className="channel-context-item" onClick={replaceAvatar}>
             <IconPhotoUp size={16} /> Replace Avatar
           </button>

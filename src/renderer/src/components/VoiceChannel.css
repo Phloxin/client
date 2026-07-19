@@ -127,6 +127,10 @@
   flex-shrink: 0;
 }
 
+.channel-row:has(.channel-avatar-stack) .channel-name {
+  flex: 0 1 auto;
+}
+
 .channel-name {
   flex: 1;
   overflow: hidden;
@@ -139,6 +143,58 @@
 .channel-unread-dot {
   flex-shrink: 0;
   color: var(--color-primary);
+}
+
+/* Collapsed-channel roster: avatars overlapped in a line to the right of the
+   name, TeamSpeak style. First 3 only, then "+n". */
+.channel-avatar-stack {
+  /* The name normally grows to fill the row; when collapsed let it shrink to its
+     text so the avatars sit right beside it and the chevron keeps the far edge. */
+  margin-right: auto;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  /* Cancels the row's 8px gap so the first avatar tucks against the name. */
+  margin-left: -2px;
+}
+
+.channel-avatar-stack .client-avatar {
+  width: 18px;
+  height: 18px;
+  font-size: 9px;
+  /* The overlap. Later siblings paint on top; the ring separates them. The
+     opaque background is the same tint composited over the row instead of over
+     transparent — otherwise the avatar underneath shows through. */
+  margin-left: -6px;
+  background: color-mix(in srgb, var(--color-primary) 18%, var(--color-background));
+  box-shadow: 0 0 0 2px var(--color-background);
+}
+
+.channel-avatar-stack .client-avatar:first-child {
+  margin-left: 0;
+}
+
+.channel-avatar-more {
+  margin-left: 4px;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+
+/* Collapse chevron, pinned to the row's right edge. */
+.channel-collapse-btn {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: var(--color-text-muted);
+  transition: color 0.12s;
+}
+
+.channel-collapse-btn:hover {
+  color: var(--color-text);
 }
 
 .channel-error {

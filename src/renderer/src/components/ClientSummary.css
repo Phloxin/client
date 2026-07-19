@@ -102,6 +102,30 @@
   color: var(--color-text-muted);
 }
 
+.client-summary-status {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+/* Borrows the .presence-* colour classes from VoiceChannel.css; only the shape
+   is ours (the dot there is absolutely positioned over an avatar). */
+.client-summary-status-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.client-summary-status-message {
+  color: var(--color-text-muted);
+  overflow-wrap: anywhere;
+}
+
+.client-summary-status-message::before {
+  content: '— ';
+}
+
 .client-summary-value {
   margin: 0;
   font-size: var(--font-size-sm);

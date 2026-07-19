@@ -45,7 +45,10 @@ export function setupUpdater() {
 
   // Quit and install now. Downloaded-but-not-installed updates otherwise apply
   // on the next app close via autoInstallOnAppQuit.
-  ipcMain.on('updater:install', () => autoUpdater.quitAndInstall())
+  // isSilent: skip the NSIS wizard (assisted installer would otherwise show it
+  // and re-ask for the install dir). isForceRunAfter: silent installs don't
+  // relaunch on their own.
+  ipcMain.on('updater:install', () => autoUpdater.quitAndInstall(true, true))
 
   ipcMain.handle('get-app-version', () => app.getVersion())
 }

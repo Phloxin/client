@@ -63,6 +63,7 @@ function VideoGrid({
   onSetStreamRoles,
   watchedStreamClientIds = EMPTY_WATCHED,
   onSetStreamWatched,
+  streamViewers: streamViewersProp,
   volume,
   muted,
   onVolumeChange,
@@ -111,10 +112,15 @@ function VideoGrid({
     clients?.find((c) => c.id === s.clientId)?.name || s.fallbackLabel || `Stream ${s.consumerId}`
 
   // Audience for every live producer, pushed from the voice socket. Subscribed
-  // here rather than threaded down as a prop: the grid is the only consumer, and
-  // soup is already imported directly for stream roles.
-  const [streamViewers, setStreamViewers] = useState(() => new Map())
-  useEffect(() => subscribeStreamViewers(setStreamViewers), [])
+  // to soup directly in the main window, but the popout runs in a separate JS
+  // realm with an empty soup instance, so it supplies the opener's snapshot via
+  // the streamViewers prop; only subscribe when no prop is provided.
+  const [localStreamViewers, setLocalStreamViewers] = useState(() => new Map())
+  useEffect(() => {
+    if (streamViewersProp) return
+    return subscribeStreamViewers(setLocalStreamViewers)
+  }, [streamViewersProp])
+  const streamViewers = streamViewersProp ?? localStreamViewers
   const [viewersOpen, setViewersOpen] = useState(false)
 
   const sortedStreams = [...streams].sort((a, b) => {
@@ -317,6 +323,11 @@ function VideoGrid({
     if (next === 0 && !muted) onMutedChange(true)
   }
 
+  const resetVolume = () => {
+    onVolumeChange(100)
+    if (muted) onMutedChange(false)
+  }
+
   const VolumeIcon =
     muted || volume === 0
       ? IconVolumeOff
@@ -501,15 +512,20 @@ function VideoGrid({
             </div>
             <div className="video-controls" onClick={(e) => e.stopPropagation()}>
               <div className="volume-control">
-                <input
-                  type="range"
-                  className="volume-slider"
-                  min={0}
-                  max={100}
-                  value={muted ? 0 : volume}
-                  onChange={handleVolumeChange}
-                  title="Volume"
-                />
+                <div className="volume-slider-wrap">
+                  <span className="volume-center-tick" aria-hidden="true" />
+                  <input
+                    type="range"
+                    className="volume-slider"
+                    min={0}
+                    max={200}
+                    value={muted ? 0 : volume}
+                    onChange={handleVolumeChange}
+                    onDoubleClick={resetVolume}
+                    title="Volume — 100% is normal, drag right to boost (double-click to reset)"
+                  />
+                </div>
+                <span className="volume-value">{muted ? 0 : volume}%</span>
                 <button
                   type="button"
                   className="vid-btn"
