@@ -22,6 +22,14 @@
   align-items: center;
 }
 
+/* Disconnected: the ServerMenu grows to fill the rail (inline server list),
+   so the header stretches instead of hugging the trigger. */
+.server-header.disconnected {
+  flex: 1;
+  min-height: 0;
+  align-items: stretch;
+}
+
 .channel-section-label {
   padding: 0 4px 10px;
   display: flex;

@@ -1,19 +1,21 @@
 import { useState, useRef, useEffect } from 'react'
 import { motion, AnimatePresence } from 'motion/react'
 import { useAnimationCategory } from '../context/SettingsContext'
-import { menuPop, overlayPop, scrimFade } from '../lib/motionPresets'
+import { overlayPop, scrimFade } from '../lib/motionPresets'
 import SegmentedTabs from './SegmentedTabs'
 import './ServerMenu.css'
 import { httpFetch } from '../lib/http'
+import { useMenuPosition } from '../lib/menuPosition'
 import {
-  IconChevronDown,
   IconPlus,
   IconX,
-  IconPlugConnected,
+  IconPlugConnectedX,
   IconTrash,
   IconPencil,
   IconEye,
-  IconEyeOff
+  IconEyeOff,
+  IconActivity,
+  IconInfoCircle
 } from '@tabler/icons-react'
 
 // Initial state for the add-server form
@@ -28,9 +30,9 @@ const MAX_USERNAME_LEN = 64
 // Sent as the LoginRequest.device_name on register, matching the connect path.
 const DEVICE_NAME = 'Pylon Desktop'
 
-// Sidebar header control: shows the connection status + the active/"Connect"
-// label, and opens a dropdown of saved servers with add / connect / remove /
-// disconnect actions.
+// Sidebar server control. Connected: an identity row with a disconnect button.
+// Disconnected: the same row plus the saved-server list rendered inline, filling
+// the rail so you can add / connect / edit / remove without a dropdown.
 function ServerMenu({
   servers,
   connectedServer,
@@ -39,9 +41,13 @@ function ServerMenu({
   onAddServer,
   onEditServer,
   onRemoveServer,
-  onNotify
+  onNotify,
+  onViewServerTraffic
 }) {
-  const [open, setOpen] = useState(false)
+  // Right-click context menu on the trigger (connected only): { x, y } or null.
+  const [ctxPos, setCtxPos] = useState(null)
+  const ctxRef = useRef(null)
+  const ctxStyle = useMenuPosition(ctxRef, ctxPos)
   const [showAddModal, setShowAddModal] = useState(false)
   // Holds the id of the server being edited, or null when adding a new one
   const [editingId, setEditingId] = useState(null)
@@ -58,28 +64,25 @@ function ServerMenu({
   useEffect(() => {
     if (!showAddModal) setShowPassword(false)
   }, [showAddModal])
-  const menuRef = useRef(null)
   const overlayAnim = useAnimationCategory('overlays')
 
   const connected = !!connectedServer
 
-  // Close the dropdown when clicking outside it
+  // Close the context menu on an outside click.
   useEffect(() => {
-    if (!open) return
+    if (!ctxPos) return
     const onClick = (e) => {
-      if (menuRef.current && !menuRef.current.contains(e.target)) setOpen(false)
+      if (ctxRef.current && !ctxRef.current.contains(e.target)) setCtxPos(null)
     }
     document.addEventListener('mousedown', onClick)
     return () => document.removeEventListener('mousedown', onClick)
-  }, [open])
+  }, [ctxPos])
 
   const handleConnect = (server) => {
-    setOpen(false)
     onConnect(server)
   }
 
   const handleDisconnect = () => {
-    setOpen(false)
     onDisconnect()
   }
 
@@ -133,12 +136,9 @@ function ServerMenu({
     if (editingId) onEditServer(server)
     else onAddServer(server)
     setShowAddModal(false)
-    if (!editingId && mode === 'login') {
-      setOpen(false)
-      onConnect(server)
-    } else {
-      setOpen(true)
-    }
+    // Adding via the Login tab also connects immediately; Register-tab saves and
+    // edits just update the inline list.
+    if (!editingId && mode === 'login') onConnect(server)
   }
 
   // Register: validate locally (passwords match + length limits), then POST to
@@ -198,61 +198,69 @@ function ServerMenu({
     onAddServer(server)
     onNotify?.(`Registered "${username}" on ${nickname}`)
     setShowAddModal(false)
-    // Continue with the server we just registered against. Do not leave the
-    // user at the dropdown, where clicking the first saved server can log in to
-    // a different host than the one used for registration.
-    setOpen(false)
+    // Continue with the server we just registered against, rather than leaving
+    // the user to pick from the list (where the first entry may be a different
+    // host than the one just registered on).
     onConnect(server)
   }
 
   const submit = () => (isRegister ? handleRegister() : handleSave())
 
   return (
-    <div className="server-menu" ref={menuRef}>
-      <button
+    <div className={`server-menu${connected ? '' : ' disconnected'}`}>
+      {/* Identity row. Right-click (connected) opens the traffic/summary menu. */}
+      <div
         className="server-menu-trigger"
-        onClick={() => setOpen((o) => !o)}
+        onContextMenu={(e) => {
+          // Right-click actions only apply to the connected server.
+          if (!connected) return
+          e.preventDefault()
+          setCtxPos({ x: e.clientX, y: e.clientY })
+        }}
         title={connected ? `Connected to ${connectedServer.nickname}` : 'Not connected'}
       >
         <span className={`server-status-dot${connected ? ' connected' : ''}`} />
         <span className="server-menu-label">
-          {connected ? connectedServer.nickname : 'Connect'}
+          {connected ? connectedServer.nickname : 'Not connected'}
         </span>
-        <IconChevronDown size={16} className={`server-menu-chevron${open ? ' open' : ''}`} />
-      </button>
+        {connected && (
+          <button
+            className="server-menu-disconnect"
+            title="Disconnect from server"
+            aria-label="Disconnect from server"
+            onClick={handleDisconnect}
+          >
+            <IconPlugConnectedX size={16} />
+          </button>
+        )}
+      </div>
 
-      <AnimatePresence>
-        {open && (
-          <motion.div className="server-menu-dropdown" {...menuPop(overlayAnim)}>
-            {connected && (
-              <button className="server-menu-action disconnect" onClick={handleDisconnect}>
-                <IconPlugConnected size={16} /> Disconnect
-              </button>
-            )}
-            <div className="server-menu-section-label">
-              <span>Servers</span>
-              <span className="server-menu-section-divider" aria-hidden="true" />
-              <button className="server-menu-add-btn" title="Add server" onClick={openAddModal}>
-                <IconPlus size={15} />
-              </button>
-            </div>
+      {/* Saved-server list — inline, fills the rail while disconnected. */}
+      {!connected && (
+        <div className="server-menu-list">
+          <div className="server-menu-section-label">
+            <span>Servers</span>
+            <span className="server-menu-section-divider" aria-hidden="true" />
+            <button className="server-menu-add-btn" title="Add server" onClick={openAddModal}>
+              <IconPlus size={15} />
+            </button>
+          </div>
 
-            {servers.length === 0 && <div className="server-menu-empty">No saved servers yet</div>}
-
-            {servers.map((server) => {
-              const isActive = connectedServer?.id === server.id
-              return (
+          {servers.length === 0 ? (
+            <div className="server-menu-empty">No saved servers yet</div>
+          ) : (
+            <div className="server-menu-list-scroll">
+              {servers.map((server) => (
                 <div
                   key={server.id}
-                  className={`server-menu-item${isActive ? ' active' : ''}`}
-                  onClick={() => !isActive && handleConnect(server)}
+                  className="server-menu-item"
+                  onClick={() => handleConnect(server)}
                 >
                   <div className="server-menu-item-info">
                     <span className="server-menu-item-name">{server.nickname}</span>
                     <span className="server-menu-item-host">{server.host}</span>
                   </div>
                   <div className="server-menu-item-actions">
-                    {isActive && <span className="server-menu-item-badge">Connected</span>}
                     <button
                       className="server-menu-item-edit"
                       title="Edit server"
@@ -263,25 +271,56 @@ function ServerMenu({
                     >
                       <IconPencil size={15} />
                     </button>
-                    {!isActive && (
-                      <button
-                        className="server-menu-item-remove"
-                        title="Remove server"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          onRemoveServer(server.id)
-                        }}
-                      >
-                        <IconTrash size={15} />
-                      </button>
-                    )}
+                    <button
+                      className="server-menu-item-remove"
+                      title="Remove server"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onRemoveServer(server.id)
+                      }}
+                    >
+                      <IconTrash size={15} />
+                    </button>
                   </div>
                 </div>
-              )
-            })}
-          </motion.div>
-        )}
-      </AnimatePresence>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {ctxPos && (
+        <div className="channel-context-menu" ref={ctxRef} style={ctxStyle}>
+          <button
+            type="button"
+            className="channel-context-item"
+            onClick={() => {
+              setCtxPos(null)
+              onViewServerTraffic?.()
+            }}
+          >
+            <IconActivity size={16} /> View server traffic
+          </button>
+          <button
+            type="button"
+            className="channel-context-item"
+            disabled
+            title="Coming soon"
+          >
+            <IconInfoCircle size={16} /> View server summary
+          </button>
+          <button
+            type="button"
+            className="channel-context-item danger"
+            onClick={() => {
+              setCtxPos(null)
+              handleDisconnect()
+            }}
+          >
+            <IconPlugConnectedX size={16} /> Disconnect
+          </button>
+        </div>
+      )}
 
       <AnimatePresence>
         {showAddModal && (

@@ -11,6 +11,7 @@ import VideoGrid from '../components/VideoGrid'
 import ChatPanel from '../components/ChatPanel'
 import ClientSummary from '../components/ClientSummary'
 import ChannelSummary from '../components/ChannelSummary'
+import ServerTraffic from '../components/ServerTraffic'
 import TitleBar from '../components/TitleBar'
 import ConnectionOverlay from '../components/ConnectionOverlay'
 import Toast from '../components/Toast'
@@ -36,7 +37,8 @@ import {
   IconUser,
   IconUsersGroup,
   IconX,
-  IconVolume
+  IconVolume,
+  IconActivity
 } from '@tabler/icons-react'
 
 const APP_TITLE = 'Pylon'
@@ -156,6 +158,10 @@ function Main() {
   // is user-level and outlives a connection — an entry can exist for someone the
   // roster no longer lists, and `clients` is replaced wholesale by Ready.
   const [presences, setPresences] = useState({})
+  // Server-traffic log (newest first): members crossing the online/offline
+  // boundary while we're lurking. Fed by PresenceUpdate below, cleared on
+  // connect/disconnect. Rendered by ServerTraffic when not in a voice channel.
+  const [traffic, setTraffic] = useState([])
   const [feed, setFeed] = useState([])
   const [viewMode, setViewMode] = useState('log') // 'log' or 'video'
   const [servers, setServers] = useState([])
@@ -198,6 +204,9 @@ function Main() {
   const channelsRef = useRef([])
   const clientsRef = useRef([])
   const refreshPresencesRef = useRef(null)
+  // Latest presences, read by the events handler to diff old→new status without
+  // a stale closure (mirrors the channels/clients ref pattern above).
+  const presencesRef = useRef({})
   const dndRef = useRef(false)
 
   //Stream Ref Hooks
@@ -243,6 +252,9 @@ function Main() {
   useEffect(() => {
     clientsRef.current = clients
   }, [clients])
+  useEffect(() => {
+    presencesRef.current = presences
+  }, [presences])
 
   // Same for the popout bridge's data, read once-bound without stale closures.
   useEffect(() => {
@@ -330,6 +342,8 @@ function Main() {
     setNotifications([])
     setDmNotifications([])
     setReadStates({})
+    setTraffic([])
+    setShowTraffic(false)
   }, [token])
 
   // Expose a bridge the popout window reads via window.opener. Live MediaStream
@@ -405,6 +419,13 @@ function Main() {
   // A channel whose details we're viewing in the main area (right-click → Channel
   // Details). Mutually exclusive with the chat preview and client summary.
   const [summaryChannelId, setSummaryChannelId] = useState(null)
+
+  // Explicitly viewing the server-traffic log (server menu → View server
+  // traffic), forced on top of the in-channel chat/streams view. Another canvas
+  // override, mutually exclusive with the preview/summary views above; cleared
+  // by Esc or navigating elsewhere. When lurking, traffic is the default view
+  // anyway, so this only matters while in a voice channel.
+  const [showTraffic, setShowTraffic] = useState(false)
 
   // The channel the local client currently has joined (chat is scoped to it)
   const selfChannelId = clients.find((c) => c.id === client?.id)?.channel_id ?? null
@@ -531,6 +552,7 @@ function Main() {
   const handlePreviewChannel = (channelId) => {
     setSummaryClientId(null)
     setSummaryChannelId(null)
+    setShowTraffic(false)
     setPreviewChannelId(channelId === selfChannelId ? null : channelId)
   }
 
@@ -538,6 +560,7 @@ function Main() {
   const handleShowClientSummary = (userId) => {
     setPreviewChannelId(null)
     setSummaryChannelId(null)
+    setShowTraffic(false)
     setSummaryClientId(userId)
   }
 
@@ -546,7 +569,18 @@ function Main() {
   const handleShowChannelSummary = (channelId) => {
     setPreviewChannelId(null)
     setSummaryClientId(null)
+    setShowTraffic(false)
     setSummaryChannelId(channelId)
+  }
+
+  // Server menu → View server traffic: force the traffic log into the canvas,
+  // clearing any other canvas override. Navigating anywhere (Esc, a channel, a
+  // profile) drops it again.
+  const handleViewServerTraffic = () => {
+    setPreviewChannelId(null)
+    setSummaryClientId(null)
+    setSummaryChannelId(null)
+    setShowTraffic(true)
   }
 
   // Open the DM an inbox alert points at: by sender id when known (resolves the
@@ -620,6 +654,7 @@ function Main() {
     async (userId) => {
       if (!userId || userId === client?.id) return
       setSummaryClientId(null)
+      setShowTraffic(false)
       try {
         const id = await ensureDmChannel(userId)
         // The preview-drop effect clears any previewed id not in `channels`, but
@@ -1522,6 +1557,21 @@ function Main() {
       // replace it wholesale rather than merging, so a cleared status_message
       // (null) doesn't leave the previous one behind.
       if (ev === 'PresenceUpdate') {
+        // Server traffic: log a crossing of the online/offline boundary (someone
+        // else). Invisible == offline, so an invisible user never crosses into
+        // visible (no "came online"), and going invisible reads as "went offline".
+        const wasOffline = statusOf(presencesRef.current[data.client_id]) === 'offline'
+        const isOffline = statusOf(data) === 'offline'
+        if (wasOffline !== isOffline && data.client_id !== selfIdRef.current) {
+          const name = clientsRef.current.find((c) => c.id === data.client_id)?.name || 'Someone'
+          const now = Date.now()
+          setTraffic((prev) =>
+            [
+              { id: `${data.client_id}-${now}`, clientId: data.client_id, name, online: !isOffline, ts: now },
+              ...prev
+            ].slice(0, MAX_LOG_ENTRIES)
+          )
+        }
         setPresences((prev) => ({ ...prev, [data.client_id]: data }))
         return
       }
@@ -2171,12 +2221,13 @@ function Main() {
       else if (summaryChannelId != null) setSummaryChannelId(null)
       else if (summaryClientId != null) setSummaryClientId(null)
       else if (previewChannelId != null) setPreviewChannelId(null)
+      else if (showTraffic) setShowTraffic(false)
       else return
       e.preventDefault()
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [showSettings, rolesGroupsOpen, summaryChannelId, summaryClientId, previewChannelId])
+  }, [showSettings, rolesGroupsOpen, summaryChannelId, summaryClientId, previewChannelId, showTraffic])
 
   const connected = !!token
   const titleText = connectedServer ? `${APP_TITLE} — ${connectedServer.nickname}` : APP_TITLE
@@ -2270,7 +2321,13 @@ function Main() {
             self={client}
             onStreamsUpdate={handleStreamsUpdate}
             onStatusChange={sendStatus}
-            onSelfChannelChange={(channelId) => sendVoiceState({ channel_id: channelId })}
+            onSelfChannelChange={(channelId) => {
+              // Joining/leaving a voice channel is a navigation — drop the
+              // forced traffic view so we land on that channel's chat.
+              setShowTraffic(false)
+              sendVoiceState({ channel_id: channelId })
+            }}
+            onViewServerTraffic={handleViewServerTraffic}
             // provide a renderer-level openSettings hook
             onOpenSettings={openSettings}
             servers={servers}
@@ -2318,7 +2375,14 @@ function Main() {
             {summaryChannelId == null && summaryClientId == null && (
               <div className="chat-header">
                 <div className="header-content">
-                  {previewChannelId != null ? (
+                  {showTraffic ? (
+                    // Forced traffic view (server menu). Title-only header like a
+                    // peek — Esc or navigating elsewhere returns to the channel.
+                    <span className="view-preview-title">
+                      <IconActivity size={18} stroke={2} />
+                      Server Traffic
+                    </span>
+                  ) : previewChannelId != null ? (
                     // Peeking into another channel's chat: no view tabs (no streams),
                     // just the channel name.
                     <span className="view-preview-title">
@@ -2329,25 +2393,16 @@ function Main() {
                       )}
                       {previewChannelName}
                     </span>
-                  ) : connected ? (
+                  ) : connected && joinedChannel ? (
+                    // In a voice channel: channel name + member count + Chat/Streams tabs.
                     <>
                       <div className="chat-title">
                         <span className="chat-title-icon">
-                          {joinedChannel ? (
-                            <IconVolume size={17} stroke={2} />
-                          ) : (
-                            <IconUsersGroup size={17} stroke={2} />
-                          )}
+                          <IconVolume size={17} stroke={2} />
                         </span>
                         <span className="chat-title-text">
-                          <span className="chat-title-name">
-                            {joinedChannel?.name ?? connectedServer?.nickname ?? 'Connected'}
-                          </span>
-                          <span className="chat-title-sub">
-                            {joinedChannel
-                              ? `${joinedChannelUserCount} in voice`
-                              : 'Not in a voice channel'}
-                          </span>
+                          <span className="chat-title-name">{joinedChannel.name}</span>
+                          <span className="chat-title-sub">{joinedChannelUserCount} in voice</span>
                         </span>
                       </div>
                       <SegmentedTabs
@@ -2370,6 +2425,19 @@ function Main() {
                         ]}
                       />
                     </>
+                  ) : connected ? (
+                    // Lurking (not in a voice channel): just the server name — the
+                    // canvas below shows server traffic, so no tabs or subtext.
+                    <div className="chat-title">
+                      <span className="chat-title-icon">
+                        <IconUsersGroup size={17} stroke={2} />
+                      </span>
+                      <span className="chat-title-text">
+                        <span className="chat-title-name">
+                          {connectedServer?.nickname ?? 'Connected'}
+                        </span>
+                      </span>
+                    </div>
                   ) : (
                     <span aria-hidden="true" />
                   )}
@@ -2389,7 +2457,9 @@ function Main() {
                       ? `summary-${summaryClientId}`
                       : previewChannelId != null
                         ? `preview-${previewChannelId}`
-                        : viewMode
+                        : showTraffic || !joinedChannel
+                          ? 'lobby'
+                          : viewMode
               }
             >
               {!connected ? (
@@ -2414,6 +2484,10 @@ function Main() {
                   isSelf={summaryClient?.id === client?.id}
                   onSetAvatar={handleSetAvatar}
                 />
+              ) : showTraffic || (previewChannelId == null && !joinedChannel) ? (
+                // Server-traffic log: shown on demand (server menu) or as the
+                // default when lurking (not in a voice channel, not peeking).
+                <ServerTraffic entries={traffic} clients={clients} />
               ) : previewChannelId != null || viewMode === 'log' ? (
                 <ChatPanel
                   feed={feed.filter(

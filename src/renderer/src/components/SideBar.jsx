@@ -49,6 +49,7 @@ function Sidebar({
   onEditServer,
   onRemoveServer,
   onNotify,
+  onViewServerTraffic,
   onCreateChannel,
   onDeleteChannel,
   onReorderChannel,
@@ -445,7 +446,7 @@ function Sidebar({
 
   return (
     <aside className="sidebar" ref={sidebarRef} style={{ width }}>
-      <div className="server-header">
+      <div className={`server-header${connectedServer ? '' : ' disconnected'}`}>
         <ServerMenu
           servers={servers}
           connectedServer={connectedServer}
@@ -455,6 +456,7 @@ function Sidebar({
           onEditServer={onEditServer}
           onRemoveServer={onRemoveServer}
           onNotify={onNotify}
+          onViewServerTraffic={onViewServerTraffic}
         />
       </div>
 
