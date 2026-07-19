@@ -131,6 +131,20 @@ if (enableFeatures.length > 0) {
   app.commandLine.appendSwitch('enable-features', enableFeatures.join(','))
 }
 
+// PREFER_SCREENSHARE_CODEC=H264|AV1|VP9 pins the codec screen shares are
+// produced with (consumed in the renderer via preload's preferScreenshareCodec
+// — see pickVideoCodec in renderer/src/lib/soup.js). Only warn here; the value
+// is normalized and applied in the renderer.
+{
+  const preferCodec = process.env.PREFER_SCREENSHARE_CODEC?.trim().toUpperCase()
+  if (preferCodec && !['H264', 'AV1', 'VP9'].includes(preferCodec)) {
+    console.warn(
+      `[main] Ignoring invalid PREFER_SCREENSHARE_CODEC="${process.env.PREFER_SCREENSHARE_CODEC}" ` +
+        '(expected H264, AV1, or VP9)'
+    )
+  }
+}
+
 // Store auth token in main process so it persists across windows
 let authToken = null
 let authClient = null

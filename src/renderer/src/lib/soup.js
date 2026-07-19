@@ -1420,6 +1420,20 @@ export function resetScreenCodecPreference() {
   }
 }
 
+// User-forced screen codec from PREFER_SCREENSHARE_CODEC=H264|AV1|VP9 (normalized
+// in preload). When set, it overrides both the AV1-first default and the adaptive
+// H.264 downgrade — the user explicitly asked for this codec, so we keep it even
+// if it comes up software. undefined when unset/invalid.
+const FORCED_SCREEN_CODEC_MIME = {
+  H264: 'video/h264',
+  AV1: 'video/av1',
+  VP9: 'video/vp9'
+}[(typeof window !== 'undefined' && window.api?.preferScreenshareCodec) || '']
+
+function forcedScreenCodec() {
+  return FORCED_SCREEN_CODEC_MIME ? findVideoCodec(FORCED_SCREEN_CODEC_MIME) : undefined
+}
+
 // Screen share: AV1 for efficiency (Discord-level sharpness at lower bitrate,
 // one plain encoding — see the SVC note above screenEncodingFor), VP9 fallback.
 // Whether AV1 encodes in
@@ -1429,6 +1443,10 @@ export function resetScreenCodecPreference() {
 // and a software result downgrades the share to H.264 and remembers that choice
 // for later shares in this renderer session (SCREEN_H264_KEY).
 function pickVideoCodec() {
+  // An explicit PREFER_SCREENSHARE_CODEC wins outright when the router advertises
+  // it; fall through to the normal selection if it's unavailable.
+  const forced = forcedScreenCodec()
+  if (forced) return forced
   if (hasScreenCodecPreference()) {
     return findVideoCodec('video/h264') ?? findVideoCodec('video/vp9')
   }
@@ -1704,6 +1722,9 @@ function screenStatsHandler(ctx, stats) {
 
 async function maybeDowngradeScreenCodec(ctx, stats) {
   if (!isActiveShare(ctx) || ctx.downgraded || !ctx.producer) return
+  // A user-forced codec (PREFER_SCREENSHARE_CODEC) is honored as-is — never
+  // auto-downgrade it, even when the encoder came up software.
+  if (forcedScreenCodec()) return
   const current = ctx.producer.rtpParameters?.codecs?.[0]?.mimeType ?? ''
   if (/h264/i.test(current)) return // already on the lightest codec
 
