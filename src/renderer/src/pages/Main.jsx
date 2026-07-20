@@ -1347,6 +1347,7 @@ function Main() {
       if (result.response.ok && data.access_token) {
         applyAuthResponse(data)
         setConnectedServer(server)
+        playUiSound('connected')
       } else {
         setServerHost(null)
         showError(`Failed to connect to ${server.nickname}: ${data.error || 'login failed'}`)
@@ -1382,6 +1383,7 @@ function Main() {
     setSummaryClientId(null)
     setReadStates({})
     setConnectionStatus('connected')
+    playUiSound('disconnected')
   }, [clearAuth])
 
   // A refresh the server rejects means the device session is revoked or
@@ -1711,8 +1713,10 @@ function Main() {
         if (!('channel_id' in data)) {
           // no channel move to chime for
         } else if (data.id === selfIdRef.current) {
-          if (oldChannelId !== data.channel_id) {
-            playUiSound(data.channel_id == null ? 'channel-leave' : 'channel-join')
+          // Our own move into a channel plays "you moved to another channel".
+          // Dropping out of voice entirely (channel_id null) has no dedicated cue.
+          if (oldChannelId !== data.channel_id && data.channel_id != null) {
+            playUiSound('channel_switched')
           }
         } else if (myChannel != null) {
           if (data.channel_id === myChannel && oldChannelId !== myChannel) {
@@ -2061,6 +2065,7 @@ function Main() {
         body: formData
       })
       await throwIfError(res)
+      playUiSound('chat_message_outbound')
       // The server broadcasts MessageCreated back to us too, which appends it to the feed
     } catch (err) {
       showError(`Failed to send message: ${err.message}`)

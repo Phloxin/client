@@ -5,6 +5,8 @@ import {
   IconBellRinging,
   IconKeyboard,
   IconCheck,
+  IconX,
+  IconPin,
   IconPlayerPlayFilled,
   IconAdjustments,
   IconSettings
@@ -15,7 +17,13 @@ import AudioSettings from '../components/AudioSettings'
 import KeybindsSettings from '../components/KeybindsSettings'
 import AdvancedSettings from '../components/AdvancedSettings'
 import GeneralSettings from '../components/GeneralSettings'
-import { SOUND_CATEGORIES, playUiSound } from '../lib/sounds'
+import {
+  SOUND_SECTIONS,
+  SOUND_DEFAULTS,
+  SOUNDPACK_OPTIONS,
+  getSoundFilename,
+  playUiSound
+} from '../lib/sounds'
 import { UI_FONTS } from '../lib/uiSettings'
 import './Settings.css'
 
@@ -62,8 +70,12 @@ function Settings() {
   const {
     micSettings,
     updateMicSettings,
-    soundSettings,
-    updateSoundSettings,
+    soundState,
+    setSoundState,
+    soundpack,
+    setSoundpack,
+    soundVolume,
+    updateSoundVolume,
     appearanceSettings,
     updateAppearanceSettings,
     animationSettings,
@@ -446,51 +458,118 @@ function Settings() {
 
               <div className="settings-panel-group">
                 <div className="settings-section">
-                  <label>Sound Toggles</label>
+                  <label htmlFor="soundpack">Soundpack</label>
                   <p className="settings-section-desc">
-                    Choose which sound effects play. These are local cues only you hear.
+                    Which set of sounds to play. The list below follows the selected pack.
                   </p>
+                  <select
+                    id="soundpack"
+                    value={soundpack}
+                    onChange={(e) => setSoundpack(e.target.value)}
+                  >
+                    {SOUNDPACK_OPTIONS.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.label}
+                      </option>
+                    ))}
+                  </select>
                 </div>
 
-                {SOUND_CATEGORIES.map((category) => (
-                  <div key={category.id} className="settings-section settings-toggle-row">
-                    <div className="settings-toggle-copy">
-                      <label htmlFor={`sound-${category.id}`}>{category.label}</label>
-                    </div>
-                    <div className="sound-preview-group">
-                      {category.events.map((ev) => {
-                        // 'mic-unmute' → 'unmute', 'new-message' → 'message'. A
-                        // toggle can control two sounds; each gets its own button.
-                        const evLabel = ev.split('-').slice(1).join(' ') || ev
-                        return (
-                          <button
-                            key={ev}
-                            type="button"
-                            className="sound-preview-btn"
-                            title={`Play ${evLabel}`}
-                            aria-label={`Play ${evLabel}`}
-                            onClick={() => playUiSound(ev, 0.5, true)}
-                          >
-                            <IconPlayerPlayFilled size={14} />
-                            {category.events.length > 1 && (
-                              <span className="sound-preview-label">{evLabel}</span>
-                            )}
-                          </button>
-                        )
-                      })}
-                    </div>
-                    <label className="toggle-switch">
-                      <input
-                        type="checkbox"
-                        id={`sound-${category.id}`}
-                        checked={soundSettings[category.id] !== false}
-                        onChange={(e) => updateSoundSettings({ [category.id]: e.target.checked })}
-                      />
-                      <span className="toggle-slider" />
-                    </label>
+                <div className="settings-section">
+                  <label htmlFor="sound-volume">Notification Volume</label>
+                  <p className="settings-section-desc">
+                    Volume for soundpack sounds, separate from the voice output volume.
+                  </p>
+                  <div className="settings-volume-row">
+                    <input
+                      id="sound-volume"
+                      type="range"
+                      className="settings-volume-slider"
+                      min={0}
+                      max={100}
+                      value={soundVolume}
+                      onChange={(e) => updateSoundVolume(Number(e.target.value))}
+                    />
+                    <span className="settings-volume-value">{soundVolume}%</span>
                   </div>
-                ))}
+                </div>
               </div>
+
+              {SOUND_SECTIONS.map((section) => {
+                // Only show the sounds the active pack actually contains.
+                const sounds = section.sounds
+                  .map((s) => ({ ...s, filename: getSoundFilename(soundpack, s.id) }))
+                  .filter((s) => s.filename)
+                if (sounds.length === 0) return null
+
+                // Master switch enables/disables the whole section; it reads as on
+                // while any sound is enabled, and re-enabling keeps pins pinned.
+                const resolve = (id) => soundState[id] || SOUND_DEFAULTS[id] || 'on'
+                const anyOn = sounds.some((s) => resolve(s.id) !== 'off')
+                const toggleSection = (on) =>
+                  setSoundState(
+                    Object.fromEntries(
+                      sounds.map((s) => [s.id, on ? (resolve(s.id) === 'pin' ? 'pin' : 'on') : 'off'])
+                    )
+                  )
+
+                return (
+                  <div key={section.id} className="settings-panel-group sound-section">
+                    <div className="settings-section settings-toggle-row sound-section-head">
+                      <label htmlFor={`section-${section.id}`}>{section.label}</label>
+                      <label className="toggle-switch">
+                        <input
+                          type="checkbox"
+                          id={`section-${section.id}`}
+                          checked={anyOn}
+                          onChange={(e) => toggleSection(e.target.checked)}
+                        />
+                        <span className="toggle-slider" />
+                      </label>
+                    </div>
+
+                    {sounds.map(({ id, label, filename }) => {
+                      const state = resolve(id)
+                      return (
+                        <div key={id} className="settings-section settings-toggle-row">
+                          <div className="settings-toggle-copy">
+                            <label title={filename}>{label}</label>
+                          </div>
+                          <div className="sound-preview-group">
+                            <button
+                              type="button"
+                              className="sound-preview-btn"
+                              title={`Play ${filename}`}
+                              aria-label={`Play ${filename}`}
+                              onClick={() => playUiSound(id, undefined, true)}
+                            >
+                              <IconPlayerPlayFilled size={14} />
+                            </button>
+                          </div>
+                          <div className="sound-state" role="group" aria-label={filename}>
+                            {[
+                              ['off', IconX, 'Off'],
+                              ['on', IconCheck, 'Enabled'],
+                              ['pin', IconPin, 'Enabled — always heard, even when sound is muted']
+                            ].map(([val, Icon, title]) => (
+                              <button
+                                key={val}
+                                type="button"
+                                title={title}
+                                aria-pressed={state === val}
+                                className={`sound-state-seg ${val}${state === val ? ' active' : ''}`}
+                                onClick={() => setSoundState({ [id]: val })}
+                              >
+                                <Icon size={15} />
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )
+              })}
             </div>
           )}
         </section>

@@ -373,6 +373,60 @@
   transform: scale(0.9);
 }
 
+/* Header row of a notification-sound section: section title + master toggle. */
+.sound-section-head > label {
+  font-size: var(--font-size-md, 15px);
+  font-weight: var(--font-weight-bold, 700);
+}
+
+/* Per-sound tri-state: Off (X) / Enabled (check) / Pinned (always heard). Mirrors
+   the channel-permission overwrite segments. */
+.sound-state {
+  display: inline-flex;
+  flex-shrink: 0;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.sound-state-seg {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  padding: 4px 0;
+  border: none;
+  background: var(--color-surface);
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
+}
+
+.sound-state-seg + .sound-state-seg {
+  border-left: 1px solid var(--hairline);
+}
+
+.sound-state-seg:hover {
+  color: var(--color-text);
+}
+
+.sound-state-seg.off.active {
+  background: var(--color-danger, #e5484d);
+  color: #fff;
+}
+
+.sound-state-seg.on.active {
+  background: var(--color-success, #30a46c);
+  color: #fff;
+}
+
+.sound-state-seg.pin.active {
+  background: var(--color-primary);
+  color: var(--color-primary-contrast, #fff);
+}
+
 /* ── Toggle switch ─────────────────────────────────────────────────────── */
 
 .toggle-switch {

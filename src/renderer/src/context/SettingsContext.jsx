@@ -1,14 +1,15 @@
 import { createContext, useContext, useState, useEffect } from 'react'
 import { setOutputDevice, setMasterVolume } from '../lib/soup'
-import { SOUND_CATEGORIES, setSoundCategoriesEnabled, setSoundOutputDevice } from '../lib/sounds'
+import {
+  setSoundStateMap,
+  setSoundOutputDevice,
+  setActiveSoundpack,
+  setSoundVolume
+} from '../lib/sounds'
 import { applyAppearanceSettings, applyAnimationSettings } from '../lib/uiSettings'
 import { prefersReducedMotion } from '../lib/animation'
 
 const SettingsContext = createContext(null)
-
-// Sound-effect categories all start enabled. Derived from the soundpack registry
-// so a newly-added category is on by default without touching this file.
-const DEFAULT_SOUND_SETTINGS = Object.fromEntries(SOUND_CATEGORIES.map((c) => [c.id, true]))
 
 // Audio encoding constants — not exposed in settings UI
 const AUDIO_SAMPLE_RATE = 48000
@@ -176,27 +177,59 @@ export function SettingsProvider({ children }) {
     }
   })
 
-  const [soundSettings, setSoundSettings] = useState(() => {
+  // Per-sound state, keyed by sound id: 'off' | 'on' | 'pin'. Absent = 'on', so
+  // only sounds the user has changed from the default are stored.
+  const [soundState, setSoundStateObj] = useState(() => {
     try {
-      const saved = localStorage.getItem('soundSettings')
-      // Merge over defaults so a category added after the prefs were saved still
-      // gets a sensible (enabled) value.
-      return saved ? { ...DEFAULT_SOUND_SETTINGS, ...JSON.parse(saved) } : DEFAULT_SOUND_SETTINGS
+      const saved = localStorage.getItem('soundState')
+      return saved ? JSON.parse(saved) : {}
     } catch {
-      return DEFAULT_SOUND_SETTINGS
+      return {}
     }
   })
 
-  // Mirror sound-category prefs into the (non-React) sounds module so playUiSound
+  // Mirror sound-state prefs into the (non-React) sounds module so playUiSound
   // can honour them — on load and on every change.
   useEffect(() => {
-    setSoundCategoriesEnabled(soundSettings)
-  }, [soundSettings])
+    setSoundStateMap(soundState)
+  }, [soundState])
 
-  const updateSoundSettings = (changes) => {
-    setSoundSettings((prev) => {
+  const [soundpack, setSoundpackState] = useState(() => localStorage.getItem('soundpack') || 'default')
+
+  // Mirror the chosen soundpack into the sounds module on load and on change.
+  useEffect(() => {
+    setActiveSoundpack(soundpack)
+  }, [soundpack])
+
+  const setSoundpack = (id) => {
+    localStorage.setItem('soundpack', id)
+    setSoundpackState(id)
+  }
+
+  // Notification-sound volume, 0..100 (separate from the voice master volume).
+  const [soundVolume, setSoundVolumeState] = useState(() => {
+    const raw = localStorage.getItem('soundVolume')
+    const saved = Number(raw)
+    // Absent → default 50; a saved 0 (muted) is honoured.
+    return raw !== null && Number.isFinite(saved) ? Math.min(100, Math.max(0, saved)) : 50
+  })
+
+  // Mirror volume into the sounds module (as 0..1) on load and on change.
+  useEffect(() => {
+    setSoundVolume(soundVolume / 100)
+  }, [soundVolume])
+
+  const updateSoundVolume = (value) => {
+    localStorage.setItem('soundVolume', String(value))
+    setSoundVolumeState(value)
+  }
+
+  // `changes` is a map of soundId -> 'off'|'on'|'pin'; pass several to set a whole
+  // section at once.
+  const setSoundState = (changes) => {
+    setSoundStateObj((prev) => {
       const merged = { ...prev, ...changes }
-      localStorage.setItem('soundSettings', JSON.stringify(merged))
+      localStorage.setItem('soundState', JSON.stringify(merged))
       return merged
     })
   }
@@ -231,8 +264,12 @@ export function SettingsProvider({ children }) {
       value={{
         micSettings,
         updateMicSettings,
-        soundSettings,
-        updateSoundSettings,
+        soundState,
+        setSoundState,
+        soundpack,
+        setSoundpack,
+        soundVolume,
+        updateSoundVolume,
         appearanceSettings,
         updateAppearanceSettings,
         animationSettings,
