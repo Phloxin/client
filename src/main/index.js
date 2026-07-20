@@ -7,7 +7,8 @@ import {
   desktopCapturer,
   safeStorage,
   dialog,
-  screen
+  screen,
+  powerSaveBlocker
 } from 'electron'
 import { basename, join } from 'path'
 import { readFileSync, writeFileSync, unlinkSync } from 'fs'
@@ -52,7 +53,10 @@ function appSettingsFilePath() {
 const DEFAULT_APP_SETTINGS = {
   hardwareAcceleration: true,
   // Windows only — see the window-bounds section below.
-  retainWindowBounds: true
+  retainWindowBounds: true,
+  // Windows/Linux only — see the idle-inhibitor section below. Off by default:
+  // holding the system awake is the user's call, not ours.
+  preventSleep: false
 }
 
 function readAppSettings() {
@@ -75,6 +79,31 @@ function writeAppSettings(changes) {
 }
 
 const appSettings = readAppSettings()
+
+// ─── Idle inhibitor (Windows/Linux) ──────────────────────────────────
+// Optional "keep the system awake" switch. Chromium's power-save blocker maps
+// to SetThreadExecutionState on Windows and the freedesktop inhibit portal on
+// Linux, so one call covers both; macOS is excluded because the UI doesn't
+// offer the toggle there. 'prevent-app-suspension' stops the machine from
+// suspending while still letting the display blank on its own schedule.
+// Applied immediately on toggle and re-applied at startup — no relaunch.
+const IDLE_INHIBITOR_SUPPORTED = process.platform === 'win32' || process.platform === 'linux'
+let idleInhibitorId = null
+
+function applyIdleInhibitor(enabled) {
+  if (!IDLE_INHIBITOR_SUPPORTED) return
+  try {
+    if (enabled) {
+      if (idleInhibitorId != null && powerSaveBlocker.isStarted(idleInhibitorId)) return
+      idleInhibitorId = powerSaveBlocker.start('prevent-app-suspension')
+    } else if (idleInhibitorId != null) {
+      if (powerSaveBlocker.isStarted(idleInhibitorId)) powerSaveBlocker.stop(idleInhibitorId)
+      idleInhibitorId = null
+    }
+  } catch (err) {
+    console.error('Failed to apply idle inhibitor:', err)
+  }
+}
 
 // Master hardware-acceleration switch (Advanced settings). Off disables all
 // Chromium GPU acceleration — the standard escape hatch for broken driver stacks
@@ -595,6 +624,14 @@ app.whenReady().then(() => {
       console.error('Failed to persist launch-on-startup setting:', err)
     }
   })
+  // ─── Idle inhibitor toggle ──────────────────────────────────────────
+  // Persisted alongside the other app settings (read back through
+  // get-app-settings), but applied to the running process right away.
+  ipcMain.on('set-idle-inhibitor', (_, enabled) => {
+    writeAppSettings({ preventSleep: enabled === true })
+    applyIdleInhibitor(enabled === true)
+  })
+
   // Restart the app so a startup-only setting (hardware acceleration) takes hold.
   ipcMain.on('relaunch-app', () => {
     app.relaunch()
@@ -725,6 +762,9 @@ app.whenReady().then(() => {
   })
 
   createWindow()
+
+  // Re-arm the keep-awake blocker if the user left it on last session.
+  applyIdleInhibitor(readAppSettings().preventSleep === true)
 
   // OS-wide mute/deafen keybinds: passive hook on X11/Windows/macOS and the
   // compositor-managed GlobalShortcuts portal on Wayland (see keybinds.js).

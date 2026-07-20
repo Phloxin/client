@@ -3,10 +3,14 @@ import { IconAlertTriangle } from '@tabler/icons-react'
 import { useSettings } from '../context/SettingsContext'
 import { resetScreenCodecPreference } from '../lib/soup'
 
+// The keep-awake blocker is only wired up for Windows and Linux in main.
+const supportsIdleInhibitor = window.api?.platform === 'win32' || window.api?.platform === 'linux'
+
 // Advanced settings. Two kinds live here:
 //   - Codec badge: a renderer-only appearance pref (localStorage via context).
 //   - Hardware acceleration: a Chromium startup flag the MAIN process applies
 //     before app 'ready', so it's persisted main-side and needs a relaunch.
+//   - Keep system awake: a power-save blocker main starts/stops on the fly.
 function AdvancedSettings() {
   const { appearanceSettings, updateAppearanceSettings } = useSettings()
 
@@ -15,6 +19,7 @@ function AdvancedSettings() {
   // The value that's actually applied to the running process, so we can tell
   // the user a relaunch is pending when their toggle no longer matches it.
   const [appliedHwAccel, setAppliedHwAccel] = useState(null)
+  const [preventSleep, setPreventSleep] = useState(null)
 
   useEffect(() => {
     let cancelled = false
@@ -25,16 +30,23 @@ function AdvancedSettings() {
         const enabled = settings?.hardwareAcceleration !== false
         setHwAccel(enabled)
         setAppliedHwAccel(enabled)
+        setPreventSleep(settings?.preventSleep === true)
       })
       .catch(() => {
         if (cancelled) return
         setHwAccel(true)
         setAppliedHwAccel(true)
+        setPreventSleep(false)
       })
     return () => {
       cancelled = true
     }
   }, [])
+
+  const togglePreventSleep = (enabled) => {
+    setPreventSleep(enabled)
+    window.electron?.ipcRenderer?.send('set-idle-inhibitor', enabled)
+  }
 
   const toggleHwAccel = (enabled) => {
     setHwAccel(enabled)
@@ -53,7 +65,7 @@ function AdvancedSettings() {
       <div className="settings-panel-header">
         <div>
           <h2>Advanced</h2>
-          <p>Hardware acceleration and diagnostic overlays.</p>
+          <p>Hardware acceleration, power behavior, and diagnostic overlays.</p>
         </div>
       </div>
 
@@ -107,6 +119,29 @@ function AdvancedSettings() {
             <span className="toggle-slider" />
           </label>
         </div>
+
+        {supportsIdleInhibitor && (
+          <div className="settings-section settings-toggle-row">
+            <div className="settings-toggle-copy">
+              <label htmlFor="prevent-sleep-toggle">Keep System Awake</label>
+              <p className="settings-section-desc">
+                Stop your computer from going to sleep while Pylon is running, so long calls and
+                screen shares aren&apos;t cut off by the idle timer. Your display can still turn off
+                on its own schedule. Applies immediately.
+              </p>
+            </div>
+            <label className="toggle-switch">
+              <input
+                type="checkbox"
+                id="prevent-sleep-toggle"
+                checked={preventSleep ?? false}
+                disabled={preventSleep == null}
+                onChange={(e) => togglePreventSleep(e.target.checked)}
+              />
+              <span className="toggle-slider" />
+            </label>
+          </div>
+        )}
       </div>
     </div>
   )
