@@ -273,6 +273,15 @@
   color: var(--color-text);
 }
 
+/* Trailing "Notify everyone with visibility..." note on the @everyone entry. */
+.chat-mention-hint {
+  margin-left: auto;
+  padding-left: 10px;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  white-space: nowrap;
+}
+
 .chat-mention-avatar {
   width: 22px;
   height: 22px;

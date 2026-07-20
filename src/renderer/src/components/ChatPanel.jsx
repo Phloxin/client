@@ -12,7 +12,8 @@ import {
   IconCopy,
   IconPhoto,
   IconArrowDown,
-  IconMoodPlus
+  IconMoodPlus,
+  IconUsers
 } from '@tabler/icons-react'
 import { motion, AnimatePresence } from 'motion/react'
 import ImageViewer from './ImageViewer'
@@ -329,15 +330,18 @@ function encodeMentions(text, clients) {
 }
 
 // Composer text split into plain segments and mention pills, for the highlight
-// backdrop behind the textarea. Same matching rules as encodeMentions, so what
-// lights up is exactly what will encode on send.
+// backdrop behind the textarea. Same matching rules as encodeMentions (plus bare
+// @everyone, which the server matches as a standalone whitespace-delimited
+// token), so what lights up is exactly what the server will treat as a mention.
 function composerMentionNodes(text, clients) {
-  const names = (clients || [])
+  if (!text) return text
+  const alts = (clients || [])
     .filter((c) => c.name)
     .map((c) => c.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
     .sort((a, b) => b.length - a.length)
-  if (!text || !names.length) return text
-  const re = new RegExp(`@(?:${names.join('|')})(?!\\w)`, 'gi')
+    .map((name) => `@${name}(?!\\w)`)
+  alts.push('(?<=^|\\s)@everyone(?=\\s|$)')
+  const re = new RegExp(alts.join('|'), 'gi')
   const out = []
   let last = 0
   let m
@@ -633,9 +637,16 @@ function ChatPanel({
   }
 
   const mentionMatches = mention
-    ? (clients || [])
-        .filter((c) => c.name?.toLowerCase().includes(mention.query.toLowerCase()))
-        .slice(0, 8)
+    ? [
+        // @everyone isn't a roster entry — synthesize it, listed first like
+        // Discord. `name` is all selectMention needs to insert the token.
+        ...('everyone'.includes(mention.query.toLowerCase())
+          ? [{ id: '@everyone', name: 'everyone', everyone: true }]
+          : []),
+        ...(clients || []).filter((c) =>
+          c.name?.toLowerCase().includes(mention.query.toLowerCase())
+        )
+      ].slice(0, 8)
     : []
 
   // Replace the in-progress @token with the chosen name. The composer keeps
@@ -1186,13 +1197,20 @@ function ChatPanel({
                   onMouseEnter={() => setMentionIndex(i)}
                 >
                   <span className="chat-avatar chat-mention-avatar" aria-hidden="true">
-                    {c.avatar ? (
+                    {c.everyone ? (
+                      <IconUsers size={13} />
+                    ) : c.avatar ? (
                       <img className="chat-avatar-img" src={c.avatar} alt="" />
                     ) : (
                       (c.name || '?').charAt(0).toUpperCase()
                     )}
                   </span>
-                  {c.name}
+                  {c.everyone ? '@everyone' : c.name}
+                  {c.everyone && (
+                    <span className="chat-mention-hint">
+                      Notify everyone with visibility to this channel
+                    </span>
+                  )}
                 </button>
               ))}
             </motion.div>
