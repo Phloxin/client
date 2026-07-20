@@ -1,6 +1,11 @@
 import { useState, useEffect } from 'react'
 import { IconRefresh, IconDownload, IconCircleCheck, IconAlertTriangle } from '@tabler/icons-react'
 
+// Startup behaviour and window-geometry persistence are Windows-only: the
+// login-item registry has no Linux equivalent through Electron, and Linux/macOS
+// window managers already restore geometry on their own.
+const isWindows = window.api?.platform === 'win32'
+
 // Update flow backed by electron-updater in main. The main process broadcasts
 // 'updater:event' messages; this component just reflects the latest one and
 // exposes the three actions (check / download / install).
@@ -12,6 +17,48 @@ function GeneralSettings() {
   const [newVersion, setNewVersion] = useState('')
   const [percent, setPercent] = useState(0)
   const [error, setError] = useState('')
+
+  // Both are null until main answers, which keeps the switches disabled rather
+  // than flashing a default that may not match the stored value.
+  const [launchOnStartup, setLaunchOnStartup] = useState(null)
+  const [retainBounds, setRetainBounds] = useState(null)
+
+  useEffect(() => {
+    if (!isWindows) return
+    let cancelled = false
+
+    window.electron?.ipcRenderer
+      ?.invoke('get-launch-on-startup')
+      .then((enabled) => {
+        if (!cancelled) setLaunchOnStartup(enabled === true)
+      })
+      .catch(() => {
+        if (!cancelled) setLaunchOnStartup(false)
+      })
+
+    window.electron?.ipcRenderer
+      ?.invoke('get-app-settings')
+      .then((settings) => {
+        if (!cancelled) setRetainBounds(settings?.retainWindowBounds !== false)
+      })
+      .catch(() => {
+        if (!cancelled) setRetainBounds(true)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const toggleLaunchOnStartup = (enabled) => {
+    setLaunchOnStartup(enabled)
+    window.electron?.ipcRenderer?.send('set-launch-on-startup', enabled)
+  }
+
+  const toggleRetainBounds = (enabled) => {
+    setRetainBounds(enabled)
+    window.electron?.ipcRenderer?.send('set-app-settings', { retainWindowBounds: enabled })
+  }
 
   useEffect(() => {
     window.electron?.ipcRenderer?.invoke('get-app-version').then(setVersion).catch(() => {})
@@ -60,7 +107,11 @@ function GeneralSettings() {
       <div className="settings-panel-header">
         <div>
           <h2>General</h2>
-          <p>Application version and updates.</p>
+          <p>
+            {isWindows
+              ? 'Version, updates, and startup behavior.'
+              : 'Application version and updates.'}
+          </p>
         </div>
       </div>
 
@@ -135,6 +186,49 @@ function GeneralSettings() {
             <IconAlertTriangle size={18} stroke={2} />
             <span>{error}</span>
           </div>
+        )}
+
+        {isWindows && (
+          <>
+            <div className="settings-section settings-toggle-row">
+              <div className="settings-toggle-copy">
+                <label htmlFor="launch-on-startup-toggle">Launch on Startup</label>
+                <p className="settings-section-desc">
+                  Open Pylon automatically when you sign in to Windows.
+                </p>
+              </div>
+              <label className="toggle-switch">
+                <input
+                  type="checkbox"
+                  id="launch-on-startup-toggle"
+                  checked={launchOnStartup ?? false}
+                  disabled={launchOnStartup == null}
+                  onChange={(e) => toggleLaunchOnStartup(e.target.checked)}
+                />
+                <span className="toggle-slider" />
+              </label>
+            </div>
+
+            <div className="settings-section settings-toggle-row">
+              <div className="settings-toggle-copy">
+                <label htmlFor="retain-window-bounds-toggle">Retain Window Size and Position</label>
+                <p className="settings-section-desc">
+                  Reopen the window at the size and place on your desktop where you last closed it.
+                  Turn off to always start at the default size, centered.
+                </p>
+              </div>
+              <label className="toggle-switch">
+                <input
+                  type="checkbox"
+                  id="retain-window-bounds-toggle"
+                  checked={retainBounds ?? true}
+                  disabled={retainBounds == null}
+                  onChange={(e) => toggleRetainBounds(e.target.checked)}
+                />
+                <span className="toggle-slider" />
+              </label>
+            </div>
+          </>
         )}
       </div>
     </div>
