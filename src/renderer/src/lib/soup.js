@@ -60,6 +60,25 @@ let playbackContext = null
 // a new one replaces it, or the server tells us it closed).
 let remoteConsumers = new Map()
 
+// ─── Inbound audio health monitoring / self-heal ─────────────────
+// A remote voice's receive path can degrade over time (jitter buffer bloat or a
+// stalled playout FIFO), leaving audio delayed/crackling until the remote peer
+// leaves and rejoins. We poll each audio consumer's WebRTC stats and repair it
+// automatically: a local Web Audio graph rebuild when the bloat is in the
+// playout path, or a full re-consume when it's in the receiver's jitter buffer.
+const AUDIO_HEALTH_INTERVAL_MS = 5000
+const AUDIO_HEALTH_BAD_DELAY_SEC = 0.4 // windowed avg delay considered pathological
+const AUDIO_HEALTH_STRIKES = 2 // consecutive bad windows before acting
+const AUDIO_HEAL_BASE_COOLDOWN_MS = 30_000
+const AUDIO_HEAL_MAX_COOLDOWN_MS = 300_000
+let audioHealthTimer = null
+// producerId -> { lastHealAt, cooldownMs }. Lives OUTSIDE the consumer entry so
+// a full re-consume (which replaces the entry) cannot reset the backoff.
+const audioHealHistory = new Map()
+// producerIds whose full re-consume is in flight, so a later tick doesn't fire a
+// second overlapping heal for the same producer.
+const audioHealsInFlight = new Set()
+
 // Only the focused stream's screen-share audio should be audible - the
 // client whose ScreenShareAudio should currently be unmuted, plus the
 // volume/mute settings to apply to it.
@@ -413,6 +432,9 @@ async function openSocket() {
       const { id, replaced = false } = message.data
       const known = knownVideoProducers.get(id)
       knownVideoProducers.delete(id)
+      // A genuinely new producer with this id deserves a fresh cooldown, so drop
+      // any heal backoff we were tracking for the one that just closed.
+      audioHealHistory.delete(id)
       const entry = remoteConsumers.get(id)
       if (entry) {
         entry.consumer.close()
@@ -980,13 +1002,26 @@ export async function createMicLevelMonitor(audioContext, stream, micSettings) {
 export function createSpeakingDetector(
   stream,
   onChange,
-  { threshold = 12, hysteresis = 3, holdMs = 250 } = {}
+  {
+    threshold = 12,
+    hysteresis = 3,
+    holdMs = 250,
+    audioContext: providedContext = null,
+    sourceNode: providedSource = null
+  } = {}
 ) {
   if (!stream.getAudioTracks().length) return () => {}
 
-  const audioContext = new (window.AudioContext || window.webkitAudioContext)()
-  const source = audioContext.createMediaStreamSource(stream)
+  // When the caller hands us its playback context and the per-stream source node
+  // (the remote-voice path does), detection adds only analysis nodes — no extra
+  // AudioContext (a live render thread) and no second createMediaStreamSource per
+  // stream (a separate, drift-prone track→WebAudio bridge). Standalone callers
+  // (e.g. the settings mic test) pass neither and get a private context + own
+  // source, closed on stop exactly as before.
+  const ownContext = !providedContext
+  const audioContext = providedContext ?? new (window.AudioContext || window.webkitAudioContext)()
   const reader = createSpeechLevelReader(audioContext)
+  const source = providedSource ?? audioContext.createMediaStreamSource(stream)
   source.connect(reader.input)
 
   let speaking = false
@@ -1022,9 +1057,12 @@ export function createSpeakingDetector(
     clearInterval(intervalId)
     if (speaking) onChange(false)
     try {
-      source.disconnect()
+      // A provided (shared) source also feeds the playback gain, so only detach
+      // our own tap into the analysis chain — never a full source.disconnect().
+      if (providedSource) source.disconnect(reader.input)
+      else source.disconnect()
     } catch {
-      // Cleanup may run after the context has already disconnected the node.
+      // Cleanup may run after the node/context has already disconnected it.
     }
     for (const node of reader.nodes) {
       try {
@@ -1033,10 +1071,12 @@ export function createSpeakingDetector(
         // Analysis nodes may already be detached.
       }
     }
+    // Only a context we created is ours to close; a shared playback context is
+    // owned by getPlaybackContext() and must keep running for other streams.
     // close() rejects (async) if the context is already closed — e.g. this
     // cleanup runs twice during teardown. Skip when closed and swallow the
     // rejection so it never surfaces as an uncaught promise error.
-    if (audioContext.state !== 'closed') audioContext.close().catch(() => {})
+    if (ownContext && audioContext.state !== 'closed') audioContext.close().catch(() => {})
   }
 }
 
@@ -1051,9 +1091,18 @@ export function setLocalClientId(id) {
 // whichever channel currently owns the session (rebound on switch/adopt).
 function startSelfSpeakingDetector(stream) {
   selfSpeakingStop?.()
-  selfSpeakingStop = createSpeakingDetector(stream, (isSpeaking) => {
-    if (localClientId != null) activeCallbacks.onClientSpeaking?.(localClientId, isSpeaking)
-  })
+  // Run on the shared playback context (no sourceNode — the mic stream needs its
+  // own source node). Safe re the autoplay policy: this only runs after the user
+  // has joined a channel, by which point the playback context is allowed to run.
+  // getPlaybackContext() is declared later in the file, but function declarations
+  // hoist and we call it lazily here, so the reference resolves fine.
+  selfSpeakingStop = createSpeakingDetector(
+    stream,
+    (isSpeaking) => {
+      if (localClientId != null) activeCallbacks.onClientSpeaking?.(localClientId, isSpeaking)
+    },
+    { audioContext: getPlaybackContext() }
+  )
 }
 
 // ─── Map snake_case transport params to mediasoup camelCase ───────
@@ -1154,8 +1203,11 @@ async function doPublish(micSettings, onStream) {
       codecOptions: {
         opusStereo: micSettings.channelCount === 2,
         opusMaxPlaybackRate: micSettings.sampleRate,
+        opusMaxAverageBitrate: 64_000,
         opusDtx: true,
-        opusFec: true
+        opusPtime: 20,
+        opusFec: true,
+        // opusNack: true
       },
       appData: { produced: 'Audio' }
     })
@@ -1237,7 +1289,7 @@ export async function republish(micSettings, onStream) {
           opusStereo: micSettings.channelCount === 2,
           opusMaxPlaybackRate: micSettings.sampleRate,
           opusDtx: true,
-          opusFec: true
+          opusFec: true,
         },
         appData: { produced: 'Audio' }
       })
@@ -1984,7 +2036,7 @@ export async function shareScreen({
             opusDtx: false,
             opusFec: true,
             opusMaxAverageBitrate: 96000,
-            opusPtime: 20
+            opusPtime: 20,
           },
           encodings: [{ maxBitrate: 96000 }],
           appData: { produced: 'ScreenShareAudio' }
@@ -2186,6 +2238,271 @@ export async function subscribe() {
   subscribePromise = null
 }
 
+// ─── Rebuildable remote-audio Web Audio graph ────────────────────
+// Given an audio entry (carries stream / clientId / producedType), build the
+// playback graph: one source node off entry.stream on the shared playback
+// context -> gain (per-client volume, may exceed 1) -> destination, plus a
+// speaking detector that TAPS that same source node (see createSpeakingDetector)
+// instead of making its own context/source. Gain starts at 0; callers must run
+// applyAllAudioState() afterwards to set the real volume. Isolated from the
+// <audio> element so the graph can be torn down and rebuilt (health self-heal)
+// without dropping the WebRTC track pull.
+function buildAudioGraph(entry) {
+  const ctx = getPlaybackContext()
+  const srcNode = ctx.createMediaStreamSource(entry.stream)
+  const gainNode = ctx.createGain()
+  gainNode.gain.value = 0 // start silent; applyAllAudioState() sets the real value
+  srcNode.connect(gainNode)
+  gainNode.connect(ctx.destination)
+
+  // Screen/tab audio isn't the client's voice - don't feed it into the speaking
+  // indicator; clientId == null means we can't attribute speaking to anyone.
+  let stopDetector = null
+  if (entry.clientId != null && entry.producedType !== 'ScreenShareAudio') {
+    stopDetector = createSpeakingDetector(
+      entry.stream,
+      (isSpeaking) => {
+        activeCallbacks.onClientSpeaking?.(entry.clientId, isSpeaking)
+      },
+      { audioContext: ctx, sourceNode: srcNode }
+    )
+  }
+
+  entry.srcNode = srcNode
+  entry.gain = gainNode
+  entry.stopDetector = stopDetector
+}
+
+// Tear down only the rebuildable graph nodes (leaves the <audio> element alone).
+// Stop the detector first so it detaches its own tap into the source before we
+// fully disconnect the source node.
+function teardownAudioGraph(entry) {
+  entry.stopDetector?.()
+  entry.stopDetector = null
+  try {
+    entry.srcNode?.disconnect()
+  } catch {
+    // The media source may already be disconnected during transport reset.
+  }
+  try {
+    entry.gain?.disconnect()
+  } catch {
+    // The gain node may already be disconnected during transport reset.
+  }
+  entry.srcNode = null
+  entry.gain = null
+}
+
+// ─── Inbound audio health poll ───────────────────────────────────
+// Start the shared health interval if it isn't already running. Called whenever
+// an audio entry is registered; the tick stops itself once no audio entries
+// remain, so only ever a single interval spins.
+function startAudioHealthMonitor() {
+  if (audioHealthTimer != null) return
+  audioHealthTimer = setInterval(runAudioHealthTick, AUDIO_HEALTH_INTERVAL_MS)
+}
+
+function stopAudioHealthMonitor() {
+  if (audioHealthTimer != null) {
+    clearInterval(audioHealthTimer)
+    audioHealthTimer = null
+  }
+}
+
+function runAudioHealthTick() {
+  const audioEntries = [...remoteConsumers.entries()].filter(([, entry]) => entry.kind === 'audio')
+  // Nothing left to watch — release the interval; consumeProducer restarts it on
+  // the next audio arrival.
+  if (audioEntries.length === 0) {
+    stopAudioHealthMonitor()
+    return
+  }
+  for (const [producerId, entry] of audioEntries) {
+    // Fire-and-forget: each entry is evaluated independently and swallows its own
+    // errors, so a getStats reject on one doesn't stall the others.
+    void evaluateAudioHealth(producerId, entry)
+  }
+}
+
+// Record a heal action for backoff: stamp the time and double the cooldown
+// (start at BASE, cap at MAX). Kept in audioHealHistory (outside the entry) so a
+// full re-consume, which replaces the entry, can't reset the backoff.
+function recordHeal(producerId, now) {
+  const prev = audioHealHistory.get(producerId)
+  const cooldownMs = prev
+    ? Math.min(prev.cooldownMs * 2, AUDIO_HEAL_MAX_COOLDOWN_MS)
+    : AUDIO_HEAL_BASE_COOLDOWN_MS
+  audioHealHistory.set(producerId, { lastHealAt: now, cooldownMs })
+}
+
+// Pull one WebRTC stats sample for an audio consumer, compute WINDOWED (this
+// interval only) delay/stall metrics, accumulate strikes, and take at most one
+// repair action per tick (respecting the per-producer cooldown/backoff).
+async function evaluateAudioHealth(producerId, entry) {
+  let report
+  try {
+    report = await entry.consumer.getStats()
+  } catch {
+    // getStats can reject transiently around consumer teardown — skip this tick.
+    return
+  }
+  // The entry may have been removed or healed (replaced) while getStats was in
+  // flight — don't record stats onto a stale entry.
+  if (remoteConsumers.get(producerId) !== entry) return
+
+  let inbound = null
+  let playout = null
+  for (const stat of report.values()) {
+    if (stat.type === 'inbound-rtp' && stat.kind === 'audio') inbound = stat
+    else if (stat.type === 'media-playout') playout = stat
+  }
+  if (!inbound) return
+
+  const health = entry.health ?? (entry.health = {})
+  const prev = health.prev
+  const cur = {
+    jitterBufferDelay: inbound.jitterBufferDelay,
+    jitterBufferEmittedCount: inbound.jitterBufferEmittedCount,
+    packetsReceived: inbound.packetsReceived,
+    concealedSamples: inbound.concealedSamples,
+    totalSamplesReceived: inbound.totalSamplesReceived,
+    totalPlayoutDelay: playout?.totalPlayoutDelay,
+    totalSamplesCount: playout?.totalSamplesCount,
+    timestamp: inbound.timestamp
+  }
+  health.prev = cur
+
+  // First tick for an entry only records baselines — no deltas to evaluate yet.
+  if (!prev) return
+
+  const dJbDelay = cur.jitterBufferDelay - prev.jitterBufferDelay
+  const dJbEmitted = cur.jitterBufferEmittedCount - prev.jitterBufferEmittedCount
+  const dPackets = cur.packetsReceived - prev.packetsReceived
+  const havePlayout =
+    cur.totalPlayoutDelay != null &&
+    prev.totalPlayoutDelay != null &&
+    cur.totalSamplesCount != null &&
+    prev.totalSamplesCount != null
+  const dPlayoutDelay = havePlayout ? cur.totalPlayoutDelay - prev.totalPlayoutDelay : null
+  const dPlayoutSamples = havePlayout ? cur.totalSamplesCount - prev.totalSamplesCount : null
+
+  const jbDelaySec = dJbEmitted > 0 ? dJbDelay / dJbEmitted : null
+  const playoutDelaySec =
+    dPlayoutSamples != null && dPlayoutSamples > 0 ? dPlayoutDelay / dPlayoutSamples : null
+  // RTP still arriving but the jitter buffer isn't emitting any samples → playout
+  // stalled. Requires dPackets > 0, so deafen (server pauses the producer) and
+  // DTX silence — both of which send no packets — can never trip this.
+  const stalled = dPackets > 0 && dJbEmitted === 0
+
+  // Bump the matching strike counter when bad this window, reset to 0 when
+  // measurably good, leave unchanged when the metric was unavailable.
+  if (jbDelaySec != null) {
+    health.jbStrikes = jbDelaySec > AUDIO_HEALTH_BAD_DELAY_SEC ? (health.jbStrikes ?? 0) + 1 : 0
+  }
+  if (playoutDelaySec != null) {
+    health.playoutStrikes =
+      playoutDelaySec > AUDIO_HEALTH_BAD_DELAY_SEC ? (health.playoutStrikes ?? 0) + 1 : 0
+  }
+  // The stall condition always resolves this window (both deltas are known).
+  health.stallStrikes = stalled ? (health.stallStrikes ?? 0) + 1 : 0
+
+  if (import.meta.env.DEV) {
+    console.log(
+      `[Soup] audio health [${producerId}] jb=${jbDelaySec?.toFixed(3) ?? 'n/a'}s ` +
+        `playout=${playoutDelaySec?.toFixed(3) ?? 'n/a'}s stalled=${stalled} ` +
+        `strikes(jb=${health.jbStrikes ?? 0},playout=${health.playoutStrikes ?? 0},` +
+        `stall=${health.stallStrikes ?? 0})`
+    )
+  }
+
+  // Respect the per-producer cooldown before acting; keep strikes as they are.
+  const now = Date.now()
+  const backoff = audioHealHistory.get(producerId)
+  if (backoff && now - backoff.lastHealAt < backoff.cooldownMs) return
+
+  // Priority 1: a stall or jitter-buffer bloat lives inside the RTCRtpReceiver;
+  // only recreating the consumer resets it → full re-consume.
+  if (
+    (health.stallStrikes ?? 0) >= AUDIO_HEALTH_STRIKES ||
+    (health.jbStrikes ?? 0) >= AUDIO_HEALTH_STRIKES
+  ) {
+    const reason =
+      (health.stallStrikes ?? 0) >= AUDIO_HEALTH_STRIKES
+        ? `playout stalled (${health.stallStrikes} bad windows, ${dPackets} pkts/no emit)`
+        : `jitter buffer delay ${jbDelaySec?.toFixed(3)}s`
+    recordHeal(producerId, now)
+    await healAudioConsumer(producerId, reason)
+    return
+  }
+
+  // Priority 2: playout-path bloat is local — rebuild the Web Audio graph. If a
+  // rebuild already happened once and playout trips AGAIN, escalate to a full
+  // re-consume instead of rebuilding a second time.
+  if ((health.playoutStrikes ?? 0) >= AUDIO_HEALTH_STRIKES) {
+    if (health.rebuilt) {
+      recordHeal(producerId, now)
+      console.warn(
+        `[Soup] audio playout still degraded after rebuild [${producerId}] ` +
+          `${playoutDelaySec?.toFixed(3)}s — escalating to re-consume`
+      )
+      await healAudioConsumer(
+        producerId,
+        `playout delay ${playoutDelaySec?.toFixed(3)}s (post-rebuild)`
+      )
+      return
+    }
+    recordHeal(producerId, now)
+    console.warn(
+      `[Soup] audio playout delay ${playoutDelaySec?.toFixed(3)}s [${producerId}] — rebuilding graph`
+    )
+    teardownAudioGraph(entry)
+    buildAudioGraph(entry)
+    applyAllAudioState()
+    health.playoutStrikes = 0
+    health.rebuilt = true
+  }
+}
+
+// Full re-consume: tear the consumer + audio graph down and consume the producer
+// fresh. Needed when the bloat is inside the receiver's jitter buffer, which a
+// local graph rebuild cannot reset.
+async function healAudioConsumer(producerId, reason) {
+  const entry = remoteConsumers.get(producerId)
+  if (!entry || entry.kind !== 'audio') return
+  if (ws?.readyState !== WebSocket.OPEN) return
+  if (!consumerTransport || consumerTransport.closed) return
+  if (audioHealsInFlight.has(producerId)) return
+  audioHealsInFlight.add(producerId)
+
+  console.warn(`[Soup] Healing audio consumer [${producerId}]: ${reason}`)
+  try {
+    // Remove + tear down locally FIRST: a racing ProducerClosed then finds no
+    // entry and stays a no-op, and the fresh consume starts from a clean slate.
+    remoteConsumers.delete(producerId)
+    entry.cleanup()
+    remoteCleanups = remoteCleanups.filter((fn) => fn !== entry.cleanup)
+    entry.consumer.close()
+    // Fire-and-forget: the server may not implement CloseConsumer yet and may not
+    // reply, so this MUST go through notify(), never send() (see notify comment).
+    notify('CloseConsumer', { ids: [entry.consumerId] })
+    // Recreates the consumer, <audio> element, graph, detector, and re-applies
+    // gain exactly like a fresh arrival.
+    await consumeProducer(
+      producerId,
+      'audio',
+      activeCallbacks.onVideoStream,
+      entry.clientId,
+      entry.producedType
+    )
+  } catch (err) {
+    // If the producer died meanwhile (race with ProducerClosed), the server
+    // rejects the Consume and we're already cleaned up locally — nothing to do.
+    console.error(`[Soup] Audio heal failed [${producerId}]:`, err)
+  } finally {
+    audioHealsInFlight.delete(producerId)
+  }
+}
+
 // ─── Consume a remote producer ───────────────────────────────────
 export async function consumeProducer(producerId, kind, onStream, clientId, producedType) {
   if (!consumerTransport) await subscribe()
@@ -2238,75 +2555,68 @@ export async function consumeProducer(producerId, kind, onStream, clientId, prod
     console.log(`[Soup] Video consumer created paused [id:${consumer.id}]`)
   }
 
-  // play audio or stream via DOM element
-  let cleanup = null
-  let audioEl = null
-  let gainNode = null
+  // Build the entry up front so the audio graph, cleanup, and a later
+  // health-driven rebuild can all reference it (a rebuild reuses entry.stream).
+  const entry = {
+    consumer,
+    consumerId: consumer.id,
+    kind,
+    clientId,
+    producedType,
+    stream,
+    cleanup: null,
+    audioEl: null,
+    gain: null
+  }
 
   if (kind === 'audio') {
     // A muted <audio> element keeps the remote WebRTC track pulled; the audible
-    // playback goes through Web Audio so per-client volume can exceed 100%.
-    audioEl = document.createElement('audio')
+    // playback goes through Web Audio so per-client volume can exceed 100%. The
+    // element stays OUTSIDE the rebuildable graph (buildAudioGraph) — it is not
+    // part of the drift problem and must keep pulling the track continuously,
+    // even across a health-driven graph rebuild.
+    const audioEl = document.createElement('audio')
     audioEl.srcObject = stream
     audioEl.autoplay = true
     audioEl.muted = true
     document.body.appendChild(audioEl)
     audioEl.play().catch((err) => console.error('[Soup] Audio pump play failed:', err))
     remoteAudioElements.push(audioEl)
+    entry.audioEl = audioEl
 
-    // source -> gain -> output. applyAllAudioState() below sets the gain value
-    // (deafen/focus/per-client overrides); gain may be >1 to boost a client.
-    const ctx = getPlaybackContext()
-    const srcNode = ctx.createMediaStreamSource(stream)
-    gainNode = ctx.createGain()
-    gainNode.gain.value = 0 // start silent; applyAllAudioState() sets the real value
-    srcNode.connect(gainNode)
-    gainNode.connect(ctx.destination)
+    // Rebuildable part: source -> gain -> destination (+ speaking detector).
+    buildAudioGraph(entry)
 
-    // Screen/tab audio isn't the client's voice - don't feed it into the
-    // speaking indicator.
-    let stopDetector = null
-    if (clientId != null && producedType !== 'ScreenShareAudio') {
-      stopDetector = createSpeakingDetector(stream, (isSpeaking) => {
-        activeCallbacks.onClientSpeaking?.(clientId, isSpeaking)
-      })
-    }
-
-    cleanup = () => {
-      try {
-        srcNode.disconnect()
-      } catch {
-        // The media source may already be disconnected during transport reset.
-      }
-      try {
-        gainNode.disconnect()
-      } catch {
-        // The gain node may already be disconnected during transport reset.
-      }
+    entry.cleanup = () => {
+      teardownAudioGraph(entry)
       audioEl.pause()
       audioEl.srcObject = null
       audioEl.remove()
       remoteAudioElements = remoteAudioElements.filter((el) => el !== audioEl)
-      stopDetector?.()
     }
-    remoteCleanups.push(cleanup)
+    remoteCleanups.push(entry.cleanup)
   } else if (kind === 'video') {
     // If this client already had a video producer (e.g. restarted screen
     // share before a ProducerClosed notice arrived), close out the stale
     // consumer/tile before adding the new one.
-    for (const [pid, entry] of remoteConsumers) {
-      if (entry.kind === 'video' && entry.clientId === clientId && pid !== producerId) {
-        entry.consumer.close()
+    for (const [pid, existing] of remoteConsumers) {
+      if (existing.kind === 'video' && existing.clientId === clientId && pid !== producerId) {
+        existing.consumer.close()
         remoteConsumers.delete(pid)
         knownVideoProducers.delete(pid)
         activeCallbacks.onStreamEnded?.(pid, {
           replaced: true,
-          clientId: entry.clientId,
-          producedType: entry.producedType
+          clientId: existing.clientId,
+          producedType: existing.producedType
         })
         break
       }
     }
+    // Video is consumed paused above, so seed its bookkeeping as hidden/paused
+    // — setVideoStreamRoles() will resume it only when a view role asks for it.
+    entry.serverPaused = true
+    entry.viewRole = 'hidden'
+    entry.hasSelectableLayers = hasSelectableLayers
     onStream?.({
       stream,
       kind,
@@ -2319,21 +2629,11 @@ export async function consumeProducer(producerId, kind, onStream, clientId, prod
     })
   }
 
-  remoteConsumers.set(producerId, {
-    consumer,
-    consumerId: consumer.id,
-    kind,
-    clientId,
-    producedType,
-    cleanup,
-    audioEl,
-    gain: gainNode,
-    // Video is consumed paused above, so seed its bookkeeping as hidden/paused
-    // — setVideoStreamRoles() will resume it only when a view role asks for it.
-    ...(kind === 'video' ? { serverPaused: true, viewRole: 'hidden', hasSelectableLayers } : {})
-  })
+  remoteConsumers.set(producerId, entry)
 
   if (kind === 'audio') {
+    // Lazily spin up the shared inbound-audio health poll (no-op if running).
+    startAudioHealthMonitor()
     applyAllAudioState()
   }
 
@@ -2459,6 +2759,11 @@ export function resetMediaState() {
   // Idle the shared mic context between sessions; getMicContext() resumes it.
   if (micContext?.state === 'running') micContext.suspend().catch(() => {})
   subscribePromise = null
+  // Stop the audio health poll and drop all its per-producer state. Per-entry
+  // health rides on the entries themselves, cleared by remoteConsumers.clear().
+  stopAudioHealthMonitor()
+  audioHealHistory.clear()
+  audioHealsInFlight.clear()
   remoteCleanups.forEach((fn) => fn())
   remoteCleanups = []
   remoteAudioElements = []
@@ -2482,9 +2787,16 @@ export function setMicMuted(muted) {
 // Lazily create (and resume) the shared playback AudioContext. Created on the
 // first remote audio stream, which happens after the user has clicked to join -
 // so the autoplay policy lets it run.
+//
+// Pinned to 48 kHz (like getMicContext): WebRTC/Opus emits 48 kHz, but an
+// unpinned context follows the output device's rate. On a non-48 kHz device that
+// forces every remote stream through Chromium's drift-prone track→WebAudio
+// resampling FIFO, which is implicated in the accumulating playout delay/crackle.
 function getPlaybackContext() {
   if (!playbackContext) {
-    playbackContext = new (window.AudioContext || window.webkitAudioContext)()
+    playbackContext = new (window.AudioContext || window.webkitAudioContext)({
+      sampleRate: 48000
+    })
     applyOutputDeviceToContext()
   }
   if (playbackContext.state === 'suspended') {
