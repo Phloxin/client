@@ -581,7 +581,9 @@ function Sidebar({
             onDragEnd={handleChannelDragEnd}
             dragging={dragId === ch.id}
             dropEdge={dropTarget?.id === ch.id && dragId !== ch.id ? dropTarget.edge : null}
-            clients={clients.filter((c) => c.channel_id === ch.id)}
+            clients={clients
+              .filter((c) => c.channel_id === ch.id)
+              .sort((a, b) => (a.name || '').localeCompare(b.name || ''))}
             self={self}
             micMuted={micMuted}
             deafened={soundMuted}
