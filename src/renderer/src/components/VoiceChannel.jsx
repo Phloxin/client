@@ -10,8 +10,10 @@ import {
   rebindCallbacks,
   setLocalClientId
 } from '../lib/soup'
+import { motion, AnimatePresence } from 'motion/react'
 import { useSettings, useAnimationCategory } from '../context/SettingsContext'
 import { useAnimatedPresence } from '../lib/animation'
+import { collapseSection, avatarStack, avatarStackItem, spring } from '../lib/motionPresets'
 import { cdnUrl } from '../lib/serverConfig'
 import { useMenuPosition } from '../lib/menuPosition'
 import ClientIndicator from './ClientIndicator'
@@ -23,8 +25,7 @@ import {
   IconTrash,
   IconPointFilled,
   IconInfoCircle,
-  IconChevronDown,
-  IconChevronLeft
+  IconChevronDown
 } from '@tabler/icons-react'
 
 const STACK_MAX = 3
@@ -99,6 +100,9 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   const clientPresence = useAnimatedPresence(clients, (c) => c.id, {
     enabled: clientAnimEnabled
   })
+  // Collapse/expand of the user list rides the channel-list category — it's a
+  // sidebar structure change, not a user coming or going.
+  const collapseAnimEnabled = useAnimationCategory('channelList')
 
   const joinedRef = useRef(false)
   // Owner-bound handle for the local screen/camera capture. Track-ended events
@@ -547,22 +551,31 @@ const VoiceChannel = forwardRef(function VoiceChannel(
           <IconDiamondsFilled className="channel-icon-placeholder" size={25} />
         )}
         <span className="channel-name">{channel.name}</span>
-        {collapsed && clients.length > 0 && (
-          <span className="channel-avatar-stack">
-            {clients.slice(0, STACK_MAX).map((c) => (
-              <span className="client-avatar" key={c.id} title={c.name}>
-                {c.avatar ? (
-                  <img className="client-avatar-img" src={c.avatar} alt="" aria-hidden="true" />
-                ) : (
-                  (c.name || '?').charAt(0).toUpperCase()
-                )}
-              </span>
-            ))}
-            {clients.length > STACK_MAX && (
-              <span className="channel-avatar-more">+{clients.length - STACK_MAX}</span>
-            )}
-          </span>
-        )}
+        <AnimatePresence initial={false}>
+          {collapsed && clients.length > 0 && (
+            <motion.span className="channel-avatar-stack" {...avatarStack(collapseAnimEnabled)}>
+              {clients.slice(0, STACK_MAX).map((c) => (
+                <motion.span
+                  className="client-avatar"
+                  key={c.id}
+                  title={c.name}
+                  variants={avatarStackItem}
+                >
+                  {c.avatar ? (
+                    <img className="client-avatar-img" src={c.avatar} alt="" aria-hidden="true" />
+                  ) : (
+                    (c.name || '?').charAt(0).toUpperCase()
+                  )}
+                </motion.span>
+              ))}
+              {clients.length > STACK_MAX && (
+                <motion.span className="channel-avatar-more" variants={avatarStackItem}>
+                  +{clients.length - STACK_MAX}
+                </motion.span>
+              )}
+            </motion.span>
+          )}
+        </AnimatePresence>
         {/* After the avatar stack so the dot keeps the same slot — hard against
             the chevron — whether the channel is collapsed or expanded. */}
         {unread && (
@@ -579,43 +592,59 @@ const VoiceChannel = forwardRef(function VoiceChannel(
               setCollapsed((v) => !v)
             }}
           >
-            {collapsed ? <IconChevronLeft size={15} /> : <IconChevronDown size={15} />}
+            {/* One chevron that rotates rather than two that swap: +90°
+                (clockwise) lands exactly on the left-pointing collapsed state. */}
+            <motion.span
+              className="channel-collapse-chevron"
+              initial={false}
+              animate={{ rotate: collapsed ? 90 : 0 }}
+              transition={collapseAnimEnabled ? spring : { duration: 0 }}
+            >
+              <IconChevronDown size={15} />
+            </motion.span>
           </button>
         )}
       </div>
       {error && <div className="channel-error">{error}</div>}
-      {!collapsed &&
-        clientPresence.map(({ key, item: c, status }) => (
-          <ClientIndicator
-            key={key}
-            client={c}
-            animStatus={status}
-            speaking={!!speakingClients[c.id]}
-            micMuted={c.id === self?.id ? micMuted : !!c.self_mute}
-            deafened={c.id === self?.id ? deafened : !!c.self_deaf}
-            isSelf={c.id === self?.id}
-            streaming={streamingClientIds.has(c.id)}
-            draggableToChannel={!!onMoveClient}
-            onOpenDm={onOpenDm}
-            onPoke={onPoke}
-            onKick={onKick}
-            onKickFromChannel={onKickFromChannel}
-            onGag={onGag}
-            onBan={onBan}
-            onUnban={onUnban}
-            onSetAvatar={onSetAvatar}
-            onShowClientSummary={onShowClientSummary}
-            roles={roles}
-            onAssignRole={onAssignRole}
-            onRemoveRole={onRemoveRole}
-            vanity={vanity}
-            onToggleVanity={onToggleVanity}
-            onOpenRolesGroups={onOpenRolesGroups}
-            canKickMembers={canKickMembers}
-            canBanMembers={canBanMembers}
-            canMuteMembers={canMuteMembers}
-          />
-        ))}
+      {/* Wrapper exists purely so the user list has a single box to fold; it
+          stays mounted through the collapse animation via AnimatePresence. */}
+      <AnimatePresence initial={false}>
+        {!collapsed && clientPresence.length > 0 && (
+          <motion.div className="channel-clients" {...collapseSection(collapseAnimEnabled)}>
+            {clientPresence.map(({ key, item: c, status }) => (
+              <ClientIndicator
+                key={key}
+                client={c}
+                animStatus={status}
+                speaking={!!speakingClients[c.id]}
+                micMuted={c.id === self?.id ? micMuted : !!c.self_mute}
+                deafened={c.id === self?.id ? deafened : !!c.self_deaf}
+                isSelf={c.id === self?.id}
+                streaming={streamingClientIds.has(c.id)}
+                draggableToChannel={!!onMoveClient}
+                onOpenDm={onOpenDm}
+                onPoke={onPoke}
+                onKick={onKick}
+                onKickFromChannel={onKickFromChannel}
+                onGag={onGag}
+                onBan={onBan}
+                onUnban={onUnban}
+                onSetAvatar={onSetAvatar}
+                onShowClientSummary={onShowClientSummary}
+                roles={roles}
+                onAssignRole={onAssignRole}
+                onRemoveRole={onRemoveRole}
+                vanity={vanity}
+                onToggleVanity={onToggleVanity}
+                onOpenRolesGroups={onOpenRolesGroups}
+                canKickMembers={canKickMembers}
+                canBanMembers={canBanMembers}
+                canMuteMembers={canMuteMembers}
+              />
+            ))}
+          </motion.div>
+        )}
+      </AnimatePresence>
       {showSourcePicker && (
         <ScreenSourcePicker
           onSelect={startShareWithSource}

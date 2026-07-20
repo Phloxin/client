@@ -197,6 +197,18 @@
   color: var(--color-text);
 }
 
+/* Rotating chevron (0° expanded, -90° collapsed) — Motion drives the angle. */
+.channel-collapse-chevron {
+  display: flex;
+  align-items: center;
+}
+
+/* The folding user list. overflow:hidden is what makes the animated height clip
+   the rows instead of letting them spill past the channel module. */
+.channel-clients {
+  overflow: hidden;
+}
+
 .channel-error {
   color: var(--color-danger);
   font-size: var(--font-size-xs);

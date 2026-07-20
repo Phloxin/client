@@ -50,6 +50,58 @@ export function toastSlide(enabled) {
   }
 }
 
+// Collapsible list section (a channel's user rows folding under its header).
+// Height is sprung so the rows below settle naturally; the fade runs shorter
+// than the fold so the rows are gone before the gap finishes closing. Exit is
+// tighter than enter — collapsing should feel decisive, expanding relaxed.
+export function collapseSection(enabled) {
+  if (!enabled) return { initial: false }
+  return {
+    initial: { height: 0, opacity: 0 },
+    animate: {
+      height: 'auto',
+      opacity: 1,
+      transition: {
+        height: { type: 'spring', stiffness: 440, damping: 40, mass: 0.7 },
+        opacity: { duration: 0.16, ease: 'easeOut' }
+      }
+    },
+    exit: {
+      height: 0,
+      opacity: 0,
+      transition: {
+        height: { duration: 0.2, ease: [0.4, 0, 0.2, 1] },
+        opacity: { duration: 0.1, ease: 'easeIn' }
+      }
+    }
+  }
+}
+
+// Collapsed-channel avatar stack: the avatars pop in one after another as the
+// user rows fold away (and blink straight back out when they unfold). Children
+// must carry `avatarStackItem` as their variants for the stagger to reach them.
+export function avatarStack(enabled) {
+  if (!enabled) return { initial: false }
+  return {
+    initial: 'hidden',
+    animate: 'shown',
+    exit: 'hidden',
+    variants: {
+      hidden: { opacity: 0, transition: { duration: 0.1, ease: 'easeIn' } },
+      shown: {
+        opacity: 1,
+        transition: { duration: 0.12, delayChildren: 0.05, staggerChildren: 0.04 }
+      }
+    }
+  }
+}
+
+// Per-avatar half of `avatarStack` — pass as `variants` on each stacked avatar.
+export const avatarStackItem = {
+  hidden: { opacity: 0, scale: 0.5, x: -6 },
+  shown: { opacity: 1, scale: 1, x: 0, transition: spring }
+}
+
 // New chat message: slide up a few pixels and fade.
 export function messageSlide(enabled) {
   if (!enabled) return { initial: false }
