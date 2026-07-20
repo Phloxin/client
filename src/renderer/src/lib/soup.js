@@ -99,7 +99,7 @@ let clientAudioOverridesHost
 // ─── Reconnection state ──────────────────────────────────────────
 // The voice socket can't "resume": when it drops, the server tears down our
 // transports and removes us from the channel. Recovery is a full re-establish —
-// re-assert channel membership, fetch a fresh ticket, reconnect, re-publish —
+// re-assert channel membership (which mints a fresh ticket), reconnect, re-publish —
 // driven here with capped exponential backoff + jitter (matches the events
 // socket). Remote streams come back on their own: a fresh auth makes the server
 // replay NewProducer for everyone in the channel.
@@ -347,16 +347,88 @@ export async function connect(callbacks = {}) {
   await openSocket()
 }
 
-// Open the voice WebSocket: fetch a fresh (single-use, 30s) ticket with a
-// current access token, wire every handler, then authenticate. Used for the
-// initial connection and every reconnect attempt — each call replaces the
-// shared `ws`. A stale-socket guard on every handler ignores a superseded
-// socket once a newer one takes over.
-async function openSocket() {
-  // Step 1 — get ticket (authFetch refreshes the access token as needed)
+// ─── Voice tickets ───────────────────────────────────────────────
+// Tickets are single-use and expire 30s after the server mints one. The server
+// pushes one over the *events* socket (VoiceTicketUpdate, op 6) whenever a
+// VoiceStateUpdate moves us from no channel into a voice channel — which covers
+// both an initial join and a reconnect, since the server drops us out of the
+// channel when the voice socket dies. Main routes that push here.
+//
+// The push often lands before openSocket() asks for it (the op-1 goes out first,
+// then we get around to connecting), so it's stashed rather than awaited-only.
+// The REST endpoint stays as the fallback: a push we never see — events socket
+// down, or the server already considered us in the channel — must not strand a
+// join.
+const VOICE_TICKET_PUSH_WAIT_MS = 3000
+const VOICE_TICKET_MAX_AGE_MS = 20_000
+let pushedTicket = null // { ticket, receivedAt } — unconsumed push
+let ticketWaiter = null // resolver for an acquireTicket() currently waiting
+
+// Hand a server-pushed ticket to whoever is connecting (or stash it for the
+// connect that's about to start).
+export function receiveVoiceTicket(ticket) {
+  if (typeof ticket !== 'string' || ticket === '') return
+  console.log('[Soup] Voice ticket pushed by server')
+  pushedTicket = { ticket, receivedAt: Date.now() }
+  const waiter = ticketWaiter
+  ticketWaiter = null
+  waiter?.()
+}
+
+// Consume the stash, refusing one old enough that the server may already have
+// expired it (presenting a dead ticket costs us a failed socket, not a retry).
+function takePushedTicket() {
+  if (!pushedTicket) return null
+  const { ticket, receivedAt } = pushedTicket
+  pushedTicket = null
+  return Date.now() - receivedAt > VOICE_TICKET_MAX_AGE_MS ? null : ticket
+}
+
+function waitForPushedTicket() {
+  return new Promise((resolve) => {
+    let timer
+    let waiter
+    const finish = (value) => {
+      clearTimeout(timer)
+      if (ticketWaiter === waiter) ticketWaiter = null
+      resolve(value)
+    }
+    waiter = () => finish(takePushedTicket())
+    ticketWaiter = waiter
+    timer = setTimeout(() => finish(null), VOICE_TICKET_PUSH_WAIT_MS)
+  })
+}
+
+// A ticket for the connection we're about to open: the server's push if we have
+// (or shortly get) one, else minted over REST.
+async function acquireTicket() {
+  const ticket = takePushedTicket() ?? (await waitForPushedTicket())
+  if (ticket) return ticket
+  // The user left while we were waiting — don't spend a request on a join
+  // nobody is waiting for any more.
+  if (intentionalClose) return null
+
+  // No push — either it was lost or this join didn't cause a channel transition
+  // the server would mint for. Ask for one directly (authFetch refreshes the
+  // access token as needed).
+  console.warn('[Soup] No pushed voice ticket; requesting one over REST')
   const res = await authFetch(`${apiBase()}/server/voice`)
   if (!res.ok) throw new Error(`Voice ticket request failed: ${res.status}`)
-  const { ticket } = await res.json()
+  const { ticket: fetched } = await res.json()
+  return fetched
+}
+
+// Open the voice WebSocket: take a fresh (single-use, 30s) ticket, wire every
+// handler, then authenticate. Used for the initial connection and every
+// reconnect attempt — each call replaces the shared `ws`. A stale-socket guard
+// on every handler ignores a superseded socket once a newer one takes over.
+async function openSocket() {
+  // Step 1 — get ticket
+  const ticket = await acquireTicket()
+  // Acquiring waits on the server's push (and possibly the network), so the
+  // user may have left meanwhile — opening now would orphan a socket that
+  // nothing is holding.
+  if (!ticket || intentionalClose) return
   console.log('[Soup] Got ticket:', ticket)
 
   // Step 2 — connect to voice WebSocket
@@ -592,6 +664,9 @@ export function disconnect() {
     reconnectTimer = null
   }
   reconnectAttempts = 0
+  // A ticket minted for a join we're abandoning: drop it so a later connect
+  // can't present it instead of waiting for its own.
+  pushedTicket = null
   window.removeEventListener('offline', handleOffline)
   window.removeEventListener('online', handleOnline)
   // Let the (guarded) onclose handler run resetMediaState + onDisconnect and

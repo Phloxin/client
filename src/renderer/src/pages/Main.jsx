@@ -21,6 +21,7 @@ import IdleAnimation from '../components/IdleAnimation'
 import Settings from './Settings'
 import {
   disconnect as disconnectVoice,
+  receiveVoiceTicket,
   setFocusedScreenAudio,
   setVideoStreamRoles,
   setWatchedProducers,
@@ -1942,6 +1943,14 @@ function Main() {
         // Heartbeat acknowledgement — clears the outstanding beat; no event body.
         if (msg.op === 4) {
           awaitingAck = false
+          return
+        }
+
+        // Voice ticket (op 6): the server's reply to a VoiceStateUpdate that
+        // moved us from no channel into a voice one. Hand it to soup, which is
+        // opening (or about to open) the voice socket that needs it.
+        if (msg.op === 6) {
+          receiveVoiceTicket(msg.ticket)
           return
         }
 
