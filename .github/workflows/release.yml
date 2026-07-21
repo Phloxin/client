@@ -191,3 +191,4 @@ jobs:
             release-assets/**/*.tar.gz
             release-assets/**/*.yml
             release-assets/**/*.blockmap
+            !release-assets/**/builder-debug.yml
