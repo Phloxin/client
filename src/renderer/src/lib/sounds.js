@@ -61,7 +61,6 @@ export const SOUND_SECTIONS = [
       { id: 'connected', label: 'You connected to a server' },
       { id: 'disconnected', label: 'You disconnected from a server' },
       { id: 'connection_lost', label: 'You lost connection to a server' },
-      { id: 'neutral_connection_connected_currentchannel', label: 'Someone connected to your channel' },
       { id: 'neutral_connection_disconnected_currentchannel', label: 'Someone disconnected from your channel' },
       { id: 'neutral_connection_connectionlost_currentchannel', label: 'Someone lost connection in your channel' }
     ]

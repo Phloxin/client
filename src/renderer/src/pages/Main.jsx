@@ -182,7 +182,16 @@ function Main() {
   // True while a connect attempt is in flight (login → token), so the idle view
   // can say so. Cleared on success (we leave the idle view) or failure.
   const [connecting, setConnecting] = useState(false)
-  const showError = useCallback((message) => setToast({ message, variant: 'error' }), [])
+  // Every error toast is also the single place we chime an error cue. The second
+  // arg is the caught Error (its `.status` distinguishes a 403 permission failure)
+  // or `{ silent: true }` where the caller already plays its own specific sound.
+  const showError = useCallback((message, err) => {
+    setToast({ message, variant: 'error' })
+    if (err?.silent) return
+    const permission =
+      err?.status === 403 || /permission|forbidden|not allowed|insufficient/i.test(message)
+    playUiSound(permission ? 'insufficient_permissions' : 'error')
+  }, [])
   const showSuccess = useCallback((message) => setToast({ message, variant: 'success' }), [])
   const dismissToast = useCallback(() => setToast(null), [])
 
@@ -230,6 +239,13 @@ function Main() {
   const sessionIdRef = useRef(null)
   const selfIdRef = useRef(null)
   const selfChannelIdRef = useRef(null)
+  // Timestamp of our last own channel action (create/edit/move/etc). The server
+  // echoes ChannelUpdated back to us, and a reorder also reindexes sibling
+  // channels — so within a short window after acting we suppress the "your
+  // current channel was edited" cue (which is only meant for edits by others),
+  // while our action's own specific cue still plays.
+  const lastSelfChannelActionAtRef = useRef(0)
+  const SELF_CHANNEL_ACTION_MS = 2000
   const activeChatChannelIdRef = useRef(null)
   const chatVisibleRef = useRef(true)
   const feedRef = useRef([])
@@ -683,7 +699,7 @@ function Main() {
         // ensureDmChannel has already registered it, so this is safe.
         if (id != null) setPreviewChannelId(id)
       } catch (err) {
-        showError(`Failed to open direct message: ${err.message}`)
+        showError(`Failed to open direct message: ${err.message}`, err)
       }
     },
     [client, ensureDmChannel]
@@ -715,7 +731,7 @@ function Main() {
         })
         await throwIfError(res)
       } catch (err) {
-        showError(`Failed to poke: ${err.message}`)
+        showError(`Failed to poke: ${err.message}`, err)
       }
     },
     [client, token, ensureDmChannel]
@@ -735,7 +751,7 @@ function Main() {
         })
         await throwIfError(res)
       } catch (err) {
-        showError(`Failed to kick user: ${err.message}`)
+        showError(`Failed to kick user: ${err.message}`, err)
       }
     },
     [client, token, showError]
@@ -850,7 +866,7 @@ function Main() {
         await throwIfError(res)
         apply()
       } catch (err) {
-        showError(`Failed to assign role: ${err.message}`)
+        showError(`Failed to assign role: ${err.message}`, err)
       }
     },
     [token, roles, clients, showError, showSuccess]
@@ -879,7 +895,7 @@ function Main() {
         await throwIfError(res)
         apply()
       } catch (err) {
-        showError(`Failed to remove role: ${err.message}`)
+        showError(`Failed to remove role: ${err.message}`, err)
       }
     },
     [token, roles, clients, showError, showSuccess]
@@ -899,7 +915,7 @@ function Main() {
         await throwIfError(res)
         showSuccess(`Created group "${name}"`)
       } catch (err) {
-        showError(`Failed to create group: ${err.message}`)
+        showError(`Failed to create group: ${err.message}`, err)
       }
     },
     [token, showError, showSuccess]
@@ -931,7 +947,7 @@ function Main() {
             : `Removed "${groupName}" from ${clientName}`
         )
       } catch (err) {
-        showError(`Failed to update group: ${err.message}`)
+        showError(`Failed to update group: ${err.message}`, err)
       }
     },
     [token, vanity, clients, showError, showSuccess]
@@ -952,7 +968,7 @@ function Main() {
         await throwIfError(res)
         refreshBans()
       } catch (err) {
-        showError(`Failed to ban user: ${err.message}`)
+        showError(`Failed to ban user: ${err.message}`, err)
       }
     },
     [client, token, showError, refreshBans]
@@ -971,7 +987,7 @@ function Main() {
         await throwIfError(res)
         refreshBans()
       } catch (err) {
-        showError(`Failed to unban user: ${err.message}`)
+        showError(`Failed to unban user: ${err.message}`, err)
       }
     },
     [token, showError, refreshBans]
@@ -992,7 +1008,7 @@ function Main() {
         })
         await throwIfError(res)
       } catch (err) {
-        showError(`Failed to set ${label}: ${err.message}`)
+        showError(`Failed to set ${label}: ${err.message}`, err)
       }
     },
     [client, token]
@@ -1132,6 +1148,13 @@ function Main() {
 
   const handleRemoveServer = (id) => saveServers(servers.filter((s) => s.id !== id))
 
+  // Open the suppression window just before a self channel action, so the echoed
+  // ChannelUpdated (which can arrive before the HTTP response resolves) doesn't
+  // also fire the "your current channel was edited" cue.
+  const markSelfChannelAction = () => {
+    lastSelfChannelActionAtRef.current = Date.now()
+  }
+
   // Create a channel on the server. Position is computed to append after the current last channel.
   //The server also broadcasts ChannelCreated, so the add here is deduped by id in case that broadcast echoes back to us.
   const handleCreateChannel = async ({ name, user_limit, afterPosition }) => {
@@ -1155,8 +1178,9 @@ function Main() {
       if (created && created.id != null) {
         setChannels((prev) => (prev.some((ch) => ch.id === created.id) ? prev : [...prev, created]))
       }
+      playUiSound('channel_created')
     } catch (err) {
-      showError(`Failed to create channel: ${err.message}`)
+      showError(`Failed to create channel: ${err.message}`, err)
     }
   }
 
@@ -1169,8 +1193,9 @@ function Main() {
       })
       await throwIfError(res)
       setChannels((prev) => prev.filter((ch) => ch.id !== id))
+      playUiSound('channel_deleted')
     } catch (err) {
-      showError(`Failed to delete channel: ${err.message}`)
+      showError(`Failed to delete channel: ${err.message}`, err)
     }
   }
 
@@ -1178,6 +1203,7 @@ function Main() {
   // rest and broadcasts ChannelUpdated for the affected channels, so we don't
   // mutate locally on success.
   const handleReorderChannel = async (id, position) => {
+    markSelfChannelAction()
     try {
       const res = await authFetch(`${apiBase()}/channels/${id}`, {
         method: 'PATCH',
@@ -1185,9 +1211,10 @@ function Main() {
         body: JSON.stringify({ position })
       })
       await throwIfError(res)
+      playUiSound('channel_moved')
       showSuccess('Channel moved')
     } catch (err) {
-      showError(`Failed to reorder channel: ${err.message}`)
+      showError(`Failed to reorder channel: ${err.message}`, err)
     }
   }
 
@@ -1195,6 +1222,7 @@ function Main() {
   // reorder, the server broadcasts ChannelUpdated, so we don't mutate locally on
   // success.
   const handleSetChannelDescription = async (id, description) => {
+    markSelfChannelAction()
     try {
       const res = await authFetch(`${apiBase()}/channels/${id}`, {
         method: 'PATCH',
@@ -1202,9 +1230,10 @@ function Main() {
         body: JSON.stringify({ description })
       })
       await throwIfError(res)
+      playUiSound('channel_edited')
       showSuccess('Channel description updated')
     } catch (err) {
-      showError(`Failed to update channel description: ${err.message}`)
+      showError(`Failed to update channel description: ${err.message}`, err)
     }
   }
 
@@ -1212,6 +1241,7 @@ function Main() {
   // a `data:image/...;base64,...` string, same pipeline as client avatars. The
   // server broadcasts ChannelUpdated, so no local mutate here.
   const handleSetChannelIcon = async (id, channel_icon) => {
+    markSelfChannelAction()
     try {
       const res = await authFetch(`${apiBase()}/channels/${id}`, {
         method: 'PATCH',
@@ -1219,9 +1249,10 @@ function Main() {
         body: JSON.stringify({ channel_icon })
       })
       await throwIfError(res)
+      playUiSound('channel_edited')
       showSuccess(channel_icon ? 'Channel icon updated' : 'Channel icon removed')
     } catch (err) {
-      showError(`Failed to set channel icon: ${err.message}`)
+      showError(`Failed to set channel icon: ${err.message}`, err)
     }
   }
 
@@ -1230,6 +1261,7 @@ function Main() {
   // ChannelUpdated with the new overwrites, so we don't mutate locally
   // on success.
   const handleSetChannelOverwrite = async (channelId, targetId, targetType, allow, deny) => {
+    markSelfChannelAction()
     try {
       const res = await authFetch(`${apiBase()}/channels/${channelId}/permissions/${targetId}`, {
         method: 'PUT',
@@ -1237,21 +1269,24 @@ function Main() {
         body: JSON.stringify({ type: targetType, allow, deny })
       })
       await throwIfError(res)
+      playUiSound('channel_edited')
       showSuccess('Channel permissions updated')
     } catch (err) {
-      showError(`Failed to update channel permissions: ${err.message}`)
+      showError(`Failed to update channel permissions: ${err.message}`, err)
     }
   }
 
   const handleDeleteChannelOverwrite = async (channelId, targetId) => {
+    markSelfChannelAction()
     try {
       const res = await authFetch(`${apiBase()}/channels/${channelId}/permissions/${targetId}`, {
         method: 'DELETE'
       })
       await throwIfError(res)
+      playUiSound('channel_edited')
       showSuccess('Channel permission removed')
     } catch (err) {
-      showError(`Failed to remove channel permission: ${err.message}`)
+      showError(`Failed to remove channel permission: ${err.message}`, err)
     }
   }
 
@@ -1272,8 +1307,14 @@ function Main() {
           body: JSON.stringify({ channel_id: channelId })
         })
         await throwIfError(res)
+        // Clearing their channel (channel_id null) is a kick from it. If they were
+        // in our channel, that's "someone was kicked from your channel". Only we,
+        // the kicker, can tell this from a normal leave, so it only chimes for us.
+        if (channelId == null && current?.channel_id === selfChannelIdRef.current) {
+          playUiSound('neutral_kicked_channel_awayfromcurrentchannel')
+        }
       } catch (err) {
-        showError(`Failed to move user: ${err.message}`)
+        showError(`Failed to move user: ${err.message}`, err)
       }
     },
     [clients, token, showError]
@@ -1299,7 +1340,7 @@ function Main() {
         })
         await throwIfError(res)
       } catch (err) {
-        showError(`Failed to ${gag ? 'gag' : 'ungag'} user: ${err.message}`)
+        showError(`Failed to ${gag ? 'gag' : 'ungag'} user: ${err.message}`, err)
       }
     },
     [token, showError]
@@ -1363,7 +1404,7 @@ function Main() {
   // Single source of truth for dropping back to the disconnected state (the
   // reconnect paths call it too on a rejected token, so none leave half-cleared
   // state). Clearing the token tears down the events socket via effect cleanup.
-  const handleDisconnect = useCallback(() => {
+  const handleDisconnect = useCallback((opts) => {
     if (popoutWindowRef.current && !popoutWindowRef.current.closed) {
       popoutWindowRef.current.close()
     }
@@ -1383,14 +1424,15 @@ function Main() {
     setSummaryClientId(null)
     setReadStates({})
     setConnectionStatus('connected')
-    playUiSound('disconnected')
+    // Kick/ban paths play their own specific cue and pass skipSound.
+    if (!opts?.skipSound) playUiSound('disconnected')
   }, [clearAuth])
 
   // A refresh the server rejects means the device session is revoked or
   // expired — drop to the disconnected state and require a fresh login.
   useEffect(() => {
     setOnSessionExpired(() => {
-      showError('Session expired — please reconnect')
+      showError('Session expired — please reconnect', { silent: true })
       handleDisconnect()
     })
     return () => setOnSessionExpired(null)
@@ -1596,6 +1638,12 @@ function Main() {
             ].slice(0, MAX_LOG_ENTRIES)
           )
         }
+        // Our own away status toggling (set from the status menu, echoed back).
+        if (data.client_id === selfIdRef.current) {
+          const wasAway = statusOf(presencesRef.current[data.client_id]) === 'away'
+          const isAway = statusOf(data) === 'away'
+          if (isAway !== wasAway) playUiSound(isAway ? 'away_activated' : 'away_deactivated')
+        }
         setPresences((prev) => ({ ...prev, [data.client_id]: data }))
         return
       }
@@ -1605,6 +1653,12 @@ function Main() {
       // no longer carries it).
       if (ev === 'VoiceStateUpdate') {
         const { client_id, muted, deaf, self_mute, self_deaf } = data
+        // A change to our own server_mute is a gag/ungag by a moderator (our own
+        // mic mute is self_mute, not this). Chime on the transition only.
+        if (client_id === selfIdRef.current) {
+          const wasGagged = !!clientsRef.current.find((c) => c.id === client_id)?.server_mute
+          if (!!muted !== wasGagged) playUiSound(muted ? 'you_were_gagged' : 'you_were_ungagged')
+        }
         setClients((prev) =>
           prev.map((c) =>
             c.id === client_id
@@ -1658,8 +1712,13 @@ function Main() {
           const roleName = (id) => rolesRef.current.find((r) => r.id === id)?.name ?? 'a role'
           const added = [...after].find((id) => !before.has(id))
           const removed = [...before].find((id) => !after.has(id))
-          if (added != null) showSuccess(`You were given the "${roleName(added)}" role`)
-          else if (removed != null) showError(`Your "${roleName(removed)}" role was revoked`)
+          if (added != null) {
+            showSuccess(`You were given the "${roleName(added)}" role`)
+            playUiSound('servergroup_assigned')
+          } else if (removed != null) {
+            showError(`Your "${roleName(removed)}" role was revoked`, { silent: true })
+            playUiSound('servergroup_revoked')
+          }
         }
         // Same for OUR vanity groups: green when another user adds us to one,
         // red when they remove us. Our own toggles were already applied (and
@@ -1673,9 +1732,13 @@ function Main() {
             'a group'
           const added = [...after].find((id) => !before.has(id))
           const removed = [...before].find((id) => !after.has(id))
-          if (added != null) showSuccess(`You were added to the "${groupName(added)}" group`)
-          else if (removed != null)
-            showError(`You were removed from the "${groupName(removed)}" group`)
+          if (added != null) {
+            showSuccess(`You were added to the "${groupName(added)}" group`)
+            playUiSound('servergroup_assigned')
+          } else if (removed != null) {
+            showError(`You were removed from the "${groupName(removed)}" group`, { silent: true })
+            playUiSound('servergroup_revoked')
+          }
         }
         // ClientModified also carries profile changes (avatar / nickname). Merge
         // whatever fields are present so we don't clobber the others; `in` guards
@@ -1693,6 +1756,11 @@ function Main() {
             return next
           })
         )
+
+        // What channel WE last declared (pre-sync). If it still differs from what
+        // the server now reports for us, we never asked for this change — it was
+        // forced (a moderator kick/move), not our own leave/switch.
+        const selfDeclaredChannel = voiceStateRef.current.channel_id
 
         // A forced move (a moderator's PATCH /client) changes our channel without
         // us sending a VoiceStateUpdate, so sync the declarative voice-state ref.
@@ -1713,10 +1781,16 @@ function Main() {
         if (!('channel_id' in data)) {
           // no channel move to chime for
         } else if (data.id === selfIdRef.current) {
-          // Our own move into a channel plays "you moved to another channel".
-          // Dropping out of voice entirely (channel_id null) has no dedicated cue.
-          if (oldChannelId !== data.channel_id && data.channel_id != null) {
-            playUiSound('channel_switched')
+          if (oldChannelId !== data.channel_id) {
+            if (data.channel_id != null) {
+              // Moving into a channel — "you moved to another channel".
+              playUiSound('channel_switched')
+            } else if (selfDeclaredChannel != null) {
+              // Dropped to no channel without us asking for it → kicked from the
+              // channel. A voluntary leave declares channel_id null first, so
+              // selfDeclaredChannel would be null there and this stays silent.
+              playUiSound('you_kicked_channel')
+            }
           }
         } else if (myChannel != null) {
           if (data.channel_id === myChannel && oldChannelId !== myChannel) {
@@ -1820,6 +1894,16 @@ function Main() {
         }
       } else if (ev === 'ChannelCreated' || ev === 'ChannelUpdated') {
         queueChannelUpsert(data)
+        // Someone else edited the channel we're currently in. Our own edits play
+        // the plain "channel edited" cue and mark the echo (consumed here) so this
+        // stays silent for them.
+        if (
+          ev === 'ChannelUpdated' &&
+          data.id === selfChannelIdRef.current &&
+          Date.now() - lastSelfChannelActionAtRef.current > SELF_CHANNEL_ACTION_MS
+        ) {
+          playUiSound('your_channel_was_edited')
+        }
       } else if (ev === 'ChannelDeleted') {
         // Tolerate either a full channel object or a bare id.
         const removedId = data !== null && typeof data === 'object' ? data.id : data
@@ -1848,10 +1932,18 @@ function Main() {
         // roster here. Pruning would desync: the server still considers them a
         // member and so never re-announces them (NewUser) on rejoin, leaving them
         // invisible to everyone else. Ban is different (see ClientBanned).
+        // Chime if someone in our channel was kicked (not our own kick — that's
+        // handled on the socket close).
+        if (data.client?.id !== selfIdRef.current && data.client?.channel_id === selfChannelIdRef.current) {
+          playUiSound('neutral_kicked_server_currentchannel')
+        }
       } else if (ev === 'ClientBanned') {
         // { client, duration_seconds, reason }. Drop from the roster and record
         // the ban so they surface in the Users tab (where they can be unbanned).
         // The event carries the full client, so no /server/bans refetch is needed.
+        if (data.client?.id !== selfIdRef.current && data.client?.channel_id === selfChannelIdRef.current) {
+          playUiSound('neutral_banned_server_currentchannel')
+        }
         setClients((prev) => prev.filter((c) => c.id !== data.client.id))
         setBans((prev) =>
           prev.some((b) => b.user.id === data.client.id)
@@ -1987,8 +2079,11 @@ function Main() {
         const kicked = event.code === 4001 || reason.includes('kick')
         if (banned || kicked) {
           closedByUs = true // suppress the reconnect path below
-          showError(`You have been ${banned ? 'banned' : 'kicked'} from the server`)
-          handleDisconnect()
+          showError(`You have been ${banned ? 'banned' : 'kicked'} from the server`, {
+            silent: true
+          })
+          playUiSound(banned ? 'you_were_banned' : 'you_kicked_server')
+          handleDisconnect({ skipSound: true })
           return
         }
         // Recover unless the close was intentional. We resume if we still hold a
@@ -2068,7 +2163,7 @@ function Main() {
       playUiSound('chat_message_outbound')
       // The server broadcasts MessageCreated back to us too, which appends it to the feed
     } catch (err) {
-      showError(`Failed to send message: ${err.message}`)
+      showError(`Failed to send message: ${err.message}`, err)
     }
   }
 
@@ -2094,7 +2189,7 @@ function Main() {
       await throwIfError(res)
       // The server broadcasts MessageUpdated back to us, patching the feed entry.
     } catch (err) {
-      showError(`Failed to edit message: ${err.message}`)
+      showError(`Failed to edit message: ${err.message}`, err)
     }
   }
 
@@ -2141,7 +2236,7 @@ function Main() {
       await throwIfError(res)
     } catch (err) {
       toggleReactionLocal(messageId, emoji)
-      showError(`Failed to ${had ? 'remove' : 'add'} reaction: ${err.message}`)
+      showError(`Failed to ${had ? 'remove' : 'add'} reaction: ${err.message}`, err)
     }
   }
 
@@ -2159,7 +2254,7 @@ function Main() {
       await throwIfError(res)
       setFeed((prev) => prev.filter((e) => !(e.type === 'message' && e.id === messageId)))
     } catch (err) {
-      showError(`Failed to delete message: ${err.message}`)
+      showError(`Failed to delete message: ${err.message}`, err)
     }
   }
 
