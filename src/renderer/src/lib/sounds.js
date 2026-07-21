@@ -61,7 +61,6 @@ export const SOUND_SECTIONS = [
       { id: 'connected', label: 'You connected to a server' },
       { id: 'disconnected', label: 'You disconnected from a server' },
       { id: 'connection_lost', label: 'You lost connection to a server' },
-      { id: 'neutral_connection_disconnected_currentchannel', label: 'Someone disconnected from your channel' },
       { id: 'neutral_connection_connectionlost_currentchannel', label: 'Someone lost connection in your channel' }
     ]
   },
@@ -79,7 +78,7 @@ export const SOUND_SECTIONS = [
     sounds: [
       { id: 'channel_switched', label: 'You moved to another channel' },
       { id: 'neutral_switched_tocurrentchannel', label: 'Someone joined your channel' },
-      { id: 'neutral_switched_awayfromcurrentchannel', label: 'Someone switched out of your channel' },
+      { id: 'neutral_switched_awayfromcurrentchannel', label: 'Someone has left your channel' },
       { id: 'neutral_moved_tocurrentchannel', label: 'Someone was moved to your channel' },
       { id: 'neutral_moved_awayfromcurrentchannel', label: 'Someone was moved out of your channel' },
       { id: 'you_were_moved', label: 'You were moved to another channel' }
@@ -167,6 +166,17 @@ const EVENT_SOUND = {
   'stream-start': 'stream_started',
   'stream-stop': 'stream_stopped'
 }
+
+// Sounds with no playback trigger wired yet — the events that would fire them
+// aren't distinguishable server-side, so Settings flags them as "not wired".
+// Remove an id from here the moment its trigger is wired in Main/SideBar.
+export const UNWIRED_SOUNDS = new Set([
+  'neutral_connection_connectionlost_currentchannel',
+  'neutral_moved_tocurrentchannel',
+  'neutral_moved_awayfromcurrentchannel',
+  'you_were_moved',
+  'you_were_poked'
+])
 
 // Filename shown as a sound's title in Settings (null if the pack lacks it).
 export function getSoundFilename(packId, soundId) {

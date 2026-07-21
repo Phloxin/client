@@ -22,7 +22,8 @@ import {
   SOUND_DEFAULTS,
   SOUNDPACK_OPTIONS,
   getSoundFilename,
-  playUiSound
+  playUiSound,
+  UNWIRED_SOUNDS
 } from '../lib/sounds'
 import { UI_FONTS } from '../lib/uiSettings'
 import './Settings.css'
@@ -533,7 +534,14 @@ function Settings() {
                       return (
                         <div key={id} className="settings-section settings-toggle-row">
                           <div className="settings-toggle-copy">
-                            <label title={filename}>{label}</label>
+                            <label title={filename}>
+                              {label}
+                              {UNWIRED_SOUNDS.has(id) && (
+                                <span className="sound-unwired" title="No trigger wired yet">
+                                  not wired
+                                </span>
+                              )}
+                            </label>
                           </div>
                           <div className="sound-preview-group">
                             <button

@@ -381,6 +381,21 @@
 
 /* Per-sound tri-state: Off (X) / Enabled (check) / Pinned (always heard). Mirrors
    the channel-permission overwrite segments. */
+.sound-unwired {
+  margin-left: 8px;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  font-size: 0.7rem;
+  font-weight: var(--font-weight-medium);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-warning, #e0a458);
+  background: color-mix(in srgb, var(--color-warning, #e0a458) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-warning, #e0a458) 30%, transparent);
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
 .sound-state {
   display: inline-flex;
   flex-shrink: 0;
