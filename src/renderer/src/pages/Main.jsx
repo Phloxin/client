@@ -25,7 +25,8 @@ import {
   setFocusedScreenAudio,
   setVideoStreamRoles,
   setWatchedProducers,
-  subscribeStreamViewers
+  subscribeStreamViewers,
+  setTalkingWhileMutedHandler
 } from '../lib/soup'
 import { playUiSound } from '../lib/sounds'
 import { setServerHost, apiBase, wsBase, cdnUrl, throwIfError } from '../lib/serverConfig'
@@ -193,6 +194,9 @@ function Main() {
     playUiSound(permission ? 'insufficient_permissions' : 'error')
   }, [])
   const showSuccess = useCallback((message) => setToast({ message, variant: 'success' }), [])
+  // Warning toast (amber) — non-error advisories like talking while muted. Plays
+  // no sound itself; callers add a cue where appropriate.
+  const showWarning = useCallback((message) => setToast({ message, variant: 'warning' }), [])
   const dismissToast = useCallback(() => setToast(null), [])
 
   //Client UI Hooks
@@ -1438,6 +1442,17 @@ function Main() {
     return () => setOnSessionExpired(null)
   }, [handleDisconnect, showError])
 
+  // Warn (toast only) when we speak while our mic is muted — soup detects this on
+  // the raw mic stream and calls back here. No sound: the raw detector doesn't
+  // share the stream's noise reduction / gate, so it'd chime on noise the mic
+  // wouldn't actually transmit.
+  useEffect(() => {
+    setTalkingWhileMutedHandler(() => {
+      showWarning('Your microphone is muted')
+    })
+    return () => setTalkingWhileMutedHandler(null)
+  }, [showWarning])
+
   // Fetch channels/clients and set up WebSocket + IPC listeners on mount
   useEffect(() => {
     if (!token) return
@@ -2269,6 +2284,12 @@ function Main() {
   const sendVoiceState = useCallback((patch) => {
     const next = { ...voiceStateRef.current, ...patch }
     voiceStateRef.current = next
+    // A channel change (join/leave/switch) tears down and rebuilds media, so the
+    // streams that vanish/appear are the transition — not real stops/starts.
+    // Disarm the stream chimes now, synchronously, before handleLeave's teardown
+    // empties allVideoStreams and the diff effect mistakes it for a stream ending.
+    // The baseline effect re-arms once we've settled in the new channel (or none).
+    if ('channel_id' in patch) streamSoundsArmedRef.current = false
     if (eventsWsRef.current?.readyState === WebSocket.OPEN) {
       eventsWsRef.current.send(JSON.stringify({ op: 1, data: next }))
     }
@@ -2425,7 +2446,7 @@ function Main() {
   return (
     <ClientActionsProvider value={clientActions}>
       <div className="app-shell">
-        <Toast message={toast?.message} variant={toast?.variant} onDismiss={dismissToast} />
+        <Toast toast={toast} onDismiss={dismissToast} />
         {rolesGroupsOpen && (
           <RolesGroupsMenu
             roles={roles}

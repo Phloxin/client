@@ -34,6 +34,13 @@ let rawMicStream = null
 // survives ownership changes: a moderator move rebinds onClientSpeaking to the new
 // channel, and the detector reports our own speaking through that live callback.
 let selfSpeakingStop = null
+// Separate detector on the RAW mic stream (stays live while muted, unlike the
+// processed track the self indicator taps), used to warn when we talk while
+// muted. Its handler + cooldown are set from the UI layer.
+let mutedTalkStop = null
+let onTalkingWhileMuted = null
+let lastTalkingWhileMutedAt = 0
+const TALKING_WHILE_MUTED_COOLDOWN_MS = 2500
 let localClientId = null
 // Set while a publish() is mid-flight so a concurrent caller joins the same
 // promise instead of allocating a second producer transport (the server rejects a
@@ -1180,6 +1187,33 @@ function startSelfSpeakingDetector(stream) {
   )
 }
 
+// Register the "you're talking while muted" handler (UI plays a sound + shows a
+// warning toast). Mirrored in from the app layer, like setLocalClientId.
+export function setTalkingWhileMutedHandler(fn) {
+  onTalkingWhileMuted = fn
+}
+
+// Detect speech on the RAW mic capture, which stays live while muted — muting
+// pauses the producer, disabling the *processed* track the self indicator taps,
+// not the raw stream. So when we speak while muted, this fires the warning
+// (throttled). In passthrough mode (no RNNoise/gate) the raw track IS the
+// produced track and gets disabled on mute, so detection is skipped there — an
+// accepted gap for that non-default config.
+function startMutedTalkDetector(stream) {
+  mutedTalkStop?.()
+  mutedTalkStop = createSpeakingDetector(
+    stream,
+    (isSpeaking) => {
+      if (!isSpeaking || !micMuted) return
+      const now = performance.now()
+      if (now - lastTalkingWhileMutedAt < TALKING_WHILE_MUTED_COOLDOWN_MS) return
+      lastTalkingWhileMutedAt = now
+      onTalkingWhileMuted?.()
+    },
+    { audioContext: getPlaybackContext() }
+  )
+}
+
 // ─── Map snake_case transport params to mediasoup camelCase ───────
 function mapTransportParams(params) {
   return {
@@ -1270,6 +1304,8 @@ async function doPublish(micSettings, onStream) {
   // particular, quiet audio rejected by RNNoise or the volume gate must not
   // light the local indicator when peers cannot receive it.
   startSelfSpeakingDetector(processedStream)
+  // Separate raw-stream tap that survives muting, for the talking-while-muted warning.
+  startMutedTalkDetector(stream)
 
   for (const track of processedStream.getTracks()) {
     const producer = await producerTransport.produce({
@@ -1334,6 +1370,7 @@ export async function republish(micSettings, onStream) {
   onStream?.(processedStream)
   // Keep the self indicator tied to the replacement track peers receive.
   startSelfSpeakingDetector(processedStream)
+  startMutedTalkDetector(stream)
 
   const newTracks = processedStream.getTracks()
 
@@ -2812,6 +2849,8 @@ export function setVideoStreamRoles({ focusedConsumerId = null, visibleConsumerI
 export function resetMediaState() {
   selfSpeakingStop?.()
   selfSpeakingStop = null
+  mutedTalkStop?.()
+  mutedTalkStop = null
   const activeShare = screenShareCtx
   if (activeShare) void stopShareContext(activeShare, { notifyServer: false })
   producerTransport?.close()

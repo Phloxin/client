@@ -92,7 +92,6 @@ export const SOUND_SECTIONS = [
       { id: 'mic_muted', label: 'Microphone muted' },
       { id: 'mic_activated', label: 'Microphone unmuted' },
       { id: 'sound_muted', label: 'Sound muted / deafened' },
-      // Pinned by default so the unmute cue is heard even while still deafened.
       { id: 'sound_resumed', label: 'Sound unmuted / undeafened', default: 'pin' },
       { id: 'away_activated', label: 'Mark self as away' },
       { id: 'away_deactivated', label: 'Unmark self as away' },
@@ -142,10 +141,7 @@ export const SOUND_SECTIONS = [
   {
     id: 'warnings',
     label: 'Warnings',
-    sounds: [
-      { id: 'talking_while_mic_muted', label: 'You are talking while muted' },
-      { id: 'error', label: 'An error occurred' }
-    ]
+    sounds: [{ id: 'error', label: 'An error occurred' }]
   }
 ]
 

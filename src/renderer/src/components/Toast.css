@@ -34,6 +34,14 @@
   background: var(--color-success);
 }
 
+/* Warning variant: theme's (amber) warning color. Dark text — the ambers are
+   too light for white to stay readable. */
+.toast.warning {
+  border-color: color-mix(in srgb, var(--color-warning) 60%, transparent);
+  background: var(--color-warning);
+  color: #1c1917;
+}
+
 .toast:hover {
   filter: brightness(1.08);
 }
