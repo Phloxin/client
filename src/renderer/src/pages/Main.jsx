@@ -250,6 +250,32 @@ function Main() {
   // while our action's own specific cue still plays.
   const lastSelfChannelActionAtRef = useRef(0)
   const SELF_CHANNEL_ACTION_MS = 2000
+  // Timestamp of our last reconnect handshake. Channel changes that arrive right
+  // after (the server dropped us from voice during the outage, or the rejoin
+  // re-adds us) are recovery, not a live kick/move, so their self chimes are
+  // suppressed within this window.
+  // The voice channel we were in when a drop began (or null). After the events
+  // link is back we hold off declaring "connected" until we've actually rejoined
+  // this channel — that's the moment the user is truly reconnected.
+  const preDropChannelRef = useRef(null)
+  // The channel we're waiting to land back in after a reconnect (null when not
+  // awaiting). While set: the overlay stays up, self channel chimes are
+  // suppressed, and the sidebar won't leave voice on the transient drop-to-null.
+  const awaitingRejoinRef = useRef(null)
+  const rejoinTimeoutRef = useRef(null)
+  // Safety net: if the voice rejoin never lands (e.g. an events-only blip where
+  // voice never actually dropped), stop waiting and surface as connected anyway.
+  const VOICE_REJOIN_TIMEOUT_MS = 8000
+  const isReconnectRecovering = useCallback(() => awaitingRejoinRef.current != null, [])
+  // Finish a reconnect recovery: we're truly back now, so play the connected cue
+  // and drop the overlay. Safe to call more than once (the ref guard no-ops).
+  const completeRecovery = useCallback(() => {
+    if (awaitingRejoinRef.current == null) return
+    awaitingRejoinRef.current = null
+    clearTimeout(rejoinTimeoutRef.current)
+    setConnectionStatus('connected')
+    playUiSound('connected')
+  }, [])
   const activeChatChannelIdRef = useRef(null)
   const chatVisibleRef = useRef(true)
   const feedRef = useRef([])
@@ -478,6 +504,15 @@ function Main() {
   useEffect(() => {
     selfChannelIdRef.current = selfChannelId
   }, [selfChannelId])
+  // While awaiting a reconnect rejoin, landing back in that channel means we're
+  // truly reconnected — chime and drop the overlay now, not at the earlier events
+  // handshake. Only reacts to selfChannelId actually changing to the target, so
+  // the stale pre-reseed value at handshake time can't complete this early.
+  useEffect(() => {
+    if (selfChannelId != null && selfChannelId === awaitingRejoinRef.current) {
+      completeRecovery()
+    }
+  }, [selfChannelId, completeRecovery])
   useEffect(() => {
     activeChatChannelIdRef.current = activeChatChannelId
   }, [activeChatChannelId])
@@ -1514,6 +1549,14 @@ function Main() {
     // downed server isn't hammered. Reset to 0 on a successful handshake.
     const scheduleReconnect = () => {
       if (closedByUs || reconnectTimer) return
+      // Chime once on the drop (the overlay appears now), not on each retry —
+      // reconnectAttempts is 0 only on the first schedule after a healthy link.
+      if (reconnectAttempts === 0) {
+        playUiSound('connection_lost')
+        // Remember the voice channel we were in, so recovery can wait until we're
+        // actually back in it before declaring "connected".
+        preDropChannelRef.current = selfChannelIdRef.current
+      }
       // Surface the drop to the user (full-app overlay) while we retry.
       setConnectionStatus('reconnecting')
       const delay = Math.min(
@@ -1543,9 +1586,27 @@ function Main() {
 
     const handleIdentifyReply = (reply) => {
       // A completed handshake (fresh or resumed) means we're healthy again.
+      // reconnectAttempts > 0 means this handshake is a recovery, not the first
+      // connect (which handleConnect already chimed for).
+      const wasReconnecting = reconnectAttempts > 0
       reconnectAttempts = 0
       if (reply.kind === 'Authenticated' || reply.kind === 'Resumed') {
-        setConnectionStatus('connected')
+        if (!wasReconnecting) {
+          // Initial connect — handleConnect already chimed.
+          setConnectionStatus('connected')
+        } else if (preDropChannelRef.current == null) {
+          // Recovered, and we weren't in a voice channel — fully back now.
+          setConnectionStatus('connected')
+          playUiSound('connected')
+        } else {
+          // The events link is back, but the server dropped us from voice during
+          // the outage. Stay "reconnecting" (overlay up) until soup rejoins our
+          // channel — completeRecovery fires from the selfChannelId effect then.
+          // A timeout covers a rejoin that never lands (e.g. voice never dropped).
+          awaitingRejoinRef.current = preDropChannelRef.current
+          clearTimeout(rejoinTimeoutRef.current)
+          rejoinTimeoutRef.current = setTimeout(completeRecovery, VOICE_REJOIN_TIMEOUT_MS)
+        }
       }
       if (reply.kind === 'Authenticated') {
         // Fresh session: store its id and reset our position (we've processed no
@@ -1796,7 +1857,10 @@ function Main() {
         if (!('channel_id' in data)) {
           // no channel move to chime for
         } else if (data.id === selfIdRef.current) {
-          if (oldChannelId !== data.channel_id) {
+          // While awaiting a reconnect rejoin, our channel changes (the drop to
+          // null, then landing back in) are recovery, not a live action — stay
+          // silent; completeRecovery plays the connected cue instead.
+          if (awaitingRejoinRef.current == null && oldChannelId !== data.channel_id) {
             if (data.channel_id != null) {
               // Moving into a channel — "you moved to another channel".
               playUiSound('channel_switched')
@@ -2472,6 +2536,7 @@ function Main() {
             clients={clients}
             self={client}
             onStreamsUpdate={handleStreamsUpdate}
+            isReconnectRecovering={isReconnectRecovering}
             onStatusChange={sendStatus}
             onSelfChannelChange={(channelId) => {
               // Joining/leaving a voice channel is a navigation — drop the

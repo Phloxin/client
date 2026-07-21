@@ -38,6 +38,7 @@ function Sidebar({
   clients,
   self,
   onStreamsUpdate,
+  isReconnectRecovering,
   onOpenSettings,
   onStatusChange,
   onSelfChannelChange,
@@ -357,13 +358,19 @@ function Sidebar({
   useEffect(() => {
     if (joinedChannelId == null || selfServerChannelId === joinedChannelId) return
     if (selfServerChannelId == null) {
+      // Right after a reconnect the server briefly reports us channel-less (it
+      // dropped us from voice during the outage). Don't leave — soup is already
+      // reconnecting and re-asserting membership, and leaving would tear that
+      // down and yank us out for good. It restores selfServerChannelId when it
+      // lands, re-running this effect to a consistent state.
+      if (isReconnectRecovering?.()) return
       // Moved out of every channel — leave voice locally.
       channelRefs.current[joinedChannelId]?.leave()
       return
     }
     channelRefs.current[joinedChannelId]?.deactivate()
     channelRefs.current[selfServerChannelId]?.adopt()
-  }, [selfServerChannelId, joinedChannelId])
+  }, [selfServerChannelId, joinedChannelId, isReconnectRecovering])
 
   const isDragging = useRef(false)
   const sidebarRef = useRef(null)
