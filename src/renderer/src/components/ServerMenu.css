@@ -8,26 +8,82 @@
   width: 100%;
 }
 
+/* Disconnected: a flex column so the inline server list can fill the rail. */
+.server-menu.disconnected {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
 /* Trigger: a raised card row — the rail's identity block. */
 .server-menu-trigger {
   display: flex;
   align-items: center;
   gap: 9px;
   width: 100%;
+  flex-shrink: 0;
   padding: 10px 12px;
   border: 1px solid var(--hairline);
   border-radius: var(--radius-lg);
   background: color-mix(in srgb, var(--color-surface) 45%, transparent);
   color: var(--color-text);
-  cursor: pointer;
   transition:
     background 0.15s ease,
     border-color 0.15s ease;
 }
 
-.server-menu-trigger:hover {
+/* Connected: the row stays interactive (left-click behavior comes later). The
+   disconnected trigger is a static label, so it opts out. */
+.server-menu:not(.disconnected) .server-menu-trigger {
+  cursor: pointer;
+}
+
+.server-menu:not(.disconnected) .server-menu-trigger:hover {
   background: color-mix(in srgb, var(--color-surface) 75%, transparent);
   border-color: var(--hairline-strong);
+}
+
+/* Unplug button that replaces the chevron while connected. */
+.server-menu-disconnect {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
+}
+
+.server-menu-disconnect:hover {
+  background: color-mix(in srgb, var(--color-danger) 14%, transparent);
+  color: var(--color-danger);
+}
+
+/* Inline server list (disconnected): fills the space below the trigger. */
+.server-menu-list {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  margin-top: 10px;
+}
+
+.server-menu-list-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .server-status-dot {
@@ -35,7 +91,9 @@
   height: 8px;
   border-radius: 50%;
   flex-shrink: 0;
-  background: var(--color-text-muted);
+  /* Disconnected: glow the failure color. Connected overrides below. */
+  background: var(--color-danger);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--color-danger) 80%, transparent);
 }
 
 .server-status-dot.connected {
@@ -52,65 +110,6 @@
   font-size: var(--font-size-md);
   font-weight: var(--font-weight-semibold);
   text-align: left;
-}
-
-.server-menu-chevron {
-  flex-shrink: 0;
-  color: var(--color-text-tertiary);
-  transition: transform 0.18s ease;
-}
-
-.server-menu-chevron.open {
-  transform: rotate(180deg);
-}
-
-/* Floating dropdown below the trigger. Entrance/exit animated by Motion. */
-.server-menu-dropdown {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
-  right: 0;
-  z-index: 900;
-  background: var(--color-background-soft);
-  border: 1px solid var(--hairline-strong);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-3);
-  padding: var(--spacing-xs);
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  transform-origin: top center;
-}
-
-.server-menu-action {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-sm);
-  padding: 8px 10px;
-  border: none;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-medium);
-  text-align: left;
-  cursor: pointer;
-  transition:
-    background 0.12s ease,
-    color 0.12s ease;
-}
-
-.server-menu-action:hover {
-  background: var(--color-surface);
-  color: var(--color-text);
-}
-
-.server-menu-action.disconnect {
-  color: var(--color-danger);
-}
-
-.server-menu-action.disconnect:hover {
-  background: color-mix(in srgb, var(--color-danger) 14%, transparent);
 }
 
 .server-menu-section-label {
@@ -175,11 +174,6 @@
   background: var(--color-surface);
 }
 
-.server-menu-item.active {
-  background: color-mix(in srgb, var(--color-primary) 10%, transparent);
-  cursor: default;
-}
-
 .server-menu-item-info {
   flex: 1;
   min-width: 0;
@@ -211,15 +205,6 @@
   flex-shrink: 0;
 }
 
-.server-menu-item-badge {
-  font-size: var(--font-size-xs);
-  font-weight: var(--font-weight-semibold);
-  color: var(--color-success);
-  background: color-mix(in srgb, var(--color-success) 14%, transparent);
-  border-radius: 999px;
-  padding: 2px 8px;
-}
-
 .server-menu-item-edit,
 .server-menu-item-remove {
   display: flex;
@@ -233,9 +218,19 @@
   background: transparent;
   color: var(--color-text-tertiary);
   cursor: pointer;
+  /* Revealed on row hover (or keyboard focus) — see below. */
+  opacity: 0;
   transition:
     background 0.12s ease,
-    color 0.12s ease;
+    color 0.12s ease,
+    opacity 0.12s ease;
+}
+
+.server-menu-item:hover .server-menu-item-edit,
+.server-menu-item:hover .server-menu-item-remove,
+.server-menu-item-edit:focus-visible,
+.server-menu-item-remove:focus-visible {
+  opacity: 1;
 }
 
 .server-menu-item-edit:hover {
@@ -453,4 +448,11 @@
 
 .add-server-btn.primary:hover {
   background: var(--gradient-primary-hover);
+}
+
+/* "View server summary" is a placeholder until that view lands. */
+.channel-context-item:disabled {
+  opacity: 0.45;
+  cursor: default;
+  pointer-events: none;
 }

@@ -370,7 +370,7 @@ function ClientIndicator({
         </span>
       )}
       <span className="client-row-spacer" ref={spacerRef} aria-hidden="true" />
-      {showIcons && groups.length > 0 && (
+      {showIcons && !rosterMode && groups.length > 0 && (
         <span className="client-badges" ref={badgesRef}>
           {groups.slice(0, shownBadges).map((g) => (
             <span key={g.id} className="client-badge" title={g.name}>

@@ -39,6 +39,10 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  /* React replaces the rendered rows when switching channels and ChatPanel
+     restores the viewport itself. Chromium's native scroll anchoring can run
+     afterward and pull the list back toward a row from the previous render. */
+  overflow-anchor: none;
   padding: 18px 0 10px;
   display: flex;
   flex-direction: column;
@@ -267,6 +271,15 @@
 .chat-mention-item.active {
   background: var(--color-surface);
   color: var(--color-text);
+}
+
+/* Trailing "Notify everyone with visibility..." note on the @everyone entry. */
+.chat-mention-hint {
+  margin-left: auto;
+  padding-left: 10px;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  white-space: nowrap;
 }
 
 .chat-mention-avatar {

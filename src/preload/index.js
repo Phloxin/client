@@ -8,9 +8,20 @@ ipcRenderer.on('audiocapture:port', (e) => {
   window.postMessage({ type: 'audiocapture:port' }, '*', e.ports)
 })
 
+// Screen-share codec override from the environment (PREFER_SCREENSHARE_CODEC=
+// H264|AV1|VP9). Normalized here so the renderer reads a clean value or null;
+// invalid values are ignored (main logs a warning to the terminal). This pins
+// the codec the share is produced with and disables the adaptive downgrade —
+// see pickVideoCodec/maybeDowngradeScreenCodec in renderer/src/lib/soup.js.
+function preferredScreenshareCodec() {
+  const raw = process.env.PREFER_SCREENSHARE_CODEC?.trim().toUpperCase()
+  return raw === 'H264' || raw === 'AV1' || raw === 'VP9' ? raw : null
+}
+
 // Custom APIs for renderer
 const api = {
   platform: process.platform,
+  preferScreenshareCodec: preferredScreenshareCodec(),
   screenAudio: {
     getCapabilities: () => ipcRenderer.invoke('audiocapture:get-capabilities'),
     listApps: () => ipcRenderer.invoke('audiocapture:list-apps'),

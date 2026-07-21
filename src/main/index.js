@@ -6,7 +6,9 @@ import {
   session,
   desktopCapturer,
   safeStorage,
-  dialog
+  dialog,
+  screen,
+  powerSaveBlocker
 } from 'electron'
 import { basename, join } from 'path'
 import { readFileSync, writeFileSync, unlinkSync } from 'fs'
@@ -48,15 +50,63 @@ function appSettingsFilePath() {
   return join(app.getPath('userData'), 'app-settings.json')
 }
 
+const DEFAULT_APP_SETTINGS = {
+  hardwareAcceleration: true,
+  // Windows only — see the window-bounds section below.
+  retainWindowBounds: true,
+  // Windows/Linux only — see the idle-inhibitor section below. Off by default:
+  // holding the system awake is the user's call, not ours.
+  preventSleep: false,
+  // Silent update check on launch; the popup lets the user opt out ("don't show
+  // me again"), which flips this off.
+  checkUpdatesOnLaunch: true
+}
+
 function readAppSettings() {
   try {
-    return { hardwareAcceleration: true, ...JSON.parse(readFileSync(appSettingsFilePath(), 'utf-8')) }
+    return {
+      ...DEFAULT_APP_SETTINGS,
+      ...JSON.parse(readFileSync(appSettingsFilePath(), 'utf-8'))
+    }
   } catch {
-    return { hardwareAcceleration: true }
+    return { ...DEFAULT_APP_SETTINGS }
+  }
+}
+
+function writeAppSettings(changes) {
+  try {
+    writeFileSync(appSettingsFilePath(), JSON.stringify({ ...readAppSettings(), ...changes }))
+  } catch (err) {
+    console.error('Failed to persist app settings:', err)
   }
 }
 
 const appSettings = readAppSettings()
+
+// ─── Idle inhibitor (Windows/Linux) ──────────────────────────────────
+// Optional "keep the system awake" switch. Chromium's power-save blocker maps
+// to SetThreadExecutionState on Windows and the freedesktop inhibit portal on
+// Linux, so one call covers both; macOS is excluded because the UI doesn't
+// offer the toggle there. 'prevent-app-suspension' stops the machine from
+// suspending while still letting the display blank on its own schedule.
+// Applied immediately on toggle and re-applied at startup — no relaunch.
+const IDLE_INHIBITOR_SUPPORTED = process.platform === 'win32' || process.platform === 'linux'
+let idleInhibitorId = null
+
+function applyIdleInhibitor(enabled) {
+  if (!IDLE_INHIBITOR_SUPPORTED) return
+  try {
+    if (enabled) {
+      if (idleInhibitorId != null && powerSaveBlocker.isStarted(idleInhibitorId)) return
+      idleInhibitorId = powerSaveBlocker.start('prevent-app-suspension')
+    } else if (idleInhibitorId != null) {
+      if (powerSaveBlocker.isStarted(idleInhibitorId)) powerSaveBlocker.stop(idleInhibitorId)
+      idleInhibitorId = null
+    }
+  } catch (err) {
+    console.error('Failed to apply idle inhibitor:', err)
+  }
+}
 
 // Master hardware-acceleration switch (Advanced settings). Off disables all
 // Chromium GPU acceleration — the standard escape hatch for broken driver stacks
@@ -129,6 +179,20 @@ if (
 
 if (enableFeatures.length > 0) {
   app.commandLine.appendSwitch('enable-features', enableFeatures.join(','))
+}
+
+// PREFER_SCREENSHARE_CODEC=H264|AV1|VP9 pins the codec screen shares are
+// produced with (consumed in the renderer via preload's preferScreenshareCodec
+// — see pickVideoCodec in renderer/src/lib/soup.js). Only warn here; the value
+// is normalized and applied in the renderer.
+{
+  const preferCodec = process.env.PREFER_SCREENSHARE_CODEC?.trim().toUpperCase()
+  if (preferCodec && !['H264', 'AV1', 'VP9'].includes(preferCodec)) {
+    console.warn(
+      `[main] Ignoring invalid PREFER_SCREENSHARE_CODEC="${process.env.PREFER_SCREENSHARE_CODEC}" ` +
+        '(expected H264, AV1, or VP9)'
+    )
+  }
 }
 
 // Store auth token in main process so it persists across windows
@@ -221,6 +285,86 @@ function persistServers() {
 const MIN_CONTENT_WIDTH = 800
 const MIN_CONTENT_HEIGHT = 500
 
+// ─── Window size/position persistence (Windows only) ──────────────
+// "Retain window size and position" replays the main window's last geometry on
+// the next launch. Bounds are written to app-settings.json as the user moves and
+// resizes (debounced) and flushed on close. Windows-only because that's where
+// the setting is offered; Linux window managers and macOS already restore
+// geometry themselves, and on Wayland a client can't position its own window.
+const RETAIN_BOUNDS_SUPPORTED = process.platform === 'win32'
+
+function retainBoundsEnabled() {
+  return RETAIN_BOUNDS_SUPPORTED && readAppSettings().retainWindowBounds !== false
+}
+
+// A window restored onto a monitor that has since been unplugged (or one whose
+// resolution shrank) would open off-screen with no way to drag it back. Only
+// reuse saved bounds when a grabbable chunk of the window still lands inside
+// some display's work area.
+function boundsAreOnScreen(bounds) {
+  return screen.getAllDisplays().some(({ workArea }) => {
+    const overlapX =
+      Math.min(bounds.x + bounds.width, workArea.x + workArea.width) -
+      Math.max(bounds.x, workArea.x)
+    const overlapY =
+      Math.min(bounds.y + bounds.height, workArea.y + workArea.height) -
+      Math.max(bounds.y, workArea.y)
+    return overlapX >= 200 && overlapY >= 80
+  })
+}
+
+function restorableWindowBounds() {
+  if (!retainBoundsEnabled()) return null
+  const saved = readAppSettings().windowBounds
+  if (!saved) return null
+  const { x, y, width, height } = saved
+  if (![x, y, width, height].every((n) => Number.isFinite(n))) return null
+
+  const bounds = {
+    x: Math.round(x),
+    y: Math.round(y),
+    width: Math.max(MIN_CONTENT_WIDTH, Math.round(width)),
+    height: Math.max(MIN_CONTENT_HEIGHT, Math.round(height))
+  }
+  if (!boundsAreOnScreen(bounds)) return null
+  return { ...bounds, maximized: saved.maximized === true }
+}
+
+// Persist geometry for `win`. Uses getNormalBounds() so a window closed while
+// maximized still records the size it would restore to, with the maximized
+// state carried separately. The window is frameless, so its window bounds and
+// content bounds coincide and feed straight back into the useContentSize
+// constructor options.
+function trackWindowBounds(win) {
+  if (!RETAIN_BOUNDS_SUPPORTED) return
+
+  let saveTimer = null
+  const persist = () => {
+    saveTimer = null
+    // Minimized windows report placeholder geometry on Windows; keep the last
+    // good values instead.
+    if (win.isDestroyed() || win.isMinimized()) return
+    if (!retainBoundsEnabled()) return
+    const { x, y, width, height } = win.getNormalBounds()
+    writeAppSettings({ windowBounds: { x, y, width, height, maximized: win.isMaximized() } })
+  }
+  const queuePersist = () => {
+    if (saveTimer) clearTimeout(saveTimer)
+    saveTimer = setTimeout(persist, 400)
+  }
+
+  win.on('resize', queuePersist)
+  win.on('move', queuePersist)
+  win.on('maximize', queuePersist)
+  win.on('unmaximize', queuePersist)
+  // 'close' still has a live window, so flush synchronously — otherwise the
+  // final drag or resize dies with the pending debounce.
+  win.on('close', () => {
+    if (saveTimer) clearTimeout(saveTimer)
+    persist()
+  })
+}
+
 function createWindow() {
   // A hidden BrowserWindow normally gets revealed after Chromium's first paint.
   // With GPU acceleration disabled on Linux (notably native Wayland), that first
@@ -229,10 +373,15 @@ function createWindow() {
   // case immediately; backgroundColor prevents a white flash while React loads.
   const showImmediately = process.platform === 'linux' && appSettings.hardwareAcceleration === false
 
+  // Last session's geometry, or null when the setting is off, nothing was saved,
+  // or the saved position no longer lands on a connected display.
+  const restored = restorableWindowBounds()
+
   // Create the browser window.
   const mainWindow = new BrowserWindow({
-    width: 1000,
-    height: 700,
+    width: restored?.width ?? 1000,
+    height: restored?.height ?? 700,
+    ...(restored ? { x: restored.x, y: restored.y } : {}),
     // Treat width/height/min* as the web content area (excludes the OS title
     // bar) so the minimums map directly onto the renderer layout below.
     useContentSize: true,
@@ -253,6 +402,11 @@ function createWindow() {
       backgroundThrottling: false
     }
   })
+
+  // Maximize before the window is shown so it doesn't visibly snap open.
+  if (restored?.maximized) mainWindow.maximize()
+
+  trackWindowBounds(mainWindow)
 
   if (!showImmediately) {
     mainWindow.once('ready-to-show', () => {
@@ -449,14 +603,38 @@ app.whenReady().then(() => {
   // Read the current values (e.g. hardware-acceleration toggle) for the
   // Advanced settings UI, and persist changes. Changes apply on next launch.
   ipcMain.handle('get-app-settings', () => readAppSettings())
-  ipcMain.on('set-app-settings', (_, changes) => {
+  ipcMain.on('set-app-settings', (_, changes) => writeAppSettings(changes))
+
+  // ─── Launch on startup (Windows only) ───────────────────────────────
+  // Read back from the OS login-item registry rather than app-settings.json, so
+  // the toggle still tells the truth after the user disables Pylon from
+  // Windows' own Startup apps list. Unlike the settings above this applies
+  // immediately — no relaunch needed.
+  ipcMain.handle('get-launch-on-startup', () => {
+    if (process.platform !== 'win32') return false
     try {
-      const merged = { ...readAppSettings(), ...changes }
-      writeFileSync(appSettingsFilePath(), JSON.stringify(merged))
+      return app.getLoginItemSettings().openAtLogin === true
     } catch (err) {
-      console.error('Failed to persist app settings:', err)
+      console.error('Failed to read launch-on-startup setting:', err)
+      return false
     }
   })
+  ipcMain.on('set-launch-on-startup', (_, enabled) => {
+    if (process.platform !== 'win32') return
+    try {
+      app.setLoginItemSettings({ openAtLogin: enabled === true })
+    } catch (err) {
+      console.error('Failed to persist launch-on-startup setting:', err)
+    }
+  })
+  // ─── Idle inhibitor toggle ──────────────────────────────────────────
+  // Persisted alongside the other app settings (read back through
+  // get-app-settings), but applied to the running process right away.
+  ipcMain.on('set-idle-inhibitor', (_, enabled) => {
+    writeAppSettings({ preventSleep: enabled === true })
+    applyIdleInhibitor(enabled === true)
+  })
+
   // Restart the app so a startup-only setting (hardware acceleration) takes hold.
   ipcMain.on('relaunch-app', () => {
     app.relaunch()
@@ -587,6 +765,9 @@ app.whenReady().then(() => {
   })
 
   createWindow()
+
+  // Re-arm the keep-awake blocker if the user left it on last session.
+  applyIdleInhibitor(readAppSettings().preventSleep === true)
 
   // OS-wide mute/deafen keybinds: passive hook on X11/Windows/macOS and the
   // compositor-managed GlobalShortcuts portal on Wayland (see keybinds.js).

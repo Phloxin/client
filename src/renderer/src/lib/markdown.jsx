@@ -70,8 +70,20 @@ const mention = {
   })
 }
 
+// Bare `@everyone`. The server only counts it as a mention when it stands alone
+// between whitespace (see parse_mentions), so match the same shape: the trailing
+// boundary comes from the lookahead, the leading one from prevCapture (the text
+// rule always breaks before '@', so we get first look at it).
+const everyone = {
+  order: mention.order,
+  match: (source, _state, prevCapture) =>
+    /(?:^|\s)$/.test(prevCapture) ? /^@everyone(?=\s|$)/.exec(source) : null,
+  parse: () => ({})
+}
+
 const rules = {
   mention,
+  everyone,
   // Block-level
   heading: d.heading,
   codeBlock: d.codeBlock,
@@ -142,6 +154,12 @@ function renderNode(node, key) {
       return (
         <span key={key} className="chat-mention">
           @{node.name}
+        </span>
+      )
+    case 'everyone':
+      return (
+        <span key={key} className="chat-mention">
+          @everyone
         </span>
       )
     case 'strong':

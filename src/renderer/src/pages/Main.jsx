@@ -11,18 +11,23 @@ import VideoGrid from '../components/VideoGrid'
 import ChatPanel from '../components/ChatPanel'
 import ClientSummary from '../components/ClientSummary'
 import ChannelSummary from '../components/ChannelSummary'
+import ServerTraffic from '../components/ServerTraffic'
+import ServerSummary from '../components/ServerSummary'
 import TitleBar from '../components/TitleBar'
 import ConnectionOverlay from '../components/ConnectionOverlay'
 import Toast from '../components/Toast'
+import UpdatePrompt from '../components/UpdatePrompt'
 import RolesGroupsMenu from '../components/RolesGroupsMenu'
 import IdleAnimation from '../components/IdleAnimation'
 import Settings from './Settings'
 import {
   disconnect as disconnectVoice,
+  receiveVoiceTicket,
   setFocusedScreenAudio,
   setVideoStreamRoles,
   setWatchedProducers,
-  subscribeStreamViewers
+  subscribeStreamViewers,
+  setTalkingWhileMutedHandler
 } from '../lib/soup'
 import { playUiSound } from '../lib/sounds'
 import { setServerHost, apiBase, wsBase, cdnUrl, throwIfError } from '../lib/serverConfig'
@@ -36,7 +41,8 @@ import {
   IconUser,
   IconUsersGroup,
   IconX,
-  IconVolume
+  IconVolume,
+  IconActivity
 } from '@tabler/icons-react'
 
 const APP_TITLE = 'Pylon'
@@ -156,6 +162,10 @@ function Main() {
   // is user-level and outlives a connection — an entry can exist for someone the
   // roster no longer lists, and `clients` is replaced wholesale by Ready.
   const [presences, setPresences] = useState({})
+  // Server-traffic log (newest first): members crossing the online/offline
+  // boundary while we're lurking. Fed by PresenceUpdate below, cleared on
+  // connect/disconnect. Rendered by ServerTraffic when not in a voice channel.
+  const [traffic, setTraffic] = useState([])
   const [feed, setFeed] = useState([])
   const [viewMode, setViewMode] = useState('log') // 'log' or 'video'
   const [servers, setServers] = useState([])
@@ -174,8 +184,20 @@ function Main() {
   // True while a connect attempt is in flight (login → token), so the idle view
   // can say so. Cleared on success (we leave the idle view) or failure.
   const [connecting, setConnecting] = useState(false)
-  const showError = useCallback((message) => setToast({ message, variant: 'error' }), [])
+  // Every error toast is also the single place we chime an error cue. The second
+  // arg is the caught Error (its `.status` distinguishes a 403 permission failure)
+  // or `{ silent: true }` where the caller already plays its own specific sound.
+  const showError = useCallback((message, err) => {
+    setToast({ message, variant: 'error' })
+    if (err?.silent) return
+    const permission =
+      err?.status === 403 || /permission|forbidden|not allowed|insufficient/i.test(message)
+    playUiSound(permission ? 'insufficient_permissions' : 'error')
+  }, [])
   const showSuccess = useCallback((message) => setToast({ message, variant: 'success' }), [])
+  // Warning toast (amber) — non-error advisories like talking while muted. Plays
+  // no sound itself; callers add a cue where appropriate.
+  const showWarning = useCallback((message) => setToast({ message, variant: 'warning' }), [])
   const dismissToast = useCallback(() => setToast(null), [])
 
   //Client UI Hooks
@@ -198,6 +220,9 @@ function Main() {
   const channelsRef = useRef([])
   const clientsRef = useRef([])
   const refreshPresencesRef = useRef(null)
+  // Latest presences, read by the events handler to diff old→new status without
+  // a stale closure (mirrors the channels/clients ref pattern above).
+  const presencesRef = useRef({})
   const dndRef = useRef(false)
 
   //Stream Ref Hooks
@@ -219,6 +244,39 @@ function Main() {
   const sessionIdRef = useRef(null)
   const selfIdRef = useRef(null)
   const selfChannelIdRef = useRef(null)
+  // Timestamp of our last own channel action (create/edit/move/etc). The server
+  // echoes ChannelUpdated back to us, and a reorder also reindexes sibling
+  // channels — so within a short window after acting we suppress the "your
+  // current channel was edited" cue (which is only meant for edits by others),
+  // while our action's own specific cue still plays.
+  const lastSelfChannelActionAtRef = useRef(0)
+  const SELF_CHANNEL_ACTION_MS = 2000
+  // Timestamp of our last reconnect handshake. Channel changes that arrive right
+  // after (the server dropped us from voice during the outage, or the rejoin
+  // re-adds us) are recovery, not a live kick/move, so their self chimes are
+  // suppressed within this window.
+  // The voice channel we were in when a drop began (or null). After the events
+  // link is back we hold off declaring "connected" until we've actually rejoined
+  // this channel — that's the moment the user is truly reconnected.
+  const preDropChannelRef = useRef(null)
+  // The channel we're waiting to land back in after a reconnect (null when not
+  // awaiting). While set: the overlay stays up, self channel chimes are
+  // suppressed, and the sidebar won't leave voice on the transient drop-to-null.
+  const awaitingRejoinRef = useRef(null)
+  const rejoinTimeoutRef = useRef(null)
+  // Safety net: if the voice rejoin never lands (e.g. an events-only blip where
+  // voice never actually dropped), stop waiting and surface as connected anyway.
+  const VOICE_REJOIN_TIMEOUT_MS = 8000
+  const isReconnectRecovering = useCallback(() => awaitingRejoinRef.current != null, [])
+  // Finish a reconnect recovery: we're truly back now, so play the connected cue
+  // and drop the overlay. Safe to call more than once (the ref guard no-ops).
+  const completeRecovery = useCallback(() => {
+    if (awaitingRejoinRef.current == null) return
+    awaitingRejoinRef.current = null
+    clearTimeout(rejoinTimeoutRef.current)
+    setConnectionStatus('connected')
+    playUiSound('connected')
+  }, [])
   const activeChatChannelIdRef = useRef(null)
   const chatVisibleRef = useRef(true)
   const feedRef = useRef([])
@@ -243,6 +301,9 @@ function Main() {
   useEffect(() => {
     clientsRef.current = clients
   }, [clients])
+  useEffect(() => {
+    presencesRef.current = presences
+  }, [presences])
 
   // Same for the popout bridge's data, read once-bound without stale closures.
   useEffect(() => {
@@ -330,6 +391,9 @@ function Main() {
     setNotifications([])
     setDmNotifications([])
     setReadStates({})
+    setTraffic([])
+    setShowTraffic(false)
+    setShowServerSummary(false)
   }, [token])
 
   // Expose a bridge the popout window reads via window.opener. Live MediaStream
@@ -406,6 +470,17 @@ function Main() {
   // Details). Mutually exclusive with the chat preview and client summary.
   const [summaryChannelId, setSummaryChannelId] = useState(null)
 
+  // Explicitly viewing the server-traffic log (server menu → View server
+  // traffic), forced on top of the in-channel chat/streams view. Another canvas
+  // override, mutually exclusive with the preview/summary views above; cleared
+  // by Esc or navigating elsewhere. When lurking, traffic is the default view
+  // anyway, so this only matters while in a voice channel.
+  const [showTraffic, setShowTraffic] = useState(false)
+  // Forced server-summary view (server menu). Same canvas-override rules as
+  // showTraffic: mutually exclusive with the preview/summary views, cleared by
+  // Esc or navigating elsewhere.
+  const [showServerSummary, setShowServerSummary] = useState(false)
+
   // The channel the local client currently has joined (chat is scoped to it)
   const selfChannelId = clients.find((c) => c.id === client?.id)?.channel_id ?? null
 
@@ -430,6 +505,15 @@ function Main() {
   useEffect(() => {
     selfChannelIdRef.current = selfChannelId
   }, [selfChannelId])
+  // While awaiting a reconnect rejoin, landing back in that channel means we're
+  // truly reconnected — chime and drop the overlay now, not at the earlier events
+  // handshake. Only reacts to selfChannelId actually changing to the target, so
+  // the stale pre-reseed value at handshake time can't complete this early.
+  useEffect(() => {
+    if (selfChannelId != null && selfChannelId === awaitingRejoinRef.current) {
+      completeRecovery()
+    }
+  }, [selfChannelId, completeRecovery])
   useEffect(() => {
     activeChatChannelIdRef.current = activeChatChannelId
   }, [activeChatChannelId])
@@ -531,6 +615,8 @@ function Main() {
   const handlePreviewChannel = (channelId) => {
     setSummaryClientId(null)
     setSummaryChannelId(null)
+    setShowTraffic(false)
+    setShowServerSummary(false)
     setPreviewChannelId(channelId === selfChannelId ? null : channelId)
   }
 
@@ -538,6 +624,8 @@ function Main() {
   const handleShowClientSummary = (userId) => {
     setPreviewChannelId(null)
     setSummaryChannelId(null)
+    setShowTraffic(false)
+    setShowServerSummary(false)
     setSummaryClientId(userId)
   }
 
@@ -546,7 +634,30 @@ function Main() {
   const handleShowChannelSummary = (channelId) => {
     setPreviewChannelId(null)
     setSummaryClientId(null)
+    setShowTraffic(false)
+    setShowServerSummary(false)
     setSummaryChannelId(channelId)
+  }
+
+  // Server menu → View server traffic: force the traffic log into the canvas,
+  // clearing any other canvas override. Navigating anywhere (Esc, a channel, a
+  // profile) drops it again.
+  const handleViewServerTraffic = () => {
+    setPreviewChannelId(null)
+    setSummaryClientId(null)
+    setSummaryChannelId(null)
+    setShowServerSummary(false)
+    setShowTraffic(true)
+  }
+
+  // Server menu → View server summary: force the server-summary card into the
+  // canvas, clearing any other override. Cleared like the traffic view.
+  const handleViewServerSummary = () => {
+    setPreviewChannelId(null)
+    setSummaryClientId(null)
+    setSummaryChannelId(null)
+    setShowTraffic(false)
+    setShowServerSummary(true)
   }
 
   // Open the DM an inbox alert points at: by sender id when known (resolves the
@@ -620,13 +731,15 @@ function Main() {
     async (userId) => {
       if (!userId || userId === client?.id) return
       setSummaryClientId(null)
+      setShowTraffic(false)
+      setShowServerSummary(false)
       try {
         const id = await ensureDmChannel(userId)
         // The preview-drop effect clears any previewed id not in `channels`, but
         // ensureDmChannel has already registered it, so this is safe.
         if (id != null) setPreviewChannelId(id)
       } catch (err) {
-        showError(`Failed to open direct message: ${err.message}`)
+        showError(`Failed to open direct message: ${err.message}`, err)
       }
     },
     [client, ensureDmChannel]
@@ -658,7 +771,7 @@ function Main() {
         })
         await throwIfError(res)
       } catch (err) {
-        showError(`Failed to poke: ${err.message}`)
+        showError(`Failed to poke: ${err.message}`, err)
       }
     },
     [client, token, ensureDmChannel]
@@ -678,7 +791,7 @@ function Main() {
         })
         await throwIfError(res)
       } catch (err) {
-        showError(`Failed to kick user: ${err.message}`)
+        showError(`Failed to kick user: ${err.message}`, err)
       }
     },
     [client, token, showError]
@@ -793,7 +906,7 @@ function Main() {
         await throwIfError(res)
         apply()
       } catch (err) {
-        showError(`Failed to assign role: ${err.message}`)
+        showError(`Failed to assign role: ${err.message}`, err)
       }
     },
     [token, roles, clients, showError, showSuccess]
@@ -822,7 +935,7 @@ function Main() {
         await throwIfError(res)
         apply()
       } catch (err) {
-        showError(`Failed to remove role: ${err.message}`)
+        showError(`Failed to remove role: ${err.message}`, err)
       }
     },
     [token, roles, clients, showError, showSuccess]
@@ -842,7 +955,7 @@ function Main() {
         await throwIfError(res)
         showSuccess(`Created group "${name}"`)
       } catch (err) {
-        showError(`Failed to create group: ${err.message}`)
+        showError(`Failed to create group: ${err.message}`, err)
       }
     },
     [token, showError, showSuccess]
@@ -874,7 +987,7 @@ function Main() {
             : `Removed "${groupName}" from ${clientName}`
         )
       } catch (err) {
-        showError(`Failed to update group: ${err.message}`)
+        showError(`Failed to update group: ${err.message}`, err)
       }
     },
     [token, vanity, clients, showError, showSuccess]
@@ -895,7 +1008,7 @@ function Main() {
         await throwIfError(res)
         refreshBans()
       } catch (err) {
-        showError(`Failed to ban user: ${err.message}`)
+        showError(`Failed to ban user: ${err.message}`, err)
       }
     },
     [client, token, showError, refreshBans]
@@ -914,7 +1027,7 @@ function Main() {
         await throwIfError(res)
         refreshBans()
       } catch (err) {
-        showError(`Failed to unban user: ${err.message}`)
+        showError(`Failed to unban user: ${err.message}`, err)
       }
     },
     [token, showError, refreshBans]
@@ -935,7 +1048,7 @@ function Main() {
         })
         await throwIfError(res)
       } catch (err) {
-        showError(`Failed to set ${label}: ${err.message}`)
+        showError(`Failed to set ${label}: ${err.message}`, err)
       }
     },
     [client, token]
@@ -1075,6 +1188,13 @@ function Main() {
 
   const handleRemoveServer = (id) => saveServers(servers.filter((s) => s.id !== id))
 
+  // Open the suppression window just before a self channel action, so the echoed
+  // ChannelUpdated (which can arrive before the HTTP response resolves) doesn't
+  // also fire the "your current channel was edited" cue.
+  const markSelfChannelAction = () => {
+    lastSelfChannelActionAtRef.current = Date.now()
+  }
+
   // Create a channel on the server. Position is computed to append after the current last channel.
   //The server also broadcasts ChannelCreated, so the add here is deduped by id in case that broadcast echoes back to us.
   const handleCreateChannel = async ({ name, user_limit, afterPosition }) => {
@@ -1098,8 +1218,9 @@ function Main() {
       if (created && created.id != null) {
         setChannels((prev) => (prev.some((ch) => ch.id === created.id) ? prev : [...prev, created]))
       }
+      playUiSound('channel_created')
     } catch (err) {
-      showError(`Failed to create channel: ${err.message}`)
+      showError(`Failed to create channel: ${err.message}`, err)
     }
   }
 
@@ -1112,8 +1233,9 @@ function Main() {
       })
       await throwIfError(res)
       setChannels((prev) => prev.filter((ch) => ch.id !== id))
+      playUiSound('channel_deleted')
     } catch (err) {
-      showError(`Failed to delete channel: ${err.message}`)
+      showError(`Failed to delete channel: ${err.message}`, err)
     }
   }
 
@@ -1121,6 +1243,7 @@ function Main() {
   // rest and broadcasts ChannelUpdated for the affected channels, so we don't
   // mutate locally on success.
   const handleReorderChannel = async (id, position) => {
+    markSelfChannelAction()
     try {
       const res = await authFetch(`${apiBase()}/channels/${id}`, {
         method: 'PATCH',
@@ -1128,9 +1251,10 @@ function Main() {
         body: JSON.stringify({ position })
       })
       await throwIfError(res)
+      playUiSound('channel_moved')
       showSuccess('Channel moved')
     } catch (err) {
-      showError(`Failed to reorder channel: ${err.message}`)
+      showError(`Failed to reorder channel: ${err.message}`, err)
     }
   }
 
@@ -1138,6 +1262,7 @@ function Main() {
   // reorder, the server broadcasts ChannelUpdated, so we don't mutate locally on
   // success.
   const handleSetChannelDescription = async (id, description) => {
+    markSelfChannelAction()
     try {
       const res = await authFetch(`${apiBase()}/channels/${id}`, {
         method: 'PATCH',
@@ -1145,9 +1270,10 @@ function Main() {
         body: JSON.stringify({ description })
       })
       await throwIfError(res)
+      playUiSound('channel_edited')
       showSuccess('Channel description updated')
     } catch (err) {
-      showError(`Failed to update channel description: ${err.message}`)
+      showError(`Failed to update channel description: ${err.message}`, err)
     }
   }
 
@@ -1155,6 +1281,7 @@ function Main() {
   // a `data:image/...;base64,...` string, same pipeline as client avatars. The
   // server broadcasts ChannelUpdated, so no local mutate here.
   const handleSetChannelIcon = async (id, channel_icon) => {
+    markSelfChannelAction()
     try {
       const res = await authFetch(`${apiBase()}/channels/${id}`, {
         method: 'PATCH',
@@ -1162,9 +1289,10 @@ function Main() {
         body: JSON.stringify({ channel_icon })
       })
       await throwIfError(res)
+      playUiSound('channel_edited')
       showSuccess(channel_icon ? 'Channel icon updated' : 'Channel icon removed')
     } catch (err) {
-      showError(`Failed to set channel icon: ${err.message}`)
+      showError(`Failed to set channel icon: ${err.message}`, err)
     }
   }
 
@@ -1173,6 +1301,7 @@ function Main() {
   // ChannelUpdated with the new overwrites, so we don't mutate locally
   // on success.
   const handleSetChannelOverwrite = async (channelId, targetId, targetType, allow, deny) => {
+    markSelfChannelAction()
     try {
       const res = await authFetch(`${apiBase()}/channels/${channelId}/permissions/${targetId}`, {
         method: 'PUT',
@@ -1180,21 +1309,24 @@ function Main() {
         body: JSON.stringify({ type: targetType, allow, deny })
       })
       await throwIfError(res)
+      playUiSound('channel_edited')
       showSuccess('Channel permissions updated')
     } catch (err) {
-      showError(`Failed to update channel permissions: ${err.message}`)
+      showError(`Failed to update channel permissions: ${err.message}`, err)
     }
   }
 
   const handleDeleteChannelOverwrite = async (channelId, targetId) => {
+    markSelfChannelAction()
     try {
       const res = await authFetch(`${apiBase()}/channels/${channelId}/permissions/${targetId}`, {
         method: 'DELETE'
       })
       await throwIfError(res)
+      playUiSound('channel_edited')
       showSuccess('Channel permission removed')
     } catch (err) {
-      showError(`Failed to remove channel permission: ${err.message}`)
+      showError(`Failed to remove channel permission: ${err.message}`, err)
     }
   }
 
@@ -1215,8 +1347,14 @@ function Main() {
           body: JSON.stringify({ channel_id: channelId })
         })
         await throwIfError(res)
+        // Clearing their channel (channel_id null) is a kick from it. If they were
+        // in our channel, that's "someone was kicked from your channel". Only we,
+        // the kicker, can tell this from a normal leave, so it only chimes for us.
+        if (channelId == null && current?.channel_id === selfChannelIdRef.current) {
+          playUiSound('neutral_kicked_channel_awayfromcurrentchannel')
+        }
       } catch (err) {
-        showError(`Failed to move user: ${err.message}`)
+        showError(`Failed to move user: ${err.message}`, err)
       }
     },
     [clients, token, showError]
@@ -1242,7 +1380,7 @@ function Main() {
         })
         await throwIfError(res)
       } catch (err) {
-        showError(`Failed to ${gag ? 'gag' : 'ungag'} user: ${err.message}`)
+        showError(`Failed to ${gag ? 'gag' : 'ungag'} user: ${err.message}`, err)
       }
     },
     [token, showError]
@@ -1290,6 +1428,7 @@ function Main() {
       if (result.response.ok && data.access_token) {
         applyAuthResponse(data)
         setConnectedServer(server)
+        playUiSound('connected')
       } else {
         setServerHost(null)
         showError(`Failed to connect to ${server.nickname}: ${data.error || 'login failed'}`)
@@ -1305,7 +1444,7 @@ function Main() {
   // Single source of truth for dropping back to the disconnected state (the
   // reconnect paths call it too on a rejected token, so none leave half-cleared
   // state). Clearing the token tears down the events socket via effect cleanup.
-  const handleDisconnect = useCallback(() => {
+  const handleDisconnect = useCallback((opts) => {
     if (popoutWindowRef.current && !popoutWindowRef.current.closed) {
       popoutWindowRef.current.close()
     }
@@ -1325,17 +1464,30 @@ function Main() {
     setSummaryClientId(null)
     setReadStates({})
     setConnectionStatus('connected')
+    // Kick/ban paths play their own specific cue and pass skipSound.
+    if (!opts?.skipSound) playUiSound('disconnected')
   }, [clearAuth])
 
   // A refresh the server rejects means the device session is revoked or
   // expired — drop to the disconnected state and require a fresh login.
   useEffect(() => {
     setOnSessionExpired(() => {
-      showError('Session expired — please reconnect')
+      showError('Session expired — please reconnect', { silent: true })
       handleDisconnect()
     })
     return () => setOnSessionExpired(null)
   }, [handleDisconnect, showError])
+
+  // Warn (toast only) when we speak while our mic is muted — soup detects this on
+  // the raw mic stream and calls back here. No sound: the raw detector doesn't
+  // share the stream's noise reduction / gate, so it'd chime on noise the mic
+  // wouldn't actually transmit.
+  useEffect(() => {
+    setTalkingWhileMutedHandler(() => {
+      showWarning('Your microphone is muted')
+    })
+    return () => setTalkingWhileMutedHandler(null)
+  }, [showWarning])
 
   // Fetch channels/clients and set up WebSocket + IPC listeners on mount
   useEffect(() => {
@@ -1398,6 +1550,14 @@ function Main() {
     // downed server isn't hammered. Reset to 0 on a successful handshake.
     const scheduleReconnect = () => {
       if (closedByUs || reconnectTimer) return
+      // Chime once on the drop (the overlay appears now), not on each retry —
+      // reconnectAttempts is 0 only on the first schedule after a healthy link.
+      if (reconnectAttempts === 0) {
+        playUiSound('connection_lost')
+        // Remember the voice channel we were in, so recovery can wait until we're
+        // actually back in it before declaring "connected".
+        preDropChannelRef.current = selfChannelIdRef.current
+      }
       // Surface the drop to the user (full-app overlay) while we retry.
       setConnectionStatus('reconnecting')
       const delay = Math.min(
@@ -1427,9 +1587,27 @@ function Main() {
 
     const handleIdentifyReply = (reply) => {
       // A completed handshake (fresh or resumed) means we're healthy again.
+      // reconnectAttempts > 0 means this handshake is a recovery, not the first
+      // connect (which handleConnect already chimed for).
+      const wasReconnecting = reconnectAttempts > 0
       reconnectAttempts = 0
       if (reply.kind === 'Authenticated' || reply.kind === 'Resumed') {
-        setConnectionStatus('connected')
+        if (!wasReconnecting) {
+          // Initial connect — handleConnect already chimed.
+          setConnectionStatus('connected')
+        } else if (preDropChannelRef.current == null) {
+          // Recovered, and we weren't in a voice channel — fully back now.
+          setConnectionStatus('connected')
+          playUiSound('connected')
+        } else {
+          // The events link is back, but the server dropped us from voice during
+          // the outage. Stay "reconnecting" (overlay up) until soup rejoins our
+          // channel — completeRecovery fires from the selfChannelId effect then.
+          // A timeout covers a rejoin that never lands (e.g. voice never dropped).
+          awaitingRejoinRef.current = preDropChannelRef.current
+          clearTimeout(rejoinTimeoutRef.current)
+          rejoinTimeoutRef.current = setTimeout(completeRecovery, VOICE_REJOIN_TIMEOUT_MS)
+        }
       }
       if (reply.kind === 'Authenticated') {
         // Fresh session: store its id and reset our position (we've processed no
@@ -1522,6 +1700,27 @@ function Main() {
       // replace it wholesale rather than merging, so a cleared status_message
       // (null) doesn't leave the previous one behind.
       if (ev === 'PresenceUpdate') {
+        // Server traffic: log a crossing of the online/offline boundary (someone
+        // else). Invisible == offline, so an invisible user never crosses into
+        // visible (no "came online"), and going invisible reads as "went offline".
+        const wasOffline = statusOf(presencesRef.current[data.client_id]) === 'offline'
+        const isOffline = statusOf(data) === 'offline'
+        if (wasOffline !== isOffline && data.client_id !== selfIdRef.current) {
+          const name = clientsRef.current.find((c) => c.id === data.client_id)?.name || 'Someone'
+          const now = Date.now()
+          setTraffic((prev) =>
+            [
+              { id: `${data.client_id}-${now}`, clientId: data.client_id, name, online: !isOffline, ts: now },
+              ...prev
+            ].slice(0, MAX_LOG_ENTRIES)
+          )
+        }
+        // Our own away status toggling (set from the status menu, echoed back).
+        if (data.client_id === selfIdRef.current) {
+          const wasAway = statusOf(presencesRef.current[data.client_id]) === 'away'
+          const isAway = statusOf(data) === 'away'
+          if (isAway !== wasAway) playUiSound(isAway ? 'away_activated' : 'away_deactivated')
+        }
         setPresences((prev) => ({ ...prev, [data.client_id]: data }))
         return
       }
@@ -1531,6 +1730,12 @@ function Main() {
       // no longer carries it).
       if (ev === 'VoiceStateUpdate') {
         const { client_id, muted, deaf, self_mute, self_deaf } = data
+        // A change to our own server_mute is a gag/ungag by a moderator (our own
+        // mic mute is self_mute, not this). Chime on the transition only.
+        if (client_id === selfIdRef.current) {
+          const wasGagged = !!clientsRef.current.find((c) => c.id === client_id)?.server_mute
+          if (!!muted !== wasGagged) playUiSound(muted ? 'you_were_gagged' : 'you_were_ungagged')
+        }
         setClients((prev) =>
           prev.map((c) =>
             c.id === client_id
@@ -1584,8 +1789,13 @@ function Main() {
           const roleName = (id) => rolesRef.current.find((r) => r.id === id)?.name ?? 'a role'
           const added = [...after].find((id) => !before.has(id))
           const removed = [...before].find((id) => !after.has(id))
-          if (added != null) showSuccess(`You were given the "${roleName(added)}" role`)
-          else if (removed != null) showError(`Your "${roleName(removed)}" role was revoked`)
+          if (added != null) {
+            showSuccess(`You were given the "${roleName(added)}" role`)
+            playUiSound('servergroup_assigned')
+          } else if (removed != null) {
+            showError(`Your "${roleName(removed)}" role was revoked`, { silent: true })
+            playUiSound('servergroup_revoked')
+          }
         }
         // Same for OUR vanity groups: green when another user adds us to one,
         // red when they remove us. Our own toggles were already applied (and
@@ -1599,9 +1809,13 @@ function Main() {
             'a group'
           const added = [...after].find((id) => !before.has(id))
           const removed = [...before].find((id) => !after.has(id))
-          if (added != null) showSuccess(`You were added to the "${groupName(added)}" group`)
-          else if (removed != null)
-            showError(`You were removed from the "${groupName(removed)}" group`)
+          if (added != null) {
+            showSuccess(`You were added to the "${groupName(added)}" group`)
+            playUiSound('servergroup_assigned')
+          } else if (removed != null) {
+            showError(`You were removed from the "${groupName(removed)}" group`, { silent: true })
+            playUiSound('servergroup_revoked')
+          }
         }
         // ClientModified also carries profile changes (avatar / nickname). Merge
         // whatever fields are present so we don't clobber the others; `in` guards
@@ -1619,6 +1833,11 @@ function Main() {
             return next
           })
         )
+
+        // What channel WE last declared (pre-sync). If it still differs from what
+        // the server now reports for us, we never asked for this change — it was
+        // forced (a moderator kick/move), not our own leave/switch.
+        const selfDeclaredChannel = voiceStateRef.current.channel_id
 
         // A forced move (a moderator's PATCH /client) changes our channel without
         // us sending a VoiceStateUpdate, so sync the declarative voice-state ref.
@@ -1639,8 +1858,19 @@ function Main() {
         if (!('channel_id' in data)) {
           // no channel move to chime for
         } else if (data.id === selfIdRef.current) {
-          if (oldChannelId !== data.channel_id) {
-            playUiSound(data.channel_id == null ? 'channel-leave' : 'channel-join')
+          // While awaiting a reconnect rejoin, our channel changes (the drop to
+          // null, then landing back in) are recovery, not a live action — stay
+          // silent; completeRecovery plays the connected cue instead.
+          if (awaitingRejoinRef.current == null && oldChannelId !== data.channel_id) {
+            if (data.channel_id != null) {
+              // Moving into a channel — "you moved to another channel".
+              playUiSound('channel_switched')
+            } else if (selfDeclaredChannel != null) {
+              // Dropped to no channel without us asking for it → kicked from the
+              // channel. A voluntary leave declares channel_id null first, so
+              // selfDeclaredChannel would be null there and this stays silent.
+              playUiSound('you_kicked_channel')
+            }
           }
         } else if (myChannel != null) {
           if (data.channel_id === myChannel && oldChannelId !== myChannel) {
@@ -1744,6 +1974,16 @@ function Main() {
         }
       } else if (ev === 'ChannelCreated' || ev === 'ChannelUpdated') {
         queueChannelUpsert(data)
+        // Someone else edited the channel we're currently in. Our own edits play
+        // the plain "channel edited" cue and mark the echo (consumed here) so this
+        // stays silent for them.
+        if (
+          ev === 'ChannelUpdated' &&
+          data.id === selfChannelIdRef.current &&
+          Date.now() - lastSelfChannelActionAtRef.current > SELF_CHANNEL_ACTION_MS
+        ) {
+          playUiSound('your_channel_was_edited')
+        }
       } else if (ev === 'ChannelDeleted') {
         // Tolerate either a full channel object or a bare id.
         const removedId = data !== null && typeof data === 'object' ? data.id : data
@@ -1772,10 +2012,18 @@ function Main() {
         // roster here. Pruning would desync: the server still considers them a
         // member and so never re-announces them (NewUser) on rejoin, leaving them
         // invisible to everyone else. Ban is different (see ClientBanned).
+        // Chime if someone in our channel was kicked (not our own kick — that's
+        // handled on the socket close).
+        if (data.client?.id !== selfIdRef.current && data.client?.channel_id === selfChannelIdRef.current) {
+          playUiSound('neutral_kicked_server_currentchannel')
+        }
       } else if (ev === 'ClientBanned') {
         // { client, duration_seconds, reason }. Drop from the roster and record
         // the ban so they surface in the Users tab (where they can be unbanned).
         // The event carries the full client, so no /server/bans refetch is needed.
+        if (data.client?.id !== selfIdRef.current && data.client?.channel_id === selfChannelIdRef.current) {
+          playUiSound('neutral_banned_server_currentchannel')
+        }
         setClients((prev) => prev.filter((c) => c.id !== data.client.id))
         setBans((prev) =>
           prev.some((b) => b.user.id === data.client.id)
@@ -1874,6 +2122,14 @@ function Main() {
           return
         }
 
+        // Voice ticket (op 6): the server's reply to a VoiceStateUpdate that
+        // moved us from no channel into a voice one. Hand it to soup, which is
+        // opening (or about to open) the voice socket that needs it.
+        if (msg.op === 6) {
+          receiveVoiceTicket(msg.ticket)
+          return
+        }
+
         // Rejected command (e.g. an invalid presence update). This is a reply to
         // one message, not a connection fault — surface it and keep the socket.
         if (typeof msg.err === 'string') {
@@ -1903,8 +2159,11 @@ function Main() {
         const kicked = event.code === 4001 || reason.includes('kick')
         if (banned || kicked) {
           closedByUs = true // suppress the reconnect path below
-          showError(`You have been ${banned ? 'banned' : 'kicked'} from the server`)
-          handleDisconnect()
+          showError(`You have been ${banned ? 'banned' : 'kicked'} from the server`, {
+            silent: true
+          })
+          playUiSound(banned ? 'you_were_banned' : 'you_kicked_server')
+          handleDisconnect({ skipSound: true })
           return
         }
         // Recover unless the close was intentional. We resume if we still hold a
@@ -1981,9 +2240,10 @@ function Main() {
         body: formData
       })
       await throwIfError(res)
+      playUiSound('chat_message_outbound')
       // The server broadcasts MessageCreated back to us too, which appends it to the feed
     } catch (err) {
-      showError(`Failed to send message: ${err.message}`)
+      showError(`Failed to send message: ${err.message}`, err)
     }
   }
 
@@ -2009,7 +2269,7 @@ function Main() {
       await throwIfError(res)
       // The server broadcasts MessageUpdated back to us, patching the feed entry.
     } catch (err) {
-      showError(`Failed to edit message: ${err.message}`)
+      showError(`Failed to edit message: ${err.message}`, err)
     }
   }
 
@@ -2056,7 +2316,7 @@ function Main() {
       await throwIfError(res)
     } catch (err) {
       toggleReactionLocal(messageId, emoji)
-      showError(`Failed to ${had ? 'remove' : 'add'} reaction: ${err.message}`)
+      showError(`Failed to ${had ? 'remove' : 'add'} reaction: ${err.message}`, err)
     }
   }
 
@@ -2074,7 +2334,7 @@ function Main() {
       await throwIfError(res)
       setFeed((prev) => prev.filter((e) => !(e.type === 'message' && e.id === messageId)))
     } catch (err) {
-      showError(`Failed to delete message: ${err.message}`)
+      showError(`Failed to delete message: ${err.message}`, err)
     }
   }
 
@@ -2089,6 +2349,12 @@ function Main() {
   const sendVoiceState = useCallback((patch) => {
     const next = { ...voiceStateRef.current, ...patch }
     voiceStateRef.current = next
+    // A channel change (join/leave/switch) tears down and rebuilds media, so the
+    // streams that vanish/appear are the transition — not real stops/starts.
+    // Disarm the stream chimes now, synchronously, before handleLeave's teardown
+    // empties allVideoStreams and the diff effect mistakes it for a stream ending.
+    // The baseline effect re-arms once we've settled in the new channel (or none).
+    if ('channel_id' in patch) streamSoundsArmedRef.current = false
     if (eventsWsRef.current?.readyState === WebSocket.OPEN) {
       eventsWsRef.current.send(JSON.stringify({ op: 1, data: next }))
     }
@@ -2171,12 +2437,14 @@ function Main() {
       else if (summaryChannelId != null) setSummaryChannelId(null)
       else if (summaryClientId != null) setSummaryClientId(null)
       else if (previewChannelId != null) setPreviewChannelId(null)
+      else if (showTraffic) setShowTraffic(false)
+      else if (showServerSummary) setShowServerSummary(false)
       else return
       e.preventDefault()
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [showSettings, rolesGroupsOpen, summaryChannelId, summaryClientId, previewChannelId])
+  }, [showSettings, rolesGroupsOpen, summaryChannelId, summaryClientId, previewChannelId, showTraffic, showServerSummary])
 
   const connected = !!token
   const titleText = connectedServer ? `${APP_TITLE} — ${connectedServer.nickname}` : APP_TITLE
@@ -2243,7 +2511,8 @@ function Main() {
   return (
     <ClientActionsProvider value={clientActions}>
       <div className="app-shell">
-        <Toast message={toast?.message} variant={toast?.variant} onDismiss={dismissToast} />
+        <Toast toast={toast} onDismiss={dismissToast} />
+        <UpdatePrompt />
         {rolesGroupsOpen && (
           <RolesGroupsMenu
             roles={roles}
@@ -2269,8 +2538,17 @@ function Main() {
             clients={clients}
             self={client}
             onStreamsUpdate={handleStreamsUpdate}
+            isReconnectRecovering={isReconnectRecovering}
             onStatusChange={sendStatus}
-            onSelfChannelChange={(channelId) => sendVoiceState({ channel_id: channelId })}
+            onSelfChannelChange={(channelId) => {
+              // Joining/leaving a voice channel is a navigation — drop the
+              // forced traffic view so we land on that channel's chat.
+              setShowTraffic(false)
+              setShowServerSummary(false)
+              sendVoiceState({ channel_id: channelId })
+            }}
+            onViewServerTraffic={handleViewServerTraffic}
+            onViewServerSummary={handleViewServerSummary}
             // provide a renderer-level openSettings hook
             onOpenSettings={openSettings}
             servers={servers}
@@ -2315,10 +2593,17 @@ function Main() {
           <main className="chat-area">
             {/* Summary views have no header bar: their banner card acts as the header.
               Leaving a view = clicking back to your joined channel in the sidebar. */}
-            {summaryChannelId == null && summaryClientId == null && (
+            {summaryChannelId == null && summaryClientId == null && !showServerSummary && (
               <div className="chat-header">
                 <div className="header-content">
-                  {previewChannelId != null ? (
+                  {showTraffic ? (
+                    // Forced traffic view (server menu). Title-only header like a
+                    // peek — Esc or navigating elsewhere returns to the channel.
+                    <span className="view-preview-title">
+                      <IconActivity size={18} stroke={2} />
+                      Server Traffic
+                    </span>
+                  ) : previewChannelId != null ? (
                     // Peeking into another channel's chat: no view tabs (no streams),
                     // just the channel name.
                     <span className="view-preview-title">
@@ -2329,25 +2614,16 @@ function Main() {
                       )}
                       {previewChannelName}
                     </span>
-                  ) : connected ? (
+                  ) : connected && joinedChannel ? (
+                    // In a voice channel: channel name + member count + Chat/Streams tabs.
                     <>
                       <div className="chat-title">
                         <span className="chat-title-icon">
-                          {joinedChannel ? (
-                            <IconVolume size={17} stroke={2} />
-                          ) : (
-                            <IconUsersGroup size={17} stroke={2} />
-                          )}
+                          <IconVolume size={17} stroke={2} />
                         </span>
                         <span className="chat-title-text">
-                          <span className="chat-title-name">
-                            {joinedChannel?.name ?? connectedServer?.nickname ?? 'Connected'}
-                          </span>
-                          <span className="chat-title-sub">
-                            {joinedChannel
-                              ? `${joinedChannelUserCount} in voice`
-                              : 'Not in a voice channel'}
-                          </span>
+                          <span className="chat-title-name">{joinedChannel.name}</span>
+                          <span className="chat-title-sub">{joinedChannelUserCount} in voice</span>
                         </span>
                       </div>
                       <SegmentedTabs
@@ -2370,6 +2646,19 @@ function Main() {
                         ]}
                       />
                     </>
+                  ) : connected ? (
+                    // Lurking (not in a voice channel): just the server name — the
+                    // canvas below shows server traffic, so no tabs or subtext.
+                    <div className="chat-title">
+                      <span className="chat-title-icon">
+                        <IconUsersGroup size={17} stroke={2} />
+                      </span>
+                      <span className="chat-title-text">
+                        <span className="chat-title-name">
+                          {connectedServer?.nickname ?? 'Connected'}
+                        </span>
+                      </span>
+                    </div>
                   ) : (
                     <span aria-hidden="true" />
                   )}
@@ -2387,9 +2676,13 @@ function Main() {
                     ? `channel-summary-${summaryChannelId}`
                     : summaryClientId != null
                       ? `summary-${summaryClientId}`
-                      : previewChannelId != null
+                      : showServerSummary
+                        ? 'server-summary'
+                        : previewChannelId != null
                         ? `preview-${previewChannelId}`
-                        : viewMode
+                        : showTraffic || !joinedChannel
+                          ? 'lobby'
+                          : viewMode
               }
             >
               {!connected ? (
@@ -2414,6 +2707,12 @@ function Main() {
                   isSelf={summaryClient?.id === client?.id}
                   onSetAvatar={handleSetAvatar}
                 />
+              ) : showServerSummary ? (
+                <ServerSummary />
+              ) : showTraffic || (previewChannelId == null && !joinedChannel) ? (
+                // Server-traffic log: shown on demand (server menu) or as the
+                // default when lurking (not in a voice channel, not peeking).
+                <ServerTraffic entries={traffic} clients={clients} />
               ) : previewChannelId != null || viewMode === 'log' ? (
                 <ChatPanel
                   feed={feed.filter(

@@ -10,14 +10,19 @@ import { IconAlertTriangle, IconCircleCheck } from '@tabler/icons-react'
 // denials, failed fetches) — as opposed to ErrorBoundary, which takes over the
 // whole app on a hard crash. The 'success' variant confirms completed actions.
 // Click anywhere on it to dismiss; it also auto-dismisses after a few seconds.
-function Toast({ message, variant = 'error', onDismiss }) {
+function Toast({ toast, onDismiss }) {
   const overlayAnim = useAnimationCategory('overlays')
+  const message = toast?.message
+  const variant = toast?.variant ?? 'error'
 
+  // Depend on the toast object, not just the message string, so re-firing the
+  // same message (e.g. a repeated "talking while muted" warning) restarts the
+  // auto-dismiss timer and keeps the banner up instead of hiding after the first.
   useEffect(() => {
     if (!message) return
     const t = setTimeout(onDismiss, 6000)
     return () => clearTimeout(t)
-  }, [message, onDismiss])
+  }, [toast, message, onDismiss])
 
   return (
     <AnimatePresence>

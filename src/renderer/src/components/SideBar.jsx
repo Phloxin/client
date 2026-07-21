@@ -38,6 +38,7 @@ function Sidebar({
   clients,
   self,
   onStreamsUpdate,
+  isReconnectRecovering,
   onOpenSettings,
   onStatusChange,
   onSelfChannelChange,
@@ -49,6 +50,8 @@ function Sidebar({
   onEditServer,
   onRemoveServer,
   onNotify,
+  onViewServerTraffic,
+  onViewServerSummary,
   onCreateChannel,
   onDeleteChannel,
   onReorderChannel,
@@ -355,13 +358,19 @@ function Sidebar({
   useEffect(() => {
     if (joinedChannelId == null || selfServerChannelId === joinedChannelId) return
     if (selfServerChannelId == null) {
+      // Right after a reconnect the server briefly reports us channel-less (it
+      // dropped us from voice during the outage). Don't leave — soup is already
+      // reconnecting and re-asserting membership, and leaving would tear that
+      // down and yank us out for good. It restores selfServerChannelId when it
+      // lands, re-running this effect to a consistent state.
+      if (isReconnectRecovering?.()) return
       // Moved out of every channel — leave voice locally.
       channelRefs.current[joinedChannelId]?.leave()
       return
     }
     channelRefs.current[joinedChannelId]?.deactivate()
     channelRefs.current[selfServerChannelId]?.adopt()
-  }, [selfServerChannelId, joinedChannelId])
+  }, [selfServerChannelId, joinedChannelId, isReconnectRecovering])
 
   const isDragging = useRef(false)
   const sidebarRef = useRef(null)
@@ -445,7 +454,7 @@ function Sidebar({
 
   return (
     <aside className="sidebar" ref={sidebarRef} style={{ width }}>
-      <div className="server-header">
+      <div className={`server-header${connectedServer ? '' : ' disconnected'}`}>
         <ServerMenu
           servers={servers}
           connectedServer={connectedServer}
@@ -455,6 +464,8 @@ function Sidebar({
           onEditServer={onEditServer}
           onRemoveServer={onRemoveServer}
           onNotify={onNotify}
+          onViewServerTraffic={onViewServerTraffic}
+          onViewServerSummary={onViewServerSummary}
         />
       </div>
 
@@ -501,9 +512,11 @@ function Sidebar({
           {filterOpen && sidebarView === 'users' && (
             <div className="client-context-menu user-filter-menu" ref={filterRef}>
               <div className="client-context-menu-header">Filter by</div>
+              <div className="user-filter-scroll">
               {roles.length === 0 && vanity.length === 0 && (
                 <div className="client-role-empty">No roles or groups</div>
               )}
+              {roles.length > 0 && <div className="user-filter-section">Roles</div>}
               {roles.map((r) => (
                 <button
                   key={`r${r.id}`}
@@ -519,6 +532,7 @@ function Sidebar({
                   {r.name}
                 </button>
               ))}
+              {vanity.length > 0 && <div className="user-filter-section">Groups</div>}
               {vanity.map((g) => (
                 <button
                   key={`g${g.id}`}
@@ -548,6 +562,7 @@ function Sidebar({
                   Clear filters
                 </button>
               )}
+              </div>
             </div>
           )}
         </div>
@@ -573,7 +588,9 @@ function Sidebar({
             onDragEnd={handleChannelDragEnd}
             dragging={dragId === ch.id}
             dropEdge={dropTarget?.id === ch.id && dragId !== ch.id ? dropTarget.edge : null}
-            clients={clients.filter((c) => c.channel_id === ch.id)}
+            clients={clients
+              .filter((c) => c.channel_id === ch.id)
+              .sort((a, b) => (a.name || '').localeCompare(b.name || ''))}
             self={self}
             micMuted={micMuted}
             deafened={soundMuted}

@@ -1,0 +1,80 @@
+/* Launch-time update prompt. Small centered dialog; buttons reuse the global
+   .picker-btn styles from ScreenSourcePicker.css. */
+
+.update-prompt-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgb(var(--shadow-tint) / 0.55);
+  backdrop-filter: blur(3px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1200;
+  padding: 24px;
+}
+
+.update-prompt {
+  width: min(400px, 96%);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-xl);
+  background: var(--gradient-surface);
+  box-shadow: var(--shadow-3);
+  padding: 22px 24px;
+}
+
+.update-prompt h3 {
+  margin: 0 0 8px;
+  font-size: var(--font-size-lg);
+  color: var(--color-text);
+}
+
+.update-prompt p {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+}
+
+.update-prompt-dontask {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.update-prompt-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.update-prompt-actions .picker-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.update-prompt-progress {
+  margin-top: 14px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--color-background-mute);
+  overflow: hidden;
+}
+
+.update-prompt-progress-bar {
+  height: 100%;
+  background: var(--gradient-primary);
+  transition: width 0.2s ease;
+}
+
+.update-prompt-error-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-danger);
+}

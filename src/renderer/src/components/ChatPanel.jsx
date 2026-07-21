@@ -12,7 +12,8 @@ import {
   IconCopy,
   IconPhoto,
   IconArrowDown,
-  IconMoodPlus
+  IconMoodPlus,
+  IconUsers
 } from '@tabler/icons-react'
 import { motion, AnimatePresence } from 'motion/react'
 import ImageViewer from './ImageViewer'
@@ -329,15 +330,18 @@ function encodeMentions(text, clients) {
 }
 
 // Composer text split into plain segments and mention pills, for the highlight
-// backdrop behind the textarea. Same matching rules as encodeMentions, so what
-// lights up is exactly what will encode on send.
+// backdrop behind the textarea. Same matching rules as encodeMentions (plus bare
+// @everyone, which the server matches as a standalone whitespace-delimited
+// token), so what lights up is exactly what the server will treat as a mention.
 function composerMentionNodes(text, clients) {
-  const names = (clients || [])
+  if (!text) return text
+  const alts = (clients || [])
     .filter((c) => c.name)
     .map((c) => c.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
     .sort((a, b) => b.length - a.length)
-  if (!text || !names.length) return text
-  const re = new RegExp(`@(?:${names.join('|')})(?!\\w)`, 'gi')
+    .map((name) => `@${name}(?!\\w)`)
+  alts.push('(?<=^|\\s)@everyone(?=\\s|$)')
+  const re = new RegExp(alts.join('|'), 'gi')
   const out = []
   let last = 0
   let m
@@ -440,7 +444,10 @@ function ChatPanel({
   const channelKeyRef = useRef(channelKey)
   const prependingRef = useRef(false)
 
-  // After every feed change, decide where to leave the scroll position:
+  // After every rendered feed change, decide where to leave the scroll position.
+  // `feedPresence` intentionally trails `feed` by one layout commit, so using
+  // the source feed here can measure the old DOM before newly loaded history
+  // has mounted (leaving the initial chat view stuck at scrollTop 0).
   //  - switched channels        → snap to the bottom (newest)
   //  - just prepended older msgs → keep the same messages under the viewport
   //  - was already near bottom   → follow new messages down
@@ -449,7 +456,7 @@ function ChatPanel({
     const el = listRef.current
     if (!el) return
     const prev = metricsRef.current
-    const lastId = feed[feed.length - 1]?.id
+    const lastId = feedPresence[feedPresence.length - 1]?.item.id
     if (channelKeyRef.current !== channelKey) {
       channelKeyRef.current = channelKey
       prependingRef.current = false
@@ -471,7 +478,31 @@ function ChatPanel({
       scrollHeight: el.scrollHeight,
       clientHeight: el.clientHeight
     }
-  }, [feed, channelKey])
+  }, [feedPresence, channelKey])
+
+  // Images, videos, embeds, and late font layout can make an already-rendered
+  // row taller after the feed layout effect above has scrolled to the bottom.
+  // The scrollport itself can also shrink as the composer/outer flex layout
+  // settles. Keep the bottom pinned across both kinds of resize only if the
+  // last measured viewport was already there; handleScroll updates the metrics
+  // immediately when the user moves up, so their reading position is left alone.
+  useLayoutEffect(() => {
+    const el = listRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(() => {
+      const prev = metricsRef.current
+      if (prev.scrollHeight - prev.scrollTop - prev.clientHeight >= 80) return
+      el.scrollTop = el.scrollHeight
+      metricsRef.current = {
+        scrollTop: el.scrollTop,
+        scrollHeight: el.scrollHeight,
+        clientHeight: el.clientHeight
+      }
+    })
+    observer.observe(el)
+    for (const row of el.querySelectorAll(':scope > [data-anim-status]')) observer.observe(row)
+    return () => observer.disconnect()
+  }, [feedPresence, channelKey])
 
   // Near the top → pull the previous page (once at a time), remembering the
   // pre-prepend metrics so the layout effect can restore the viewport.
@@ -497,10 +528,15 @@ function ChatPanel({
   }
 
   // Grow the message box to fit its content, up to MAX_INPUT_LINES, then let it
-  // scroll. Runs on every text change (typing, emoji insert, send-clear).
+  // scroll. Runs on every text change (typing, emoji insert, send-clear). Measure
+  // whether the message list is pinned before changing the textarea height, then
+  // restore the bottom after flexbox gives the composer its additional space.
   useLayoutEffect(() => {
     const el = inputRef.current
     if (!el) return
+    const list = listRef.current
+    const keepLatestVisible =
+      list && list.scrollHeight - list.scrollTop - list.clientHeight < 80
     el.style.height = 'auto' // shrink first so scrollHeight reflects the content
     const cs = getComputedStyle(el)
     const lineHeight = parseFloat(cs.lineHeight) || 20
@@ -511,6 +547,18 @@ function ChatPanel({
     const fullHeight = el.scrollHeight + verticalBorder
     el.style.height = `${Math.min(fullHeight, maxHeight)}px`
     el.style.overflowY = fullHeight > maxHeight ? 'auto' : 'hidden'
+    if (keepLatestVisible) {
+      // Reading scrollHeight forces the flex layout to include the textarea's
+      // new height before the scroll is applied.
+      list.scrollTop = list.scrollHeight
+      metricsRef.current = {
+        scrollTop: list.scrollTop,
+        scrollHeight: list.scrollHeight,
+        clientHeight: list.clientHeight
+      }
+      setScrolledUp(false)
+      setNewBelow(false)
+    }
   }, [text])
 
   // Close the emoji picker on outside click
@@ -589,9 +637,16 @@ function ChatPanel({
   }
 
   const mentionMatches = mention
-    ? (clients || [])
-        .filter((c) => c.name?.toLowerCase().includes(mention.query.toLowerCase()))
-        .slice(0, 8)
+    ? [
+        // @everyone isn't a roster entry — synthesize it, listed first like
+        // Discord. `name` is all selectMention needs to insert the token.
+        ...('everyone'.includes(mention.query.toLowerCase())
+          ? [{ id: '@everyone', name: 'everyone', everyone: true }]
+          : []),
+        ...(clients || []).filter((c) =>
+          c.name?.toLowerCase().includes(mention.query.toLowerCase())
+        )
+      ].slice(0, 8)
     : []
 
   // Replace the in-progress @token with the chosen name. The composer keeps
@@ -664,6 +719,17 @@ function ChatPanel({
       if (e.key === 'Escape') {
         e.preventDefault()
         setMention(null)
+        return
+      }
+    }
+    // Up-arrow in an empty composer jumps straight to editing your own most
+    // recent message (matching Discord/Slack). Only fires when the last message
+    // in the feed is ours, so we never steal caret navigation from a draft.
+    if (e.key === 'ArrowUp' && !text && !attachments.length && !disabled) {
+      const last = [...feed].reverse().find((entry) => entry.type === 'message')
+      if (last && selfId != null && last.authorId === selfId) {
+        e.preventDefault()
+        setEditingId(last.id)
         return
       }
     }
@@ -1131,13 +1197,20 @@ function ChatPanel({
                   onMouseEnter={() => setMentionIndex(i)}
                 >
                   <span className="chat-avatar chat-mention-avatar" aria-hidden="true">
-                    {c.avatar ? (
+                    {c.everyone ? (
+                      <IconUsers size={13} />
+                    ) : c.avatar ? (
                       <img className="chat-avatar-img" src={c.avatar} alt="" />
                     ) : (
                       (c.name || '?').charAt(0).toUpperCase()
                     )}
                   </span>
-                  {c.name}
+                  {c.everyone ? '@everyone' : c.name}
+                  {c.everyone && (
+                    <span className="chat-mention-hint">
+                      Notify everyone with visibility to this channel
+                    </span>
+                  )}
                 </button>
               ))}
             </motion.div>

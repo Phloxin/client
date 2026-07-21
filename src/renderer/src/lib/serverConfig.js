@@ -34,7 +34,11 @@ export function wsBase() {
 export async function throwIfError(res) {
   if (res.ok) return res
   const body = await res.json().catch(() => null)
-  throw new Error(body?.error || `Server responded ${res.status}`)
+  const err = new Error(body?.error || `Server responded ${res.status}`)
+  // Keep the HTTP status so callers can tell a permission failure (403) apart
+  // from other errors without matching on message text.
+  err.status = res.status
+  throw err
 }
 
 // Resolve a server-relative asset path (e.g. /cdn/foo.png) against the active
