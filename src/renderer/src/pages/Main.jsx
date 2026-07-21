@@ -16,6 +16,7 @@ import ServerSummary from '../components/ServerSummary'
 import TitleBar from '../components/TitleBar'
 import ConnectionOverlay from '../components/ConnectionOverlay'
 import Toast from '../components/Toast'
+import UpdatePrompt from '../components/UpdatePrompt'
 import RolesGroupsMenu from '../components/RolesGroupsMenu'
 import IdleAnimation from '../components/IdleAnimation'
 import Settings from './Settings'
@@ -2511,6 +2512,7 @@ function Main() {
     <ClientActionsProvider value={clientActions}>
       <div className="app-shell">
         <Toast toast={toast} onDismiss={dismissToast} />
+        <UpdatePrompt />
         {rolesGroupsOpen && (
           <RolesGroupsMenu
             roles={roles}

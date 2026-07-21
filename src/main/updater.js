@@ -16,13 +16,31 @@ function broadcast(type, payload = {}) {
   }
 }
 
+// A launch check is silent: only 'available' surfaces (as a popup). The
+// checking/not-available/error chatter is suppressed so it never disturbs the
+// settings UI or the user when nothing's new. The flag rides the single
+// in-flight check between checkForUpdates() and its terminal event.
+let launchCheckActive = false
+
 export function setupUpdater() {
-  autoUpdater.on('checking-for-update', () => broadcast('checking'))
-  autoUpdater.on('update-available', (info) => broadcast('available', { version: info.version }))
-  autoUpdater.on('update-not-available', () => broadcast('not-available'))
+  autoUpdater.on('checking-for-update', () => {
+    if (!launchCheckActive) broadcast('checking')
+  })
+  autoUpdater.on('update-available', (info) => {
+    const launch = launchCheckActive
+    launchCheckActive = false
+    broadcast('available', { version: info.version, launch })
+  })
+  autoUpdater.on('update-not-available', () => {
+    if (launchCheckActive) launchCheckActive = false
+    else broadcast('not-available')
+  })
   autoUpdater.on('download-progress', (p) => broadcast('progress', { percent: p.percent }))
   autoUpdater.on('update-downloaded', (info) => broadcast('downloaded', { version: info.version }))
-  autoUpdater.on('error', (err) => broadcast('error', { message: String(err?.message || err) }))
+  autoUpdater.on('error', (err) => {
+    if (launchCheckActive) launchCheckActive = false
+    else broadcast('error', { message: String(err?.message || err) })
+  })
 
   ipcMain.handle('updater:check', async () => {
     // Dev builds have no app-update.yml; checkForUpdates would reject. Tell the
@@ -32,6 +50,17 @@ export function setupUpdater() {
       await autoUpdater.checkForUpdates()
     } catch (err) {
       broadcast('error', { message: String(err?.message || err) })
+    }
+  })
+
+  // Silent check fired once on launch. No-op in dev (no app-update.yml).
+  ipcMain.handle('updater:check-on-launch', async () => {
+    if (!app.isPackaged) return
+    launchCheckActive = true
+    try {
+      await autoUpdater.checkForUpdates()
+    } catch {
+      launchCheckActive = false
     }
   })
 

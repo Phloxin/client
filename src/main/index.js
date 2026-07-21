@@ -56,7 +56,10 @@ const DEFAULT_APP_SETTINGS = {
   retainWindowBounds: true,
   // Windows/Linux only — see the idle-inhibitor section below. Off by default:
   // holding the system awake is the user's call, not ours.
-  preventSleep: false
+  preventSleep: false,
+  // Silent update check on launch; the popup lets the user opt out ("don't show
+  // me again"), which flips this off.
+  checkUpdatesOnLaunch: true
 }
 
 function readAppSettings() {
