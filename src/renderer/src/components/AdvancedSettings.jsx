@@ -6,6 +6,12 @@ import { resetScreenCodecPreference } from '../lib/soup'
 // The keep-awake blocker is only wired up for Windows and Linux in main.
 const supportsIdleInhibitor = window.api?.platform === 'win32' || window.api?.platform === 'linux'
 
+// Last-loaded main-process settings, kept module-side so remounting the panel
+// (e.g. switching back to the Advanced tab) seeds the toggles from the known
+// values instead of null — otherwise the async load flashes the `?? fallback`
+// state for a frame before it resolves. Updated on every successful load/toggle.
+let cachedSettings = null
+
 // Advanced settings. Two kinds live here:
 //   - Codec badge: a renderer-only appearance pref (localStorage via context).
 //   - Hardware acceleration: a Chromium startup flag the MAIN process applies
@@ -14,18 +20,23 @@ const supportsIdleInhibitor = window.api?.platform === 'win32' || window.api?.pl
 function AdvancedSettings() {
   const { appearanceSettings, updateAppearanceSettings } = useSettings()
 
-  // null while loading; the boolean once the main process answers.
-  const [hwAccel, setHwAccel] = useState(null)
+  // Seed from the cache so a remount shows the right state immediately; null
+  // only on the very first mount, before the main process has ever answered.
+  const seedHwAccel = cachedSettings ? cachedSettings.hardwareAcceleration !== false : null
+  const [hwAccel, setHwAccel] = useState(seedHwAccel)
   // The value that's actually applied to the running process, so we can tell
   // the user a relaunch is pending when their toggle no longer matches it.
-  const [appliedHwAccel, setAppliedHwAccel] = useState(null)
-  const [preventSleep, setPreventSleep] = useState(null)
+  const [appliedHwAccel, setAppliedHwAccel] = useState(seedHwAccel)
+  const [preventSleep, setPreventSleep] = useState(
+    cachedSettings ? cachedSettings.preventSleep === true : null
+  )
 
   useEffect(() => {
     let cancelled = false
     window.electron?.ipcRenderer
       ?.invoke('get-app-settings')
       .then((settings) => {
+        cachedSettings = settings || {}
         if (cancelled) return
         const enabled = settings?.hardwareAcceleration !== false
         setHwAccel(enabled)
@@ -45,11 +56,13 @@ function AdvancedSettings() {
 
   const togglePreventSleep = (enabled) => {
     setPreventSleep(enabled)
+    if (cachedSettings) cachedSettings.preventSleep = enabled
     window.electron?.ipcRenderer?.send('set-idle-inhibitor', enabled)
   }
 
   const toggleHwAccel = (enabled) => {
     setHwAccel(enabled)
+    if (cachedSettings) cachedSettings.hardwareAcceleration = enabled
     window.electron?.ipcRenderer?.send('set-app-settings', { hardwareAcceleration: enabled })
     // The set of available encoders is about to change, so a previously-learned
     // "AV1 is software → prefer H.264" verdict is stale — re-probe AV1 next share.

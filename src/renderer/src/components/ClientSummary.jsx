@@ -188,6 +188,15 @@ function ClientSummary({ client, roles = [], vanity = [], isSelf = false, onSetA
         </p>
       </section>
 
+      {/* Client build/version from the Identify handshake, carried on presence
+          (client_type.version). Absent when the user is offline or predates it. */}
+      {presence?.client_type?.version && (
+        <section className="client-summary-section">
+          <h3 className="client-summary-heading">App Version</h3>
+          <p className="client-summary-value">{presence.client_type.version}</p>
+        </section>
+      )}
+
       {viewerOpen && hasAvatar && (
         <ImageViewer
           src={client.avatar}

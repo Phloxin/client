@@ -101,6 +101,26 @@ html[data-transparency='true'] .chat-area {
   color: var(--color-primary);
 }
 
+/* An image icon fills the box on its own — drop the tinted placeholder backing. */
+.chat-title-icon:has(.chat-title-icon-img) {
+  background: none;
+}
+
+.chat-title-icon-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: inherit;
+}
+
+.preview-title-icon-img {
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  object-fit: cover;
+  border-radius: var(--radius-sm);
+}
+
 .chat-title-text {
   display: flex;
   flex-direction: column;

@@ -2068,6 +2068,11 @@ function Main() {
         scheduleReconnect()
         return
       }
+      // App version to report in the Identify handshake (server attaches it to
+      // our client record). Best-effort — null if the IPC isn't available.
+      const appVersion = await window.electron?.ipcRenderer
+        ?.invoke('get-app-version')
+        .catch(() => null)
       if (closedByUs) return
       ws = new WebSocket(`${wsBase()}/ws`)
       eventsWsRef.current = ws
@@ -2083,9 +2088,10 @@ function Main() {
         const data = canResume
           ? {
               token: accessToken,
+              version: appVersion,
               resume: { session_id: sessionIdRef.current, seq: lastEventSeqRef.current }
             }
-          : { token: accessToken }
+          : { token: accessToken, version: appVersion }
         ws.send(JSON.stringify({ op: 0, data }))
         // Heartbeat: prove we're still alive every interval, reporting the last
         // event sequence we've processed. If these stop arriving the server
@@ -2607,7 +2613,13 @@ function Main() {
                     // Peeking into another channel's chat: no view tabs (no streams),
                     // just the channel name.
                     <span className="view-preview-title">
-                      {previewChannel?.type === 'dm' ? (
+                      {previewChannel?.channel_icon ? (
+                        <img
+                          className="preview-title-icon-img"
+                          src={cdnUrl(previewChannel.channel_icon)}
+                          alt=""
+                        />
+                      ) : previewChannel?.type === 'dm' ? (
                         <IconUser size={18} stroke={2} />
                       ) : (
                         <IconMessage size={18} stroke={2} />
@@ -2619,7 +2631,15 @@ function Main() {
                     <>
                       <div className="chat-title">
                         <span className="chat-title-icon">
-                          <IconVolume size={17} stroke={2} />
+                          {joinedChannel.channel_icon ? (
+                            <img
+                              className="chat-title-icon-img"
+                              src={cdnUrl(joinedChannel.channel_icon)}
+                              alt=""
+                            />
+                          ) : (
+                            <IconVolume size={17} stroke={2} />
+                          )}
                         </span>
                         <span className="chat-title-text">
                           <span className="chat-title-name">{joinedChannel.name}</span>

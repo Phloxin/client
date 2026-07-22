@@ -15,7 +15,8 @@ import {
   IconEye,
   IconEyeOff,
   IconActivity,
-  IconInfoCircle
+  IconInfoCircle,
+  IconServer
 } from '@tabler/icons-react'
 
 // Initial state for the add-server form
@@ -257,6 +258,15 @@ function ServerMenu({
                   className="server-menu-item"
                   onClick={() => handleConnect(server)}
                 >
+                  {/* Placeholder until the server sends its own icon on connect,
+                      at which point server.icon carries the image URL. */}
+                  <span className="server-menu-item-icon">
+                    {server.icon ? (
+                      <img src={server.icon} alt="" />
+                    ) : (
+                      <IconServer size={18} stroke={2} />
+                    )}
+                  </span>
                   <div className="server-menu-item-info">
                     <span className="server-menu-item-name">{server.nickname}</span>
                     <span className="server-menu-item-host">{server.host}</span>
