@@ -29,18 +29,26 @@ function sdSegment(px, py, ax, ay, bx, by) {
 const cover = (d) => Math.min(1, Math.max(0, 0.5 - d))
 
 // ── glyph signed-distance fields (32px space) ────────────────────────
-function micDist(x, y) {
-  const capsule = sdRoundRect(x, y, 16, 11.5, 4.5, 6.5, 4.5) // mic head
-  const stem = sdRoundRect(x, y, 16, 21, 1.3, 3.6, 1) // neck
-  const base = sdRoundRect(x, y, 16, 25.2, 5, 1.3, 1.2) // foot
-  return Math.min(capsule, stem, base)
+// Modelled on the Tabler "microphone" glyph (hollow capsule + pickup arc +
+// stem + base, all stroked), scaled to fill the 32px frame. T = half stroke.
+const T = 1.7
+function micDist(x, y, filled = false) {
+  // capsule head — solid when `filled` (talking), else a hollow outline
+  const box = sdRoundRect(x, y, 16, 10.5, 4.35, 7.95, 4.35)
+  const capsule = filled ? box - T : Math.abs(box) - T
+  // U-shaped pickup arc: bottom half of a ring under the capsule
+  let arc = Math.abs(len(x - 16, y - 14) - 10.1) - T
+  if (y < 14) arc = 1e9
+  const stem = sdSegment(x, y, 16, 24.1, 16, 30) - T // neck
+  const base = sdSegment(x, y, 10.2, 30, 21.8, 30) - T // foot
+  return Math.min(capsule, arc, stem, base)
 }
 function headphoneDist(x, y) {
   // Headband: top half of a ring; cups: rounded rects at each end.
-  let band = Math.abs(len(x - 16, y - 18) - 9) - 1.5
-  if (y > 18.5) band = 1e9
-  const leftCup = sdRoundRect(x, y, 7.5, 20, 2, 4, 2)
-  const rightCup = sdRoundRect(x, y, 24.5, 20, 2, 4, 2)
+  let band = Math.abs(len(x - 16, y - 16) - 11) - T
+  if (y > 16) band = 1e9
+  const leftCup = sdRoundRect(x, y, 6.5, 20, 2.4, 6, 2.4)
+  const rightCup = sdRoundRect(x, y, 25.5, 20, 2.4, 6, 2.4)
   return Math.min(band, leftCup, rightCup)
 }
 
@@ -69,7 +77,7 @@ function render({ glyph, color, slash }) {
       if (slash) {
         // dark outline first so the slash reads against the glyph, then the
         // coloured cut on top.
-        const seg = sdSegment(px, py, 8, 8, 24, 24)
+        const seg = sdSegment(px, py, 6, 6, 26, 26)
         over(buf, i, 24, 24, 30, cover(seg - 2.6))
         over(buf, i, cr, cg, cb, cover(seg - 1.3))
       }
@@ -126,7 +134,7 @@ const GREEN = [59, 165, 93]
 const RED = [237, 66, 69]
 const icons = {
   'tray-idle': { glyph: micDist, color: IDLE },
-  'tray-talking': { glyph: micDist, color: GREEN },
+  'tray-talking': { glyph: (x, y) => micDist(x, y, true), color: GREEN },
   'tray-muted': { glyph: micDist, color: RED, slash: true },
   'tray-deafened': { glyph: headphoneDist, color: RED, slash: true }
 }

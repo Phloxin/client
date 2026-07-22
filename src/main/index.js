@@ -26,11 +26,8 @@ import { setupTray, setTrayVoiceState, destroyTray } from './tray'
 
 const APP_ID = 'app.pylon.client'
 
-// Main window reference + quit intent, shared with the tray. On Windows the
-// window hides to the tray on close and only really quits via the tray's Quit
-// (or any real app-quit path), so isQuitting distinguishes the two.
+// Main window reference, shared with the tray so it can reach the window.
 let mainWindow = null
-let isQuitting = false
 
 // Portals need a stable XDG application ID. In development there is no
 // installed .desktop file for Electron to infer it from, so set the name before
@@ -422,16 +419,6 @@ function createWindow() {
     })
   }
 
-  // Close-to-tray (Windows): the window's X / title-bar close hides to the tray
-  // instead of quitting, matching TeamSpeak. A real quit (tray Quit, OS
-  // shutdown) sets isQuitting first so this lets the close through.
-  mainWindow.on('close', (e) => {
-    if (process.platform === 'win32' && !isQuitting) {
-      e.preventDefault()
-      mainWindow.hide()
-    }
-  })
-
   // Let the custom title bar swap its maximize/restore icon when the window's
   // maximized state changes by any means (button, double-click, OS snap).
   const sendMaxState = () =>
@@ -792,10 +779,7 @@ app.whenReady().then(() => {
   // menu. No-op on other platforms (see tray.js).
   setupTray({
     getWindow: () => mainWindow,
-    quit: () => {
-      isQuitting = true
-      app.quit()
-    }
+    quit: () => app.quit()
   })
 
   // Re-arm the keep-awake blocker if the user left it on last session.
@@ -815,16 +799,9 @@ app.whenReady().then(() => {
   })
 })
 
-// Any real quit path (tray Quit, OS shutdown, relaunch) flips this so the
-// close-to-tray handler stops swallowing the window's close event.
-app.on('before-quit', () => {
-  isQuitting = true
-})
-
 // Quit when all windows are closed, except on macOS. There, it's common
 // for applications and their menu bar to stay active until the user quits
-// explicitly with Cmd + Q. On Windows the window hides to the tray rather than
-// closing, so this doesn't fire until an actual quit destroys it.
+// explicitly with Cmd + Q.
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit()
