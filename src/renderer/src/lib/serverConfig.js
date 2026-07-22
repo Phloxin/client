@@ -17,14 +17,28 @@ export function getServerHost() {
   return currentHost
 }
 
-// HTTP API base, e.g. https://1.2.3.4:3000
+// Dev builds launched with PYLON_INSECURE=1 talk to the server over plain
+// http/ws so a TLS-less test box can be used (see src/preload/index.js). The
+// flag is compiled out of packaged builds, so this is always false there and we
+// use TLS unconditionally.
+function insecure() {
+  return Boolean(globalThis.window?.api?.insecureConnections)
+}
+
+// HTTP API base for a given host, e.g. https://1.2.3.4:3000. Used before a host
+// becomes the active server (e.g. registration), where currentHost isn't set yet.
+export function apiBaseForHost(host) {
+  return `${insecure() ? 'http' : 'https'}://${host}`
+}
+
+// HTTP API base for the active server, e.g. https://1.2.3.4:3000
 export function apiBase() {
-  return `https://${currentHost}`
+  return apiBaseForHost(currentHost)
 }
 
 // WebSocket base, e.g. wss://1.2.3.4:3000 (append /ws or /voice)
 export function wsBase() {
-  return `wss://${currentHost}`
+  return `${insecure() ? 'ws' : 'wss'}://${currentHost}`
 }
 
 // Throw on a failed API response, preferring the server's human-readable
