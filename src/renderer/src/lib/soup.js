@@ -15,6 +15,10 @@ let producerTransport
 let consumerTransport
 let producers = []
 let localProducerIds = new Set()
+// The negotiated Opus profile belongs to the Producer, not to the mutable
+// settings object. A WeakMap keeps the metadata alongside the mediasoup object
+// without retaining producers after a transport reset.
+const audioProducerProfiles = new WeakMap()
 let screenShareCtx = null
 let shareClaimQueue = Promise.resolve()
 let shareProduceQueue = Promise.resolve()
@@ -46,6 +50,13 @@ let localClientId = null
 // promise instead of allocating a second producer transport (the server rejects a
 // duplicate). Both the reset-driven republish and an adopt() can race here.
 let publishInFlight = null
+// Republish serializes the entire capture -> processing -> producer update
+// transaction. micAcquireChain alone only protects getUserMedia; without this
+// queue, rapid settings changes can replace tracks out of order.
+let republishChain = Promise.resolve()
+// Invalidates republish work that was queued or awaiting media after a reset.
+// A stale operation must not attach its capture to a newly-created transport.
+let mediaStateGeneration = 0
 // The RNNoise WASM binary, fetched once and reused across AudioContexts.
 let rnnoiseBinaryPromise = null
 let subscribePromise = null
@@ -92,6 +103,58 @@ const audioHealsInFlight = new Set()
 let focusedClientId = null
 let focusedVolume = 1
 let focusedMuted = false
+
+// ─── Shared 25 Hz audio ticker ────────────────────────────────────
+// Speaking detectors and the live volume gate all need the same hidden-window-safe
+// cadence. One timer avoids an independent wakeup for every stream while keeping
+// analyser reads exactly where they were.
+const AUDIO_TICK_INTERVAL_MS = 40
+const audioTickerCallbacks = new Set()
+let audioTickerTimer = null
+
+function invokeAudioTickerCallback(callback) {
+  try {
+    callback()
+  } catch (err) {
+    // One broken analyser/gate must not stop the other participants' indicators.
+    console.error('[Soup] 40ms audio ticker callback failed:', err)
+  }
+}
+
+function stopAudioTicker() {
+  if (audioTickerTimer !== null) {
+    clearInterval(audioTickerTimer)
+    audioTickerTimer = null
+  }
+}
+
+function runAudioTicker() {
+  // Iterate a snapshot so callbacks may unregister themselves or another
+  // callback safely. Skip callbacks removed earlier in this same tick.
+  for (const callback of [...audioTickerCallbacks]) {
+    if (audioTickerCallbacks.has(callback)) invokeAudioTickerCallback(callback)
+  }
+  if (audioTickerCallbacks.size === 0) stopAudioTicker()
+}
+
+// Registering runs once immediately, preserving the old detector/gate startup
+// behavior. The returned function is idempotent and stops the shared timer when
+// the last callback leaves.
+function registerAudioTickerCallback(callback) {
+  audioTickerCallbacks.add(callback)
+  if (audioTickerTimer === null) {
+    audioTickerTimer = setInterval(runAudioTicker, AUDIO_TICK_INTERVAL_MS)
+  }
+  invokeAudioTickerCallback(callback)
+
+  let registered = true
+  return () => {
+    if (!registered) return
+    registered = false
+    audioTickerCallbacks.delete(callback)
+    if (audioTickerCallbacks.size === 0) stopAudioTicker()
+  }
+}
 
 // Per-client local volume/mute overrides for mic audio (right-click controls
 // in the sidebar) - keyed by clientId. Persisted to localStorage per server
@@ -299,9 +362,13 @@ export function setWatchedProducers(producerIds = []) {
   for (const producerId of wanted) {
     if (remoteConsumers.has(producerId)) continue
     const { clientId, producedType } = knownVideoProducers.get(producerId)
-    consumeProducer(producerId, 'video', activeCallbacks.onVideoStream, clientId, producedType).catch(
-      (err) => console.error(`[Soup] Failed to consume producer ${producerId}:`, err)
-    )
+    consumeProducer(
+      producerId,
+      'video',
+      activeCallbacks.onVideoStream,
+      clientId,
+      producedType
+    ).catch((err) => console.error(`[Soup] Failed to consume producer ${producerId}:`, err))
   }
 }
 
@@ -763,7 +830,7 @@ async function buildAudioProcessor(stream, micSettings) {
   const chainNodes = [source, destination]
   let node = source
   let rnnoiseNode = null
-  let gateTimer = null
+  let stopGateTicker = null
 
   if (needsRnnoise) {
     try {
@@ -790,21 +857,18 @@ async function buildAudioProcessor(stream, micSettings) {
     node.connect(gate)
     node = gate
 
-    const checkLevel = () => {
-      gateController.update()
-    }
-    // 25Hz via setInterval, not rAF: level detection needs far less than display
-    // rate, and rAF is throttled/paused when the window is hidden — which would
-    // stall the gate and stick outgoing audio gated/ungated while minimized.
-    checkLevel()
-    gateTimer = setInterval(checkLevel, 40)
+    // 25Hz via the shared ticker, not rAF: level detection needs far less than
+    // display rate, and rAF is throttled/paused when the window is hidden — which
+    // would stall the gate and stick outgoing audio gated/ungated while minimized.
+    stopGateTicker = registerAudioTickerCallback(() => gateController.update())
     console.log('[Soup] Volume gate applied, threshold:', micSettings.volumeGateThreshold)
   }
 
   node.connect(destination)
 
   const stop = () => {
-    if (gateTimer) clearInterval(gateTimer)
+    stopGateTicker?.()
+    stopGateTicker = null
     try {
       rnnoiseNode?.destroy()
     } catch {
@@ -1108,7 +1172,6 @@ export function createSpeakingDetector(
 
   let speaking = false
   let lastVoiceAt = 0
-  let intervalId
 
   const tick = () => {
     const level = reader.read()
@@ -1128,15 +1191,12 @@ export function createSpeakingDetector(
       onChange(false)
     }
   }
-  // 25Hz via setInterval, not rAF: this runs once per remote participant plus
-  // self (N+1 loops in a busy channel), level detection doesn't need display
-  // rate, and rAF pauses when the window is hidden — freezing speaking state
-  // while minimized.
-  tick()
-  intervalId = setInterval(tick, 40)
+  // 25Hz via the shared hidden-window-safe ticker. Registration invokes the
+  // callback once immediately, matching the previous startup behavior.
+  const unregisterTicker = registerAudioTickerCallback(tick)
 
   return () => {
-    clearInterval(intervalId)
+    unregisterTicker()
     if (speaking) onChange(false)
     try {
       // A provided (shared) source also feeds the playback gain, so only detach
@@ -1224,6 +1284,103 @@ function mapTransportParams(params) {
   }
 }
 
+// The persisted `bitrate` field predates the current voice profiles and is kept
+// only for settings compatibility. Encoding ceilings live here so initial
+// publish and every produce-based republish use the same source of truth.
+const MIC_AUDIO_PROFILES = {
+  speech: {
+    name: 'speech',
+    maxBitrate: 96_000,
+    maxPlaybackRate: 48_000,
+    dtx: true,
+    fec: true,
+    nack: true,
+    ptime: 20
+  },
+  // The setting is introduced with the HiFi UI in Phase 3. Keeping its Opus
+  // profile here means that profile-changing republish already has one place to
+  // compare negotiated parameters when that toggle lands.
+  hifi: {
+    name: 'hifi',
+    maxBitrate: 192_000,
+    maxPlaybackRate: 48_000,
+    dtx: false,
+    fec: true,
+    nack: true,
+    ptime: 20
+  }
+}
+
+function selectedMicAudioProfile(micSettings) {
+  return micSettings?.hifiVoice === true ? MIC_AUDIO_PROFILES.hifi : MIC_AUDIO_PROFILES.speech
+}
+
+// `resolvedChannelCount` is supplied internally from the track returned by
+// getUserMedia. It intentionally wins over the ideal/requested setting: a
+// device may satisfy an ideal stereo request with a mono track.
+export function buildMicOpusOptions(micSettings) {
+  const profile = selectedMicAudioProfile(micSettings)
+  const resolvedChannelCount = Number(
+    micSettings?.resolvedChannelCount ?? micSettings?.channelCount ?? 1
+  )
+
+  return {
+    encodings: [{ maxBitrate: profile.maxBitrate }],
+    codecOptions: {
+      opusStereo: resolvedChannelCount === 2,
+      opusMaxPlaybackRate: profile.maxPlaybackRate,
+      opusMaxAverageBitrate: profile.maxBitrate,
+      opusDtx: profile.dtx,
+      opusPtime: profile.ptime,
+      opusFec: profile.fec,
+      opusNack: profile.nack
+    }
+  }
+}
+
+function micSettingsWithResolvedChannelCount(micSettings, stream) {
+  let resolvedChannelCount
+  try {
+    resolvedChannelCount = stream?.getAudioTracks?.()[0]?.getSettings?.().channelCount
+  } catch {
+    // getSettings() is best-effort; the constraint remains a sensible fallback.
+  }
+  if (!Number.isFinite(resolvedChannelCount) || resolvedChannelCount < 1) {
+    resolvedChannelCount = micSettings?.channelCount ?? 1
+  }
+  return { ...micSettings, resolvedChannelCount }
+}
+
+function micAudioProfileFor(micSettings, opusOptions) {
+  const codecOptions = opusOptions.codecOptions
+  return {
+    name: selectedMicAudioProfile(micSettings).name,
+    maxBitrate: opusOptions.encodings[0].maxBitrate,
+    opusStereo: codecOptions.opusStereo,
+    opusMaxPlaybackRate: codecOptions.opusMaxPlaybackRate,
+    opusMaxAverageBitrate: codecOptions.opusMaxAverageBitrate,
+    opusDtx: codecOptions.opusDtx,
+    opusPtime: codecOptions.opusPtime,
+    opusFec: codecOptions.opusFec,
+    opusNack: codecOptions.opusNack
+  }
+}
+
+function sameMicAudioProfile(left, right) {
+  if (!left || !right) return false
+  return (
+    left.name === right.name &&
+    left.maxBitrate === right.maxBitrate &&
+    left.opusStereo === right.opusStereo &&
+    left.opusMaxPlaybackRate === right.opusMaxPlaybackRate &&
+    left.opusMaxAverageBitrate === right.opusMaxAverageBitrate &&
+    left.opusDtx === right.opusDtx &&
+    left.opusPtime === right.opusPtime &&
+    left.opusFec === right.opusFec &&
+    left.opusNack === right.opusNack
+  )
+}
+
 // ─── Publish: send local audio ───────────────────────────────────
 // Single-flight: a forced-move MediaStateReset (re-establish via the previously
 // joined channel) and the adopt() of the new channel can both call this at once.
@@ -1307,22 +1464,18 @@ async function doPublish(micSettings, onStream) {
   // Separate raw-stream tap that survives muting, for the talking-while-muted warning.
   startMutedTalkDetector(stream)
 
+  const resolvedMicSettings = micSettingsWithResolvedChannelCount(micSettings, stream)
+  const opusOptions = buildMicOpusOptions(resolvedMicSettings)
+  const audioProfile = micAudioProfileFor(resolvedMicSettings, opusOptions)
+
   for (const track of processedStream.getTracks()) {
     const producer = await producerTransport.produce({
       track,
-      encodings: [{ maxBitrate: micSettings.bitrate }],
-      codecOptions: {
-        opusStereo: micSettings.channelCount === 2,
-        opusMaxPlaybackRate: micSettings.sampleRate,
-        opusMaxAverageBitrate: 64_000,
-        opusDtx: true,
-        opusPtime: 20,
-        opusFec: true,
-        // opusNack: true
-      },
+      ...opusOptions,
       appData: { produced: 'Audio' }
     })
     producers.push(producer)
+    audioProducerProfiles.set(producer, audioProfile)
     localProducerIds.add(producer.id)
     if (micMuted) producer.pause()
     console.log(`[Soup] Producing ${track.kind} [id:${producer.id}]`)
@@ -1331,22 +1484,95 @@ async function doPublish(micSettings, onStream) {
   console.log('[Soup] Publishing audio')
 }
 
-// ─── Republish: apply new mic settings to the existing producer ──
-// Reuses the existing audio producer(s) via replaceTrack() instead of
-// closing and re-negotiating a brand-new producer with the server on
-// every settings change.
-export async function republish(micSettings, onStream) {
-  if (!producerTransport) throw new Error('Not connected to voice')
+// Release a republish candidate that never became the current producer. This is
+// deliberately explicit because profile replacements are produced with
+// stopTracks:false so a failed produce does not destroy a track we may still
+// need while deciding whether the transaction committed.
+function stopMicRepublishCandidate(stream, processedStream, processorStop) {
+  processorStop?.()
+  const tracks = new Set([
+    ...(stream?.getTracks?.() ?? []),
+    ...(processedStream?.getTracks?.() ?? [])
+  ])
+  for (const track of tracks) track.stop()
+}
 
-  const audioProducers = producers.filter((p) => p.kind === 'audio')
+async function disposeMicProducers(producerList) {
+  const ids = []
+  for (const producer of producerList) {
+    const track = producer.track
+    producer.close()
+    // Profile replacements use stopTracks:false; stopping explicitly also makes
+    // cleanup correct for a candidate produced with that ownership mode.
+    track?.stop()
+    localProducerIds.delete(producer.id)
+    ids.push(producer.id)
+  }
+  await Promise.all(ids.map((id) => closeServerProducer(id)))
+}
+
+function commitRepublishedMicProcessing({
+  stream,
+  processedStream,
+  processorStop,
+  previousStop,
+  onStream
+}) {
+  previousStop?.()
+  audioProcessorStop = processorStop
+  // Keep both detectors tied to the same capture transaction that just became
+  // current. Starting either one tears down its previous callback/tap.
+  startSelfSpeakingDetector(processedStream)
+  startMutedTalkDetector(stream)
+  onStream?.(processedStream)
+}
+
+function discardRepublishCandidate({ stream, processedStream, processorStop, previousStop }) {
+  // acquireMicCapture has already stopped the previous raw track, so once a
+  // candidate is abandoned the old processing graph cannot remain useful. Stop
+  // it as well, but do not clear a newer graph installed by a reset/reconnect.
+  previousStop?.()
+  if (audioProcessorStop === previousStop) audioProcessorStop = null
+  stopMicRepublishCandidate(stream, processedStream, processorStop)
+}
+
+// ─── Republish: apply new mic settings to the existing producer ──
+// Reuses the existing audio producer(s) via replaceTrack() for ordinary setting
+// changes. A profile change (for example mono speech -> future HiFi stereo) is
+// produced first; only a successful replacement commits the producer list and
+// its profile metadata.
+export function republish(micSettings, onStream) {
+  const generation = mediaStateGeneration
+  const operation = republishChain.then(
+    () => doRepublish(micSettings, onStream, generation),
+    () => doRepublish(micSettings, onStream, generation)
+  )
+  // Keep the chain usable after a rejected operation while returning the
+  // original rejection to the caller.
+  republishChain = operation.catch(() => {})
+  return operation
+}
+
+async function doRepublish(micSettings, onStream, expectedGeneration) {
+  if (expectedGeneration !== mediaStateGeneration) return
+
+  const transport = producerTransport
+  if (!transport) throw new Error('Not connected to voice')
+
+  const isCurrent = () =>
+    expectedGeneration === mediaStateGeneration &&
+    producerTransport === transport &&
+    !transport.closed
+
+  const audioProducers = producers.filter((p) => p.kind === 'audio' && !p.closed)
   // The raw capture backing the current producer(s). Released *before* the new
   // one opens — it has to be, or Chromium hands back the old processing config
   // and the settings the user just applied are silently ignored (see
   // acquireMicCapture). Cost is a sub-second gap in outgoing audio in the
   // passthrough case, where the raw track IS the produced track.
   const previousRawStream = rawMicStream
+  const previousProcessorStop = audioProcessorStop
 
-  // Get a fresh stream with updated constraints
   let stream
   try {
     stream = await acquireMicCapture(micSettings, previousRawStream)
@@ -1355,98 +1581,250 @@ export async function republish(micSettings, onStream) {
     throw new Error(`Failed to get audio device: ${err.message}`)
   }
 
-  // Re-apply the local processing chain (RNNoise / volume gate). Stop any
-  // previous chain first so its AudioContext and worklet don't leak.
-  stopAudioProcessor()
+  // Build the candidate graph without tearing down the current graph yet. The
+  // old raw capture has already been released by acquireMicCapture, but delaying
+  // graph teardown keeps the local bookkeeping transactional if processing or
+  // produce fails.
   let processedStream = stream
+  let candidateProcessorStop = () => {}
   try {
     const processed = await buildAudioProcessor(stream, micSettings)
     processedStream = processed.stream
-    audioProcessorStop = processed.stop
+    candidateProcessorStop = processed.stop
   } catch (err) {
     console.error('[Soup] republish audio processor failed:', err)
   }
 
-  onStream?.(processedStream)
-  // Keep the self indicator tied to the replacement track peers receive.
-  startSelfSpeakingDetector(processedStream)
-  startMutedTalkDetector(stream)
-
+  const resolvedMicSettings = micSettingsWithResolvedChannelCount(micSettings, stream)
+  const opusOptions = buildMicOpusOptions(resolvedMicSettings)
+  const audioProfile = micAudioProfileFor(resolvedMicSettings, opusOptions)
   const newTracks = processedStream.getTracks()
 
   // The socket can drop while we were awaiting getUserMedia / the audio
   // processor above; onclose then runs resetMediaState(), closing the transport
   // and the producers we captured. Bail rather than produce/replaceTrack on a
   // corpse (InvalidStateError: closed) — the reconnect path re-publishes fresh.
-  if (!producerTransport || producerTransport.closed) {
-    stopAudioProcessor()
-    // The new capture never reached a producer; release it. The previous raw
-    // capture was already stopped by resetMediaState() when the socket dropped.
-    stopRawStream(stream)
+  if (!isCurrent()) {
+    discardRepublishCandidate({
+      stream,
+      processedStream,
+      processorStop: candidateProcessorStop,
+      previousStop: previousProcessorStop
+    })
     return
   }
 
-  // Adopt the new capture as the current raw stream; the previous one is
-  // released below once its track is no longer attached to a producer.
+  // Adopt the new capture only after the operation still belongs to this media
+  // generation. The old raw stream was already stopped by acquireMicCapture.
   setRawMicStream(stream)
 
   if (audioProducers.length === 0) {
     // No existing producer to reuse (first publish hasn't happened yet) -
     // produce fresh, mirroring publish().
-    for (const track of newTracks) {
-      const producer = await producerTransport.produce({
-        track,
-        encodings: [{ maxBitrate: micSettings.bitrate }],
-        codecOptions: {
-          opusStereo: micSettings.channelCount === 2,
-          opusMaxPlaybackRate: micSettings.sampleRate,
-          opusDtx: true,
-          opusFec: true,
-        },
-        appData: { produced: 'Audio' }
+    const freshProducers = []
+    try {
+      for (const track of newTracks) {
+        const producer = await transport.produce({
+          track,
+          ...opusOptions,
+          appData: { produced: 'Audio' }
+        })
+        freshProducers.push(producer)
+      }
+      if (!isCurrent()) {
+        await disposeMicProducers(freshProducers)
+        discardRepublishCandidate({
+          stream,
+          processedStream,
+          processorStop: candidateProcessorStop,
+          previousStop: previousProcessorStop
+        })
+        return
+      }
+    } catch (err) {
+      await disposeMicProducers(freshProducers)
+      discardRepublishCandidate({
+        stream,
+        processedStream,
+        processorStop: candidateProcessorStop,
+        previousStop: previousProcessorStop
       })
-      producers.push(producer)
-      localProducerIds.add(producer.id)
-      if (micMuted) producer.pause()
-      console.log(`[Soup] Republished ${track.kind} [id:${producer.id}]`)
+      throw err
     }
 
+    producers = producers.filter((p) => p.kind !== 'audio').concat(freshProducers)
+    for (const producer of freshProducers) {
+      audioProducerProfiles.set(producer, audioProfile)
+      localProducerIds.add(producer.id)
+      if (micMuted) producer.pause()
+      console.log(`[Soup] Republished ${producer.track.kind} [id:${producer.id}]`)
+    }
+    commitRepublishedMicProcessing({
+      stream,
+      processedStream,
+      processorStop: candidateProcessorStop,
+      previousStop: previousProcessorStop,
+      onStream
+    })
     console.log('[Soup] Audio republished with new settings')
+    return
+  }
+
+  if (newTracks.length !== audioProducers.length) {
+    discardRepublishCandidate({
+      stream,
+      processedStream,
+      processorStop: candidateProcessorStop,
+      previousStop: previousProcessorStop
+    })
+    throw new Error('Microphone track count changed during republish')
+  }
+
+  const profileChanged = audioProducers.some((producer) => {
+    const previousProfile = audioProducerProfiles.get(producer)
+    return previousProfile && !sameMicAudioProfile(previousProfile, audioProfile)
+  })
+
+  if (profileChanged) {
+    // mediasoup/SFU replaces the prior Audio producer when this produce succeeds.
+    // Keep the old local producer array untouched until every candidate succeeds.
+    // stopTracks:false gives the transaction explicit ownership if it has to
+    // discard a partially-created candidate.
+    const replacementProducers = []
+    try {
+      for (const track of newTracks) {
+        const producer = await transport.produce({
+          track,
+          ...opusOptions,
+          stopTracks: false,
+          appData: { produced: 'Audio' }
+        })
+        replacementProducers.push(producer)
+      }
+      if (!isCurrent()) {
+        await disposeMicProducers(replacementProducers)
+        discardRepublishCandidate({
+          stream,
+          processedStream,
+          processorStop: candidateProcessorStop,
+          previousStop: previousProcessorStop
+        })
+        return
+      }
+    } catch (err) {
+      await disposeMicProducers(replacementProducers)
+      discardRepublishCandidate({
+        stream,
+        processedStream,
+        processorStop: candidateProcessorStop,
+        previousStop: previousProcessorStop
+      })
+      throw err
+    }
+
+    const oldProducerSet = new Set(audioProducers)
+    producers = producers
+      .filter((producer) => !oldProducerSet.has(producer))
+      .concat(replacementProducers)
+    for (const producer of replacementProducers) {
+      audioProducerProfiles.set(producer, audioProfile)
+      localProducerIds.add(producer.id)
+      if (micMuted) producer.pause()
+    }
+    // The server has already marked the old producer as replaced; sending a
+    // second CloseProducer would race the signaling FIFO and report NotFound.
+    for (const producer of audioProducers) {
+      localProducerIds.delete(producer.id)
+      const oldTrack = producer.track
+      producer.close()
+      oldTrack?.stop()
+    }
+    commitRepublishedMicProcessing({
+      stream,
+      processedStream,
+      processorStop: candidateProcessorStop,
+      previousStop: previousProcessorStop,
+      onStream
+    })
+    console.log('[Soup] Audio profile changed; producer replaced')
     return
   }
 
   // Swap the track on each existing audio producer in place. The
   // server-side producer (and any consumers peers already created for it)
   // stays alive, so peers keep receiving the same producer id.
-  for (let i = 0; i < audioProducers.length; i++) {
-    const producer = audioProducers[i]
-    const track = newTracks[i]
-    if (!track || producer.closed) continue
+  let adoptedTrackCount = 0
+  try {
+    for (let i = 0; i < audioProducers.length; i++) {
+      const producer = audioProducers[i]
+      const track = newTracks[i]
+      if (!track || producer.closed) continue
+      if (!isCurrent()) throw new Error('Voice transport reset during republish')
 
-    await producer.replaceTrack({ track })
+      const oldTrack = producer.track
+      await producer.replaceTrack({ track })
+      oldTrack?.stop()
+      adoptedTrackCount++
 
-    // Update bitrate on the existing RTP sender without renegotiating.
-    // Note: opusStereo/opusMaxPlaybackRate are negotiated at produce()
-    // time and can't be changed without a brand-new producer - changing
-    // sampleRate/channelCount won't retroactively update those params.
-    const sender = producer.rtpSender
-    if (sender) {
-      const params = sender.getParameters()
-      if (params.encodings?.length) {
-        params.encodings[0].maxBitrate = micSettings.bitrate
-        try {
-          await sender.setParameters(params)
-        } catch (err) {
-          console.warn('[Soup] Failed to update bitrate:', err)
+      // Update bitrate on the existing RTP sender without renegotiating.
+      // Opus fmtp profile fields are negotiated at produce() time; the ceiling
+      // itself is still kept consistent with the shared helper.
+      const sender = producer.rtpSender
+      if (sender) {
+        const params = sender.getParameters()
+        if (params.encodings?.length) {
+          params.encodings[0].maxBitrate = opusOptions.encodings[0].maxBitrate
+          try {
+            await sender.setParameters(params)
+          } catch (err) {
+            console.warn('[Soup] Failed to update bitrate:', err)
+          }
         }
       }
-    }
 
-    if (micMuted) producer.pause()
-    else producer.resume()
-    console.log(`[Soup] Replaced track on producer [id:${producer.id}]`)
+      if (micMuted) producer.pause()
+      else producer.resume()
+      console.log(`[Soup] Replaced track on producer [id:${producer.id}]`)
+    }
+  } catch (err) {
+    if (!isCurrent()) {
+      discardRepublishCandidate({
+        stream,
+        processedStream,
+        processorStop: candidateProcessorStop,
+        previousStop: previousProcessorStop
+      })
+      return
+    }
+    if (adoptedTrackCount > 0) {
+      // A mediasoup replace can fail after an earlier producer was already
+      // updated. Keep the producer bookkeeping intact and make the new graph
+      // current for the tracks that did adopt it; never report a false rollback.
+      commitRepublishedMicProcessing({
+        stream,
+        processedStream,
+        processorStop: candidateProcessorStop,
+        previousStop: previousProcessorStop,
+        onStream
+      })
+    } else {
+      discardRepublishCandidate({
+        stream,
+        processedStream,
+        processorStop: candidateProcessorStop,
+        previousStop: previousProcessorStop
+      })
+    }
+    throw err
   }
 
+  commitRepublishedMicProcessing({
+    stream,
+    processedStream,
+    processorStop: candidateProcessorStop,
+    previousStop: previousProcessorStop,
+    onStream
+  })
   console.log('[Soup] Audio republished with new settings')
 }
 
@@ -2148,7 +2526,7 @@ export async function shareScreen({
             opusDtx: false,
             opusFec: true,
             opusMaxAverageBitrate: 96000,
-            opusPtime: 20,
+            opusPtime: 20
           },
           encodings: [{ maxBitrate: 96000 }],
           appData: { produced: 'ScreenShareAudio' }
@@ -2615,6 +2993,26 @@ async function healAudioConsumer(producerId, reason) {
   }
 }
 
+function setAudioJitterBufferTarget(consumer, kind, producedType) {
+  // producedType is carried through signaling because producer appData is not
+  // present on the remote Consumer. Keep this strictly audio-only: video
+  // receivers must not inherit an audio latency target.
+  if (kind !== 'audio') return
+  const targetMs = producedType === 'Audio' ? 60 : producedType === 'ScreenShareAudio' ? 120 : null
+  if (targetMs == null) return
+
+  const receiver = consumer?.rtpReceiver
+  if (!receiver || !('jitterBufferTarget' in receiver)) return
+  try {
+    receiver.jitterBufferTarget = targetMs
+    console.log(`[Soup] Audio jitter buffer target set to ${targetMs}ms (${producedType})`)
+  } catch (err) {
+    // Browser support is experimental and may expose a read-only/clamped
+    // implementation. The reactive 5s health self-heal remains the backstop.
+    console.warn('[Soup] Failed to set audio jitter buffer target:', err)
+  }
+}
+
 // ─── Consume a remote producer ───────────────────────────────────
 export async function consumeProducer(producerId, kind, onStream, clientId, producedType) {
   if (!consumerTransport) await subscribe()
@@ -2635,6 +3033,11 @@ export async function consumeProducer(producerId, kind, onStream, clientId, prod
     kind: consumerParams.kind,
     rtpParameters: consumerParams.rtp_parameters
   })
+
+  // Set once before ResumeConsumer so the first decoded packets use the
+  // requested target. Re-consumes from audio self-heal come through this same
+  // function automatically.
+  setAudioJitterBufferTarget(consumer, kind, producedType)
 
   const encodings = consumer.rtpParameters?.encodings ?? []
   const hasSelectableLayers =
@@ -2847,12 +3250,21 @@ export function setVideoStreamRoles({ focusedConsumerId = null, visibleConsumerI
 
 // ─── Reset all media state ───────────────────────────────────────
 export function resetMediaState() {
+  mediaStateGeneration++
   selfSpeakingStop?.()
   selfSpeakingStop = null
   mutedTalkStop?.()
   mutedTalkStop = null
   const activeShare = screenShareCtx
   if (activeShare) void stopShareContext(activeShare, { notifyServer: false })
+  // Some profile-replacement producers intentionally use stopTracks:false so
+  // a failed produce can be cleaned up transactionally. Take explicit ownership
+  // at reset as well; the transport alone cannot stop those tracks.
+  for (const producer of producers) {
+    const track = producer.track
+    producer.close()
+    track?.stop()
+  }
   producerTransport?.close()
   producerTransport = null
   consumerTransport?.close()
