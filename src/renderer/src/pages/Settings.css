@@ -706,8 +706,26 @@
   color: var(--color-text-secondary);
 }
 
-.vg-bar {
+.vg-slider-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+}
+
+/* Holds the level bar and the range input stacked on the same track so the
+   threshold thumb lines up with the live mic level. Tall enough for the thumb
+   to overhang the bar. */
+.vg-meter {
   position: relative;
+  flex: 1;
+  height: 22px;
+  display: flex;
+  align-items: center;
+}
+
+.vg-track {
+  position: relative;
+  width: 100%;
   height: 10px;
   border-radius: 5px;
   background: var(--color-background-mute);
@@ -726,18 +744,63 @@
   transition: width 0.06s linear;
 }
 
-.vg-marker {
+/* Transparent range input laid over the track; only its thumb is visible and it
+   acts as the draggable threshold marker. */
+.vg-slider {
   position: absolute;
-  top: 50%;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+  outline: none;
+}
+
+.vg-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
   width: 8px;
   height: 18px;
-  transform: translate(-50%, -50%);
-  background: var(--color-danger);
-  border: 2px solid var(--color-background-mute);
   border-radius: 4px;
+  background: var(--color-danger);
+  /* Background-colored ring + drop shadow read the pill as a raised handle over
+     the success→primary level fill (matches the pre-slider marker styling). */
+  border: 2px solid var(--color-background);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
-  /* Drags land on the bar (pointer capture); the handle is just a visual. */
-  pointer-events: none;
+  cursor: pointer;
+  transition: transform 0.12s ease;
+}
+
+.vg-slider::-webkit-slider-thumb:hover {
+  transform: scaleY(1.1);
+}
+
+.vg-slider::-moz-range-thumb {
+  width: 8px;
+  height: 18px;
+  border-radius: 4px;
+  background: var(--color-danger);
+  border: 2px solid var(--color-background);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+}
+
+.vg-slider:focus-visible::-webkit-slider-thumb {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 1px;
+}
+
+.vg-value {
+  flex-shrink: 0;
+  min-width: 56px;
+  text-align: right;
+  font-size: var(--font-size-sm);
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-secondary);
 }
 
 .vg-status {

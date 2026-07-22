@@ -24,7 +24,6 @@ function VolumeGateMeter({ threshold, onThresholdChange, micSettings, gateEnable
 
   const meterRafRef = useRef(null)
   const testRafRef = useRef(null)
-  const meterRef = useRef(null)
   const audioCtxRef = useRef(null)
   const streamRef = useRef(null)
   const sourceRef = useRef(null)
@@ -219,50 +218,34 @@ function VolumeGateMeter({ threshold, onThresholdChange, micSettings, gateEnable
     tick()
   }
 
-  // ── Drag-to-set handling ────────────────────────────────────────────
-  // Safe to fire on every pointer move now: onThresholdChange only writes the
-  // Settings draft; nothing publishes voice state until Apply.
-  const draggingRef = useRef(false)
-  const updateFromClientX = (clientX) => {
-    const el = meterRef.current
-    if (!el) return
-    const rect = el.getBoundingClientRect()
-    const pct = Math.max(0, Math.min(100, ((clientX - rect.left) / rect.width) * 100))
-    onThresholdChange(Math.round(pct))
-  }
+  // The gate threshold is stored as a unitless 0-100 level (the same scale the
+  // live meter reports). The slider presents it in dB from -50 to +50, a plain
+  // linear relabel of that 0-100 range, so nothing downstream has to change.
+  const thresholdDb = Math.round(threshold - 50)
+  const dbLabel = `${thresholdDb > 0 ? '+' : ''}${thresholdDb} dB`
 
   return (
     <div className="volume-gate-meter">
-      <div
-        className="vg-bar"
-        ref={meterRef}
-        onPointerDown={(e) => {
-          draggingRef.current = true
-          e.currentTarget.setPointerCapture(e.pointerId)
-          updateFromClientX(e.clientX)
-        }}
-        onPointerMove={(e) => {
-          if (draggingRef.current) updateFromClientX(e.clientX)
-        }}
-        onPointerUp={(e) => {
-          draggingRef.current = false
-          e.currentTarget.releasePointerCapture(e.pointerId)
-        }}
-        role="slider"
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-valuenow={threshold}
-        tabIndex={0}
-        onKeyDown={(e) => {
-          if (e.key === 'ArrowLeft') onThresholdChange(Math.max(0, threshold - 1))
-          if (e.key === 'ArrowRight') onThresholdChange(Math.min(100, threshold + 1))
-        }}
-      >
-        <div className="vg-fill" style={{ width: `${audioLevel}%` }} />
-        <div
-          className="vg-marker"
-          style={{ left: `clamp(4px, ${threshold}%, calc(100% - 4px))` }}
-        />
+      <div className="vg-slider-row">
+        <div className="vg-meter">
+          {/* Live mic level, behind the slider so the threshold thumb reads
+              against your actual input on a shared 0-100 scale. */}
+          <div className="vg-track">
+            <div className="vg-fill" style={{ width: `${audioLevel}%` }} />
+          </div>
+          <input
+            type="range"
+            className="vg-slider"
+            min={-50}
+            max={50}
+            step={1}
+            value={thresholdDb}
+            onChange={(e) => onThresholdChange(Number(e.target.value) + 50)}
+            aria-label="Voice gate threshold"
+            aria-valuetext={dbLabel}
+          />
+        </div>
+        <span className="vg-value">{dbLabel}</span>
       </div>
       {liveMicStream && (
         <p className="settings-section-desc" style={{ marginTop: 8 }}>

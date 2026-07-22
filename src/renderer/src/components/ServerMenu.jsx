@@ -5,6 +5,7 @@ import { overlayPop, scrimFade } from '../lib/motionPresets'
 import SegmentedTabs from './SegmentedTabs'
 import './ServerMenu.css'
 import { httpFetch } from '../lib/http'
+import { apiBaseForHost } from '../lib/serverConfig'
 import { useMenuPosition } from '../lib/menuPosition'
 import {
   IconPlus,
@@ -176,7 +177,7 @@ function ServerMenu({
     setRegistering(true)
     let res
     try {
-      res = await httpFetch(`https://${host}/register`, {
+      res = await httpFetch(`${apiBaseForHost(host)}/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password, device_name: DEVICE_NAME })
