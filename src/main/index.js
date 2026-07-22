@@ -22,8 +22,15 @@ const icon = process.platform === 'win32' ? iconIco : iconPng
 import { setupGlobalKeybinds, stopGlobalKeybinds } from './keybinds'
 import { setupAudioCapture, stopAudioCaptureHost } from './audioCapture'
 import { setupUpdater } from './updater'
+import { setupTray, setTrayVoiceState, destroyTray } from './tray'
 
 const APP_ID = 'app.pylon.client'
+
+// Main window reference + quit intent, shared with the tray. On Windows the
+// window hides to the tray on close and only really quits via the tray's Quit
+// (or any real app-quit path), so isQuitting distinguishes the two.
+let mainWindow = null
+let isQuitting = false
 
 // Portals need a stable XDG application ID. In development there is no
 // installed .desktop file for Electron to infer it from, so set the name before
@@ -377,8 +384,9 @@ function createWindow() {
   // or the saved position no longer lands on a connected display.
   const restored = restorableWindowBounds()
 
-  // Create the browser window.
-  const mainWindow = new BrowserWindow({
+  // Create the browser window. Assigned to the module-level ref so the tray can
+  // reach it after close-to-tray hides it.
+  mainWindow = new BrowserWindow({
     width: restored?.width ?? 1000,
     height: restored?.height ?? 700,
     ...(restored ? { x: restored.x, y: restored.y } : {}),
@@ -413,6 +421,16 @@ function createWindow() {
       mainWindow.show()
     })
   }
+
+  // Close-to-tray (Windows): the window's X / title-bar close hides to the tray
+  // instead of quitting, matching TeamSpeak. A real quit (tray Quit, OS
+  // shutdown) sets isQuitting first so this lets the close through.
+  mainWindow.on('close', (e) => {
+    if (process.platform === 'win32' && !isQuitting) {
+      e.preventDefault()
+      mainWindow.hide()
+    }
+  })
 
   // Let the custom title bar swap its maximize/restore icon when the window's
   // maximized state changes by any means (button, double-click, OS snap).
@@ -586,6 +604,10 @@ app.whenReady().then(() => {
     else win.maximize()
   })
   ipcMain.on('window-close', (e) => BrowserWindow.fromWebContents(e.sender)?.close())
+
+  // Live mic indicator for the system tray: renderer pushes 'idle' | 'talking' |
+  // 'muted' | 'deafened' whenever it changes (see SideBar).
+  ipcMain.on('tray:voice-state', (_, state) => setTrayVoiceState(state))
   ipcMain.handle(
     'window-is-maximized',
     (e) => BrowserWindow.fromWebContents(e.sender)?.isMaximized() ?? false
@@ -766,6 +788,16 @@ app.whenReady().then(() => {
 
   createWindow()
 
+  // Windows system-tray icon with the live mic indicator + Open/Mute/Deafen/Quit
+  // menu. No-op on other platforms (see tray.js).
+  setupTray({
+    getWindow: () => mainWindow,
+    quit: () => {
+      isQuitting = true
+      app.quit()
+    }
+  })
+
   // Re-arm the keep-awake blocker if the user left it on last session.
   applyIdleInhibitor(readAppSettings().preventSleep === true)
 
@@ -783,14 +815,24 @@ app.whenReady().then(() => {
   })
 })
 
+// Any real quit path (tray Quit, OS shutdown, relaunch) flips this so the
+// close-to-tray handler stops swallowing the window's close event.
+app.on('before-quit', () => {
+  isQuitting = true
+})
+
 // Quit when all windows are closed, except on macOS. There, it's common
 // for applications and their menu bar to stay active until the user quits
-// explicitly with Cmd + Q.
+// explicitly with Cmd + Q. On Windows the window hides to the tray rather than
+// closing, so this doesn't fire until an actual quit destroys it.
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit()
   }
 })
+
+// Remove the tray icon on quit so it doesn't linger as a ghost until hovered.
+app.on('will-quit', destroyTray)
 
 // Tear down the global keyboard hook so the native listener thread doesn't
 // linger past quit.
