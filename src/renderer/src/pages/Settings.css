@@ -35,8 +35,8 @@
   width: 30px;
   height: 30px;
   padding: 0;
-  border: 1px solid var(--hairline);
-  border-radius: 50%;
+  border: none;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--color-text-tertiary);
   cursor: pointer;
@@ -594,13 +594,54 @@
   transform: scale(0.97);
 }
 
-.settings-status {
+.settings-status-actions {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
   gap: var(--spacing-sm);
+}
+
+.settings-cancel-btn {
+  padding: 8px 14px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
   font-size: var(--font-size-sm);
-  color: var(--color-text-tertiary);
+  font-weight: var(--font-weight-semibold);
+  font-family: var(--font-family-primary);
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
+}
+
+.settings-cancel-btn:hover {
+  background: var(--color-background-mute);
+  color: var(--color-text);
+}
+
+.settings-cancel-btn:active {
+  transform: scale(0.97);
+}
+
+/* Floating action bar: sticks to the bottom of the scrolling settings pane so
+   the Apply prompt stays visible no matter which control you changed. */
+.settings-status {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-sm);
+  margin-top: var(--spacing-xs);
+  padding: 12px 16px;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+  background: var(--color-surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  box-shadow: 0 -6px 20px -8px rgba(0, 0, 0, 0.45);
 }
 
 /* Keybind capture controls */
@@ -671,7 +712,8 @@
   border-radius: 5px;
   background: var(--color-background-mute);
   border: 1px solid var(--hairline);
-  overflow: hidden;
+  cursor: ew-resize;
+  touch-action: none;
 }
 
 .vg-fill {
@@ -686,10 +728,16 @@
 
 .vg-marker {
   position: absolute;
-  top: -2px;
-  bottom: -2px;
-  width: 2px;
+  top: 50%;
+  width: 8px;
+  height: 18px;
+  transform: translate(-50%, -50%);
   background: var(--color-danger);
+  border: 2px solid var(--color-background-mute);
+  border-radius: 4px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  /* Drags land on the bar (pointer capture); the handle is just a visual. */
+  pointer-events: none;
 }
 
 .vg-status {

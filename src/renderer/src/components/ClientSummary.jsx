@@ -97,6 +97,7 @@ function ClientSummary({ client, roles = [], vanity = [], isSelf = false, onSetA
         className={`client-summary-card${bannerColors ? ' channel-summary-banner' : ''}`}
         style={bannerGradient(bannerColors)}
       >
+        <div className="client-summary-avatar-wrap">
         {interactive ? (
           <button
             type="button"
@@ -129,6 +130,12 @@ function ClientSummary({ client, roles = [], vanity = [], isSelf = false, onSetA
             )}
           </span>
         )}
+          <span
+            className={`client-summary-avatar-dot presence-${status}`}
+            title={statusLabel}
+            aria-hidden="true"
+          />
+        </div>
         {canEdit && (
           <input
             ref={avatarInputRef}
@@ -139,11 +146,14 @@ function ClientSummary({ client, roles = [], vanity = [], isSelf = false, onSetA
           />
         )}
         <span className="client-summary-name">{client?.name ?? 'Unknown user'}</span>
+        {presence?.status_message && (
+          <span className="client-summary-status-box">{presence.status_message}</span>
+        )}
       </div>
 
-      <section className="client-summary-section">
-        <h3 className="client-summary-heading">Server Roles</h3>
-        {assignedRoles.length > 0 ? (
+      {assignedRoles.length > 0 && (
+        <section className="client-summary-section">
+          <h3 className="client-summary-heading">Server Roles</h3>
           <ul className="client-summary-roles">
             {assignedRoles.map((r) => (
               <li key={r.id} className="client-summary-role">
@@ -152,14 +162,12 @@ function ClientSummary({ client, roles = [], vanity = [], isSelf = false, onSetA
               </li>
             ))}
           </ul>
-        ) : (
-          <p className="client-summary-placeholder">No roles to show yet.</p>
-        )}
-      </section>
+        </section>
+      )}
 
-      <section className="client-summary-section">
-        <h3 className="client-summary-heading">Server Groups</h3>
-        {assignedGroups.length > 0 ? (
+      {assignedGroups.length > 0 && (
+        <section className="client-summary-section">
+          <h3 className="client-summary-heading">Server Groups</h3>
           <ul className="client-summary-roles">
             {assignedGroups.map((g) => (
               <li key={g.id} className="client-summary-role">
@@ -172,21 +180,8 @@ function ClientSummary({ client, roles = [], vanity = [], isSelf = false, onSetA
               </li>
             ))}
           </ul>
-        ) : (
-          <p className="client-summary-placeholder">No groups to show yet.</p>
-        )}
-      </section>
-
-      <section className="client-summary-section">
-        <h3 className="client-summary-heading">Activity</h3>
-        <p className="client-summary-value client-summary-status">
-          <span className={`client-summary-status-dot presence-${status}`} aria-hidden="true" />
-          {statusLabel}
-          {presence?.status_message && (
-            <span className="client-summary-status-message">{presence.status_message}</span>
-          )}
-        </p>
-      </section>
+        </section>
+      )}
 
       {/* Client build/version from the Identify handshake, carried on presence
           (client_type.version). Absent when the user is offline or predates it. */}

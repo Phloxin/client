@@ -219,7 +219,10 @@ function VolumeGateMeter({ threshold, onThresholdChange, micSettings, gateEnable
     tick()
   }
 
-  // ── Click-to-set handling ──────────────────────────────────────────
+  // ── Drag-to-set handling ────────────────────────────────────────────
+  // Safe to fire on every pointer move now: onThresholdChange only writes the
+  // Settings draft; nothing publishes voice state until Apply.
+  const draggingRef = useRef(false)
   const updateFromClientX = (clientX) => {
     const el = meterRef.current
     if (!el) return
@@ -233,7 +236,18 @@ function VolumeGateMeter({ threshold, onThresholdChange, micSettings, gateEnable
       <div
         className="vg-bar"
         ref={meterRef}
-        onClick={(e) => updateFromClientX(e.clientX)}
+        onPointerDown={(e) => {
+          draggingRef.current = true
+          e.currentTarget.setPointerCapture(e.pointerId)
+          updateFromClientX(e.clientX)
+        }}
+        onPointerMove={(e) => {
+          if (draggingRef.current) updateFromClientX(e.clientX)
+        }}
+        onPointerUp={(e) => {
+          draggingRef.current = false
+          e.currentTarget.releasePointerCapture(e.pointerId)
+        }}
         role="slider"
         aria-valuemin={0}
         aria-valuemax={100}
@@ -245,7 +259,10 @@ function VolumeGateMeter({ threshold, onThresholdChange, micSettings, gateEnable
         }}
       >
         <div className="vg-fill" style={{ width: `${audioLevel}%` }} />
-        <div className="vg-marker" style={{ left: `${threshold}%` }} />
+        <div
+          className="vg-marker"
+          style={{ left: `clamp(4px, ${threshold}%, calc(100% - 4px))` }}
+        />
       </div>
       {liveMicStream && (
         <p className="settings-section-desc" style={{ marginTop: 8 }}>

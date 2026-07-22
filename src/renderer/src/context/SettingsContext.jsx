@@ -63,20 +63,22 @@ const DEFAULT_KEYBINDS = {
 const DEFAULT_ANIMATIONS = {
   // enabled is the master switch; the rest are 'off' or a per-category style.
   enabled: true,
-  channelSwitch: 'fade', // 'fade' | 'slide' | 'off'
+  channelSwitch: 'fade', // 'fade' | 'off'
   userJoin: 'pop', // 'pop' | 'off'
   channelList: 'pop', // 'pop' | 'off'
   overlays: 'on', // modals, menus, toasts — 'on' | 'off'
   messages: 'slide' // new chat messages — 'slide' | 'off'
 }
 
-// 'slide' was retired for user-join / channel-list (only 'pop' read well there);
-// fold any persisted 'slide' back to 'pop' so old saves don't dangle on a value
-// the UI no longer offers.
+// 'slide' was retired for user-join / channel-list (only 'pop' read well there)
+// and later for channel-switch too (fade is the only non-off style now); fold any
+// persisted 'slide' back to that category's remaining style so old saves don't
+// dangle on a value the UI no longer offers.
 function migrateAnimations(settings) {
   const next = { ...settings }
   if (next.userJoin === 'slide') next.userJoin = 'pop'
   if (next.channelList === 'slide') next.channelList = 'pop'
+  if (next.channelSwitch === 'slide') next.channelSwitch = 'fade'
   return next
 }
 

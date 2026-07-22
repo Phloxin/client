@@ -2686,7 +2686,13 @@ function Main() {
               </div>
             )}
 
-            {/* Keyed so switching channel/tab remounts and replays the switch animation. */}
+            {/* Keyed so switching channel/tab remounts and replays the switch
+                animation. The key mirrors the render branches below and keys the
+                channel views by *content identity* (which channel + chat-vs-grid),
+                not by peek-vs-joined: peeking channel X shows `chat-X` and joining
+                that same channel (landing on the log tab) is still `chat-X`, so the
+                fade doesn't redundantly replay when only the titlebar gains its
+                voice counter. Switching channel or chat↔video still changes the key. */}
             <div
               className="chat-switch-region"
               key={
@@ -2698,11 +2704,11 @@ function Main() {
                       ? `summary-${summaryClientId}`
                       : showServerSummary
                         ? 'server-summary'
-                        : previewChannelId != null
-                        ? `preview-${previewChannelId}`
-                        : showTraffic || !joinedChannel
+                        : showTraffic || (previewChannelId == null && !joinedChannel)
                           ? 'lobby'
-                          : viewMode
+                          : previewChannelId != null || viewMode === 'log'
+                            ? `chat-${activeChatChannelId}`
+                            : `grid-${selfChannelId}`
               }
             >
               {!connected ? (

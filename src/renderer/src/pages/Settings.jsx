@@ -372,70 +372,31 @@ function Settings() {
                   </label>
                 </div>
 
-                {animationSettings.enabled && (
-                  <>
-                    <div className="settings-section">
-                      <label htmlFor="anim-channel-switch">Switch Views</label>
-                      <select
-                        id="anim-channel-switch"
-                        value={animationSettings.channelSwitch}
-                        onChange={(e) => updateAnimationSettings({ channelSwitch: e.target.value })}
-                      >
-                        <option value="fade">Fade</option>
-                        <option value="slide">Slide</option>
-                        <option value="off">Off</option>
-                      </select>
+                {animationSettings.enabled &&
+                  [
+                    { key: 'channelSwitch', label: 'Switch Views', on: 'fade' },
+                    { key: 'userJoin', label: 'User Join', on: 'pop' },
+                    { key: 'channelList', label: 'Channel List', on: 'pop' },
+                    { key: 'messages', label: 'New Messages', on: 'slide' },
+                    { key: 'overlays', label: 'Menus & Dialogs', on: 'on' }
+                  ].map(({ key, label, on }) => (
+                    <div key={key} className="settings-section settings-toggle-row">
+                      <div className="settings-toggle-copy">
+                        <label htmlFor={`anim-${key}`}>{label}</label>
+                      </div>
+                      <label className="toggle-switch">
+                        <input
+                          type="checkbox"
+                          id={`anim-${key}`}
+                          checked={animationSettings[key] !== 'off'}
+                          onChange={(e) =>
+                            updateAnimationSettings({ [key]: e.target.checked ? on : 'off' })
+                          }
+                        />
+                        <span className="toggle-slider" />
+                      </label>
                     </div>
-
-                    <div className="settings-section">
-                      <label htmlFor="anim-user-join">User Join</label>
-                      <select
-                        id="anim-user-join"
-                        value={animationSettings.userJoin}
-                        onChange={(e) => updateAnimationSettings({ userJoin: e.target.value })}
-                      >
-                        <option value="pop">Pop</option>
-                        <option value="off">Off</option>
-                      </select>
-                    </div>
-
-                    <div className="settings-section">
-                      <label htmlFor="anim-channel-list">Channel List</label>
-                      <select
-                        id="anim-channel-list"
-                        value={animationSettings.channelList}
-                        onChange={(e) => updateAnimationSettings({ channelList: e.target.value })}
-                      >
-                        <option value="pop">Pop</option>
-                        <option value="off">Off</option>
-                      </select>
-                    </div>
-
-                    <div className="settings-section">
-                      <label htmlFor="anim-messages">New Messages</label>
-                      <select
-                        id="anim-messages"
-                        value={animationSettings.messages}
-                        onChange={(e) => updateAnimationSettings({ messages: e.target.value })}
-                      >
-                        <option value="slide">Slide</option>
-                        <option value="off">Off</option>
-                      </select>
-                    </div>
-
-                    <div className="settings-section">
-                      <label htmlFor="anim-overlays">Menus &amp; Dialogs</label>
-                      <select
-                        id="anim-overlays"
-                        value={animationSettings.overlays}
-                        onChange={(e) => updateAnimationSettings({ overlays: e.target.value })}
-                      >
-                        <option value="on">On</option>
-                        <option value="off">Off</option>
-                      </select>
-                    </div>
-                  </>
-                )}
+                  ))}
               </div>
             </div>
           )}

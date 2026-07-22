@@ -31,6 +31,10 @@ function AudioSettings({ micSettings, updateMicSettings }) {
     updateMicSettings(draftSettings)
   }
 
+  const handleCancel = () => {
+    setDraftSettings(micSettings)
+  }
+
   return (
     <div className="settings-panel-card">
       <div className="settings-panel-header">
@@ -125,7 +129,7 @@ function AudioSettings({ micSettings, updateMicSettings }) {
         <div className="settings-section">
           <label>Voice Gate Threshold</label>
           <p className="settings-section-desc">
-            Click the bar to set the cut-off level. Audio below the marker is filtered out.
+            Drag the bar to set the cut-off level. Audio below the marker is filtered out.
             {!draftSettings.useVolumeGate &&
               ' Enable the volume gate above to apply this during calls.'}
           </p>
@@ -236,9 +240,14 @@ function AudioSettings({ micSettings, updateMicSettings }) {
       {isDirty && (
         <div className="settings-status">
           <span>You have unsaved changes</span>
-          <button className="settings-apply-btn" onClick={handleApply}>
-            Apply
-          </button>
+          <div className="settings-status-actions">
+            <button className="settings-cancel-btn" onClick={handleCancel}>
+              Cancel
+            </button>
+            <button className="settings-apply-btn" onClick={handleApply}>
+              Apply
+            </button>
+          </div>
         </div>
       )}
     </div>
