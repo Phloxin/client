@@ -1,5 +1,5 @@
 // ─── Imports ────────────────────────────────────────────────────
-import { Device } from 'mediasoup-client'
+import { Device, parseScalabilityMode } from 'mediasoup-client'
 import { loadRnnoise, RnnoiseWorkletNode } from '@sapphi-red/web-noise-suppressor'
 import rnnoiseWasmPath from '@sapphi-red/web-noise-suppressor/rnnoise.wasm?url'
 import rnnoiseSimdWasmPath from '@sapphi-red/web-noise-suppressor/rnnoise_simd.wasm?url'
@@ -7,6 +7,7 @@ import rnnoiseWorkletPath from '@sapphi-red/web-noise-suppressor/rnnoiseWorklet.
 import { apiBase, wsBase, getServerHost } from './serverConfig'
 import { authFetch } from './auth'
 import { startScreenAudio, onScreenAudioError } from './screenAudio'
+import { detachRtpSender, recoverMicRepublish, runBeforeServerProduce } from './mediaRecovery'
 
 // ─── State ──────────────────────────────────────────────────────
 let device
@@ -34,6 +35,11 @@ let audioProcessorStop = null
 // is torn down or its track replaced — stopping it while live would kill the
 // send in the passthrough case (where the produced track IS this raw track).
 let rawMicStream = null
+// The last capture configuration that was successfully committed to the live
+// audio producer(s). Republish must be able to reopen this profile after it has
+// released the old capture and a candidate gUM/processing/produce operation
+// fails; otherwise the old producer can be left holding an ended track.
+let lastCommittedMicSettings = null
 // Self speaking detector, owned here rather than by a channel component so it
 // survives ownership changes: a moderator move rebinds onClientSpeaking to the new
 // channel, and the detector reports our own speaking through that live callback.
@@ -1419,13 +1425,21 @@ async function doPublish(micSettings, onStream) {
   })
 
   producerTransport.on('produce', ({ kind, rtpParameters, appData }, callback, errback) => {
-    send('Produce', {
-      produce_params: {
-        rtp_params: rtpParameters,
-        kind
-      },
-      produced_type: appData?.produced ?? 'Audio'
-    })
+    const produceOnServer = async () => {
+      // Screen rung validation must finish before the SFU sees Produce. The SFU
+      // atomically replaces a same-type producer, so validating afterward could
+      // destroy the last live share when the candidate is rejected.
+      await runBeforeServerProduce(appData, rtpParameters)
+      return send('Produce', {
+        produce_params: {
+          rtp_params: rtpParameters,
+          kind
+        },
+        produced_type: appData?.produced ?? 'Audio'
+      })
+    }
+
+    produceOnServer()
       .then((res) => callback({ id: res.id }))
       .catch((err) => errback(err))
   })
@@ -1481,6 +1495,8 @@ async function doPublish(micSettings, onStream) {
     console.log(`[Soup] Producing ${track.kind} [id:${producer.id}]`)
   }
 
+  lastCommittedMicSettings = { ...resolvedMicSettings }
+
   console.log('[Soup] Publishing audio')
 }
 
@@ -1516,10 +1532,13 @@ function commitRepublishedMicProcessing({
   processedStream,
   processorStop,
   previousStop,
+  micSettings,
   onStream
 }) {
   previousStop?.()
   audioProcessorStop = processorStop
+  setRawMicStream(stream)
+  if (micSettings) lastCommittedMicSettings = { ...micSettings }
   // Keep both detectors tied to the same capture transaction that just became
   // current. Starting either one tears down its previous callback/tap.
   startSelfSpeakingDetector(processedStream)
@@ -1534,6 +1553,27 @@ function discardRepublishCandidate({ stream, processedStream, processorStop, pre
   previousStop?.()
   if (audioProcessorStop === previousStop) audioProcessorStop = null
   stopMicRepublishCandidate(stream, processedStream, processorStop)
+}
+
+// The capture source is released before a republish candidate opens so browser
+// audio constraints actually take effect. If anything after that release
+// fails, reopen the last committed profile and put a live track back on every
+// existing audio producer before surfacing the original error.
+function restoreCommittedMicCapture(options) {
+  return recoverMicRepublish({
+    ...options,
+    rawMicStream,
+    acquireMicCapture,
+    buildAudioProcessor,
+    stopRawStream,
+    stopCandidate: stopMicRepublishCandidate,
+    micMuted,
+    onPreviousStopped: (previousStop) => {
+      if (audioProcessorStop === previousStop) audioProcessorStop = null
+    },
+    onCommit: commitRepublishedMicProcessing,
+    onError: (phase, err) => console.error(`[Soup] Failed ${phase}:`, err)
+  })
 }
 
 // ─── Republish: apply new mic settings to the existing producer ──
@@ -1565,6 +1605,7 @@ async function doRepublish(micSettings, onStream, expectedGeneration) {
     !transport.closed
 
   const audioProducers = producers.filter((p) => p.kind === 'audio' && !p.closed)
+  const previousMicSettings = lastCommittedMicSettings ? { ...lastCommittedMicSettings } : null
   // The raw capture backing the current producer(s). Released *before* the new
   // one opens — it has to be, or Chromium hands back the old processing config
   // and the settings the user just applied are silently ignored (see
@@ -1578,6 +1619,16 @@ async function doRepublish(micSettings, onStream, expectedGeneration) {
     stream = await acquireMicCapture(micSettings, previousRawStream)
   } catch (err) {
     console.error('[Soup] republish getUserMedia failed:', err.name, err.message)
+    await restoreCommittedMicCapture({
+      audioProducers,
+      micSettings: previousMicSettings,
+      previousStop: previousProcessorStop,
+      candidateStream: null,
+      candidateProcessedStream: null,
+      candidateProcessorStop: null,
+      onStream,
+      isCurrent
+    })
     throw new Error(`Failed to get audio device: ${err.message}`)
   }
 
@@ -1613,10 +1664,6 @@ async function doRepublish(micSettings, onStream, expectedGeneration) {
     })
     return
   }
-
-  // Adopt the new capture only after the operation still belongs to this media
-  // generation. The old raw stream was already stopped by acquireMicCapture.
-  setRawMicStream(stream)
 
   if (audioProducers.length === 0) {
     // No existing producer to reuse (first publish hasn't happened yet) -
@@ -1664,6 +1711,7 @@ async function doRepublish(micSettings, onStream, expectedGeneration) {
       processedStream,
       processorStop: candidateProcessorStop,
       previousStop: previousProcessorStop,
+      micSettings: resolvedMicSettings,
       onStream
     })
     console.log('[Soup] Audio republished with new settings')
@@ -1671,11 +1719,15 @@ async function doRepublish(micSettings, onStream, expectedGeneration) {
   }
 
   if (newTracks.length !== audioProducers.length) {
-    discardRepublishCandidate({
-      stream,
-      processedStream,
-      processorStop: candidateProcessorStop,
-      previousStop: previousProcessorStop
+    await restoreCommittedMicCapture({
+      audioProducers,
+      micSettings: previousMicSettings,
+      previousStop: previousProcessorStop,
+      candidateStream: stream,
+      candidateProcessedStream: processedStream,
+      candidateProcessorStop,
+      onStream,
+      isCurrent
     })
     throw new Error('Microphone track count changed during republish')
   }
@@ -1712,13 +1764,17 @@ async function doRepublish(micSettings, onStream, expectedGeneration) {
         return
       }
     } catch (err) {
-      await disposeMicProducers(replacementProducers)
-      discardRepublishCandidate({
-        stream,
-        processedStream,
-        processorStop: candidateProcessorStop,
-        previousStop: previousProcessorStop
+      await restoreCommittedMicCapture({
+        audioProducers,
+        micSettings: previousMicSettings,
+        previousStop: previousProcessorStop,
+        candidateStream: stream,
+        candidateProcessedStream: processedStream,
+        candidateProcessorStop,
+        onStream,
+        isCurrent
       })
+      await disposeMicProducers(replacementProducers)
       throw err
     }
 
@@ -1744,6 +1800,7 @@ async function doRepublish(micSettings, onStream, expectedGeneration) {
       processedStream,
       processorStop: candidateProcessorStop,
       previousStop: previousProcessorStop,
+      micSettings: resolvedMicSettings,
       onStream
     })
     console.log('[Soup] Audio profile changed; producer replaced')
@@ -1753,7 +1810,6 @@ async function doRepublish(micSettings, onStream, expectedGeneration) {
   // Swap the track on each existing audio producer in place. The
   // server-side producer (and any consumers peers already created for it)
   // stays alive, so peers keep receiving the same producer id.
-  let adoptedTrackCount = 0
   try {
     for (let i = 0; i < audioProducers.length; i++) {
       const producer = audioProducers[i]
@@ -1764,7 +1820,6 @@ async function doRepublish(micSettings, onStream, expectedGeneration) {
       const oldTrack = producer.track
       await producer.replaceTrack({ track })
       oldTrack?.stop()
-      adoptedTrackCount++
 
       // Update bitrate on the existing RTP sender without renegotiating.
       // Opus fmtp profile fields are negotiated at produce() time; the ceiling
@@ -1796,25 +1851,17 @@ async function doRepublish(micSettings, onStream, expectedGeneration) {
       })
       return
     }
-    if (adoptedTrackCount > 0) {
-      // A mediasoup replace can fail after an earlier producer was already
-      // updated. Keep the producer bookkeeping intact and make the new graph
-      // current for the tracks that did adopt it; never report a false rollback.
-      commitRepublishedMicProcessing({
-        stream,
-        processedStream,
-        processorStop: candidateProcessorStop,
-        previousStop: previousProcessorStop,
-        onStream
-      })
-    } else {
-      discardRepublishCandidate({
-        stream,
-        processedStream,
-        processorStop: candidateProcessorStop,
-        previousStop: previousProcessorStop
-      })
-    }
+
+    await restoreCommittedMicCapture({
+      audioProducers,
+      micSettings: previousMicSettings,
+      previousStop: previousProcessorStop,
+      candidateStream: stream,
+      candidateProcessedStream: processedStream,
+      candidateProcessorStop,
+      onStream,
+      isCurrent
+    })
     throw err
   }
 
@@ -1823,6 +1870,7 @@ async function doRepublish(micSettings, onStream, expectedGeneration) {
     processedStream,
     processorStop: candidateProcessorStop,
     previousStop: previousProcessorStop,
+    micSettings: resolvedMicSettings,
     onStream
   })
   console.log('[Soup] Audio republished with new settings')
@@ -1864,17 +1912,26 @@ onScreenAudioError(({ message }) => {
 // no picker choice).
 const VIDEO_SCALABILITY_MODE = 'L3T3_KEY'
 
-// Screen share uses a single plain encoding — no scalabilityMode at all.
-// Spatial SVC (L2/L3) was dropped first: splitting the budget across layers
-// left the full-res image soft (Discord looks sharp at ~4 Mbps with one clean
-// stream). Temporal layers (L1T3) went next: hardware encoders reject or
-// refuse to register for SVC modes (observed: the D3D12 encoder does plain
-// H.264 fine but AV1 'L1T3' fell back to libaom; MediaFoundation H.264 threw
-// on 'L1T3' in setParameters) — and since a software-AV1 sender gets
-// downgraded to H.264 (no layers) anyway, the layers only ever served
-// machines that were about to lose them. Trade-off: no per-viewer fps/res
-// tiering for screen shares — setVideoStreamRoles() still pauses hidden
-// streams; layer preferences are skipped for consumers that report no layers.
+// Screen shares deliberately have only temporal SVC (never spatial SVC or
+// simulcast): sharp text needs the whole bitrate budget at full resolution.
+// AV1/VP9 may support up to three temporal layers; H.264 must always remain
+// plain because MediaFoundation rejects scalabilityMode on its screen encoder.
+const SCREEN_SVC_RUNGS = ['L1T3', 'L1T2', 'plain']
+const SCREEN_SVC_VERDICT_PREFIX = 'screenSvcVerdict:'
+
+function screenCodecMime(codec) {
+  return codec?.mimeType?.toLowerCase() ?? ''
+}
+
+function supportsScreenTemporalSvc(codec) {
+  return /^video\/(av1|vp9)$/i.test(codec?.mimeType ?? '')
+}
+
+function screenSvcRungsFor(codec, startRung) {
+  const rungs = supportsScreenTemporalSvc(codec) ? SCREEN_SVC_RUNGS : ['plain']
+  const startIndex = startRung == null ? 0 : rungs.indexOf(startRung)
+  return startIndex >= 0 ? rungs.slice(startIndex) : rungs
+}
 
 // Ceiling for the single full-resolution screen encoding. Sixty FPS needs more
 // bits than 30 FPS, and the H.264 hardware fallback needs more than AV1/VP9 for
@@ -1899,6 +1956,15 @@ function screenEncodingFor({ width, height, fps, codec, optimizeFor }) {
   return { maxBitrate, maxFramerate: Math.max(1, Math.round(fps)) }
 }
 
+// Chromium's WebRTC sender is the only path that can use temporal SVC. Keep
+// screenEncodingFor() bitrate/framerate-only: the native AV1 screen encoder
+// reuses that helper with its intentionally plain RTP encoding.
+function chromiumScreenEncodingFor(codec, rung, { width, height, fps, optimizeFor }) {
+  const encoding = screenEncodingFor({ width, height, fps, codec, optimizeFor })
+  const scalabilityMode = supportsScreenTemporalSvc(codec) && rung !== 'plain' ? rung : undefined
+  return scalabilityMode ? { ...encoding, scalabilityMode } : encoding
+}
+
 // A video codec from the loaded device's sending capabilities, by mime type.
 // The codec passed to produce() MUST come from sendRtpCapabilities: the legacy
 // rtpCapabilities getter aliases the receiving capabilities, whose H.264 profile
@@ -1920,6 +1986,45 @@ function findVideoCodec(mime) {
 const SCREEN_H264_KEY = 'screenPreferH264'
 const SCREEN_H264_CACHE_VERSION_KEY = 'screenPreferH264Version'
 
+function screenSvcVerdictKey(codec) {
+  const mime = screenCodecMime(codec)
+  return supportsScreenTemporalSvc(codec) && mime ? `${SCREEN_SVC_VERDICT_PREFIX}${mime}` : null
+}
+
+function cachedScreenSvcRung(codec) {
+  const key = screenSvcVerdictKey(codec)
+  if (!key) return null
+  try {
+    const rung = sessionStorage.getItem(key)
+    return screenSvcRungsFor(codec).includes(rung) ? rung : null
+  } catch {
+    return null
+  }
+}
+
+function cacheScreenSvcRung(codec, rung) {
+  const key = screenSvcVerdictKey(codec)
+  if (!key || !screenSvcRungsFor(codec).includes(rung)) return
+  try {
+    sessionStorage.setItem(key, rung)
+  } catch {
+    // Storage is only an optimization; retry the full rung ladder if unavailable.
+  }
+}
+
+function clearScreenSvcRungStorage() {
+  try {
+    const keys = []
+    for (let index = 0; index < sessionStorage.length; index++) {
+      const key = sessionStorage.key(index)
+      if (key?.startsWith(SCREEN_SVC_VERDICT_PREFIX)) keys.push(key)
+    }
+    for (const key of keys) sessionStorage.removeItem(key)
+  } catch {
+    // sessionStorage may be unavailable in unusual/private renderer contexts.
+  }
+}
+
 // This is an optimization, not durable hardware capability knowledge. GPU
 // process startup, driver state, and feature flags can differ across app
 // launches (especially the first launch after an update), so a software result
@@ -1936,6 +2041,7 @@ function clearScreenCodecPreferenceStorage() {
     // localStorage is unavailable only in unusual/private renderer contexts;
     // the normal codec probe still works without the optimization cache.
   }
+  clearScreenSvcRungStorage()
 }
 
 clearScreenCodecPreferenceStorage()
@@ -1960,6 +2066,7 @@ export function resetScreenCodecPreference() {
   } catch {
     // Ignore storage failures; the next renderer session will still probe AV1.
   }
+  clearScreenSvcRungStorage()
 }
 
 // User-forced screen codec from PREFER_SCREENSHARE_CODEC=H264|AV1|VP9 (normalized
@@ -1976,14 +2083,10 @@ function forcedScreenCodec() {
   return FORCED_SCREEN_CODEC_MIME ? findVideoCodec(FORCED_SCREEN_CODEC_MIME) : undefined
 }
 
-// Screen share: AV1 for efficiency (Discord-level sharpness at lower bitrate,
-// one plain encoding — see the SVC note above screenEncodingFor), VP9 fallback.
-// Whether AV1 encodes in
-// hardware or software can't be known up front (mediaCapabilities.encodingInfo
-// lies on Windows — reports AV1 powerEfficient even when the WebRTC encoder is
-// libaom), so the first share probes it: getStats names the real encoder ~3s in,
-// and a software result downgrades the share to H.264 and remembers that choice
-// for later shares in this renderer session (SCREEN_H264_KEY).
+// Screen share prefers AV1 for efficiency, then VP9. Chromium AV1/VP9 starts on
+// a temporal-SVC rung and falls through L1T3 → L1T2 → plain when needed; H.264
+// always stays plain. Sender stats remain the final HW/SW verdict because a
+// positive MediaCapabilities answer is not reliable on Windows/RDNA3.
 function pickVideoCodec() {
   // An explicit PREFER_SCREENSHARE_CODEC wins outright when the router advertises
   // it; fall through to the normal selection if it's unavailable.
@@ -2143,20 +2246,15 @@ function startEncoderStatsLog(producer, onStats) {
   return stop
 }
 
-// ─── Adaptive screen-share codec downgrade ───────────────────────
-// The share starts on AV1 (best quality-per-bit when hardware-encoded); the first
-// stats sample (~3s) names the encoder the machine actually produced. Software
-// AV1/VP9 (libaom/libvpx — the heaviest encoders Chromium ships) downgrades to
-// H.264 immediately and remembers the choice for this renderer session
-// (SCREEN_H264_KEY): H.264 is hardware via MediaFoundation where the GPU process
-// supports it, else openh264, the cheapest software encoder. A hardware encoder
-// only downgrades under sustained cpu limitation. We re-produce ONCE, reusing the
-// live capture track so the user doesn't re-pick a source. The SFU already
-// tolerates a brief two-producer overlap
-// (see consumeProducer's stale-consumer cleanup), so we produce the replacement
-// before closing the original — a failed downgrade leaves the AV1 share running
-// rather than killing it.
+// ─── Adaptive screen-share SVC fallback ──────────────────────────
+// AV1/VP9 start at L1T3 and use an explicit rung state machine. A hard
+// produce()/setParameters() failure tries the next rung with the same capture
+// track; a software verdict first steps down within the codec, and only a plain
+// unforced AV1/VP9 share falls to H.264. Sustained CPU pressure retains its
+// existing direct H.264 fallback. Each successful rung is cached per session.
 const CPU_STRIKES_TO_DOWNGRADE = 3 // ~3 polls × 3s ≈ 9s of sustained cpu limiting
+const SCREEN_FALLBACK_BASE_COOLDOWN_MS = 5000
+const SCREEN_FALLBACK_MAX_COOLDOWN_MS = 300_000
 
 function enqueueShareClaim(operation) {
   const result = shareClaimQueue.then(operation, operation)
@@ -2184,20 +2282,299 @@ function isActiveShare(ctx) {
   return screenShareCtx === ctx && !ctx.stopped
 }
 
+function screenRungKey(codec, rung) {
+  return `${screenCodecMime(codec) || '__default__'}:${rung}`
+}
+
+function isScreenRungRejected(ctx, codec, rung) {
+  return ctx.rejectedScreenRungs?.has(screenRungKey(codec, rung))
+}
+
+function rejectScreenRung(ctx, codec, rung) {
+  ctx.rejectedScreenRungs?.add(screenRungKey(codec, rung))
+}
+
+function resetScreenFallbackCooldown(ctx) {
+  ctx.fallbackFailureCount = 0
+  ctx.fallbackCooldownUntil = 0
+}
+
+function armScreenFallbackCooldown(ctx) {
+  const failureCount = ctx.fallbackFailureCount ?? 0
+  const delay = Math.min(
+    SCREEN_FALLBACK_MAX_COOLDOWN_MS,
+    SCREEN_FALLBACK_BASE_COOLDOWN_MS * 2 ** Math.min(failureCount, 8)
+  )
+  ctx.fallbackFailureCount = failureCount + 1
+  ctx.fallbackCooldownUntil = Date.now() + delay
+  console.warn(`[Soup] Screen fallback cooling down for ${delay}ms`)
+}
+
+function screenFallbackIsCoolingDown(ctx) {
+  return Date.now() < (ctx.fallbackCooldownUntil ?? 0)
+}
+
 // Serialize mediasoup produce operations for the single local video-share slot.
 // If ownership changes during the await, close only the producer just created;
 // never call a global teardown that could belong to the successor share.
 function produceForShare(ctx, options) {
-  return enqueueShareProduce(async () => {
-    if (!isActiveShare(ctx)) throw shareSupersededError()
-    const producer = await ctx.transport.produce(options)
+  let rejectedAttemptSender = null
+  const result = enqueueShareProduce(async () => {
+    try {
+      if (!isActiveShare(ctx)) throw shareSupersededError()
+      const producer = await ctx.transport.produce({
+        ...options,
+        // Chrome creates the transceiver before later SDP work can reject. The
+        // callback is invoked before that work, so keep the sender outside the
+        // mediasoup Producer as a cleanup handle for handler-level failures.
+        onRtpSender: (sender) => {
+          rejectedAttemptSender = sender
+          options.onRtpSender?.(sender)
+        }
+      })
+      if (!isActiveShare(ctx)) {
+        producer.close()
+        await closeServerProducer(producer.id)
+        throw shareSupersededError()
+      }
+      return producer
+    } catch (error) {
+      if (rejectedAttemptSender) {
+        try {
+          await detachRtpSender(rejectedAttemptSender)
+        } catch (detachError) {
+          console.warn('[Soup] Failed to detach rejected screen RTP sender:', detachError)
+        }
+      }
+      throw error
+    }
+  })
+
+  return result
+}
+
+function screenEncodingCapabilityError(codec) {
+  const error = new Error(
+    `No viable screen encoding rung for ${codec?.mimeType ?? 'the default codec'}`
+  )
+  error.code = 'SCREEN_ENCODING_CAPABILITY_REJECTED'
+  return error
+}
+
+// MediaCapabilities is only a negative pre-hint. Positive answers are known to
+// be unreliable on Windows/RDNA3, so every accepted rung still goes through the
+// sender-stats verdict. A forced codec intentionally bypasses this optimization.
+async function hasNegativeScreenEncodingCapabilityHint(ctx, codec, encoding) {
+  if (!supportsScreenTemporalSvc(codec) || forcedScreenCodec()) return false
+  const mediaCapabilities = globalThis.navigator?.mediaCapabilities
+  if (typeof mediaCapabilities?.encodingInfo !== 'function') return false
+
+  try {
+    const info = await mediaCapabilities.encodingInfo({
+      type: 'webrtc',
+      video: {
+        contentType: codec.mimeType,
+        width: Math.max(1, Math.round(ctx.width)),
+        height: Math.max(1, Math.round(ctx.height)),
+        framerate: encoding.maxFramerate,
+        bitrate: encoding.maxBitrate,
+        ...(encoding.scalabilityMode ? { scalabilityMode: encoding.scalabilityMode } : {})
+      }
+    })
+    const negative = info?.supported === false || info?.powerEfficient === false
+    if (negative) {
+      console.warn(
+        `[Soup] Skipping ${codec.mimeType} ${encoding.scalabilityMode ?? 'plain'} screen rung ` +
+          'from negative MediaCapabilities hint'
+      )
+    }
+    return negative
+  } catch {
+    // Unsupported query fields or browser errors are deliberately not a verdict.
+    return false
+  }
+}
+
+function screenProducerOptions(ctx, codec, encoding) {
+  let sender = null
+  return {
+    track: ctx.track,
+    codec,
+    encodings: [encoding],
+    // A failed produce/parameter attempt must not end the capture track: the
+    // next SVC rung reuses it, and stopShareContext() remains its sole owner.
+    stopTracks: false,
+    codecOptions: { videoGoogleStartBitrate: 2500 },
+    onRtpSender: (rtpSender) => {
+      sender = rtpSender
+    },
+    appData: {
+      produced: 'ScreenShare',
+      beforeServerProduce: async (rtpParameters) => {
+        await setSenderDegradationPreference(
+          sender,
+          ctx.optimizeFor === 'motion' ? 'maintain-framerate' : 'maintain-resolution',
+          { strict: true }
+        )
+        confirmScreenRung(rtpParameters, sender, encoding)
+      }
+    }
+  }
+}
+
+async function discardUnadoptedScreenProducer(producer) {
+  try {
+    producer.close()
+  } finally {
+    await closeServerProducer(producer.id)
+  }
+}
+
+function screenRungExhaustedError(codec) {
+  const error = new Error(
+    `All screen encoding rungs were rejected for ${codec?.mimeType ?? 'the default codec'}`
+  )
+  error.code = 'SCREEN_ENCODING_RUNGS_EXHAUSTED'
+  return error
+}
+
+// Try a codec's temporal-SVC ladder from the requested rung down to plain.
+// Each candidate is fully configured before it is returned, so a failed
+// produce()/setParameters() never consumes the shared capture track or becomes
+// the active producer.
+async function produceScreenWithFallback(ctx, codec, { startRung } = {}) {
+  const firstRung = startRung ?? cachedScreenSvcRung(codec) ?? screenSvcRungsFor(codec)[0]
+  const rungs = screenSvcRungsFor(codec, firstRung).filter(
+    (rung) => !isScreenRungRejected(ctx, codec, rung)
+  )
+  if (rungs.length === 0) throw screenRungExhaustedError(codec)
+  let lastError = null
+
+  for (const rung of rungs) {
+    const encoding = chromiumScreenEncodingFor(codec, rung, ctx)
+    if (await hasNegativeScreenEncodingCapabilityHint(ctx, codec, encoding)) {
+      rejectScreenRung(ctx, codec, rung)
+      lastError = screenEncodingCapabilityError(codec)
+      continue
+    }
+
+    let producer
+    try {
+      producer = await produceForShare(ctx, screenProducerOptions(ctx, codec, encoding))
+      if (!isActiveShare(ctx) || ctx.track?.readyState === 'ended') {
+        throw shareSupersededError()
+      }
+      cacheScreenSvcRung(codec, rung)
+      return { producer, codec, rung, encoding }
+    } catch (error) {
+      if (producer) await discardUnadoptedScreenProducer(producer)
+      if (isShareSupersededError(error)) throw error
+      rejectScreenRung(ctx, codec, rung)
+      lastError = error
+      console.warn(
+        `[Soup] Screen ${codec?.mimeType ?? 'default'} ${rung} rung failed; trying the next rung:`,
+        error
+      )
+    }
+  }
+
+  throw lastError ?? screenEncodingCapabilityError(codec)
+}
+
+function uniqueScreenCodecs(codecs) {
+  const seen = new Set()
+  return codecs.filter((codec) => {
+    // Preserve mediasoup's default-codec path for routers that advertise none
+    // of our explicit AV1/VP9/H.264 candidates.
+    const mime = screenCodecMime(codec) || '__default__'
+    if (seen.has(mime)) return false
+    seen.add(mime)
+    return true
+  })
+}
+
+// A pre-produce failure may mean AV1/VP9 is advertised but unavailable in this
+// Chromium process. Exhaust that codec's rung ladder first, then try the next
+// compatible codec. An explicit PREFER_SCREENSHARE_CODEC never leaves its codec.
+async function produceInitialScreenWithFallback(ctx, initialCodec) {
+  const forced = forcedScreenCodec()
+  const codecs = uniqueScreenCodecs(
+    forced ? [forced] : [initialCodec, findVideoCodec('video/vp9'), findVideoCodec('video/h264')]
+  )
+  let lastError = null
+
+  for (const codec of codecs) {
+    try {
+      return await produceScreenWithFallback(ctx, codec)
+    } catch (error) {
+      if (isShareSupersededError(error)) throw error
+      lastError = error
+      console.warn(`[Soup] Screen codec ${codec?.mimeType ?? 'default'} could not start:`, error)
+    }
+  }
+
+  throw lastError ?? new Error('No supported screen-share video codec is available')
+}
+
+function adoptScreenProducer(ctx, candidate) {
+  const previous = ctx.producer
+  ctx.statsStop?.()
+  ctx.statsStop = null
+  ctx.producer = candidate.producer
+  ctx.screenCodec = candidate.codec
+  ctx.screenSvcRung = candidate.rung
+  ctx.cpuStrikes = 0
+  resetScreenFallbackCooldown(ctx)
+  localProducerIds.add(candidate.producer.id)
+
+  if (previous && previous !== candidate.producer) {
+    previous.close()
+    localProducerIds.delete(previous.id)
+    // Producing ScreenShare atomically replaces its server-side predecessor;
+    // closing previous.id explicitly would return NotFound and desync the FIFO.
+  }
+
+  logNegotiatedVideoCodec(candidate.producer, candidate.encoding.scalabilityMode)
+  ctx.statsStop = startEncoderStatsLog(candidate.producer, (stats) => {
+    // A getStats() call already in flight for the replaced producer may finish
+    // after its interval is cleared. Do not let that stale software verdict skip
+    // a freshly selected SVC rung.
+    if (ctx.producer !== candidate.producer) return
+    screenStatsHandler(ctx, stats)
+  })
+}
+
+function nextScreenSvcRung(ctx) {
+  const rungs = screenSvcRungsFor(ctx.screenCodec)
+  const current = rungs.includes(ctx.screenSvcRung) ? ctx.screenSvcRung : 'plain'
+  const index = rungs.indexOf(current)
+  if (index < 0) return null
+  return (
+    rungs.slice(index + 1).find((rung) => !isScreenRungRejected(ctx, ctx.screenCodec, rung)) ?? null
+  )
+}
+
+async function stepDownScreenSvcRung(ctx, reason) {
+  const nextRung = nextScreenSvcRung(ctx)
+  if (!nextRung) return false
+
+  try {
+    const candidate = await produceScreenWithFallback(ctx, ctx.screenCodec, { startRung: nextRung })
     if (!isActiveShare(ctx)) {
-      producer.close()
-      await closeServerProducer(producer.id)
+      await discardUnadoptedScreenProducer(candidate.producer)
       throw shareSupersededError()
     }
-    return producer
-  })
+    adoptScreenProducer(ctx, candidate)
+    console.log(
+      `[Soup] Screen ${ctx.screenCodec?.mimeType ?? 'default'} stepped down to ${candidate.rung} ` +
+        `(${reason}) [id:${candidate.producer.id}]`
+    )
+    return true
+  } catch (error) {
+    if (isShareSupersededError(error)) throw error
+    console.warn('[Soup] Screen SVC rungs exhausted; considering codec fallback:', error)
+    return false
+  }
 }
 
 async function stopShareContext(ctx, { notifyServer = true } = {}) {
@@ -2259,105 +2636,151 @@ function claimShareContext(ctx) {
 function screenStatsHandler(ctx, stats) {
   if (!isActiveShare(ctx)) return
   ctx.onEncoderStats?.(stats)
-  maybeDowngradeScreenCodec(ctx, stats)
+  void maybeDowngradeScreenCodec(ctx, stats)
+}
+
+async function downgradeScreenCodecToH264(ctx, { softwareEncoder, reason }) {
+  const current = ctx.producer?.rtpParameters?.codecs?.[0]?.mimeType ?? ''
+  if (/h264/i.test(current)) return false
+
+  const h264 = findVideoCodec('video/h264')
+  if (!h264) return false
+
+  const candidate = await produceScreenWithFallback(ctx, h264, { startRung: 'plain' })
+  if (!isActiveShare(ctx)) {
+    await discardUnadoptedScreenProducer(candidate.producer)
+    throw shareSupersededError()
+  }
+  adoptScreenProducer(ctx, candidate)
+
+  // Only an observed software encoder proves that this renderer should skip
+  // AV1/VP9 next time. CPU pressure alone must not create that preference.
+  if (softwareEncoder) {
+    try {
+      sessionStorage.setItem(SCREEN_H264_KEY, '1')
+    } catch {
+      // The next share will simply probe again if sessionStorage is unavailable.
+    }
+  }
+  console.log(`[Soup] Screen codec downgraded to H264 (${reason}) [id:${candidate.producer.id}]`)
+  return true
 }
 
 async function maybeDowngradeScreenCodec(ctx, stats) {
-  if (!isActiveShare(ctx) || ctx.downgraded || !ctx.producer) return
-  // A user-forced codec (PREFER_SCREENSHARE_CODEC) is honored as-is — never
-  // auto-downgrade it, even when the encoder came up software.
-  if (forcedScreenCodec()) return
+  if (
+    !isActiveShare(ctx) ||
+    !ctx.producer ||
+    ctx.screenTransition ||
+    screenFallbackIsCoolingDown(ctx)
+  )
+    return
+
   const current = ctx.producer.rtpParameters?.codecs?.[0]?.mimeType ?? ''
   if (/h264/i.test(current)) return // already on the lightest codec
 
   const softwareEncoder = stats.hardware === false
   if (softwareEncoder) {
-    // Verified software AV1/VP9 is never worth keeping — downgrade now.
+    // A measured software encoder may be caused by the SVC rung itself. Lower
+    // that rung before abandoning AV1/VP9 for H.264.
     ctx.cpuStrikes = CPU_STRIKES_TO_DOWNGRADE
   } else {
-    // Hardware (or not-yet-known) encoder: only downgrade under sustained cpu
-    // limitation. Decay rather than reset — a loaded encoder oscillates between
-    // 'cpu' and 'bandwidth', and a hard reset let that oscillation dodge the
-    // downgrade forever.
+    // Hardware (or not-yet-known) encoder: only step down under sustained cpu
+    // limitation. Decay rather than reset so cpu/bandwidth oscillation cannot
+    // avoid a needed fallback forever.
     ctx.cpuStrikes =
       stats.qualityLimitationReason === 'cpu' ? ctx.cpuStrikes + 1 : Math.max(0, ctx.cpuStrikes - 1)
   }
   if (ctx.cpuStrikes < CPU_STRIKES_TO_DOWNGRADE) return
-  ctx.downgraded = true // commit — win or lose, don't re-evaluate
 
-  const h264 = findVideoCodec('video/h264')
-  if (!h264) return // nothing lighter to switch to
-
-  const previous = ctx.producer
-  const oldId = previous.id
-  try {
-    // No scalabilityMode on H.264: MediaFoundation hardware encoders reject
-    // 'L1T3' in setParameters, breaking setDegradationPreference below.
-    const next = await produceForShare(ctx, {
-      track: ctx.track,
-      codec: h264,
-      encodings: [
-        screenEncodingFor({
-          width: ctx.width,
-          height: ctx.height,
-          fps: ctx.fps,
-          codec: h264,
-          optimizeFor: ctx.optimizeFor
-        })
-      ],
-      // Same shared-track rule as shareScreen: closing a producer must never
-      // stop the capture track (stopScreenShare owns that).
-      stopTracks: false,
-      codecOptions: { videoGoogleStartBitrate: 2500 },
-      appData: { produced: 'ScreenShare' }
-    })
-
-    previous.close()
-    localProducerIds.delete(oldId)
-    // Producing the same ScreenShare media type atomically replaces the old
-    // server producer; asking the SFU to close oldId now would return NotFound
-    // and used to poison the response FIFO.
-    ctx.producer = next
-    localProducerIds.add(next.id)
-    // Only a measured-software encoder proves this renderer should avoid
-    // repeating the expensive AV1 attempt. Keep that decision session-scoped;
-    // a new app process must be allowed to discover newly working HW AV1.
-    if (softwareEncoder) {
-      try {
-        sessionStorage.setItem(SCREEN_H264_KEY, '1')
-      } catch {
-        // The next share will simply probe again if sessionStorage is unavailable.
-      }
+  const forced = forcedScreenCodec()
+  const nextRung = nextScreenSvcRung(ctx)
+  // Preserve the existing forced-codec contract for CPU pressure: only a
+  // measured software encoder walks the SVC ladder, and forced shares never
+  // auto-switch to H.264.
+  if (forced && !softwareEncoder) return
+  if (forced && !nextRung) {
+    armScreenFallbackCooldown(ctx)
+    return
+  }
+  if (!forced && !nextRung) {
+    const h264 = findVideoCodec('video/h264')
+    if (!h264 || isScreenRungRejected(ctx, h264, 'plain')) {
+      armScreenFallbackCooldown(ctx)
+      return
     }
-    await setDegradationPreference(
-      next,
-      ctx.optimizeFor === 'motion' ? 'maintain-framerate' : 'maintain-resolution'
-    )
-    if (!isActiveShare(ctx) || ctx.producer !== next) return
-    ctx.statsStop = startEncoderStatsLog(next, (nextStats) => screenStatsHandler(ctx, nextStats))
-    console.log(
-      `[Soup] Screen codec downgraded to H264 (${softwareEncoder ? 'software encoder' : 'cpu limited'}) [id:${next.id}]`
-    )
-  } catch (err) {
-    if (isShareSupersededError(err)) return
-    console.warn('[Soup] Screen codec downgrade failed; staying on AV1:', err)
+  }
+  const reason = softwareEncoder ? 'software encoder' : 'cpu limited'
+  const transition = (async () => {
+    if (softwareEncoder && nextRung && (await stepDownScreenSvcRung(ctx, reason))) return
+    // Forced-codec mode can lose temporal SVC rungs but may never switch codec.
+    if (forced) {
+      armScreenFallbackCooldown(ctx)
+      return
+    }
+    const downgraded = await downgradeScreenCodecToH264(ctx, { softwareEncoder, reason })
+    if (!downgraded) armScreenFallbackCooldown(ctx)
+  })()
+  ctx.screenTransition = transition
+
+  try {
+    await transition
+  } catch (error) {
+    if (isShareSupersededError(error)) return
+    // Keep the current producer if every candidate failed; a later stats sample
+    // should wait for the backoff before considering another transition.
+    console.warn('[Soup] Screen fallback transition failed; keeping current producer:', error)
+    armScreenFallbackCooldown(ctx)
+    if (!softwareEncoder) ctx.cpuStrikes = 0
+  } finally {
+    if (ctx.screenTransition === transition) ctx.screenTransition = null
+  }
+}
+
+function confirmScreenRung(rtpParameters, sender, encoding) {
+  const expected = encoding.scalabilityMode
+  if (!expected) return
+
+  const negotiated = rtpParameters?.encodings?.[0]?.scalabilityMode
+  let senderMode
+  try {
+    senderMode = sender?.getParameters?.().encodings?.[0]?.scalabilityMode
+  } catch {
+    // The negotiated RTP parameters below are still useful if sender readback
+    // is unavailable in this browser.
+  }
+  const actual = senderMode ?? negotiated
+  if (actual !== expected) {
+    const error = new Error(`Screen sender selected ${actual ?? 'plain'} instead of ${expected}`)
+    error.code = 'SCREEN_SCALABILITY_MODE_MISMATCH'
+    throw error
   }
 }
 
 // Bias how the encoder sheds quality under CPU/bandwidth pressure, via the RTP
 // sender's top-level degradationPreference. Mirrors the audio setParameters path
-// (getParameters → mutate → setParameters in a try/catch). 'maintain-resolution'
-// keeps frames sharp and lets fps drop; 'maintain-framerate' does the reverse.
-async function setDegradationPreference(producer, preference) {
-  const sender = producer.rtpSender
-  if (!sender) return
-  const params = sender.getParameters()
-  params.degradationPreference = preference
-  try {
-    await sender.setParameters(params)
-  } catch (err) {
-    console.warn('[Soup] Failed to set degradationPreference:', err)
+// (getParameters → mutate → setParameters). Strict mode is used while probing a
+// screen rung: a rejected parameter update must reject that rung, not be cached.
+async function setSenderDegradationPreference(sender, preference, { strict = false } = {}) {
+  if (!sender) {
+    const error = new Error('Screen producer has no RTP sender')
+    if (strict) throw error
+    console.warn('[Soup] Failed to set degradationPreference:', error)
+    return false
   }
+  try {
+    const params = sender.getParameters()
+    params.degradationPreference = preference
+    await sender.setParameters(params)
+    return true
+  } catch (error) {
+    if (strict) throw error
+    console.warn('[Soup] Failed to set degradationPreference:', error)
+    return false
+  }
+}
+
+async function setDegradationPreference(producer, preference, options) {
+  return setSenderDegradationPreference(producer.rtpSender, preference, options)
 }
 
 // ─── Share screen ────────────────────────────────────────────────
@@ -2408,7 +2831,12 @@ export async function shareScreen({
     optimizeFor,
     onEncoderStats,
     cpuStrikes: 0,
-    downgraded: false
+    screenCodec: null,
+    screenSvcRung: 'plain',
+    screenTransition: null,
+    rejectedScreenRungs: new Set(),
+    fallbackFailureCount: 0,
+    fallbackCooldownUntil: 0
   }
   await claimShareContext(ctx)
 
@@ -2453,34 +2881,16 @@ export async function shareScreen({
         `ceiling ${Math.round(screenEncoding.maxBitrate / 1000)}kbps`
     )
 
-    const videoProducer = await produceForShare(ctx, {
-      track,
-      // Request the codec explicitly: AV1, else VP9 — or H.264 once the probe
-      // learned AV1 is software here (see pickVideoCodec). One plain encoding,
-      // no scalabilityMode (see the SVC note above screenEncodingFor).
-      codec: screenCodec,
-      encodings: [screenEncoding],
-      // The adaptive downgrade re-produces this SAME track, so producers must
-      // not stop it on close() (the default stopTracks:true killed the
-      // replacement producer — black stream at 0fps).
-      stopTracks: false,
-      codecOptions: { videoGoogleStartBitrate: 2500 },
-      appData: { produced: 'ScreenShare' }
-    })
-    ctx.producer = videoProducer
-    localProducerIds.add(videoProducer.id)
-    logNegotiatedVideoCodec(videoProducer)
-
-    await setDegradationPreference(
-      videoProducer,
-      optimizeFor === 'motion' ? 'maintain-framerate' : 'maintain-resolution'
-    )
-    if (!isActiveShare(ctx) || ctx.producer !== videoProducer || track.readyState === 'ended') {
+    const initialProducer = await produceInitialScreenWithFallback(ctx, screenCodec)
+    if (!isActiveShare(ctx) || track.readyState === 'ended') {
+      await discardUnadoptedScreenProducer(initialProducer.producer)
       throw shareSupersededError()
     }
-
-    ctx.statsStop = startEncoderStatsLog(videoProducer, (stats) => screenStatsHandler(ctx, stats))
-    console.log(`[Soup] Screen sharing [id:${videoProducer.id}]`)
+    adoptScreenProducer(ctx, initialProducer)
+    console.log(
+      `[Soup] Screen sharing ${initialProducer.codec?.mimeType ?? 'default'} ` +
+        `${initialProducer.rung} [id:${initialProducer.producer.id}]`
+    )
 
     // Screenshare audio: native capture for per-app/system modes, or the legacy
     // loopback track riding getDisplayMedia. Audio failure keeps video live.
@@ -3013,6 +3423,24 @@ function setAudioJitterBufferTarget(consumer, kind, producedType) {
   }
 }
 
+// Consumer RTP parameters are the negotiated source of truth for selectable
+// layers. SVC encodes its counts in scalabilityMode (which is one-based), while
+// H.264 simulcast exposes one RTP encoding per spatial layer. Convert both to
+// the zero-based layer indexes expected by mediasoup's preferred-layers API.
+function consumerLayerCapabilities(rtpParameters) {
+  const encodings = rtpParameters?.encodings ?? []
+  let maxSpatial = Math.max(0, encodings.length - 1)
+  let maxTemporal = 0
+
+  for (const encoding of encodings) {
+    const { spatialLayers, temporalLayers } = parseScalabilityMode(encoding.scalabilityMode)
+    maxSpatial = Math.max(maxSpatial, spatialLayers - 1)
+    maxTemporal = Math.max(maxTemporal, temporalLayers - 1)
+  }
+
+  return { maxSpatial, maxTemporal }
+}
+
 // ─── Consume a remote producer ───────────────────────────────────
 export async function consumeProducer(producerId, kind, onStream, clientId, producedType) {
   if (!consumerTransport) await subscribe()
@@ -3039,13 +3467,8 @@ export async function consumeProducer(producerId, kind, onStream, clientId, prod
   // function automatically.
   setAudioJitterBufferTarget(consumer, kind, producedType)
 
-  const encodings = consumer.rtpParameters?.encodings ?? []
-  const hasSelectableLayers =
-    encodings.length > 1 ||
-    encodings.some((encoding) => {
-      const match = /^L(\d+)T(\d+)/i.exec(encoding.scalabilityMode ?? '')
-      return match && (Number(match[1]) > 1 || Number(match[2]) > 1)
-    })
+  const layerCapabilities = consumerLayerCapabilities(consumer.rtpParameters)
+  const hasSelectableLayers = layerCapabilities.maxSpatial > 0 || layerCapabilities.maxTemporal > 0
 
   const stream = new MediaStream([consumer.track])
 
@@ -3132,6 +3555,7 @@ export async function consumeProducer(producerId, kind, onStream, clientId, prod
     entry.serverPaused = true
     entry.viewRole = 'hidden'
     entry.hasSelectableLayers = hasSelectableLayers
+    entry.layerCapabilities = layerCapabilities
     onStream?.({
       stream,
       kind,
@@ -3158,9 +3582,9 @@ export async function consumeProducer(producerId, kind, onStream, clientId, prod
 
 // ─── Bandwidth rationing: per-stream view roles ──────────────────
 // Drives server-side layer selection + pausing from the UI's current view so
-// we don't pull every screen share at full 4K at once. With AV1 L3T3_KEY each
-// producer exposes 3 spatial (0 = ~quarter res, 2 = full) and 3 temporal (fps)
-// layers; the server forwards only the layer a given consumer asks for.
+// we don't pull every screen share at full 4K at once. Each consumer's
+// negotiated RTP parameters define its actual spatial/temporal layer limits;
+// the server forwards only the layer a given consumer asks for.
 //
 // REQUIRES matching server handlers (same style as Consume / ResumeConsumer):
 //   SetConsumerPreferredLayers { id, spatial_layer, temporal_layer }
@@ -3168,27 +3592,58 @@ export async function consumeProducer(producerId, kind, onStream, clientId, prod
 //   PauseConsumer  { id } → serverConsumer.pause()
 //   ResumeConsumer { id } → serverConsumer.resume()   (already implemented)
 // All three must send a response, since send() awaits one.
-const VIEW_LAYERS = {
-  focused: { spatialLayer: 2, temporalLayer: 2 },
-  // The unfocused grid fills the whole area with medium tiles, so it gets a
-  // mid spatial layer at full fps — better than a carousel thumbnail, cheaper
-  // than the focused stream.
-  grid: { spatialLayer: 1, temporalLayer: 2 },
-  thumbnail: { spatialLayer: 1, temporalLayer: 0 }
+function layersForViewRole(entry, role) {
+  const { maxSpatial = 0, maxTemporal = 0 } = entry.layerCapabilities ?? {}
+
+  if (role === 'thumbnail') return { spatialLayer: 0, temporalLayer: 0 }
+  if (role === 'grid') {
+    // A screen with L1Tx has no spatial tier to drop, so retain its only
+    // resolution. SVC cameras use their middle layer; two-encoding simulcast
+    // cameras retain their full layer for grid tiles as negotiated.
+    return { spatialLayer: Math.min(1, maxSpatial), temporalLayer: maxTemporal }
+  }
+  return { spatialLayer: maxSpatial, temporalLayer: maxTemporal }
 }
 
-// Ask the server to forward only the given SVC layers for this consumer.
-// No-ops if the preference is unchanged.
+// Ask the server to forward only the given selectable layers for this consumer.
+// The acknowledged preference is cached only after the server accepts it. A
+// separate desired value makes role flips while a request is pending converge
+// to the latest role without ever treating an unacknowledged request as cached.
 function setConsumerPreferredLayers(entry, { spatialLayer, temporalLayer }) {
   if (!entry.hasSelectableLayers) return
+  const layers = { spatialLayer, temporalLayer }
+  entry.desiredPreferredLayers = layers
+
+  if (entry.preferredLayersRequest) return
   if (entry.preferredSpatial === spatialLayer && entry.preferredTemporal === temporalLayer) return
-  entry.preferredSpatial = spatialLayer
-  entry.preferredTemporal = temporalLayer
+
+  entry.preferredLayersRequest = layers
   send('SetConsumerPreferredLayers', {
     id: entry.consumerId,
     spatial_layer: spatialLayer,
     temporal_layer: temporalLayer
-  }).catch((err) => console.warn('[Soup] SetConsumerPreferredLayers failed:', err))
+  })
+    .then(() => {
+      entry.preferredSpatial = spatialLayer
+      entry.preferredTemporal = temporalLayer
+    })
+    .catch((err) => {
+      // Never leave an optimistic value behind: a later role application can
+      // retry this request instead of assuming the server accepted it.
+      entry.preferredSpatial = undefined
+      entry.preferredTemporal = undefined
+      console.warn('[Soup] SetConsumerPreferredLayers failed:', err)
+    })
+    .finally(() => {
+      entry.preferredLayersRequest = null
+      const desired = entry.desiredPreferredLayers
+      if (
+        desired &&
+        (desired.spatialLayer !== spatialLayer || desired.temporalLayer !== temporalLayer)
+      ) {
+        setConsumerPreferredLayers(entry, desired)
+      }
+    })
 }
 
 // Pause/resume RTP forwarding on the server side (real bandwidth, unlike a
@@ -3233,17 +3688,17 @@ export function setVideoStreamRoles({ focusedConsumerId = null, visibleConsumerI
             : 'thumbnail'
           : 'hidden'
 
-    if (entry.viewRole === role) continue
+    const roleChanged = entry.viewRole !== role
     entry.viewRole = role
 
     if (role === 'hidden') {
-      pauseVideoConsumer(entry)
+      if (roleChanged) pauseVideoConsumer(entry)
     } else {
       // Set the forwarding tier while still paused, then resume. Requests are
       // serialized by the signaling FIFO, so a layered consumer cannot briefly
       // burst at its default highest layer before the preference takes effect.
-      setConsumerPreferredLayers(entry, VIEW_LAYERS[role])
-      resumeVideoConsumer(entry) // no-op unless server-paused
+      setConsumerPreferredLayers(entry, layersForViewRole(entry, role))
+      if (roleChanged) resumeVideoConsumer(entry) // no-op unless server-paused
     }
   }
 }
@@ -3282,6 +3737,7 @@ export function resetMediaState() {
   // producer references it anymore (nothing to keep the OS mic open for).
   stopRawStream(rawMicStream)
   setRawMicStream(null)
+  lastCommittedMicSettings = null
   // Idle the shared mic context between sessions; getMicContext() resumes it.
   if (micContext?.state === 'running') micContext.suspend().catch(() => {})
   subscribePromise = null
