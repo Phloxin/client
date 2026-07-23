@@ -95,10 +95,15 @@ function Sidebar({
   // routing through onSharingChange — force sharing off so the dock button
   // reverts from "End Stream" to "Start Stream".
   useEffect(() => {
-    if (!joinedChannelId) setSharing(false)
+    if (!joinedChannelId) {
+      setSharing(false)
+      setSelfSpeaking(false)
+    }
   }, [joinedChannelId])
   const [micMuted, setMicMutedState] = useState(false)
   const [soundMuted, setSoundMutedState] = useState(false)
+  // Our own speaking state, reported up from the active VoiceChannel — drives the system tray icons
+  const [selfSpeaking, setSelfSpeaking] = useState(false)
   const channelRefs = useRef({})
 
   // Which list the sidebar body shows: the channel tree or a flat roster of every
@@ -349,6 +354,20 @@ function Sidebar({
     onStatusChange?.(micMuted, soundMuted)
   }, [micMuted, soundMuted])
 
+  // Drive the Windows system-tray mic indicator. Deafen outranks mute outranks
+  // talking; mute/deafen show even when not in a channel (they're global toggles),
+  // matching TeamSpeak. No-op off Windows (main ignores the message).
+  useEffect(() => {
+    const state = soundMuted
+      ? 'deafened'
+      : micMuted
+        ? 'muted'
+        : selfSpeaking
+          ? 'talking'
+          : 'idle'
+    window.electron?.ipcRenderer?.send('tray:voice-state', state)
+  }, [micMuted, soundMuted, selfSpeaking])
+
   // The channel the server says we're in (authoritative roster) can diverge from
   // the channel our live voice session is joined to when a moderator moves us
   // (PATCH /client). When that happens, adopt the new channel so our session and
@@ -594,6 +613,7 @@ function Sidebar({
             self={self}
             micMuted={micMuted}
             deafened={soundMuted}
+            onSelfSpeaking={setSelfSpeaking}
             onSelfChannelChange={onSelfChannelChange}
             onDeleteChannel={onDeleteChannel}
             onRequestCreateChannel={openCreateChannel}

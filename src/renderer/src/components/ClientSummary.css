@@ -102,28 +102,38 @@
   color: var(--color-text-muted);
 }
 
-.client-summary-status {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-}
-
-/* Borrows the .presence-* colour classes from VoiceChannel.css; only the shape
-   is ours (the dot there is absolutely positioned over an avatar). */
-.client-summary-status-dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
+/* Presence dot notched into the avatar's bottom-right. Borrows the .presence-*
+   colour classes from VoiceChannel.css; the ring matches the page background so
+   it reads as cut out of the avatar. */
+.client-summary-avatar-wrap {
+  position: relative;
   flex-shrink: 0;
+  line-height: 0;
 }
 
-.client-summary-status-message {
-  color: var(--color-text-muted);
+.client-summary-avatar-dot {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 3px var(--color-background);
+  /* Fill/border come from the .presence-* class (VoiceChannel.css) — don't set
+     background here or its later source order overrides the status colour. */
+}
+
+/* Custom status message, shown beside the name only when set. Filled with the
+   page background so it reads as its own chip over the banner gradient. */
+.client-summary-status-box {
+  padding: 6px 12px;
+  border-radius: var(--radius-md);
+  background: var(--color-background);
+  border: 1px solid var(--hairline);
+  color: var(--color-text-secondary, var(--color-text));
+  font-size: var(--font-size-sm);
+  max-width: 340px;
   overflow-wrap: anywhere;
-}
-
-.client-summary-status-message::before {
-  content: '— ';
 }
 
 .client-summary-value {

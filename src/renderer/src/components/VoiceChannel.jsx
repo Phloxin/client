@@ -45,6 +45,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     micMuted,
     deafened,
     onStreamsUpdate,
+    onSelfSpeaking,
     onSelfChannelChange,
     onJoinedChange,
     onSharingChange,
@@ -183,6 +184,8 @@ const VoiceChannel = forwardRef(function VoiceChannel(
       if (!!prev[clientId] === isSpeaking) return prev
       return { ...prev, [clientId]: isSpeaking }
     })
+    // Surface our own speaking state for the system-tray mic indicator.
+    if (clientId === self?.id) onSelfSpeaking?.(isSpeaking)
   }
 
   // Publish (or, on a reconnect, re-publish) the local mic with current settings.
@@ -221,6 +224,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     setSharing(false)
     setVideoStreams([])
     setSpeakingClients({})
+    onSelfSpeaking?.(false)
   }
 
   // Republish audio whenever mic settings change while in a channel

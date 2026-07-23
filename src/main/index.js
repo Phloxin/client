@@ -22,8 +22,12 @@ const icon = process.platform === 'win32' ? iconIco : iconPng
 import { setupGlobalKeybinds, stopGlobalKeybinds } from './keybinds'
 import { setupAudioCapture, stopAudioCaptureHost } from './audioCapture'
 import { setupUpdater } from './updater'
+import { setupTray, setTrayVoiceState, destroyTray } from './tray'
 
 const APP_ID = 'app.pylon.client'
+
+// Main window reference, shared with the tray so it can reach the window.
+let mainWindow = null
 
 // Portals need a stable XDG application ID. In development there is no
 // installed .desktop file for Electron to infer it from, so set the name before
@@ -377,8 +381,9 @@ function createWindow() {
   // or the saved position no longer lands on a connected display.
   const restored = restorableWindowBounds()
 
-  // Create the browser window.
-  const mainWindow = new BrowserWindow({
+  // Create the browser window. Assigned to the module-level ref so the tray can
+  // reach it after close-to-tray hides it.
+  mainWindow = new BrowserWindow({
     width: restored?.width ?? 1000,
     height: restored?.height ?? 700,
     ...(restored ? { x: restored.x, y: restored.y } : {}),
@@ -586,6 +591,10 @@ app.whenReady().then(() => {
     else win.maximize()
   })
   ipcMain.on('window-close', (e) => BrowserWindow.fromWebContents(e.sender)?.close())
+
+  // Live mic indicator for the system tray: renderer pushes 'idle' | 'talking' |
+  // 'muted' | 'deafened' whenever it changes (see SideBar).
+  ipcMain.on('tray:voice-state', (_, state) => setTrayVoiceState(state))
   ipcMain.handle(
     'window-is-maximized',
     (e) => BrowserWindow.fromWebContents(e.sender)?.isMaximized() ?? false
@@ -766,6 +775,13 @@ app.whenReady().then(() => {
 
   createWindow()
 
+  // Windows system-tray icon with the live mic indicator + Open/Mute/Deafen/Quit
+  // menu. No-op on other platforms (see tray.js).
+  setupTray({
+    getWindow: () => mainWindow,
+    quit: () => app.quit()
+  })
+
   // Re-arm the keep-awake blocker if the user left it on last session.
   applyIdleInhibitor(readAppSettings().preventSleep === true)
 
@@ -791,6 +807,9 @@ app.on('window-all-closed', () => {
     app.quit()
   }
 })
+
+// Remove the tray icon on quit so it doesn't linger as a ghost until hovered.
+app.on('will-quit', destroyTray)
 
 // Tear down the global keyboard hook so the native listener thread doesn't
 // linger past quit.

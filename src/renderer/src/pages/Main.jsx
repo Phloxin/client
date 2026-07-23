@@ -41,8 +41,7 @@ import {
   IconUser,
   IconUsersGroup,
   IconX,
-  IconVolume,
-  IconActivity
+  IconVolume
 } from '@tabler/icons-react'
 
 const APP_TITLE = 'Pylon'
@@ -176,6 +175,9 @@ function Main() {
   const [rolesGroupsOpen, setRolesGroupsOpen] = useState(false)
   const [bans, setBans] = useState([])
   const [connectedServer, setConnectedServer] = useState(null)
+  // The server's own name (GET /server), distinct from the list entry's local
+  // nickname. Shown in the title bar and lurking header once connected.
+  const [serverName, setServerName] = useState(null)
   const [connectionStatus, setConnectionStatus] = useState('connected')
   // Transient toast banner: { message, variant } or null when hidden. 'error'
   // reports partial failures (bad requests, permission denials, failed fetches);
@@ -1426,8 +1428,18 @@ function Main() {
       }
 
       if (result.response.ok && data.access_token) {
+        // Fetch the server's real name before revealing the connected UI, so the
+        // header/title show it from the first render instead of flashing the
+        // nickname first. Uses the fresh access token directly (auth state isn't
+        // applied yet). Falls back to the nickname if this fails.
+        const info = await httpFetch(`${apiBase()}/server`, {
+          headers: { Authorization: `Bearer ${data.access_token}` }
+        })
+          .then((res) => (res.ok ? res.json() : null))
+          .catch(() => null)
         applyAuthResponse(data)
         setConnectedServer(server)
+        setServerName(info?.name ?? null)
         playUiSound('connected')
       } else {
         setServerHost(null)
@@ -1459,6 +1471,7 @@ function Main() {
     setSelectedStreamClientId(null)
     setWatchedStreamClientIds(new Set())
     setConnectedServer(null)
+    setServerName(null)
     setServerHost(null)
     setPreviewChannelId(null)
     setSummaryClientId(null)
@@ -2453,7 +2466,23 @@ function Main() {
   }, [showSettings, rolesGroupsOpen, summaryChannelId, summaryClientId, previewChannelId, showTraffic, showServerSummary])
 
   const connected = !!token
-  const titleText = connectedServer ? `${APP_TITLE} — ${connectedServer.nickname}` : APP_TITLE
+  const serverDisplayName = serverName ?? connectedServer?.nickname ?? 'Connected'
+  const titleText = connectedServer ? `${APP_TITLE} — ${serverDisplayName}` : APP_TITLE
+
+  // Server-name header for the traffic canvas — shown both when lurking and when
+  // the traffic view is opened explicitly from the server menu, so the two land
+  // on the same header instead of one saying the server name and the other
+  // "Server Traffic".
+  const serverHeaderTitle = (
+    <div className="chat-title">
+      <span className="chat-title-icon">
+        <IconUsersGroup size={17} stroke={2} />
+      </span>
+      <span className="chat-title-text">
+        <span className="chat-title-name">{serverDisplayName}</span>
+      </span>
+    </div>
+  )
 
   // Canvas header title: the joined voice channel, or the server when lurking.
   const joinedChannel = channels.find((c) => c.id === selfChannelId)
@@ -2603,12 +2632,10 @@ function Main() {
               <div className="chat-header">
                 <div className="header-content">
                   {showTraffic ? (
-                    // Forced traffic view (server menu). Title-only header like a
-                    // peek — Esc or navigating elsewhere returns to the channel.
-                    <span className="view-preview-title">
-                      <IconActivity size={18} stroke={2} />
-                      Server Traffic
-                    </span>
+                    // Forced traffic view (server menu). Same server-name header
+                    // as the lurking view below — Esc or navigating elsewhere
+                    // returns to the channel.
+                    serverHeaderTitle
                   ) : previewChannelId != null ? (
                     // Peeking into another channel's chat: no view tabs (no streams),
                     // just the channel name.
@@ -2669,16 +2696,7 @@ function Main() {
                   ) : connected ? (
                     // Lurking (not in a voice channel): just the server name — the
                     // canvas below shows server traffic, so no tabs or subtext.
-                    <div className="chat-title">
-                      <span className="chat-title-icon">
-                        <IconUsersGroup size={17} stroke={2} />
-                      </span>
-                      <span className="chat-title-text">
-                        <span className="chat-title-name">
-                          {connectedServer?.nickname ?? 'Connected'}
-                        </span>
-                      </span>
-                    </div>
+                    serverHeaderTitle
                   ) : (
                     <span aria-hidden="true" />
                   )}
@@ -2686,7 +2704,13 @@ function Main() {
               </div>
             )}
 
-            {/* Keyed so switching channel/tab remounts and replays the switch animation. */}
+            {/* Keyed so switching channel/tab remounts and replays the switch
+                animation. The key mirrors the render branches below and keys the
+                channel views by *content identity* (which channel + chat-vs-grid),
+                not by peek-vs-joined: peeking channel X shows `chat-X` and joining
+                that same channel (landing on the log tab) is still `chat-X`, so the
+                fade doesn't redundantly replay when only the titlebar gains its
+                voice counter. Switching channel or chat↔video still changes the key. */}
             <div
               className="chat-switch-region"
               key={
@@ -2698,11 +2722,11 @@ function Main() {
                       ? `summary-${summaryClientId}`
                       : showServerSummary
                         ? 'server-summary'
-                        : previewChannelId != null
-                        ? `preview-${previewChannelId}`
-                        : showTraffic || !joinedChannel
+                        : showTraffic || (previewChannelId == null && !joinedChannel)
                           ? 'lobby'
-                          : viewMode
+                          : previewChannelId != null || viewMode === 'log'
+                            ? `chat-${activeChatChannelId}`
+                            : `grid-${selfChannelId}`
               }
             >
               {!connected ? (
