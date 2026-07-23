@@ -41,7 +41,8 @@
     "react-router-dom": "^7.16.0",
     "simple-markdown": "^0.7.3",
     "uiohook-napi": "^1.5.5",
-    "unicode-emoji-json": "^0.9.0"
+    "unicode-emoji-json": "^0.9.0",
+    "uplot": "^1.6.32"
   },
   "devDependencies": {
     "@electron-toolkit/eslint-config": "^2.1.0",

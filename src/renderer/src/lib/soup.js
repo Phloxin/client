@@ -2200,14 +2200,184 @@ function outboundLayerIsHigher(left, right) {
   return ridRank(left?.rid) > ridRank(right?.rid)
 }
 
+// Aggregates one outbound-video getStats() report across simulcast encodings
+// into a single sample — the live equivalent of chrome://webrtc-internals.
+// Mutates previousByOutboundId (per-poller delta state); callers must never
+// share that map across pollers. Each outbound encoding keeps its own previous
+// sample: simulcast reports have different SSRCs and must never be diffed
+// against one another. Returns null when no active outbound-rtp video report
+// exists.
+function computeOutboundVideoSample(stats, previousByOutboundId) {
+  let fallbackRemoteInbound = null
+  const remoteInboundByLocalId = new Map()
+  let candidatePair = null
+  for (const report of stats.values()) {
+    if (report.type === 'remote-inbound-rtp') {
+      fallbackRemoteInbound ??= report
+      if (report.localId) remoteInboundByLocalId.set(report.localId, report)
+    } else if (
+      report.type === 'candidate-pair' &&
+      report.state === 'succeeded' &&
+      report.nominated
+    ) {
+      candidatePair = report
+    }
+  }
+
+  const activeOutbound = []
+  const activeOutboundIds = new Set()
+  for (const s of stats.values()) {
+    // Chromium may expose a separate outbound RTX report. It has kind=video
+    // but no encoded frames; mixing it into the primary report corrupts all
+    // byte/frame deltas and can trigger a false codec downgrade.
+    if (s.type !== 'outbound-rtp' || s.kind !== 'video' || s.framesEncoded == null) continue
+    const outboundRtpId = s.id ?? `ssrc:${s.ssrc ?? 'unknown'}`
+    if (s.active === false) {
+      // If a simulcast layer is disabled and later comes back, its first
+      // sample must not span the entire inactive period.
+      previousByOutboundId.delete(outboundRtpId)
+      continue
+    }
+    activeOutboundIds.add(outboundRtpId)
+    activeOutbound.push({ id: outboundRtpId, stat: s })
+  }
+
+  // Drop samples for encodings no longer exposed by getStats (for example
+  // after a sender reconfiguration), so a reused id cannot produce a stale
+  // delta after a long gap.
+  for (const previousId of previousByOutboundId.keys()) {
+    if (!activeOutboundIds.has(previousId)) previousByOutboundId.delete(previousId)
+  }
+  if (activeOutbound.length === 0) return null
+
+  let totalEncodeTimeDelta = 0
+  let totalFramesDelta = 0
+  let hasEncodeDelta = false
+  let totalSendKbps = 0
+  let hasSendDelta = false
+  let totalPacketsSent = 0
+  let totalRetransmittedPacketsSent = 0
+  let totalNackCount = 0
+  let totalPliCount = 0
+  let totalPacketsLost = 0
+  let hasPacketsLost = false
+  let highestActive = null
+  let anyCpuLimited = false
+  let anyBandwidthLimited = false
+  const hardwareVerdicts = []
+
+  for (const { id: outboundRtpId, stat: s } of activeOutbound) {
+    const previous = previousByOutboundId.get(outboundRtpId)
+    const framesDelta =
+      previous && s.framesEncoded >= previous.framesEncoded
+        ? s.framesEncoded - previous.framesEncoded
+        : null
+    const encodeTimeDelta =
+      previous &&
+      Number.isFinite(s.totalEncodeTime) &&
+      Number.isFinite(previous.totalEncodeTime) &&
+      s.totalEncodeTime >= previous.totalEncodeTime
+        ? s.totalEncodeTime - previous.totalEncodeTime
+        : null
+    const elapsedMs =
+      previous && Number.isFinite(s.timestamp) && Number.isFinite(previous.timestamp)
+        ? s.timestamp - previous.timestamp
+        : 0
+    const bytesDelta =
+      previous &&
+      Number.isFinite(s.bytesSent) &&
+      Number.isFinite(previous.bytesSent) &&
+      s.bytesSent >= previous.bytesSent
+        ? s.bytesSent - previous.bytesSent
+        : null
+
+    if (framesDelta != null && encodeTimeDelta != null) {
+      totalFramesDelta += framesDelta
+      totalEncodeTimeDelta += encodeTimeDelta
+      hasEncodeDelta = true
+    }
+    if (bytesDelta != null && elapsedMs > 0) {
+      // Sum each encoding's rate. Summing the elapsed time would divide a
+      // two-layer simulcast stream by two when both reports share a clock.
+      totalSendKbps += (8 * bytesDelta) / elapsedMs
+      hasSendDelta = true
+    }
+
+    totalPacketsSent += s.packetsSent ?? 0
+    totalRetransmittedPacketsSent += s.retransmittedPacketsSent ?? 0
+    totalNackCount += s.nackCount ?? 0
+    totalPliCount += s.pliCount ?? 0
+    const remoteInbound =
+      remoteInboundByLocalId.get(outboundRtpId) ??
+      (activeOutbound.length === 1 ? fallbackRemoteInbound : null)
+    if (remoteInbound?.packetsLost != null) {
+      totalPacketsLost += remoteInbound.packetsLost
+      hasPacketsLost = true
+    }
+
+    const reason = s.qualityLimitationReason
+    anyCpuLimited ||= reason === 'cpu'
+    anyBandwidthLimited ||= reason === 'bandwidth'
+    hardwareVerdicts.push(encoderIsHardware(s.encoderImplementation))
+    if (highestActive == null || outboundLayerIsHigher(s, highestActive.stat)) {
+      highestActive = { id: outboundRtpId, stat: s }
+    }
+
+    previousByOutboundId.set(outboundRtpId, {
+      totalEncodeTime: s.totalEncodeTime ?? 0,
+      framesEncoded: s.framesEncoded ?? 0,
+      bytesSent: s.bytesSent ?? 0,
+      timestamp: s.timestamp
+    })
+  }
+
+  // Any active software encoder makes the aggregate software. If all active
+  // encodings are known hardware, report hardware; otherwise keep the badge
+  // unknown instead of treating a missing implementation as hardware.
+  const hardware = hardwareVerdicts.some((verdict) => verdict === false)
+    ? false
+    : hardwareVerdicts.length > 0 && hardwareVerdicts.every((verdict) => verdict === true)
+      ? true
+      : null
+  const topRemoteInbound =
+    (highestActive && remoteInboundByLocalId.get(highestActive.id)) ??
+    (activeOutbound.length === 1 ? fallbackRemoteInbound : null)
+  const qualityLimitationReason = anyCpuLimited
+    ? 'cpu'
+    : anyBandwidthLimited
+      ? 'bandwidth'
+      : highestActive?.stat.qualityLimitationReason
+  const encodeMsPerFrame =
+    hasEncodeDelta && totalFramesDelta > 0 ? (totalEncodeTimeDelta * 1000) / totalFramesDelta : null
+  const sendKbps = hasSendDelta ? totalSendKbps : null
+
+  return {
+    implementation: highestActive?.stat.encoderImplementation,
+    hardware,
+    qualityLimitationReason,
+    width: highestActive?.stat.frameWidth,
+    height: highestActive?.stat.frameHeight,
+    fps: highestActive?.stat.framesPerSecond,
+    encodeMsPerFrame,
+    sendKbps,
+    packetsSent: totalPacketsSent,
+    retransmittedPacketsSent: totalRetransmittedPacketsSent,
+    nackCount: totalNackCount,
+    pliCount: totalPliCount,
+    rttMs: topRemoteInbound?.roundTripTime != null ? topRemoteInbound.roundTripTime * 1000 : null,
+    packetsLost: hasPacketsLost ? totalPacketsLost : undefined,
+    fractionLost: topRemoteInbound?.fractionLost,
+    availableOutgoingBitrate: candidatePair?.availableOutgoingBitrate,
+    activeEncodings: activeOutbound.length
+  }
+}
+
 // Poll the video sender's outbound-rtp stats every 3s and report to onStats:
 // codec + whether the encoder is hardware or software (encoderImplementation, e.g.
 // 'libaom' = software AV1) for the sharer's HW/SW tile badge, and qualityLimitationReason
-// ('cpu' = the encoder can't keep up) which drives maybeDowngradeScreenCodec. The
-// live equivalent of chrome://webrtc-internals; also logged in dev. Returns a stop
-// function; only the most recent share is polled. Each outbound encoding keeps its
-// own previous sample: simulcast reports have different SSRCs and must never be
-// diffed against one another.
+// ('cpu' = the encoder can't keep up) which drives maybeDowngradeScreenCodec.
+// Also logged in dev. Returns a stop function; only the most recent share is
+// polled.
 let encoderStatsStop = null
 function startEncoderStatsLog(producer, onStats) {
   encoderStatsStop?.()
@@ -2217,186 +2387,25 @@ function startEncoderStatsLog(producer, onStats) {
   const id = setInterval(async () => {
     try {
       const stats = await sender.getStats()
-      let fallbackRemoteInbound = null
-      const remoteInboundByLocalId = new Map()
-      let candidatePair = null
-      for (const report of stats.values()) {
-        if (report.type === 'remote-inbound-rtp') {
-          fallbackRemoteInbound ??= report
-          if (report.localId) remoteInboundByLocalId.set(report.localId, report)
-        } else if (
-          report.type === 'candidate-pair' &&
-          report.state === 'succeeded' &&
-          report.nominated
-        ) {
-          candidatePair = report
-        }
-      }
-
-      const activeOutbound = []
-      const activeOutboundIds = new Set()
-      for (const s of stats.values()) {
-        // Chromium may expose a separate outbound RTX report. It has kind=video
-        // but no encoded frames; mixing it into the primary report corrupts all
-        // byte/frame deltas and can trigger a false codec downgrade.
-        if (s.type !== 'outbound-rtp' || s.kind !== 'video' || s.framesEncoded == null) continue
-        const outboundRtpId = s.id ?? `ssrc:${s.ssrc ?? 'unknown'}`
-        if (s.active === false) {
-          // If a simulcast layer is disabled and later comes back, its first
-          // sample must not span the entire inactive period.
-          previousByOutboundId.delete(outboundRtpId)
-          continue
-        }
-        activeOutboundIds.add(outboundRtpId)
-        activeOutbound.push({ id: outboundRtpId, stat: s })
-      }
-
-      // Drop samples for encodings no longer exposed by getStats (for example
-      // after a sender reconfiguration), so a reused id cannot produce a stale
-      // delta after a long gap.
-      for (const previousId of previousByOutboundId.keys()) {
-        if (!activeOutboundIds.has(previousId)) previousByOutboundId.delete(previousId)
-      }
-      if (activeOutbound.length === 0) return
-
-      let totalEncodeTimeDelta = 0
-      let totalFramesDelta = 0
-      let hasEncodeDelta = false
-      let totalSendKbps = 0
-      let hasSendDelta = false
-      let totalPacketsSent = 0
-      let totalRetransmittedPacketsSent = 0
-      let totalNackCount = 0
-      let totalPliCount = 0
-      let totalPacketsLost = 0
-      let hasPacketsLost = false
-      let highestActive = null
-      let anyCpuLimited = false
-      let anyBandwidthLimited = false
-      const hardwareVerdicts = []
-
-      for (const { id: outboundRtpId, stat: s } of activeOutbound) {
-        const previous = previousByOutboundId.get(outboundRtpId)
-        const framesDelta =
-          previous && s.framesEncoded >= previous.framesEncoded
-            ? s.framesEncoded - previous.framesEncoded
-            : null
-        const encodeTimeDelta =
-          previous &&
-          Number.isFinite(s.totalEncodeTime) &&
-          Number.isFinite(previous.totalEncodeTime) &&
-          s.totalEncodeTime >= previous.totalEncodeTime
-            ? s.totalEncodeTime - previous.totalEncodeTime
-            : null
-        const elapsedMs =
-          previous && Number.isFinite(s.timestamp) && Number.isFinite(previous.timestamp)
-            ? s.timestamp - previous.timestamp
-            : 0
-        const bytesDelta =
-          previous &&
-          Number.isFinite(s.bytesSent) &&
-          Number.isFinite(previous.bytesSent) &&
-          s.bytesSent >= previous.bytesSent
-            ? s.bytesSent - previous.bytesSent
-            : null
-
-        if (framesDelta != null && encodeTimeDelta != null) {
-          totalFramesDelta += framesDelta
-          totalEncodeTimeDelta += encodeTimeDelta
-          hasEncodeDelta = true
-        }
-        if (bytesDelta != null && elapsedMs > 0) {
-          // Sum each encoding's rate. Summing the elapsed time would divide a
-          // two-layer simulcast stream by two when both reports share a clock.
-          totalSendKbps += (8 * bytesDelta) / elapsedMs
-          hasSendDelta = true
-        }
-
-        totalPacketsSent += s.packetsSent ?? 0
-        totalRetransmittedPacketsSent += s.retransmittedPacketsSent ?? 0
-        totalNackCount += s.nackCount ?? 0
-        totalPliCount += s.pliCount ?? 0
-        const remoteInbound =
-          remoteInboundByLocalId.get(outboundRtpId) ??
-          (activeOutbound.length === 1 ? fallbackRemoteInbound : null)
-        if (remoteInbound?.packetsLost != null) {
-          totalPacketsLost += remoteInbound.packetsLost
-          hasPacketsLost = true
-        }
-
-        const reason = s.qualityLimitationReason
-        anyCpuLimited ||= reason === 'cpu'
-        anyBandwidthLimited ||= reason === 'bandwidth'
-        hardwareVerdicts.push(encoderIsHardware(s.encoderImplementation))
-        if (highestActive == null || outboundLayerIsHigher(s, highestActive.stat)) {
-          highestActive = { id: outboundRtpId, stat: s }
-        }
-
-        previousByOutboundId.set(outboundRtpId, {
-          totalEncodeTime: s.totalEncodeTime ?? 0,
-          framesEncoded: s.framesEncoded ?? 0,
-          bytesSent: s.bytesSent ?? 0,
-          timestamp: s.timestamp
-        })
-      }
-
-      // Any active software encoder makes the aggregate software. If all active
-      // encodings are known hardware, report hardware; otherwise keep the badge
-      // unknown instead of treating a missing implementation as hardware.
-      const hardware = hardwareVerdicts.some((verdict) => verdict === false)
-        ? false
-        : hardwareVerdicts.length > 0 && hardwareVerdicts.every((verdict) => verdict === true)
-          ? true
-          : null
-      const topRemoteInbound =
-        (highestActive && remoteInboundByLocalId.get(highestActive.id)) ??
-        (activeOutbound.length === 1 ? fallbackRemoteInbound : null)
-      const qualityLimitationReason = anyCpuLimited
-        ? 'cpu'
-        : anyBandwidthLimited
-          ? 'bandwidth'
-          : highestActive?.stat.qualityLimitationReason
-      const encodeMsPerFrame =
-        hasEncodeDelta && totalFramesDelta > 0
-          ? (totalEncodeTimeDelta * 1000) / totalFramesDelta
-          : null
-      const sendKbps = hasSendDelta ? totalSendKbps : null
+      const sample = computeOutboundVideoSample(stats, previousByOutboundId)
+      if (!sample) return
 
       if (import.meta.env.DEV) {
         console.log(
-          `[Soup] encoder: ${highestActive?.stat.encoderImplementation ?? '?'} ` +
-            `(${activeOutbound.length} active encoding${activeOutbound.length === 1 ? '' : 's'})` +
-            ` | limited by: ${qualityLimitationReason ?? '?'}` +
-            ` | ${highestActive?.stat.frameWidth ?? '?'}x${highestActive?.stat.frameHeight ?? '?'}` +
-            `@${Math.round(highestActive?.stat.framesPerSecond ?? 0)}fps` +
-            (encodeMsPerFrame != null ? ` | ${encodeMsPerFrame.toFixed(1)}ms/frame` : '') +
-            (sendKbps != null ? ` | ${sendKbps.toFixed(0)}kbps` : '') +
-            (topRemoteInbound?.roundTripTime != null
-              ? ` | RTT ${(topRemoteInbound.roundTripTime * 1000).toFixed(0)}ms`
-              : '')
+          `[Soup] encoder: ${sample.implementation ?? '?'} ` +
+            `(${sample.activeEncodings} active encoding${sample.activeEncodings === 1 ? '' : 's'})` +
+            ` | limited by: ${sample.qualityLimitationReason ?? '?'}` +
+            ` | ${sample.width ?? '?'}x${sample.height ?? '?'}` +
+            `@${Math.round(sample.fps ?? 0)}fps` +
+            (sample.encodeMsPerFrame != null
+              ? ` | ${sample.encodeMsPerFrame.toFixed(1)}ms/frame`
+              : '') +
+            (sample.sendKbps != null ? ` | ${sample.sendKbps.toFixed(0)}kbps` : '') +
+            (sample.rttMs != null ? ` | RTT ${sample.rttMs.toFixed(0)}ms` : '')
         )
       }
 
-      onStats?.({
-        codec: codecLabel(producer.rtpParameters),
-        implementation: highestActive?.stat.encoderImplementation,
-        hardware,
-        qualityLimitationReason,
-        width: highestActive?.stat.frameWidth,
-        height: highestActive?.stat.frameHeight,
-        fps: highestActive?.stat.framesPerSecond,
-        encodeMsPerFrame,
-        sendKbps,
-        packetsSent: totalPacketsSent,
-        retransmittedPacketsSent: totalRetransmittedPacketsSent,
-        nackCount: totalNackCount,
-        pliCount: totalPliCount,
-        rttMs:
-          topRemoteInbound?.roundTripTime != null ? topRemoteInbound.roundTripTime * 1000 : null,
-        packetsLost: hasPacketsLost ? totalPacketsLost : undefined,
-        fractionLost: topRemoteInbound?.fractionLost,
-        availableOutgoingBitrate: candidatePair?.availableOutgoingBitrate
-      })
+      onStats?.({ codec: codecLabel(producer.rtpParameters), ...sample })
     } catch {
       // getStats can reject transiently around teardown — ignore.
     }
@@ -4275,6 +4284,312 @@ export function getClientAudioState(clientId) {
 // ─── Getters ─────────────────────────────────────────────────────
 export function isConnected() {
   return ws?.readyState === WebSocket.OPEN
+}
+
+// ─── Live per-stream debug stats (send + recv) ───────────────────
+// Powers a UI diagnostics panel. Each tick enumerates our live producers (mic,
+// screen/camera video, screen audio) and every remote consumer, pulls ONE
+// getStats() per stream, and reports a flat per-class metrics object. This is a
+// strictly READ-ONLY observer: it never mutates producers / screenShareCtx /
+// remoteConsumers and keeps its OWN delta state in the returned closure. That is
+// why double-polling a sender the encoder-stats logger also polls is safe — the
+// previous-sample maps are separate, so the two pollers never corrupt each
+// other's deltas.
+
+// Windowed rate in kbps from a cumulative byte counter. Null on the first sample
+// (no previous) or when the counters went backwards / are non-finite (a counter
+// reset or teardown race), matching the delta guards used elsewhere in the file.
+function streamDebugKbps(curBytes, curTs, prev) {
+  if (!prev) return null
+  if (![curBytes, curTs, prev.bytes, prev.timestamp].every(Number.isFinite)) return null
+  const dt = curTs - prev.timestamp
+  if (dt <= 0 || curBytes < prev.bytes) return null
+  return (8 * (curBytes - prev.bytes)) / dt
+}
+
+// Windowed jitter-buffer delay in ms: Δ accumulated delay / Δ emitted count — the
+// same average-per-emitted-sample math evaluateAudioHealth() uses. Null on the
+// first sample or when the emitted count didn't advance this window (no fresh
+// playout), so a stalled buffer reads as null rather than a stale huge number.
+function streamDebugJitterBufferMs(curDelay, curEmitted, prev) {
+  if (!prev) return null
+  if (
+    ![curDelay, curEmitted, prev.jitterBufferDelay, prev.jitterBufferEmittedCount].every(
+      Number.isFinite
+    )
+  )
+    return null
+  const dEmitted = curEmitted - prev.jitterBufferEmittedCount
+  if (dEmitted <= 0) return null
+  return ((curDelay - prev.jitterBufferDelay) / dEmitted) * 1000
+}
+
+// send/audio: the local outbound-rtp carries our send rate; the paired
+// remote-inbound-rtp carries what the far side observed (RTT / jitter / loss).
+// Returns { metrics, snapshot } — snapshot is the cumulative baseline for the
+// next tick's rate delta (preserved when no outbound report exists this tick).
+function extractSendAudioMetrics(report, prev) {
+  let outbound = null
+  let remoteInbound = null
+  for (const s of report.values()) {
+    if (s.type === 'outbound-rtp' && s.kind === 'audio') outbound = s
+    else if (s.type === 'remote-inbound-rtp' && s.kind === 'audio') remoteInbound = s
+  }
+  const metrics = {
+    sendKbps: outbound ? streamDebugKbps(outbound.bytesSent, outbound.timestamp, prev) : null,
+    packetsSent: outbound?.packetsSent ?? null,
+    targetBitrate: outbound?.targetBitrate ?? null,
+    rttMs: remoteInbound?.roundTripTime != null ? remoteInbound.roundTripTime * 1000 : null,
+    jitterMs: remoteInbound?.jitter != null ? remoteInbound.jitter * 1000 : null,
+    packetsLost: remoteInbound?.packetsLost ?? null,
+    fractionLost: remoteInbound?.fractionLost ?? null
+  }
+  const snapshot = outbound
+    ? { bytes: outbound.bytesSent, timestamp: outbound.timestamp }
+    : (prev ?? null)
+  return { metrics, snapshot }
+}
+
+// recv/video: one inbound-rtp video report. Rate and jitter-buffer fields are
+// windowed against prev; the rest are the live cumulative/instantaneous values.
+function extractRecvVideoMetrics(report, prev) {
+  let inbound = null
+  for (const s of report.values()) {
+    if (s.type === 'inbound-rtp' && s.kind === 'video') {
+      inbound = s
+      break
+    }
+  }
+  // Keep the row visible (stable chart identity) even before the first report.
+  if (!inbound) return { metrics: {}, snapshot: prev ?? null }
+  const metrics = {
+    recvKbps: streamDebugKbps(inbound.bytesReceived, inbound.timestamp, prev),
+    fps: inbound.framesPerSecond ?? null,
+    width: inbound.frameWidth ?? null,
+    height: inbound.frameHeight ?? null,
+    framesDecoded: inbound.framesDecoded ?? null,
+    framesDropped: inbound.framesDropped ?? null,
+    freezeCount: inbound.freezeCount ?? null,
+    totalFreezesDuration: inbound.totalFreezesDuration ?? null,
+    keyFramesDecoded: inbound.keyFramesDecoded ?? null,
+    pliCount: inbound.pliCount ?? null,
+    nackCount: inbound.nackCount ?? null,
+    packetsLost: inbound.packetsLost ?? null,
+    jitterMs: inbound.jitter != null ? inbound.jitter * 1000 : null,
+    jitterBufferMs: streamDebugJitterBufferMs(
+      inbound.jitterBufferDelay,
+      inbound.jitterBufferEmittedCount,
+      prev
+    ),
+    decoderImplementation: inbound.decoderImplementation ?? null
+  }
+  const snapshot = {
+    bytes: inbound.bytesReceived,
+    timestamp: inbound.timestamp,
+    jitterBufferDelay: inbound.jitterBufferDelay,
+    jitterBufferEmittedCount: inbound.jitterBufferEmittedCount
+  }
+  return { metrics, snapshot }
+}
+
+// recv/audio: one inbound-rtp audio report. concealedSamplesDelta is the fresh
+// concealment (PLC) this window; the buffer field is windowed like the video one.
+function extractRecvAudioMetrics(report, prev) {
+  let inbound = null
+  for (const s of report.values()) {
+    if (s.type === 'inbound-rtp' && s.kind === 'audio') {
+      inbound = s
+      break
+    }
+  }
+  if (!inbound) return { metrics: {}, snapshot: prev ?? null }
+  const concealedSamplesDelta =
+    prev &&
+    Number.isFinite(inbound.concealedSamples) &&
+    Number.isFinite(prev.concealedSamples) &&
+    inbound.concealedSamples >= prev.concealedSamples
+      ? inbound.concealedSamples - prev.concealedSamples
+      : null
+  const metrics = {
+    recvKbps: streamDebugKbps(inbound.bytesReceived, inbound.timestamp, prev),
+    packetsReceived: inbound.packetsReceived ?? null,
+    packetsLost: inbound.packetsLost ?? null,
+    jitterMs: inbound.jitter != null ? inbound.jitter * 1000 : null,
+    jitterBufferMs: streamDebugJitterBufferMs(
+      inbound.jitterBufferDelay,
+      inbound.jitterBufferEmittedCount,
+      prev
+    ),
+    concealedSamplesDelta,
+    concealmentEvents: inbound.concealmentEvents ?? null,
+    audioLevel: inbound.audioLevel ?? null
+  }
+  const snapshot = {
+    bytes: inbound.bytesReceived,
+    timestamp: inbound.timestamp,
+    jitterBufferDelay: inbound.jitterBufferDelay,
+    jitterBufferEmittedCount: inbound.jitterBufferEmittedCount,
+    concealedSamples: inbound.concealedSamples
+  }
+  return { metrics, snapshot }
+}
+
+// Start a periodic per-stream stats poll for a diagnostics UI. onSample is called
+// once per tick with { ts, streams:[...] } (see the stream shape below). Returns a
+// stop() that clears the interval and drops this call's delta state. Each call
+// owns its closure state, so independent calls never corrupt one another.
+export function startStreamDebugStats(onSample, intervalMs = 1000) {
+  // send/video only: key -> the per-producer previousByOutboundId map that
+  // computeOutboundVideoSample() mutates. Never shared across streams or with the
+  // encoder-stats poller — each key gets its own map so simulcast SSRC deltas stay
+  // isolated.
+  const outboundPrevByKey = new Map()
+  // The other three classes: key -> previous cumulative snapshot for delta math.
+  const prevByKey = new Map()
+  // Guard against stacking ticks: if a slow getStats fan-out is still resolving we
+  // drop this wakeup entirely rather than doubling the effective poll rate.
+  let inFlight = false
+
+  const tick = async () => {
+    if (inFlight) return
+    inFlight = true
+    try {
+      // Keys observed this tick, to prune delta state for streams that departed.
+      const seenKeys = new Set()
+      const jobs = []
+
+      // Module state is read LIVE here: producers is reassigned on reset and
+      // screenShareCtx / remoteConsumers churn constantly, so a captured reference
+      // would go stale. Referencing the module bindings each tick always sees the
+      // current media state (a mid-tick resetMediaState just yields fewer streams).
+      const pushSend = (producer, kind, producedType) => {
+        const sender = producer.rtpSender
+        // Mirror startEncoderStatsLog's guard: no sender/getStats → omit the stream.
+        if (!sender?.getStats) return
+        const key = `send:${producer.id}`
+        seenKeys.add(key)
+        const base = {
+          key,
+          direction: 'send',
+          kind,
+          producedType,
+          producerId: producer.id,
+          codec: codecLabel(producer.rtpParameters)
+        }
+        jobs.push(
+          (async () => {
+            try {
+              const report = await sender.getStats()
+              if (kind === 'video') {
+                // One previousByOutboundId map per stream key (created on first use);
+                // computeOutboundVideoSample owns/mutates it.
+                let perStreamMap = outboundPrevByKey.get(key)
+                if (!perStreamMap) {
+                  perStreamMap = new Map()
+                  outboundPrevByKey.set(key, perStreamMap)
+                }
+                // Returns null until an active outbound-rtp video report exists; emit
+                // an empty metrics object so the row still renders during the gap.
+                const metrics = computeOutboundVideoSample(report, perStreamMap) ?? {}
+                return { ...base, metrics }
+              }
+              const { metrics, snapshot } = extractSendAudioMetrics(report, prevByKey.get(key))
+              if (snapshot) prevByKey.set(key, snapshot)
+              return { ...base, metrics }
+            } catch {
+              // A teardown-race getStats reject skips only THIS stream, not the tick.
+              return null
+            }
+          })()
+        )
+      }
+
+      const pushRecv = (producerId, entry) => {
+        const consumer = entry.consumer
+        const key = `recv:${entry.consumerId}`
+        seenKeys.add(key)
+        const base = {
+          key,
+          direction: 'recv',
+          kind: entry.kind,
+          producedType: entry.producedType,
+          producerId,
+          consumerId: entry.consumerId,
+          clientId: entry.clientId,
+          codec: codecLabel(consumer.rtpParameters)
+        }
+        // Only video entries carry server-pause / view-role bookkeeping.
+        if (entry.kind === 'video') {
+          base.paused = entry.serverPaused
+          base.viewRole = entry.viewRole
+        }
+        jobs.push(
+          (async () => {
+            try {
+              const report = await consumer.getStats()
+              const { metrics, snapshot } =
+                entry.kind === 'video'
+                  ? extractRecvVideoMetrics(report, prevByKey.get(key))
+                  : extractRecvAudioMetrics(report, prevByKey.get(key))
+              if (snapshot) prevByKey.set(key, snapshot)
+              return { ...base, metrics }
+            } catch {
+              return null
+            }
+          })()
+        )
+      }
+
+      // Mic: possibly more than one during a republish overlap.
+      for (const p of producers) {
+        if (p.kind !== 'audio' || p.closed) continue
+        pushSend(p, 'audio', p.appData?.produced ?? 'Audio')
+      }
+      // Screen/camera share: at most one video producer and one screen-audio one.
+      const ctx = screenShareCtx
+      if (ctx && !ctx.stopped) {
+        if (ctx.producer && !ctx.producer.closed) {
+          pushSend(
+            ctx.producer,
+            'video',
+            ctx.producer.appData?.produced ?? (ctx.type === 'camera' ? 'Camera' : 'ScreenShare')
+          )
+        }
+        if (ctx.audioProducer && !ctx.audioProducer.closed) {
+          pushSend(ctx.audioProducer, 'audio', 'ScreenShareAudio')
+        }
+      }
+      // Consumed remote streams.
+      for (const [producerId, entry] of remoteConsumers) {
+        if (entry.consumer?.closed) continue
+        pushRecv(producerId, entry)
+      }
+
+      const streams = (await Promise.all(jobs)).filter((s) => s != null)
+
+      // Prune delta state for keys not present this tick so a reused id (returning
+      // after a gap) can't diff against an ancient sample.
+      for (const map of [outboundPrevByKey, prevByKey]) {
+        for (const key of map.keys()) {
+          if (!seenKeys.has(key)) map.delete(key)
+        }
+      }
+
+      onSample?.({ ts: Date.now(), streams })
+    } catch {
+      // Enumeration itself shouldn't throw (per-stream work is already guarded),
+      // but never let a stray error wedge inFlight permanently.
+    } finally {
+      inFlight = false
+    }
+  }
+
+  const timer = setInterval(tick, intervalMs)
+  return function stop() {
+    clearInterval(timer)
+    outboundPrevByKey.clear()
+    prevByKey.clear()
+  }
 }
 
 // ─── TEMP DIAGNOSTIC: live inbound kbps per remote video consumer ─────────

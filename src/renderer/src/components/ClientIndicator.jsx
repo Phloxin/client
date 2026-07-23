@@ -249,7 +249,7 @@ function ClientIndicator({
     setLocalMuted(false)
   }
 
-  const { onSetNickname, onSetPresence, presences } = useClientActions()
+  const { onSetNickname, onSetPresence, onOpenStreamDebug, presences } = useClientActions()
 
   // Absent presence = offline. A status message stays visible while offline, so
   // it's appended independently of the status itself.
@@ -276,6 +276,7 @@ function ClientIndicator({
     // VoiceChannel like onSetAvatar does. Move the rest over if more pile up.
     onSetNickname,
     onSetPresence,
+    onOpenStreamDebug,
     // The menu edits our own presence; `presence` here is this row's client.
     presence,
     onPoke,

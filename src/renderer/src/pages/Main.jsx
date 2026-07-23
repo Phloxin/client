@@ -17,6 +17,7 @@ import TitleBar from '../components/TitleBar'
 import ConnectionOverlay from '../components/ConnectionOverlay'
 import Toast from '../components/Toast'
 import UpdatePrompt from '../components/UpdatePrompt'
+import StreamDebugPanel from '../components/StreamDebugPanel'
 import RolesGroupsMenu from '../components/RolesGroupsMenu'
 import IdleAnimation from '../components/IdleAnimation'
 import Settings from './Settings'
@@ -1456,30 +1457,33 @@ function Main() {
   // Single source of truth for dropping back to the disconnected state (the
   // reconnect paths call it too on a rejected token, so none leave half-cleared
   // state). Clearing the token tears down the events socket via effect cleanup.
-  const handleDisconnect = useCallback((opts) => {
-    if (popoutWindowRef.current && !popoutWindowRef.current.closed) {
-      popoutWindowRef.current.close()
-    }
-    popoutWindowRef.current = null
-    setPoppedOut(false)
-    disconnectVoice()
-    clearAuth()
-    setChannels([])
-    setClients([])
-    setFeed([])
-    setAllVideoStreams([])
-    setSelectedStreamClientId(null)
-    setWatchedStreamClientIds(new Set())
-    setConnectedServer(null)
-    setServerName(null)
-    setServerHost(null)
-    setPreviewChannelId(null)
-    setSummaryClientId(null)
-    setReadStates({})
-    setConnectionStatus('connected')
-    // Kick/ban paths play their own specific cue and pass skipSound.
-    if (!opts?.skipSound) playUiSound('disconnected')
-  }, [clearAuth])
+  const handleDisconnect = useCallback(
+    (opts) => {
+      if (popoutWindowRef.current && !popoutWindowRef.current.closed) {
+        popoutWindowRef.current.close()
+      }
+      popoutWindowRef.current = null
+      setPoppedOut(false)
+      disconnectVoice()
+      clearAuth()
+      setChannels([])
+      setClients([])
+      setFeed([])
+      setAllVideoStreams([])
+      setSelectedStreamClientId(null)
+      setWatchedStreamClientIds(new Set())
+      setConnectedServer(null)
+      setServerName(null)
+      setServerHost(null)
+      setPreviewChannelId(null)
+      setSummaryClientId(null)
+      setReadStates({})
+      setConnectionStatus('connected')
+      // Kick/ban paths play their own specific cue and pass skipSound.
+      if (!opts?.skipSound) playUiSound('disconnected')
+    },
+    [clearAuth]
+  )
 
   // A refresh the server rejects means the device session is revoked or
   // expired — drop to the disconnected state and require a fresh login.
@@ -1723,7 +1727,13 @@ function Main() {
           const now = Date.now()
           setTraffic((prev) =>
             [
-              { id: `${data.client_id}-${now}`, clientId: data.client_id, name, online: !isOffline, ts: now },
+              {
+                id: `${data.client_id}-${now}`,
+                clientId: data.client_id,
+                name,
+                online: !isOffline,
+                ts: now
+              },
               ...prev
             ].slice(0, MAX_LOG_ENTRIES)
           )
@@ -2027,14 +2037,20 @@ function Main() {
         // invisible to everyone else. Ban is different (see ClientBanned).
         // Chime if someone in our channel was kicked (not our own kick — that's
         // handled on the socket close).
-        if (data.client?.id !== selfIdRef.current && data.client?.channel_id === selfChannelIdRef.current) {
+        if (
+          data.client?.id !== selfIdRef.current &&
+          data.client?.channel_id === selfChannelIdRef.current
+        ) {
           playUiSound('neutral_kicked_server_currentchannel')
         }
       } else if (ev === 'ClientBanned') {
         // { client, duration_seconds, reason }. Drop from the roster and record
         // the ban so they surface in the Users tab (where they can be unbanned).
         // The event carries the full client, so no /server/bans refetch is needed.
-        if (data.client?.id !== selfIdRef.current && data.client?.channel_id === selfChannelIdRef.current) {
+        if (
+          data.client?.id !== selfIdRef.current &&
+          data.client?.channel_id === selfChannelIdRef.current
+        ) {
           playUiSound('neutral_banned_server_currentchannel')
         }
         setClients((prev) => prev.filter((c) => c.id !== data.client.id))
@@ -2438,6 +2454,7 @@ function Main() {
   }
 
   const [showSettings, setShowSettings] = useState(false)
+  const [streamDebugOpen, setStreamDebugOpen] = useState(false)
   // Exit animation is handled by AnimatePresence in the JSX below, so open/
   // close are plain state flips — closing never blocks on a timer.
   const openSettings = () => setShowSettings(true)
@@ -2463,7 +2480,15 @@ function Main() {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [showSettings, rolesGroupsOpen, summaryChannelId, summaryClientId, previewChannelId, showTraffic, showServerSummary])
+  }, [
+    showSettings,
+    rolesGroupsOpen,
+    summaryChannelId,
+    summaryClientId,
+    previewChannelId,
+    showTraffic,
+    showServerSummary
+  ])
 
   const connected = !!token
   const serverDisplayName = serverName ?? connectedServer?.nickname ?? 'Connected'
@@ -2538,6 +2563,7 @@ function Main() {
     vanity,
     onToggleVanity: handleToggleVanity,
     onOpenRolesGroups: () => setRolesGroupsOpen(true),
+    onOpenStreamDebug: () => setStreamDebugOpen(true),
     canKickMembers,
     canBanMembers,
     canMuteMembers
@@ -2548,6 +2574,11 @@ function Main() {
       <div className="app-shell">
         <Toast toast={toast} onDismiss={dismissToast} />
         <UpdatePrompt />
+        {/* Non-modal, so intentionally left out of the Escape-key cascade below —
+            it should survive Escape while flipping through views mid-debug. */}
+        {streamDebugOpen && (
+          <StreamDebugPanel clients={clients} onClose={() => setStreamDebugOpen(false)} />
+        )}
         {rolesGroupsOpen && (
           <RolesGroupsMenu
             roles={roles}

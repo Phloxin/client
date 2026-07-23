@@ -1,0 +1,328 @@
+/* ============================================================================
+   STREAM DEBUG PANEL — floating, draggable, non-modal WebRTC stats overlay.
+   Opened/closed by the parent; polls stats via a soup.js subscription while
+   mounted. position:fixed so it floats over the app; the header is the only
+   drag surface (chart cursor + body scroll must never start a drag).
+   ============================================================================ */
+
+.stream-debug-panel {
+  position: fixed;
+  z-index: 900;
+  width: 380px; /* fallback — the component always sets an inline width */
+  min-width: 300px;
+  min-height: 220px;
+  max-height: 75vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-background-soft);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-3);
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+  overflow: hidden;
+}
+
+/* ── Header (drag handle) ─────────────────────────────────────────────────── */
+.sdp-header {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: 8px 8px 8px 10px;
+  border-bottom: 1px solid var(--hairline);
+  background: color-mix(in srgb, var(--color-background-mute) 55%, transparent);
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+  flex-shrink: 0;
+}
+
+.sdp-dragging .sdp-header {
+  cursor: grabbing;
+}
+
+.sdp-grip {
+  color: var(--color-text-tertiary);
+  flex-shrink: 0;
+}
+
+.sdp-header-title {
+  flex: 1;
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text);
+  letter-spacing: 0.01em;
+}
+
+.sdp-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+}
+
+.sdp-close:hover {
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+/* ── Filter chips (All / You / per-user) ──────────────────────────────────── */
+.sdp-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--hairline);
+  flex-shrink: 0;
+}
+
+.sdp-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--hairline);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-xs);
+  white-space: nowrap;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sdp-filter-chip:hover {
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.sdp-filter-active {
+  color: var(--color-primary);
+  border-color: color-mix(in srgb, var(--color-primary) 45%, transparent);
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
+}
+
+/* Warning dot: this party currently has at least one stat over its limit. */
+.sdp-chip-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-danger);
+  flex-shrink: 0;
+}
+
+/* ── Body ─────────────────────────────────────────────────────────────────── */
+.sdp-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--spacing-sm) var(--spacing-md) var(--spacing-md);
+}
+
+.sdp-empty {
+  padding: 32px 12px;
+  text-align: center;
+  color: var(--color-text-tertiary);
+}
+
+.sdp-section {
+  margin: var(--spacing-md) 0 var(--spacing-xs);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-muted);
+}
+
+.sdp-section:first-child {
+  margin-top: var(--spacing-xs);
+}
+
+/* ── Stream card ──────────────────────────────────────────────────────────── */
+.sdp-card {
+  margin-bottom: var(--spacing-sm);
+  padding: var(--spacing-sm) var(--spacing-md);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--color-background-mute);
+}
+
+/* A stream currently breaching a LIMITS threshold. */
+.sdp-card-warn {
+  border-color: color-mix(in srgb, var(--color-danger) 45%, transparent);
+}
+
+.sdp-card-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: var(--spacing-sm);
+}
+
+.sdp-card-title {
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sdp-card-sub {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-xs);
+}
+
+/* ── Badges ───────────────────────────────────────────────────────────────── */
+.sdp-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--hairline);
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  font-weight: var(--font-weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.sdp-badge-codec {
+  color: var(--color-primary);
+  border-color: color-mix(in srgb, var(--color-primary) 45%, transparent);
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
+}
+
+.sdp-badge-ok {
+  color: var(--color-success);
+  border-color: color-mix(in srgb, var(--color-success) 45%, transparent);
+  background: color-mix(in srgb, var(--color-success) 12%, transparent);
+}
+
+.sdp-badge-warn {
+  color: var(--color-warning);
+  border-color: color-mix(in srgb, var(--color-warning) 45%, transparent);
+  background: color-mix(in srgb, var(--color-warning) 12%, transparent);
+}
+
+/* Threshold breach — a stat that "should not be this high" currently is. */
+.sdp-badge-danger {
+  color: var(--color-danger);
+  border-color: color-mix(in srgb, var(--color-danger) 45%, transparent);
+  background: color-mix(in srgb, var(--color-danger) 12%, transparent);
+  text-transform: none;
+}
+
+/* ── Chart ────────────────────────────────────────────────────────────────── */
+.sdp-chart {
+  margin-top: 6px;
+}
+
+.sdp-chart-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--spacing-sm);
+  margin-bottom: 1px;
+}
+
+.sdp-chart-title {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  font-weight: var(--font-weight-medium);
+}
+
+.sdp-chart-legend {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  margin-left: auto;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sdp-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-weight: var(--font-weight-semibold);
+}
+
+.sdp-legend-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+}
+
+.sdp-chart-unit {
+  color: var(--color-text-tertiary);
+  font-weight: var(--font-weight-regular);
+}
+
+/* uPlot draws into this; width is read from clientWidth at mount. */
+.sdp-chart-canvas {
+  width: 100%;
+}
+
+/* Tame uPlot's default typography so it sits in-palette. */
+.sdp-chart-canvas .u-axis {
+  color: var(--color-text-tertiary);
+}
+
+/* ── Headline counters ────────────────────────────────────────────────────── */
+.sdp-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-top: 8px;
+  font-size: var(--font-size-xs);
+}
+
+.sdp-stat {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.sdp-stat-label {
+  color: var(--color-text-tertiary);
+}
+
+.sdp-stat-value {
+  color: var(--color-text);
+  font-weight: var(--font-weight-semibold);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Resize grip (bottom-right corner) ────────────────────────────────────── */
+.sdp-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+  touch-action: none;
+  /* Two diagonal grip lines. */
+  background: linear-gradient(
+    135deg,
+    transparent 0 50%,
+    var(--color-text-tertiary) 50% 57%,
+    transparent 57% 68%,
+    var(--color-text-tertiary) 68% 75%,
+    transparent 75%
+  );
+  opacity: 0.55;
+}
+
+.sdp-resize:hover {
+  opacity: 1;
+}
