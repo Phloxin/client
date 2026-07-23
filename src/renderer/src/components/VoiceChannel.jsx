@@ -434,10 +434,28 @@ const VoiceChannel = forwardRef(function VoiceChannel(
       let screen
       // Bound to the self tile once we know its consumerId (screen.id below).
       const onEncoderStats = (stats) => handleSelfEncoderStats(screen?.id, stats)
+      // Codec/SVC fallback publishes a replacement producer. Keep the self
+      // tile and its mutable share handle aligned with the server's new id so
+      // viewer updates continue to resolve against this stream.
+      const onProducerReplaced = ({ previousProducerId, producerId, codec }) => {
+        if (screen?.id === previousProducerId) screen.id = producerId
+        setVideoStreams((prev) =>
+          prev.map((stream) =>
+            stream.isSelf && stream.producerId === previousProducerId
+              ? {
+                  ...stream,
+                  consumerId: producerId,
+                  producerId,
+                  codec: codec ?? stream.codec
+                }
+              : stream
+          )
+        )
+      }
       if (options.isCamera) {
         // Webcams capture directly via getUserMedia - no main-process source
         // hand-off, and no audio/fps/resolution settings.
-        screen = await shareCamera(sourceId, onEncoderStats)
+        screen = await shareCamera(sourceId, onEncoderStats, onProducerReplaced)
       } else {
         // Tell the main process which source and audio mode the display-media
         // handler should use. sourceId is null on Wayland, where the OS portal
@@ -446,7 +464,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
           sourceId: sourceId ?? null,
           audioMode: options.audioMode ?? 'none'
         })
-        screen = await shareScreen({ ...options, onEncoderStats })
+        screen = await shareScreen({ ...options, onEncoderStats, onProducerReplaced })
       }
       if (screen?.stream) {
         activeShareRef.current = screen

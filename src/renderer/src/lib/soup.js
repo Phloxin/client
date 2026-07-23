@@ -2098,13 +2098,46 @@ function pickVideoCodec() {
   return findVideoCodec('video/av1') ?? findVideoCodec('video/vp9')
 }
 
-// Webcam prefers H.264: it's almost always hardware-encoded (low CPU/battery for
-// a live camera) and fine for low-res motion. Trade-off vs VP9/AV1: H.264 has no
-// spatial SVC, so unfocused/thumbnail camera tiles can only drop frames
-// (temporal), not resolution — see logNegotiatedVideoCodec's warning. Falls back
-// to VP9/AV1 (full spatial tiering) when the router doesn't advertise H.264.
+// Camera codec verdicts are deliberately independent from screen verdicts. A
+// renderer that had to use software AV1 for screenshare may still have a good
+// hardware VP9 camera encoder (and vice versa). Keep this session-only so a
+// different Chromium/GPU process gets a fresh probe.
+const CAMERA_H264_KEY = 'cameraPreferH264'
+
+function hasCameraCodecPreference() {
+  try {
+    return sessionStorage.getItem(CAMERA_H264_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+export function resetCameraCodecPreference() {
+  try {
+    sessionStorage.removeItem(CAMERA_H264_KEY)
+  } catch {
+    // Ignore storage failures; the next camera probe will still run.
+  }
+}
+
+function cacheCameraCodecPreference() {
+  try {
+    sessionStorage.setItem(CAMERA_H264_KEY, '1')
+  } catch {
+    // The next camera share will simply probe VP9 again.
+  }
+}
+
+// Webcam prefers VP9 for real spatial layer rationing, unless this renderer has
+// already measured a software/struggling VP9 encoder. H.264 is the efficient
+// hardware fallback and gets two simulcast encodings; AV1 remains a last
+// compatibility fallback only.
 function pickCameraCodec() {
-  return findVideoCodec('video/h264') ?? findVideoCodec('video/vp9') ?? findVideoCodec('video/av1')
+  const vp9 = findVideoCodec('video/vp9')
+  const h264 = findVideoCodec('video/h264')
+  const av1 = findVideoCodec('video/av1')
+  if (hasCameraCodecPreference() && h264) return h264
+  return vp9 ?? h264 ?? av1
 }
 
 // Short codec name (e.g. 'AV1', 'VP9', 'H264') from a producer/consumer's
@@ -2148,18 +2181,39 @@ function encoderIsHardware(impl) {
   return !SOFTWARE_ENCODER_RE.test(impl)
 }
 
+function outboundLayerIsHigher(left, right) {
+  const leftWidth = Number(left?.frameWidth) || 0
+  const leftHeight = Number(left?.frameHeight) || 0
+  const rightWidth = Number(right?.frameWidth) || 0
+  const rightHeight = Number(right?.frameHeight) || 0
+  const leftPixels = leftWidth * leftHeight
+  const rightPixels = rightWidth * rightHeight
+  if (leftPixels !== rightPixels) return leftPixels > rightPixels
+
+  const leftFps = Number(left?.framesPerSecond) || 0
+  const rightFps = Number(right?.framesPerSecond) || 0
+  if (leftFps !== rightFps) return leftFps > rightFps
+
+  // Some Chromium versions omit frame dimensions briefly during startup. RIDs
+  // still preserve the usual low -> medium -> full simulcast ordering.
+  const ridRank = (rid) => ({ q: 0, h: 1, f: 2 })[String(rid ?? '').toLowerCase()] ?? 0
+  return ridRank(left?.rid) > ridRank(right?.rid)
+}
+
 // Poll the video sender's outbound-rtp stats every 3s and report to onStats:
 // codec + whether the encoder is hardware or software (encoderImplementation, e.g.
 // 'libaom' = software AV1) for the sharer's HW/SW tile badge, and qualityLimitationReason
 // ('cpu' = the encoder can't keep up) which drives maybeDowngradeScreenCodec. The
 // live equivalent of chrome://webrtc-internals; also logged in dev. Returns a stop
-// function; only the most recent share is polled.
+// function; only the most recent share is polled. Each outbound encoding keeps its
+// own previous sample: simulcast reports have different SSRCs and must never be
+// diffed against one another.
 let encoderStatsStop = null
 function startEncoderStatsLog(producer, onStats) {
   encoderStatsStop?.()
   const sender = producer.rtpSender
   if (!sender?.getStats) return
-  let prev = null
+  const previousByOutboundId = new Map()
   const id = setInterval(async () => {
     try {
       const stats = await sender.getStats()
@@ -2179,61 +2233,170 @@ function startEncoderStatsLog(producer, onStats) {
         }
       }
 
+      const activeOutbound = []
+      const activeOutboundIds = new Set()
       for (const s of stats.values()) {
         // Chromium may expose a separate outbound RTX report. It has kind=video
         // but no encoded frames; mixing it into the primary report corrupts all
         // byte/frame deltas and can trigger a false codec downgrade.
         if (s.type !== 'outbound-rtp' || s.kind !== 'video' || s.framesEncoded == null) continue
-        // ms of encoder time per encoded frame — the clearest HW-vs-SW signal
-        // besides the implementation name (software AV1 sits an order of
-        // magnitude above hardware).
-        const encodeMsPerFrame =
-          prev && s.framesEncoded > prev.framesEncoded
-            ? ((s.totalEncodeTime - prev.totalEncodeTime) * 1000) /
-              (s.framesEncoded - prev.framesEncoded)
+        const outboundRtpId = s.id ?? `ssrc:${s.ssrc ?? 'unknown'}`
+        if (s.active === false) {
+          // If a simulcast layer is disabled and later comes back, its first
+          // sample must not span the entire inactive period.
+          previousByOutboundId.delete(outboundRtpId)
+          continue
+        }
+        activeOutboundIds.add(outboundRtpId)
+        activeOutbound.push({ id: outboundRtpId, stat: s })
+      }
+
+      // Drop samples for encodings no longer exposed by getStats (for example
+      // after a sender reconfiguration), so a reused id cannot produce a stale
+      // delta after a long gap.
+      for (const previousId of previousByOutboundId.keys()) {
+        if (!activeOutboundIds.has(previousId)) previousByOutboundId.delete(previousId)
+      }
+      if (activeOutbound.length === 0) return
+
+      let totalEncodeTimeDelta = 0
+      let totalFramesDelta = 0
+      let hasEncodeDelta = false
+      let totalSendKbps = 0
+      let hasSendDelta = false
+      let totalPacketsSent = 0
+      let totalRetransmittedPacketsSent = 0
+      let totalNackCount = 0
+      let totalPliCount = 0
+      let totalPacketsLost = 0
+      let hasPacketsLost = false
+      let highestActive = null
+      let anyCpuLimited = false
+      let anyBandwidthLimited = false
+      const hardwareVerdicts = []
+
+      for (const { id: outboundRtpId, stat: s } of activeOutbound) {
+        const previous = previousByOutboundId.get(outboundRtpId)
+        const framesDelta =
+          previous && s.framesEncoded >= previous.framesEncoded
+            ? s.framesEncoded - previous.framesEncoded
             : null
-        const elapsedMs = prev ? s.timestamp - prev.timestamp : 0
-        const sendKbps =
-          prev && elapsedMs > 0 ? (8 * ((s.bytesSent ?? 0) - prev.bytesSent)) / elapsedMs : null
-        const remoteInbound = remoteInboundByLocalId.get(s.id) ?? fallbackRemoteInbound
-        const rttMs =
-          remoteInbound?.roundTripTime != null ? remoteInbound.roundTripTime * 1000 : null
-        prev = {
+        const encodeTimeDelta =
+          previous &&
+          Number.isFinite(s.totalEncodeTime) &&
+          Number.isFinite(previous.totalEncodeTime) &&
+          s.totalEncodeTime >= previous.totalEncodeTime
+            ? s.totalEncodeTime - previous.totalEncodeTime
+            : null
+        const elapsedMs =
+          previous && Number.isFinite(s.timestamp) && Number.isFinite(previous.timestamp)
+            ? s.timestamp - previous.timestamp
+            : 0
+        const bytesDelta =
+          previous &&
+          Number.isFinite(s.bytesSent) &&
+          Number.isFinite(previous.bytesSent) &&
+          s.bytesSent >= previous.bytesSent
+            ? s.bytesSent - previous.bytesSent
+            : null
+
+        if (framesDelta != null && encodeTimeDelta != null) {
+          totalFramesDelta += framesDelta
+          totalEncodeTimeDelta += encodeTimeDelta
+          hasEncodeDelta = true
+        }
+        if (bytesDelta != null && elapsedMs > 0) {
+          // Sum each encoding's rate. Summing the elapsed time would divide a
+          // two-layer simulcast stream by two when both reports share a clock.
+          totalSendKbps += (8 * bytesDelta) / elapsedMs
+          hasSendDelta = true
+        }
+
+        totalPacketsSent += s.packetsSent ?? 0
+        totalRetransmittedPacketsSent += s.retransmittedPacketsSent ?? 0
+        totalNackCount += s.nackCount ?? 0
+        totalPliCount += s.pliCount ?? 0
+        const remoteInbound =
+          remoteInboundByLocalId.get(outboundRtpId) ??
+          (activeOutbound.length === 1 ? fallbackRemoteInbound : null)
+        if (remoteInbound?.packetsLost != null) {
+          totalPacketsLost += remoteInbound.packetsLost
+          hasPacketsLost = true
+        }
+
+        const reason = s.qualityLimitationReason
+        anyCpuLimited ||= reason === 'cpu'
+        anyBandwidthLimited ||= reason === 'bandwidth'
+        hardwareVerdicts.push(encoderIsHardware(s.encoderImplementation))
+        if (highestActive == null || outboundLayerIsHigher(s, highestActive.stat)) {
+          highestActive = { id: outboundRtpId, stat: s }
+        }
+
+        previousByOutboundId.set(outboundRtpId, {
           totalEncodeTime: s.totalEncodeTime ?? 0,
           framesEncoded: s.framesEncoded ?? 0,
           bytesSent: s.bytesSent ?? 0,
           timestamp: s.timestamp
-        }
-        if (import.meta.env.DEV) {
-          console.log(
-            `[Soup] encoder: ${s.encoderImplementation ?? '?'} | limited by: ` +
-              `${s.qualityLimitationReason ?? '?'} | ${s.frameWidth ?? '?'}x${s.frameHeight ?? '?'}` +
-              `@${Math.round(s.framesPerSecond ?? 0)}fps` +
-              (encodeMsPerFrame != null ? ` | ${encodeMsPerFrame.toFixed(1)}ms/frame` : '') +
-              (sendKbps != null ? ` | ${sendKbps.toFixed(0)}kbps` : '') +
-              (rttMs != null ? ` | RTT ${rttMs.toFixed(0)}ms` : '')
-          )
-        }
-        onStats?.({
-          codec: codecLabel(producer.rtpParameters),
-          implementation: s.encoderImplementation,
-          hardware: encoderIsHardware(s.encoderImplementation),
-          qualityLimitationReason: s.qualityLimitationReason,
-          width: s.frameWidth,
-          height: s.frameHeight,
-          fps: s.framesPerSecond,
-          encodeMsPerFrame,
-          sendKbps,
-          packetsSent: s.packetsSent,
-          retransmittedPacketsSent: s.retransmittedPacketsSent,
-          nackCount: s.nackCount,
-          pliCount: s.pliCount,
-          rttMs,
-          packetsLost: remoteInbound?.packetsLost,
-          fractionLost: remoteInbound?.fractionLost,
-          availableOutgoingBitrate: candidatePair?.availableOutgoingBitrate
         })
       }
+
+      // Any active software encoder makes the aggregate software. If all active
+      // encodings are known hardware, report hardware; otherwise keep the badge
+      // unknown instead of treating a missing implementation as hardware.
+      const hardware = hardwareVerdicts.some((verdict) => verdict === false)
+        ? false
+        : hardwareVerdicts.length > 0 && hardwareVerdicts.every((verdict) => verdict === true)
+          ? true
+          : null
+      const topRemoteInbound =
+        (highestActive && remoteInboundByLocalId.get(highestActive.id)) ??
+        (activeOutbound.length === 1 ? fallbackRemoteInbound : null)
+      const qualityLimitationReason = anyCpuLimited
+        ? 'cpu'
+        : anyBandwidthLimited
+          ? 'bandwidth'
+          : highestActive?.stat.qualityLimitationReason
+      const encodeMsPerFrame =
+        hasEncodeDelta && totalFramesDelta > 0
+          ? (totalEncodeTimeDelta * 1000) / totalFramesDelta
+          : null
+      const sendKbps = hasSendDelta ? totalSendKbps : null
+
+      if (import.meta.env.DEV) {
+        console.log(
+          `[Soup] encoder: ${highestActive?.stat.encoderImplementation ?? '?'} ` +
+            `(${activeOutbound.length} active encoding${activeOutbound.length === 1 ? '' : 's'})` +
+            ` | limited by: ${qualityLimitationReason ?? '?'}` +
+            ` | ${highestActive?.stat.frameWidth ?? '?'}x${highestActive?.stat.frameHeight ?? '?'}` +
+            `@${Math.round(highestActive?.stat.framesPerSecond ?? 0)}fps` +
+            (encodeMsPerFrame != null ? ` | ${encodeMsPerFrame.toFixed(1)}ms/frame` : '') +
+            (sendKbps != null ? ` | ${sendKbps.toFixed(0)}kbps` : '') +
+            (topRemoteInbound?.roundTripTime != null
+              ? ` | RTT ${(topRemoteInbound.roundTripTime * 1000).toFixed(0)}ms`
+              : '')
+        )
+      }
+
+      onStats?.({
+        codec: codecLabel(producer.rtpParameters),
+        implementation: highestActive?.stat.encoderImplementation,
+        hardware,
+        qualityLimitationReason,
+        width: highestActive?.stat.frameWidth,
+        height: highestActive?.stat.frameHeight,
+        fps: highestActive?.stat.framesPerSecond,
+        encodeMsPerFrame,
+        sendKbps,
+        packetsSent: totalPacketsSent,
+        retransmittedPacketsSent: totalRetransmittedPacketsSent,
+        nackCount: totalNackCount,
+        pliCount: totalPliCount,
+        rttMs:
+          topRemoteInbound?.roundTripTime != null ? topRemoteInbound.roundTripTime * 1000 : null,
+        packetsLost: hasPacketsLost ? totalPacketsLost : undefined,
+        fractionLost: topRemoteInbound?.fractionLost,
+        availableOutgoingBitrate: candidatePair?.availableOutgoingBitrate
+      })
     } catch {
       // getStats can reject transiently around teardown — ignore.
     }
@@ -2422,7 +2585,7 @@ function screenProducerOptions(ctx, codec, encoding) {
   }
 }
 
-async function discardUnadoptedScreenProducer(producer) {
+async function discardUnadoptedShareProducer(producer) {
   try {
     producer.close()
   } finally {
@@ -2467,7 +2630,7 @@ async function produceScreenWithFallback(ctx, codec, { startRung } = {}) {
       cacheScreenSvcRung(codec, rung)
       return { producer, codec, rung, encoding }
     } catch (error) {
-      if (producer) await discardUnadoptedScreenProducer(producer)
+      if (producer) await discardUnadoptedShareProducer(producer)
       if (isShareSupersededError(error)) throw error
       rejectScreenRung(ctx, codec, rung)
       lastError = error
@@ -2532,6 +2695,11 @@ function adoptScreenProducer(ctx, candidate) {
     localProducerIds.delete(previous.id)
     // Producing ScreenShare atomically replaces its server-side predecessor;
     // closing previous.id explicitly would return NotFound and desync the FIFO.
+    ctx.onProducerReplaced?.({
+      previousProducerId: previous.id,
+      producerId: candidate.producer.id,
+      codec: codecLabel(candidate.producer.rtpParameters)
+    })
   }
 
   logNegotiatedVideoCodec(candidate.producer, candidate.encoding.scalabilityMode)
@@ -2561,7 +2729,7 @@ async function stepDownScreenSvcRung(ctx, reason) {
   try {
     const candidate = await produceScreenWithFallback(ctx, ctx.screenCodec, { startRung: nextRung })
     if (!isActiveShare(ctx)) {
-      await discardUnadoptedScreenProducer(candidate.producer)
+      await discardUnadoptedShareProducer(candidate.producer)
       throw shareSupersededError()
     }
     adoptScreenProducer(ctx, candidate)
@@ -2648,7 +2816,7 @@ async function downgradeScreenCodecToH264(ctx, { softwareEncoder, reason }) {
 
   const candidate = await produceScreenWithFallback(ctx, h264, { startRung: 'plain' })
   if (!isActiveShare(ctx)) {
-    await discardUnadoptedScreenProducer(candidate.producer)
+    await discardUnadoptedShareProducer(candidate.producer)
     throw shareSupersededError()
   }
   adoptScreenProducer(ctx, candidate)
@@ -2805,7 +2973,10 @@ export async function shareScreen({
   audio = undefined,
   // Fires with { implementation, hardware } from encoder stats, ~3s after the
   // share starts, so the caller can show HW/SW on the self tile.
-  onEncoderStats = undefined
+  onEncoderStats = undefined,
+  // A fallback publishes a successor producer. The caller owns the self tile,
+  // so it must replace its producer id for viewer bookkeeping to follow it.
+  onProducerReplaced = undefined
 } = {}) {
   if (!producerTransport) throw new Error('Not connected to voice')
   if (audio !== undefined && audioMode === 'none' && audio) audioMode = 'system-legacy'
@@ -2836,7 +3007,8 @@ export async function shareScreen({
     screenTransition: null,
     rejectedScreenRungs: new Set(),
     fallbackFailureCount: 0,
-    fallbackCooldownUntil: 0
+    fallbackCooldownUntil: 0,
+    onProducerReplaced
   }
   await claimShareContext(ctx)
 
@@ -2883,7 +3055,7 @@ export async function shareScreen({
 
     const initialProducer = await produceInitialScreenWithFallback(ctx, screenCodec)
     if (!isActiveShare(ctx) || track.readyState === 'ended') {
-      await discardUnadoptedScreenProducer(initialProducer.producer)
+      await discardUnadoptedShareProducer(initialProducer.producer)
       throw shareSupersededError()
     }
     adoptScreenProducer(ctx, initialProducer)
@@ -3009,12 +3181,182 @@ export async function shareScreen({
   }
 }
 
+// ─── Camera codec probing and fallback ───────────────────────────
+const CAMERA_FULL_MAX_BITRATE = 2_500_000
+const CAMERA_THUMBNAIL_MAX_BITRATE = 300_000
+
+function isH264Codec(codec) {
+  return /video\/h264/i.test(codec?.mimeType ?? '')
+}
+
+function cameraEncodingsFor(codec, { simulcast = true } = {}) {
+  if (isH264Codec(codec)) {
+    return simulcast
+      ? [
+          { scaleResolutionDownBy: 4, maxBitrate: CAMERA_THUMBNAIL_MAX_BITRATE },
+          { scaleResolutionDownBy: 1, maxBitrate: CAMERA_FULL_MAX_BITRATE }
+        ]
+      : [{ maxBitrate: CAMERA_FULL_MAX_BITRATE }]
+  }
+
+  // VP9 is the normal camera path. AV1 only reaches this helper when it is the
+  // last codec advertised by an older/incomplete router, but it can use the same
+  // spatial + temporal mode when available.
+  return [{ maxBitrate: CAMERA_FULL_MAX_BITRATE, scalabilityMode: VIDEO_SCALABILITY_MODE }]
+}
+
+function uniqueCameraCodecs(codecs) {
+  const seen = new Set()
+  return codecs.filter((codec) => {
+    if (!codec) return false
+    const mime = screenCodecMime(codec) || '__default__'
+    if (seen.has(mime)) return false
+    seen.add(mime)
+    return true
+  })
+}
+
+function cameraCodecCandidates(initialCodec) {
+  const h264 = findVideoCodec('video/h264')
+  const av1 = findVideoCodec('video/av1')
+  return uniqueCameraCodecs(
+    hasCameraCodecPreference() && h264 ? [h264, av1] : [initialCodec, h264, av1]
+  )
+}
+
+function cameraProducerOptions(ctx, codec, encodings) {
+  return {
+    track: ctx.track,
+    codec,
+    encodings,
+    // Camera fallback may retry on the same capture track. mediasoup otherwise
+    // stops the supplied track when produce() rejects, preventing the retry.
+    stopTracks: false,
+    codecOptions: { videoGoogleStartBitrate: 1500 },
+    appData: { produced: 'Camera' }
+  }
+}
+
+// H.264 first tries the two-layer simulcast shape. A browser/handler that
+// rejects that shape gets one full-resolution encoding on the same track.
+async function produceCameraWithFallback(ctx, codec) {
+  const encodingAttempts = isH264Codec(codec)
+    ? [cameraEncodingsFor(codec), cameraEncodingsFor(codec, { simulcast: false })]
+    : [cameraEncodingsFor(codec)]
+  let lastError = null
+
+  for (const encodings of encodingAttempts) {
+    let producer
+    try {
+      producer = await produceForShare(ctx, cameraProducerOptions(ctx, codec, encodings))
+      if (!isActiveShare(ctx) || ctx.track?.readyState === 'ended') {
+        await discardUnadoptedShareProducer(producer)
+        throw shareSupersededError()
+      }
+      return { producer, codec, encodings }
+    } catch (error) {
+      if (isShareSupersededError(error)) throw error
+      if (producer) await discardUnadoptedShareProducer(producer)
+      lastError = error
+      console.warn(
+        `[Soup] Camera ${codec?.mimeType ?? 'default'} ` +
+          `${encodings.length} encoding attempt failed; trying the next shape:`,
+        error
+      )
+    }
+  }
+
+  throw lastError ?? new Error(`No viable camera encoding for ${codec?.mimeType ?? 'default'}`)
+}
+
+function adoptCameraProducer(ctx, candidate) {
+  const previous = ctx.producer
+  ctx.statsStop?.()
+  ctx.statsStop = null
+  ctx.producer = candidate.producer
+  ctx.cameraCodec = candidate.codec
+  ctx.cameraEncodings = candidate.encodings
+  localProducerIds.add(candidate.producer.id)
+
+  if (previous && previous !== candidate.producer) {
+    previous.close()
+    localProducerIds.delete(previous.id)
+    // Producing Camera atomically replaces its server-side predecessor; do not
+    // send a second close for the old id and race the signaling FIFO.
+    ctx.onProducerReplaced?.({
+      previousProducerId: previous.id,
+      producerId: candidate.producer.id,
+      codec: codecLabel(candidate.producer.rtpParameters)
+    })
+  }
+
+  const scalabilityMode =
+    candidate.encodings.length === 1 ? candidate.encodings[0].scalabilityMode : undefined
+  logNegotiatedVideoCodec(candidate.producer, scalabilityMode)
+  ctx.statsStop = startEncoderStatsLog(candidate.producer, (stats) => {
+    if (ctx.producer !== candidate.producer) return
+    cameraStatsHandler(ctx, stats)
+  })
+}
+
+async function downgradeCameraToH264(ctx) {
+  if (!isActiveShare(ctx) || isH264Codec(ctx.cameraCodec)) return false
+  const h264 = findVideoCodec('video/h264')
+  if (!h264) return false
+
+  const candidate = await produceCameraWithFallback(ctx, h264)
+  if (!isActiveShare(ctx)) {
+    await discardUnadoptedShareProducer(candidate.producer)
+    throw shareSupersededError()
+  }
+  await setDegradationPreference(candidate.producer, 'maintain-framerate')
+  // stopShareContext() can run while setParameters is pending. Do not adopt a
+  // successor into an already-stopped context: it would no longer be owned by
+  // the context and its server-side producer could outlive the share.
+  if (!isActiveShare(ctx) || ctx.track?.readyState === 'ended') {
+    await discardUnadoptedShareProducer(candidate.producer)
+    throw shareSupersededError()
+  }
+  adoptCameraProducer(ctx, candidate)
+  cacheCameraCodecPreference()
+  console.log(`[Soup] Camera codec downgraded to H264 simulcast [id:${candidate.producer.id}]`)
+  return true
+}
+
+function cameraStatsHandler(ctx, stats) {
+  if (!isActiveShare(ctx)) return
+  ctx.onEncoderStats?.(stats)
+  if (
+    ctx.cameraTransition ||
+    ctx.cameraFallbackAttempted ||
+    !ctx.producer ||
+    !/^video\/vp9$/i.test(ctx.cameraCodec?.mimeType ?? '')
+  )
+    return
+
+  // A measured libvpx/software VP9 result is the camera probe's negative
+  // verdict. Unknown implementations are intentionally left alone, and the
+  // verdict is only written after H.264 replacement succeeds.
+  if (stats.hardware !== false) return
+  ctx.cameraFallbackAttempted = true
+  const transition = downgradeCameraToH264(ctx).catch((error) => {
+    if (!isShareSupersededError(error)) {
+      console.warn('[Soup] Camera H264 fallback failed; keeping VP9:', error)
+    }
+    return false
+  })
+  ctx.cameraTransition = transition
+  void transition.finally(() => {
+    if (ctx.cameraTransition === transition) ctx.cameraTransition = null
+  })
+}
+
 // ─── Share webcam ────────────────────────────────────────────────
 // Streams a camera device into the same producer slot as screen share, so the
-// existing stop/preview/remote-render paths all apply. Unlike screen share,
-// the webcam carries no audio and uses the device's own native quality - the
-// fps/resolution/audio picker settings don't apply here.
-export async function shareCamera(deviceId, onEncoderStats) {
+// existing stop/preview/remote-render paths all apply. Camera capture is capped
+// at an HD/30fps ideal to avoid opening a 4K-native webcam that the sender would
+// immediately crush into its 2.5 Mbps ceiling.
+export async function shareCamera(deviceId, onEncoderStats, onProducerReplaced = undefined) {
   if (!producerTransport) throw new Error('Not connected to voice')
   const ctx = {
     type: 'camera',
@@ -3027,13 +3369,25 @@ export async function shareCamera(deviceId, onEncoderStats) {
     audioProducer: null,
     statsStop: null,
     stopPromise: null,
-    stopped: false
+    stopped: false,
+    onEncoderStats,
+    onProducerReplaced,
+    cameraCodec: null,
+    cameraEncodings: null,
+    cameraTransition: null,
+    cameraFallbackAttempted: false
   }
   await claimShareContext(ctx)
 
   try {
+    const videoConstraints = {
+      width: { ideal: 1280 },
+      height: { ideal: 720 },
+      frameRate: { ideal: 30 },
+      ...(deviceId ? { deviceId: { exact: deviceId } } : {})
+    }
     const stream = await navigator.mediaDevices.getUserMedia({
-      video: deviceId ? { deviceId: { exact: deviceId } } : true,
+      video: videoConstraints,
       audio: false
     })
     if (!isActiveShare(ctx)) {
@@ -3050,38 +3404,38 @@ export async function shareCamera(deviceId, onEncoderStats) {
     }
     track.contentHint = 'motion'
 
-    // H.264 gets NO scalabilityMode (MediaFoundation hardware encoders reject
-    // 'L1T3' in setParameters); VP9/AV1 fallbacks keep spatial+temporal layers.
     const cameraCodec = pickCameraCodec()
-    const cameraScalabilityMode = /h264/i.test(cameraCodec?.mimeType ?? '')
-      ? undefined
-      : VIDEO_SCALABILITY_MODE
-    const cameraProducer = await produceForShare(ctx, {
-      track,
-      codec: cameraCodec,
-      encodings: [
-        {
-          maxBitrate: 2_500_000,
-          ...(cameraScalabilityMode ? { scalabilityMode: cameraScalabilityMode } : {})
-        }
-      ],
-      codecOptions: { videoGoogleStartBitrate: 1500 },
-      appData: { produced: 'Camera' }
-    })
-    ctx.producer = cameraProducer
-    localProducerIds.add(cameraProducer.id)
-    logNegotiatedVideoCodec(cameraProducer, cameraScalabilityMode)
+    const candidateCodecs = cameraCodecCandidates(cameraCodec)
+    let initialCandidate = null
+    let lastError = null
+    for (const codec of candidateCodecs) {
+      try {
+        initialCandidate = await produceCameraWithFallback(ctx, codec)
+        break
+      } catch (error) {
+        if (isShareSupersededError(error)) throw error
+        lastError = error
+        console.warn(`[Soup] Camera codec ${codec?.mimeType ?? 'default'} could not start:`, error)
+      }
+    }
+    if (!initialCandidate)
+      throw lastError ?? new Error('No supported camera video codec is available')
 
-    await setDegradationPreference(cameraProducer, 'maintain-framerate')
-    if (!isActiveShare(ctx) || ctx.producer !== cameraProducer) throw shareSupersededError()
-    ctx.statsStop = startEncoderStatsLog(cameraProducer, onEncoderStats)
-    console.log(`[Soup] Camera sharing [id:${cameraProducer.id}]`)
+    await setDegradationPreference(initialCandidate.producer, 'maintain-framerate')
+    if (!isActiveShare(ctx) || ctx.track !== track || track.readyState === 'ended') {
+      await discardUnadoptedShareProducer(initialCandidate.producer)
+      throw shareSupersededError()
+    }
+    adoptCameraProducer(ctx, initialCandidate)
+    if (isH264Codec(initialCandidate.codec) && initialCandidate.encodings.length > 1) {
+      console.log('[Soup] Camera sharing with H264 simulcast (thumbnail + full layers)')
+    }
 
     const previewStream = new MediaStream([track])
     return {
-      id: cameraProducer.id,
+      id: ctx.producer.id,
       stream: previewStream,
-      codec: codecLabel(cameraProducer.rtpParameters),
+      codec: codecLabel(ctx.producer.rtpParameters),
       stop: () => stopShareContext(ctx)
     }
   } catch (err) {
