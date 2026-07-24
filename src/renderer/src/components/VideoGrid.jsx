@@ -1,8 +1,10 @@
 import { useState, useRef, useEffect } from 'react'
+import { createPortal } from 'react-dom'
 import './VideoGrid.css'
 import {
   IconVideoMinus,
   IconVideoOff,
+  IconVideoFilled,
   IconMaximize,
   IconMinimize,
   IconChevronDown,
@@ -15,7 +17,12 @@ import {
   IconExternalLink,
   IconPlayerPlayFilled,
   IconPlayerStopFilled,
-  IconEye
+  IconEye,
+  IconMovie,
+  IconMicrophone,
+  IconMicrophoneOff,
+  IconHeadphones,
+  IconHeadphonesOff
 } from '@tabler/icons-react'
 import { setFocusedScreenAudio, setVideoStreamRoles, subscribeStreamViewers } from '../lib/soup'
 import { useSettings } from '../context/SettingsContext'
@@ -23,6 +30,9 @@ import { useSettings } from '../context/SettingsContext'
 // Stable empty default so the role effect doesn't churn when no watched set is
 // passed (e.g. the popout's first render before the bridge data arrives).
 const EMPTY_WATCHED = new Set()
+// Same idea for the theatre-mode props the popout window never supplies.
+const EMPTY_LIST = []
+const EMPTY_SPEAKING = {}
 
 // Gap (px) between grid tiles — must match the `gap` in .video-grid-layout.
 const GRID_GAP = 12
@@ -67,7 +77,19 @@ function VideoGrid({
   volume,
   muted,
   onVolumeChange,
-  onMutedChange
+  onMutedChange,
+  // Theatre mode: fills the window with participant icons + voice controls
+  // overlaid. Only the main window supplies these (the popout omits them, so
+  // its theatre button is hidden and the overlays never render).
+  theatre = false,
+  onToggleTheatre,
+  voiceClients = EMPTY_LIST,
+  speakingClients = EMPTY_SPEAKING,
+  selfId,
+  micMuted = false,
+  deafened = false,
+  onToggleMic,
+  onToggleDeafen
 }) {
   const { appearanceSettings } = useSettings()
   const showCodecBadge = appearanceSettings.showCodecBadge !== false
@@ -104,6 +126,22 @@ function VideoGrid({
       viewerRef.current?.requestFullscreen()
     }
   }
+
+  // Esc leaves theatre mode. Captured so it beats the app-level Esc handlers,
+  // but deferred to the browser while OS-fullscreen is active (Esc exits that
+  // first, then a second press leaves theatre).
+  useEffect(() => {
+    if (!theatre) return
+    const onKey = (e) => {
+      if (e.key === 'Escape' && !document.fullscreenElement) {
+        e.preventDefault()
+        e.stopPropagation()
+        onToggleTheatre?.(false)
+      }
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [theatre, onToggleTheatre])
 
   // Resolve the display label from the live clients list so a stream's
   // name stays correct even if it arrived before the clients list caught
@@ -372,7 +410,26 @@ function VideoGrid({
         tabIndex={0}
         onClick={() => focusStream(s)}
       >
-        {stopped ? (
+        {isStopped(s) ? (
+          // Not watching: a clear green call-to-action to start the stream, in
+          // place of the passive "video off" placeholder.
+          <div className="stream-stopped">
+            <button
+              type="button"
+              className="stream-watch-cta"
+              title="Watch"
+              onClick={(e) => {
+                e.stopPropagation()
+                onSetStreamWatched?.(s.clientId, true)
+              }}
+            >
+              <IconPlayerPlayFilled size={variant === 'thumbnail' ? 15 : 18} />
+              {variant !== 'thumbnail' && <span>Watch</span>}
+            </button>
+          </div>
+        ) : !s.stream ? (
+        // Watching, but the consumer hasn't produced a track yet — hold the
+        // placeholder rather than flash a blank <video>.
           <div className="stream-stopped">
             <IconVideoOff size={variant === 'thumbnail' ? 22 : 32} />
           </div>
@@ -386,21 +443,123 @@ function VideoGrid({
             }}
           />
         )}
-        <button
-          type="button"
-          className={`stream-toggle-btn ${stopped ? 'play' : 'stop'}`}
-          title={stopped ? 'Watch stream' : 'Close stream'}
-          onClick={(e) => toggleStopped(s, e)}
-        >
-          {stopped ? <IconPlayerPlayFilled size={15} /> : <IconPlayerStopFilled size={15} />}
-        </button>
+        {/* Close control — only while watching; starting a stopped stream is
+            handled by the centre call-to-action above. */}
+        {!isStopped(s) && (
+          <button
+            type="button"
+            className="stream-toggle-btn stop"
+            title="Close stream"
+            onClick={(e) => toggleStopped(s, e)}
+          >
+            <IconPlayerStopFilled size={15} />
+          </button>
+        )}
         <div className={labelClass}>{resolveLabel(s)}</div>
       </div>
     )
   }
 
-  return (
-    <div className={`video-viewer${isFullscreen ? ' fullscreen' : ''}`} ref={viewerRef}>
+  // The theatre-mode toggle, shown in both the focus and grid control clusters.
+  // Only rendered when a toggle is supplied (the main window; never the popout,
+  // which is already its own window).
+  const theatreBtn = onToggleTheatre ? (
+    <button
+      type="button"
+      className={`vid-btn${theatre ? ' active' : ''}`}
+      onClick={() => onToggleTheatre()}
+      title={theatre ? 'Exit theatre mode' : 'Theatre mode'}
+    >
+      <IconMovie size={18} />
+    </button>
+  ) : null
+
+  // Which channel members are live-sharing, so the theatre rail can badge them.
+  const streamingClientIds = new Set(streams.map((s) => s.clientId))
+
+  // A voice-channel participant chip for the theatre-mode left rail: avatar with
+  // a speaking ring, a mute/deafen badge, a streaming marker, and the name.
+  const renderParticipant = (c) => {
+    const isSelfC = c.id === selfId
+    const speaking = !!speakingClients[c.id]
+    // Our own live toggles beat the roster echo; others come from their voice
+    // state (a server gag reads as muted, matching the sidebar indicator).
+    const cDeaf = isSelfC ? deafened : !!c.self_deaf
+    const cMic = isSelfC ? micMuted : !!c.self_mute || !!c.server_mute
+    const initial = c.name?.charAt(0).toUpperCase() ?? '?'
+    return (
+      <div
+        key={c.id}
+        className={`theatre-participant${speaking ? ' speaking' : ''}`}
+        title={c.name}
+      >
+        <span className="theatre-avatar">
+          {c.avatar ? (
+            <img className="theatre-avatar-img" src={c.avatar} alt="" aria-hidden="true" />
+          ) : (
+            initial
+          )}
+          {cDeaf ? (
+            <span className="theatre-avatar-badge muted" aria-label="Deafened">
+              <IconHeadphonesOff size={11} />
+            </span>
+          ) : cMic ? (
+            <span className="theatre-avatar-badge muted" aria-label="Muted">
+              <IconMicrophoneOff size={11} />
+            </span>
+          ) : null}
+        </span>
+        <span className="theatre-participant-name">{c.name}</span>
+        {streamingClientIds.has(c.id) && (
+          <IconVideoFilled size={14} className="theatre-streaming-icon" aria-label="Streaming" />
+        )}
+      </div>
+    )
+  }
+
+  // The theatre-only overlays: the participant rail (left) and the mic/deafen
+  // voice controls (bottom-left). Layered over whichever video view is active.
+  const theatreOverlays = theatre ? (
+    <>
+      {voiceClients.length > 0 && (
+        <div
+          className="theatre-rail"
+          onClick={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          {voiceClients.map(renderParticipant)}
+        </div>
+      )}
+      <div
+        className="theatre-voice-controls"
+        onClick={(e) => e.stopPropagation()}
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <button
+          type="button"
+          className={`vid-btn${micMuted ? ' danger' : ''}`}
+          onClick={() => onToggleMic?.()}
+          title={micMuted ? 'Unmute microphone' : 'Mute microphone'}
+        >
+          {micMuted ? <IconMicrophoneOff size={18} /> : <IconMicrophone size={18} />}
+        </button>
+        <button
+          type="button"
+          className={`vid-btn${deafened ? ' danger' : ''}`}
+          onClick={() => onToggleDeafen?.()}
+          title={deafened ? 'Undeafen' : 'Deafen'}
+        >
+          {deafened ? <IconHeadphonesOff size={18} /> : <IconHeadphones size={18} />}
+        </button>
+      </div>
+    </>
+  ) : null
+
+  const viewer = (
+    <div
+      className={`video-viewer${isFullscreen ? ' fullscreen' : ''}${theatre ? ' theatre' : ''}`}
+      ref={viewerRef}
+    >
       {selectedStream ? (
         <>
           {/* Clicking the focused video (anywhere but the controls) unfocuses it.
@@ -477,7 +636,23 @@ function VideoGrid({
                 )}
               </div>
             )}
-            {/* Viewer count, top-right. Same hover gate as .video-controls. */}
+            {/* Stop watching, top-right corner. Available even while focused (the
+                tile-level toggle only shows in the grid/carousel). Unwatch drops
+                the consumer; unfocusing returns to the grid. */}
+            <button
+              type="button"
+              className="vid-btn focus-stop-btn"
+              title="Stop watching"
+              onClick={(e) => {
+                e.stopPropagation()
+                onSetStreamWatched?.(selectedStream.clientId, false)
+                onSelect?.(null)
+              }}
+            >
+              <IconPlayerStopFilled size={16} />
+            </button>
+            {/* Viewer count, top-right (just left of the stop button). Same hover
+                gate as .video-controls. */}
             <div className="focus-viewers" onClick={(e) => e.stopPropagation()}>
               <button
                 type="button"
@@ -545,6 +720,7 @@ function VideoGrid({
                   <IconExternalLink size={18} />
                 </button>
               )}
+              {theatreBtn}
               <button
                 type="button"
                 className="vid-btn"
@@ -565,6 +741,7 @@ function VideoGrid({
             >
               {carouselCollapsed ? <IconChevronUp size={18} /> : <IconChevronDown size={18} />}
             </button>
+            {theatreOverlays}
           </div>
 
           {!carouselCollapsed && (
@@ -594,6 +771,7 @@ function VideoGrid({
                 <IconExternalLink size={18} />
               </button>
             )}
+            {theatreBtn}
             <button
               type="button"
               className="vid-btn"
@@ -604,10 +782,15 @@ function VideoGrid({
             </button>
           </div>
           {sortedStreams.map((s) => renderTile(s, 'grid'))}
+          {theatreOverlays}
         </div>
       )}
     </div>
   )
+
+  // In theatre mode the viewer escapes the chat canvas to cover the window, so
+  // portal it to the body — clear of the layout's clipping/transformed ancestors.
+  return theatre ? createPortal(viewer, document.body) : viewer
 }
 
 export default VideoGrid

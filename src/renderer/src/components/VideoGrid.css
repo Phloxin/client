@@ -187,6 +187,34 @@
   background: #06070d;
 }
 
+/* Green "Watch stream" call-to-action centred in a not-yet-watched tile. */
+.stream-watch-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 15px;
+  border: none;
+  border-radius: 999px;
+  background: var(--color-success);
+  color: #fff;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    transform 0.12s ease;
+}
+
+.stream-watch-cta:hover {
+  background: color-mix(in srgb, var(--color-success) 85%, #000);
+  transform: scale(1.04);
+}
+
+/* Icon-only and compact inside the small carousel thumbnails. */
+.video-thumbnail .stream-watch-cta {
+  padding: 7px;
+}
+
 .video-thumbnail.stopped,
 .video-grid-tile.stopped {
   border-color: transparent;
@@ -346,7 +374,8 @@
 .focus-viewers {
   position: absolute;
   top: 12px;
-  right: 12px;
+  /* Sits just left of the stop button in the corner (32px btn + 8px gap). */
+  right: 52px;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
@@ -358,6 +387,28 @@
 .video-focus:hover .focus-viewers,
 .video-focus:focus-within .focus-viewers,
 .focus-viewers:has(.focus-viewers-list) {
+  opacity: 1;
+}
+
+/* Stop-watching button, top-right corner of the focused stream. Solid red so
+   it reads as the "stop" action at a glance; fades in with the rest of the
+   focus chrome. */
+/* Red stop icon on the standard translucent .vid-btn chrome (dark at rest,
+   grey on hover — same as its neighbours). Compound selector so the red icon
+   colour outranks the equal-specificity .vid-btn `color` declared later. */
+.vid-btn.focus-stop-btn {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  color: var(--color-danger);
+  opacity: 0;
+  transition:
+    opacity 0.15s ease,
+    background 0.15s ease;
+}
+
+.video-focus:hover .focus-stop-btn,
+.video-focus:focus-within .focus-stop-btn {
   opacity: 1;
 }
 
@@ -655,4 +706,147 @@
   overflow: hidden;
   text-overflow: ellipsis;
   pointer-events: none;
+}
+
+/* ============================================================================
+   THEATRE MODE — the viewer escapes the chat canvas to fill the window, with
+   the voice-channel participant rail (left) and mic/deafen controls (bottom-
+   left) overlaid on the stream. Portaled to <body>, so it sits over the whole
+   layout; the custom title bar stays visible/interactive above it.
+   ============================================================================ */
+
+.video-viewer.theatre {
+  position: fixed;
+  top: var(--title-bar-height, 40px);
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 950;
+  padding: 12px;
+  background: #000;
+}
+
+/* Fill edge-to-edge: the focus frame drops its rounding in theatre. */
+.video-viewer.theatre .video-focus {
+  border-radius: 0;
+}
+
+/* ── Participant rail (left) ──────────────────────────────────────────────── */
+
+/* The container passes clicks through its gaps to the video beneath; only the
+   chips themselves are interactive. */
+.theatre-rail {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  max-height: 100%;
+  padding: 16px 12px;
+  overflow-y: auto;
+  pointer-events: none;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border-light) transparent;
+}
+
+.theatre-participant {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 240px;
+  padding: 5px 12px 5px 5px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(4px);
+  color: #fff;
+}
+
+.theatre-avatar {
+  position: relative;
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: var(--font-weight-bold);
+  background: color-mix(in srgb, var(--color-primary) 30%, #000);
+  color: #fff;
+  box-shadow: 0 0 0 2px transparent;
+  transition: box-shadow 0.12s ease;
+}
+
+.theatre-avatar-img {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+/* Speaking ring — green glow, matching the sidebar's speaking indicator. */
+.theatre-participant.speaking .theatre-avatar {
+  box-shadow:
+    0 0 0 2px var(--color-success),
+    0 0 10px color-mix(in srgb, var(--color-success) 70%, transparent);
+}
+
+/* Mute/deafen badge, notched into the avatar's bottom-right. */
+.theatre-avatar-badge {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  background: #0c0c10;
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.55);
+}
+
+.theatre-avatar-badge.muted {
+  color: var(--color-danger);
+}
+
+.theatre-participant-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 0.85rem;
+}
+
+.theatre-streaming-icon {
+  flex-shrink: 0;
+  color: var(--color-primary);
+}
+
+/* ── Voice controls (bottom-left) ────────────────────────────────────────── */
+
+/* Always visible (not hover-gated) so mute/deafen stay one click away with the
+   sidebar hidden. */
+.theatre-voice-controls {
+  position: absolute;
+  left: 16px;
+  bottom: 16px;
+  z-index: 6;
+  display: flex;
+  gap: 8px;
+}
+
+.theatre-voice-controls .vid-btn {
+  width: 40px;
+  height: 40px;
+}
+
+/* Muted/deafened controls read danger, matching the sidebar dock buttons. */
+.vid-btn.danger {
+  color: var(--color-danger);
 }

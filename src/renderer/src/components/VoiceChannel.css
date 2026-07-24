@@ -608,3 +608,31 @@
   flex-shrink: 0;
   color: var(--color-primary);
 }
+
+/* Clickable wrapper around the streaming icon — jumps to watching this client's
+   stream. Bare button (no chrome) so it reads as the icon it wraps; a hover
+   halo signals it's interactive. */
+.client-streaming-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  padding: 2px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  cursor: pointer;
+  transition:
+    background-color 0.12s,
+    transform 0.12s;
+}
+
+.client-streaming-btn:hover {
+  background: color-mix(in srgb, var(--color-primary) 18%, transparent);
+  transform: scale(1.08);
+}
+
+.client-streaming-btn:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 1px;
+}
