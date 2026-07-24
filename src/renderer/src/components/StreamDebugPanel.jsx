@@ -286,7 +286,11 @@ function SendCard({ buf, theme }) {
         {isVideo ? (
           <Badge tone={hw === 'HW' ? 'ok' : hw === 'SW' ? 'warn' : undefined}>{hw}</Badge>
         ) : null}
-        {isVideo && qlr && qlr !== 'none' ? <Badge tone="warn">{qlr}</Badge> : null}
+        {isVideo && qlr ? (
+          <Badge tone={qlr === 'bandwidth' ? 'danger' : qlr === 'cpu' ? 'warn' : 'ok'}>
+            {qlr === 'none' ? 'unlimited' : qlr}
+          </Badge>
+        ) : null}
         {warns.map((w) => (
           <Badge key={w} tone="danger">
             {w}

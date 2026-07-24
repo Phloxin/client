@@ -16,10 +16,6 @@ let producerTransport
 let consumerTransport
 let producers = []
 let localProducerIds = new Set()
-// The negotiated Opus profile belongs to the Producer, not to the mutable
-// settings object. A WeakMap keeps the metadata alongside the mediasoup object
-// without retaining producers after a transport reset.
-const audioProducerProfiles = new WeakMap()
 let screenShareCtx = null
 let shareClaimQueue = Promise.resolve()
 let shareProduceQueue = Promise.resolve()
@@ -40,6 +36,10 @@ let rawMicStream = null
 // released the old capture and a candidate gUM/processing/produce operation
 // fails; otherwise the old producer can be left holding an ended track.
 let lastCommittedMicSettings = null
+// The Opus profile key committed to the live audio producer(s). Every commit
+// path stamps the same key onto all audio producers in one transaction, so a
+// single module value is enough to detect a profile change on republish.
+let lastCommittedAudioProfile = null
 // Self speaking detector, owned here rather than by a channel component so it
 // survives ownership changes: a moderator move rebinds onClientSpeaking to the new
 // channel, and the detector reports our own speaking through that live callback.
@@ -135,10 +135,10 @@ function stopAudioTicker() {
 }
 
 function runAudioTicker() {
-  // Iterate a snapshot so callbacks may unregister themselves or another
-  // callback safely. Skip callbacks removed earlier in this same tick.
-  for (const callback of [...audioTickerCallbacks]) {
-    if (audioTickerCallbacks.has(callback)) invokeAudioTickerCallback(callback)
+  // Set iteration is spec-safe under concurrent deletion: a callback removed
+  // earlier in this same tick (by itself or another callback) is skipped.
+  for (const callback of audioTickerCallbacks) {
+    invokeAudioTickerCallback(callback)
   }
   if (audioTickerCallbacks.size === 0) stopAudioTicker()
 }
@@ -153,10 +153,7 @@ function registerAudioTickerCallback(callback) {
   }
   invokeAudioTickerCallback(callback)
 
-  let registered = true
   return () => {
-    if (!registered) return
-    registered = false
     audioTickerCallbacks.delete(callback)
     if (audioTickerCallbacks.size === 0) stopAudioTicker()
   }
@@ -1418,34 +1415,11 @@ function micSettingsWithResolvedChannelCount(micSettings, stream) {
   return { ...micSettings, resolvedChannelCount }
 }
 
-function micAudioProfileFor(micSettings, opusOptions) {
-  const codecOptions = opusOptions.codecOptions
-  return {
-    name: selectedMicAudioProfile(micSettings).name,
-    maxBitrate: opusOptions.encodings[0].maxBitrate,
-    opusStereo: codecOptions.opusStereo,
-    opusMaxPlaybackRate: codecOptions.opusMaxPlaybackRate,
-    opusMaxAverageBitrate: codecOptions.opusMaxAverageBitrate,
-    opusDtx: codecOptions.opusDtx,
-    opusPtime: codecOptions.opusPtime,
-    opusFec: codecOptions.opusFec,
-    opusNack: codecOptions.opusNack
-  }
-}
-
-function sameMicAudioProfile(left, right) {
-  if (!left || !right) return false
-  return (
-    left.name === right.name &&
-    left.maxBitrate === right.maxBitrate &&
-    left.opusStereo === right.opusStereo &&
-    left.opusMaxPlaybackRate === right.opusMaxPlaybackRate &&
-    left.opusMaxAverageBitrate === right.opusMaxAverageBitrate &&
-    left.opusDtx === right.opusDtx &&
-    left.opusPtime === right.opusPtime &&
-    left.opusFec === right.opusFec &&
-    left.opusNack === right.opusNack
-  )
+// The negotiated Opus profile is fully determined by the profile name
+// (speech/hifi selects every fmtp field) and whether the track is stereo, so a
+// `name:stereo` key is enough to detect a profile change on republish.
+function micAudioProfileKey(micSettings, opusOptions) {
+  return `${selectedMicAudioProfile(micSettings).name}:${opusOptions.codecOptions.opusStereo}`
 }
 
 // ─── Publish: send local audio ───────────────────────────────────
@@ -1541,7 +1515,7 @@ async function doPublish(micSettings, onStream) {
 
   const resolvedMicSettings = micSettingsWithResolvedChannelCount(micSettings, stream)
   const opusOptions = buildMicOpusOptions(resolvedMicSettings)
-  const audioProfile = micAudioProfileFor(resolvedMicSettings, opusOptions)
+  const audioProfile = micAudioProfileKey(resolvedMicSettings, opusOptions)
 
   for (const track of processedStream.getTracks()) {
     const producer = await producerTransport.produce({
@@ -1550,13 +1524,13 @@ async function doPublish(micSettings, onStream) {
       appData: { produced: 'Audio' }
     })
     producers.push(producer)
-    audioProducerProfiles.set(producer, audioProfile)
     localProducerIds.add(producer.id)
     if (micMuted) producer.pause()
     console.log(`[Soup] Producing ${track.kind} [id:${producer.id}]`)
   }
 
   lastCommittedMicSettings = { ...resolvedMicSettings }
+  lastCommittedAudioProfile = audioProfile
 
   console.log('[Soup] Publishing audio')
 }
@@ -1620,20 +1594,27 @@ function discardRepublishCandidate({ stream, processedStream, processorStop, pre
 // audio constraints actually take effect. If anything after that release
 // fails, reopen the last committed profile and put a live track back on every
 // existing audio producer before surfacing the original error.
+// Stable recovery dependencies, bound once. Per-transaction values (the
+// candidate streams/callbacks in `options`) and the mutable module reads
+// (rawMicStream, micMuted) are merged in at each call.
+const micRepublishRecoveryEnv = {
+  acquireMicCapture,
+  buildAudioProcessor,
+  stopRawStream,
+  stopCandidate: stopMicRepublishCandidate,
+  onPreviousStopped: (previousStop) => {
+    if (audioProcessorStop === previousStop) audioProcessorStop = null
+  },
+  onCommit: commitRepublishedMicProcessing,
+  onError: (phase, err) => console.error(`[Soup] Failed ${phase}:`, err)
+}
+
 function restoreCommittedMicCapture(options) {
   return recoverMicRepublish({
+    ...micRepublishRecoveryEnv,
     ...options,
     rawMicStream,
-    acquireMicCapture,
-    buildAudioProcessor,
-    stopRawStream,
-    stopCandidate: stopMicRepublishCandidate,
-    micMuted,
-    onPreviousStopped: (previousStop) => {
-      if (audioProcessorStop === previousStop) audioProcessorStop = null
-    },
-    onCommit: commitRepublishedMicProcessing,
-    onError: (phase, err) => console.error(`[Soup] Failed ${phase}:`, err)
+    micMuted
   })
 }
 
@@ -1660,10 +1641,7 @@ async function doRepublish(micSettings, onStream, expectedGeneration) {
   const transport = producerTransport
   if (!transport) throw new Error('Not connected to voice')
 
-  const isCurrent = () =>
-    expectedGeneration === mediaStateGeneration &&
-    producerTransport === transport &&
-    !transport.closed
+  const isCurrent = () => producerTransport === transport && !transport.closed
 
   const audioProducers = producers.filter((p) => p.kind === 'audio' && !p.closed)
   const previousMicSettings = lastCommittedMicSettings ? { ...lastCommittedMicSettings } : null
@@ -1709,20 +1687,46 @@ async function doRepublish(micSettings, onStream, expectedGeneration) {
 
   const resolvedMicSettings = micSettingsWithResolvedChannelCount(micSettings, stream)
   const opusOptions = buildMicOpusOptions(resolvedMicSettings)
-  const audioProfile = micAudioProfileFor(resolvedMicSettings, opusOptions)
+  const audioProfile = micAudioProfileKey(resolvedMicSettings, opusOptions)
   const newTracks = processedStream.getTracks()
 
-  // The socket can drop while we were awaiting getUserMedia / the audio
-  // processor above; onclose then runs resetMediaState(), closing the transport
-  // and the producers we captured. Bail rather than produce/replaceTrack on a
-  // corpse (InvalidStateError: closed) — the reconnect path re-publishes fresh.
-  if (!isCurrent()) {
+  // The candidate streams/stops are fixed for the rest of the transaction, so
+  // bind the recovery/commit bundles once instead of repeating their arguments
+  // at every branch below.
+  const discardCandidate = () =>
     discardRepublishCandidate({
       stream,
       processedStream,
       processorStop: candidateProcessorStop,
       previousStop: previousProcessorStop
     })
+  const restoreCommitted = () =>
+    restoreCommittedMicCapture({
+      audioProducers,
+      micSettings: previousMicSettings,
+      previousStop: previousProcessorStop,
+      candidateStream: stream,
+      candidateProcessedStream: processedStream,
+      candidateProcessorStop,
+      onStream,
+      isCurrent
+    })
+  const commitCandidate = () =>
+    commitRepublishedMicProcessing({
+      stream,
+      processedStream,
+      processorStop: candidateProcessorStop,
+      previousStop: previousProcessorStop,
+      micSettings: resolvedMicSettings,
+      onStream
+    })
+
+  // The socket can drop while we were awaiting getUserMedia / the audio
+  // processor above; onclose then runs resetMediaState(), closing the transport
+  // and the producers we captured. Bail rather than produce/replaceTrack on a
+  // corpse (InvalidStateError: closed) — the reconnect path re-publishes fresh.
+  if (!isCurrent()) {
+    discardCandidate()
     return
   }
 
@@ -1741,62 +1745,34 @@ async function doRepublish(micSettings, onStream, expectedGeneration) {
       }
       if (!isCurrent()) {
         await disposeMicProducers(freshProducers)
-        discardRepublishCandidate({
-          stream,
-          processedStream,
-          processorStop: candidateProcessorStop,
-          previousStop: previousProcessorStop
-        })
+        discardCandidate()
         return
       }
     } catch (err) {
       await disposeMicProducers(freshProducers)
-      discardRepublishCandidate({
-        stream,
-        processedStream,
-        processorStop: candidateProcessorStop,
-        previousStop: previousProcessorStop
-      })
+      discardCandidate()
       throw err
     }
 
     producers = producers.filter((p) => p.kind !== 'audio').concat(freshProducers)
     for (const producer of freshProducers) {
-      audioProducerProfiles.set(producer, audioProfile)
       localProducerIds.add(producer.id)
       if (micMuted) producer.pause()
       console.log(`[Soup] Republished ${producer.track.kind} [id:${producer.id}]`)
     }
-    commitRepublishedMicProcessing({
-      stream,
-      processedStream,
-      processorStop: candidateProcessorStop,
-      previousStop: previousProcessorStop,
-      micSettings: resolvedMicSettings,
-      onStream
-    })
+    lastCommittedAudioProfile = audioProfile
+    commitCandidate()
     console.log('[Soup] Audio republished with new settings')
     return
   }
 
   if (newTracks.length !== audioProducers.length) {
-    await restoreCommittedMicCapture({
-      audioProducers,
-      micSettings: previousMicSettings,
-      previousStop: previousProcessorStop,
-      candidateStream: stream,
-      candidateProcessedStream: processedStream,
-      candidateProcessorStop,
-      onStream,
-      isCurrent
-    })
+    await restoreCommitted()
     throw new Error('Microphone track count changed during republish')
   }
 
-  const profileChanged = audioProducers.some((producer) => {
-    const previousProfile = audioProducerProfiles.get(producer)
-    return previousProfile && !sameMicAudioProfile(previousProfile, audioProfile)
-  })
+  const profileChanged =
+    lastCommittedAudioProfile !== null && lastCommittedAudioProfile !== audioProfile
 
   if (profileChanged) {
     // mediasoup/SFU replaces the prior Audio producer when this produce succeeds.
@@ -1816,26 +1792,13 @@ async function doRepublish(micSettings, onStream, expectedGeneration) {
       }
       if (!isCurrent()) {
         await disposeMicProducers(replacementProducers)
-        discardRepublishCandidate({
-          stream,
-          processedStream,
-          processorStop: candidateProcessorStop,
-          previousStop: previousProcessorStop
-        })
+        discardCandidate()
         return
       }
     } catch (err) {
-      await restoreCommittedMicCapture({
-        audioProducers,
-        micSettings: previousMicSettings,
-        previousStop: previousProcessorStop,
-        candidateStream: stream,
-        candidateProcessedStream: processedStream,
-        candidateProcessorStop,
-        onStream,
-        isCurrent
-      })
-      await disposeMicProducers(replacementProducers)
+      // Restoring the committed capture and tearing down the rejected
+      // replacement producers touch disjoint resources, so run them together.
+      await Promise.all([restoreCommitted(), disposeMicProducers(replacementProducers)])
       throw err
     }
 
@@ -1844,7 +1807,6 @@ async function doRepublish(micSettings, onStream, expectedGeneration) {
       .filter((producer) => !oldProducerSet.has(producer))
       .concat(replacementProducers)
     for (const producer of replacementProducers) {
-      audioProducerProfiles.set(producer, audioProfile)
       localProducerIds.add(producer.id)
       if (micMuted) producer.pause()
     }
@@ -1856,14 +1818,8 @@ async function doRepublish(micSettings, onStream, expectedGeneration) {
       producer.close()
       oldTrack?.stop()
     }
-    commitRepublishedMicProcessing({
-      stream,
-      processedStream,
-      processorStop: candidateProcessorStop,
-      previousStop: previousProcessorStop,
-      micSettings: resolvedMicSettings,
-      onStream
-    })
+    lastCommittedAudioProfile = audioProfile
+    commitCandidate()
     console.log('[Soup] Audio profile changed; producer replaced')
     return
   }
@@ -1904,36 +1860,15 @@ async function doRepublish(micSettings, onStream, expectedGeneration) {
     }
   } catch (err) {
     if (!isCurrent()) {
-      discardRepublishCandidate({
-        stream,
-        processedStream,
-        processorStop: candidateProcessorStop,
-        previousStop: previousProcessorStop
-      })
+      discardCandidate()
       return
     }
 
-    await restoreCommittedMicCapture({
-      audioProducers,
-      micSettings: previousMicSettings,
-      previousStop: previousProcessorStop,
-      candidateStream: stream,
-      candidateProcessedStream: processedStream,
-      candidateProcessorStop,
-      onStream,
-      isCurrent
-    })
+    await restoreCommitted()
     throw err
   }
 
-  commitRepublishedMicProcessing({
-    stream,
-    processedStream,
-    processorStop: candidateProcessorStop,
-    previousStop: previousProcessorStop,
-    micSettings: resolvedMicSettings,
-    onStream
-  })
+  commitCandidate()
   console.log('[Soup] Audio republished with new settings')
 }
 
@@ -2052,25 +1987,45 @@ function screenSvcVerdictKey(codec) {
   return supportsScreenTemporalSvc(codec) && mime ? `${SCREEN_SVC_VERDICT_PREFIX}${mime}` : null
 }
 
+// sessionStorage may be unavailable in unusual/private renderer contexts, so
+// every access is guarded; these caches are best-effort optimizations only.
+function sessionVerdict(key) {
+  return {
+    get() {
+      try {
+        return sessionStorage.getItem(key)
+      } catch {
+        return null
+      }
+    },
+    set(value) {
+      try {
+        sessionStorage.setItem(key, value)
+      } catch {
+        // Ignore; callers re-probe when the cache is missing.
+      }
+    },
+    clear() {
+      try {
+        sessionStorage.removeItem(key)
+      } catch {
+        // Ignore; the next renderer session re-probes.
+      }
+    }
+  }
+}
+
 function cachedScreenSvcRung(codec) {
   const key = screenSvcVerdictKey(codec)
   if (!key) return null
-  try {
-    const rung = sessionStorage.getItem(key)
-    return screenSvcRungsFor(codec).includes(rung) ? rung : null
-  } catch {
-    return null
-  }
+  const rung = sessionVerdict(key).get()
+  return screenSvcRungsFor(codec).includes(rung) ? rung : null
 }
 
 function cacheScreenSvcRung(codec, rung) {
   const key = screenSvcVerdictKey(codec)
   if (!key || !screenSvcRungsFor(codec).includes(rung)) return
-  try {
-    sessionStorage.setItem(key, rung)
-  } catch {
-    // Storage is only an optimization; retry the full rung ladder if unavailable.
-  }
+  sessionVerdict(key).set(rung)
 }
 
 function clearScreenSvcRungStorage() {
@@ -2082,7 +2037,7 @@ function clearScreenSvcRungStorage() {
     }
     for (const key of keys) sessionStorage.removeItem(key)
   } catch {
-    // sessionStorage may be unavailable in unusual/private renderer contexts.
+    // Best-effort cleanup; ignore when storage is unavailable.
   }
 }
 
@@ -2108,11 +2063,7 @@ function clearScreenCodecPreferenceStorage() {
 clearScreenCodecPreferenceStorage()
 
 function hasScreenCodecPreference() {
-  try {
-    return sessionStorage.getItem(SCREEN_H264_KEY) === '1'
-  } catch {
-    return false
-  }
+  return sessionVerdict(SCREEN_H264_KEY).get() === '1'
 }
 
 // Forget the session's "AV1 is software here → use H.264" verdict so the next
@@ -2166,27 +2117,15 @@ function pickVideoCodec() {
 const CAMERA_H264_KEY = 'cameraPreferH264'
 
 function hasCameraCodecPreference() {
-  try {
-    return sessionStorage.getItem(CAMERA_H264_KEY) === '1'
-  } catch {
-    return false
-  }
+  return sessionVerdict(CAMERA_H264_KEY).get() === '1'
 }
 
 export function resetCameraCodecPreference() {
-  try {
-    sessionStorage.removeItem(CAMERA_H264_KEY)
-  } catch {
-    // Ignore storage failures; the next camera probe will still run.
-  }
+  sessionVerdict(CAMERA_H264_KEY).clear()
 }
 
 function cacheCameraCodecPreference() {
-  try {
-    sessionStorage.setItem(CAMERA_H264_KEY, '1')
-  } catch {
-    // The next camera share will simply probe VP9 again.
-  }
+  sessionVerdict(CAMERA_H264_KEY).set('1')
 }
 
 // Webcam prefers VP9 for real spatial layer rationing, unless this renderer has
@@ -2271,17 +2210,10 @@ function outboundLayerIsHigher(left, right) {
 function computeOutboundVideoSample(stats, previousByOutboundId) {
   let fallbackRemoteInbound = null
   const remoteInboundByLocalId = new Map()
-  let candidatePair = null
   for (const report of stats.values()) {
     if (report.type === 'remote-inbound-rtp') {
       fallbackRemoteInbound ??= report
       if (report.localId) remoteInboundByLocalId.set(report.localId, report)
-    } else if (
-      report.type === 'candidate-pair' &&
-      report.state === 'succeeded' &&
-      report.nominated
-    ) {
-      candidatePair = report
     }
   }
 
@@ -2340,27 +2272,17 @@ function computeOutboundVideoSample(stats, previousByOutboundId) {
       s.totalEncodeTime >= previous.totalEncodeTime
         ? s.totalEncodeTime - previous.totalEncodeTime
         : null
-    const elapsedMs =
-      previous && Number.isFinite(s.timestamp) && Number.isFinite(previous.timestamp)
-        ? s.timestamp - previous.timestamp
-        : 0
-    const bytesDelta =
-      previous &&
-      Number.isFinite(s.bytesSent) &&
-      Number.isFinite(previous.bytesSent) &&
-      s.bytesSent >= previous.bytesSent
-        ? s.bytesSent - previous.bytesSent
-        : null
+    const encodingKbps = streamDebugKbps(s.bytesSent, s.timestamp, previous)
 
     if (framesDelta != null && encodeTimeDelta != null) {
       totalFramesDelta += framesDelta
       totalEncodeTimeDelta += encodeTimeDelta
       hasEncodeDelta = true
     }
-    if (bytesDelta != null && elapsedMs > 0) {
+    if (encodingKbps != null) {
       // Sum each encoding's rate. Summing the elapsed time would divide a
       // two-layer simulcast stream by two when both reports share a clock.
-      totalSendKbps += (8 * bytesDelta) / elapsedMs
+      totalSendKbps += encodingKbps
       hasSendDelta = true
     }
 
@@ -2387,7 +2309,7 @@ function computeOutboundVideoSample(stats, previousByOutboundId) {
     previousByOutboundId.set(outboundRtpId, {
       totalEncodeTime: s.totalEncodeTime ?? 0,
       framesEncoded: s.framesEncoded ?? 0,
-      bytesSent: s.bytesSent ?? 0,
+      bytes: s.bytesSent ?? 0,
       timestamp: s.timestamp
     })
   }
@@ -2428,7 +2350,6 @@ function computeOutboundVideoSample(stats, previousByOutboundId) {
     rttMs: topRemoteInbound?.roundTripTime != null ? topRemoteInbound.roundTripTime * 1000 : null,
     packetsLost: hasPacketsLost ? totalPacketsLost : undefined,
     fractionLost: topRemoteInbound?.fractionLost,
-    availableOutgoingBitrate: candidatePair?.availableOutgoingBitrate,
     activeEncodings: activeOutbound.length
   }
 }
@@ -2566,8 +2487,7 @@ function produceForShare(ctx, options) {
         }
       })
       if (!isActiveShare(ctx)) {
-        producer.close()
-        await closeServerProducer(producer.id)
+        await discardUnadoptedShareProducer(producer)
         throw shareSupersededError()
       }
       return producer
@@ -2714,9 +2634,10 @@ async function produceScreenWithFallback(ctx, codec, { startRung } = {}) {
   throw lastError ?? screenEncodingCapabilityError(codec)
 }
 
-function uniqueScreenCodecs(codecs) {
+function uniqueCodecsByMime(codecs) {
   const seen = new Set()
   return codecs.filter((codec) => {
+    if (!codec) return false
     // Preserve mediasoup's default-codec path for routers that advertise none
     // of our explicit AV1/VP9/H.264 candidates.
     const mime = screenCodecMime(codec) || '__default__'
@@ -2726,45 +2647,55 @@ function uniqueScreenCodecs(codecs) {
   })
 }
 
-// A pre-produce failure may mean AV1/VP9 is advertised but unavailable in this
-// Chromium process. Exhaust that codec's rung ladder first, then try the next
-// compatible codec. An explicit PREFER_SCREENSHARE_CODEC never leaves its codec.
-async function produceInitialScreenWithFallback(ctx, initialCodec) {
-  const forced = forcedScreenCodec()
-  const codecs = uniqueScreenCodecs(
-    forced ? [forced] : [initialCodec, findVideoCodec('video/vp9'), findVideoCodec('video/h264')]
-  )
+// Try each candidate codec in order until one produces. Superseded errors abort
+// the whole walk; any other failure is warned and remembered so the last one is
+// rethrown when no codec works.
+async function produceWithCodecFallback(codecs, attemptFn, { label, noCodecMessage }) {
   let lastError = null
 
   for (const codec of codecs) {
     try {
-      return await produceScreenWithFallback(ctx, codec)
+      return await attemptFn(codec)
     } catch (error) {
       if (isShareSupersededError(error)) throw error
       lastError = error
-      console.warn(`[Soup] Screen codec ${codec?.mimeType ?? 'default'} could not start:`, error)
+      console.warn(`[Soup] ${label} codec ${codec?.mimeType ?? 'default'} could not start:`, error)
     }
   }
 
-  throw lastError ?? new Error('No supported screen-share video codec is available')
+  throw lastError ?? new Error(noCodecMessage)
 }
 
-function adoptScreenProducer(ctx, candidate) {
+// A pre-produce failure may mean AV1/VP9 is advertised but unavailable in this
+// Chromium process. Exhaust that codec's rung ladder first, then try the next
+// compatible codec. An explicit PREFER_SCREENSHARE_CODEC never leaves its codec.
+function produceInitialScreenWithFallback(ctx, initialCodec) {
+  const forced = forcedScreenCodec()
+  const codecs = uniqueCodecsByMime(
+    forced ? [forced] : [initialCodec, findVideoCodec('video/vp9'), findVideoCodec('video/h264')]
+  )
+  return produceWithCodecFallback(codecs, (codec) => produceScreenWithFallback(ctx, codec), {
+    label: 'Screen',
+    noCodecMessage: 'No supported screen-share video codec is available'
+  })
+}
+
+// Make a freshly produced candidate the context's active producer: stop the old
+// stats poller, apply the caller's per-type ctx state, then close the previous
+// producer WITHOUT a server CloseProducer — producing a ScreenShare/Camera
+// atomically replaces its server-side predecessor, so an explicit close of
+// previous.id would return NotFound and desync the signaling FIFO.
+function adoptShareProducer(ctx, candidate, { applyState, scalabilityMode, onStats }) {
   const previous = ctx.producer
   ctx.statsStop?.()
   ctx.statsStop = null
   ctx.producer = candidate.producer
-  ctx.screenCodec = candidate.codec
-  ctx.screenSvcRung = candidate.rung
-  ctx.cpuStrikes = 0
-  resetScreenFallbackCooldown(ctx)
+  applyState?.(ctx, candidate)
   localProducerIds.add(candidate.producer.id)
 
   if (previous && previous !== candidate.producer) {
     previous.close()
     localProducerIds.delete(previous.id)
-    // Producing ScreenShare atomically replaces its server-side predecessor;
-    // closing previous.id explicitly would return NotFound and desync the FIFO.
     ctx.onProducerReplaced?.({
       previousProducerId: previous.id,
       producerId: candidate.producer.id,
@@ -2772,13 +2703,26 @@ function adoptScreenProducer(ctx, candidate) {
     })
   }
 
-  logNegotiatedVideoCodec(candidate.producer, candidate.encoding.scalabilityMode)
+  logNegotiatedVideoCodec(candidate.producer, scalabilityMode)
   ctx.statsStop = startEncoderStatsLog(candidate.producer, (stats) => {
     // A getStats() call already in flight for the replaced producer may finish
     // after its interval is cleared. Do not let that stale software verdict skip
     // a freshly selected SVC rung.
     if (ctx.producer !== candidate.producer) return
-    screenStatsHandler(ctx, stats)
+    onStats(ctx, stats)
+  })
+}
+
+function adoptScreenProducer(ctx, candidate) {
+  adoptShareProducer(ctx, candidate, {
+    applyState: (share, adopted) => {
+      share.screenCodec = adopted.codec
+      share.screenSvcRung = adopted.rung
+      share.cpuStrikes = 0
+      resetScreenFallbackCooldown(share)
+    },
+    scalabilityMode: candidate.encoding.scalabilityMode,
+    onStats: screenStatsHandler
   })
 }
 
@@ -2878,8 +2822,7 @@ function screenStatsHandler(ctx, stats) {
 }
 
 async function downgradeScreenCodecToH264(ctx, { softwareEncoder, reason }) {
-  const current = ctx.producer?.rtpParameters?.codecs?.[0]?.mimeType ?? ''
-  if (/h264/i.test(current)) return false
+  if (isH264Codec(ctx.producer?.rtpParameters?.codecs?.[0])) return false
 
   const h264 = findVideoCodec('video/h264')
   if (!h264) return false
@@ -2894,11 +2837,7 @@ async function downgradeScreenCodecToH264(ctx, { softwareEncoder, reason }) {
   // Only an observed software encoder proves that this renderer should skip
   // AV1/VP9 next time. CPU pressure alone must not create that preference.
   if (softwareEncoder) {
-    try {
-      sessionStorage.setItem(SCREEN_H264_KEY, '1')
-    } catch {
-      // The next share will simply probe again if sessionStorage is unavailable.
-    }
+    sessionVerdict(SCREEN_H264_KEY).set('1')
   }
   console.log(`[Soup] Screen codec downgraded to H264 (${reason}) [id:${candidate.producer.id}]`)
   return true
@@ -2913,8 +2852,7 @@ async function maybeDowngradeScreenCodec(ctx, stats) {
   )
     return
 
-  const current = ctx.producer.rtpParameters?.codecs?.[0]?.mimeType ?? ''
-  if (/h264/i.test(current)) return // already on the lightest codec
+  if (isH264Codec(ctx.producer.rtpParameters?.codecs?.[0])) return // already on the lightest codec
 
   const softwareEncoder = stats.hardware === false
   if (softwareEncoder) {
@@ -3275,21 +3213,10 @@ function cameraEncodingsFor(codec, { simulcast = true } = {}) {
   return [{ maxBitrate: CAMERA_FULL_MAX_BITRATE, scalabilityMode: VIDEO_SCALABILITY_MODE }]
 }
 
-function uniqueCameraCodecs(codecs) {
-  const seen = new Set()
-  return codecs.filter((codec) => {
-    if (!codec) return false
-    const mime = screenCodecMime(codec) || '__default__'
-    if (seen.has(mime)) return false
-    seen.add(mime)
-    return true
-  })
-}
-
 function cameraCodecCandidates(initialCodec) {
   const h264 = findVideoCodec('video/h264')
   const av1 = findVideoCodec('video/av1')
-  return uniqueCameraCodecs(
+  return uniqueCodecsByMime(
     hasCameraCodecPreference() && h264 ? [h264, av1] : [initialCodec, h264, av1]
   )
 }
@@ -3340,32 +3267,14 @@ async function produceCameraWithFallback(ctx, codec) {
 }
 
 function adoptCameraProducer(ctx, candidate) {
-  const previous = ctx.producer
-  ctx.statsStop?.()
-  ctx.statsStop = null
-  ctx.producer = candidate.producer
-  ctx.cameraCodec = candidate.codec
-  ctx.cameraEncodings = candidate.encodings
-  localProducerIds.add(candidate.producer.id)
-
-  if (previous && previous !== candidate.producer) {
-    previous.close()
-    localProducerIds.delete(previous.id)
-    // Producing Camera atomically replaces its server-side predecessor; do not
-    // send a second close for the old id and race the signaling FIFO.
-    ctx.onProducerReplaced?.({
-      previousProducerId: previous.id,
-      producerId: candidate.producer.id,
-      codec: codecLabel(candidate.producer.rtpParameters)
-    })
-  }
-
-  const scalabilityMode =
-    candidate.encodings.length === 1 ? candidate.encodings[0].scalabilityMode : undefined
-  logNegotiatedVideoCodec(candidate.producer, scalabilityMode)
-  ctx.statsStop = startEncoderStatsLog(candidate.producer, (stats) => {
-    if (ctx.producer !== candidate.producer) return
-    cameraStatsHandler(ctx, stats)
+  adoptShareProducer(ctx, candidate, {
+    applyState: (share, adopted) => {
+      share.cameraCodec = adopted.codec
+      share.cameraEncodings = adopted.encodings
+    },
+    scalabilityMode:
+      candidate.encodings.length === 1 ? candidate.encodings[0].scalabilityMode : undefined,
+    onStats: cameraStatsHandler
   })
 }
 
@@ -3476,20 +3385,11 @@ export async function shareCamera(deviceId, onEncoderStats, onProducerReplaced =
 
     const cameraCodec = pickCameraCodec()
     const candidateCodecs = cameraCodecCandidates(cameraCodec)
-    let initialCandidate = null
-    let lastError = null
-    for (const codec of candidateCodecs) {
-      try {
-        initialCandidate = await produceCameraWithFallback(ctx, codec)
-        break
-      } catch (error) {
-        if (isShareSupersededError(error)) throw error
-        lastError = error
-        console.warn(`[Soup] Camera codec ${codec?.mimeType ?? 'default'} could not start:`, error)
-      }
-    }
-    if (!initialCandidate)
-      throw lastError ?? new Error('No supported camera video codec is available')
+    const initialCandidate = await produceWithCodecFallback(
+      candidateCodecs,
+      (codec) => produceCameraWithFallback(ctx, codec),
+      { label: 'Camera', noCodecMessage: 'No supported camera video codec is available' }
+    )
 
     await setDegradationPreference(initialCandidate.producer, 'maintain-framerate')
     if (!isActiveShare(ctx) || ctx.track !== track || track.readyState === 'ended') {
@@ -3699,8 +3599,6 @@ async function evaluateAudioHealth(producerId, entry) {
   // First tick for an entry only records baselines — no deltas to evaluate yet.
   if (!prev) return
 
-  const dJbDelay = cur.jitterBufferDelay - prev.jitterBufferDelay
-  const dJbEmitted = cur.jitterBufferEmittedCount - prev.jitterBufferEmittedCount
   const dPackets = cur.packetsReceived - prev.packetsReceived
   const havePlayout =
     cur.totalPlayoutDelay != null &&
@@ -3710,7 +3608,9 @@ async function evaluateAudioHealth(producerId, entry) {
   const dPlayoutDelay = havePlayout ? cur.totalPlayoutDelay - prev.totalPlayoutDelay : null
   const dPlayoutSamples = havePlayout ? cur.totalSamplesCount - prev.totalSamplesCount : null
 
-  const jbDelaySec = dJbEmitted > 0 ? dJbDelay / dJbEmitted : null
+  const jbDelayMs = jitterBufferAvgMs(cur.jitterBufferDelay, cur.jitterBufferEmittedCount, prev)
+  const jbDelaySec = jbDelayMs != null ? jbDelayMs / 1000 : null
+  const dJbEmitted = cur.jitterBufferEmittedCount - prev.jitterBufferEmittedCount
   const playoutDelaySec =
     dPlayoutSamples != null && dPlayoutSamples > 0 ? dPlayoutDelay / dPlayoutSamples : null
   // RTP still arriving but the jitter buffer isn't emitting any samples → playout
@@ -4038,10 +3938,10 @@ function setConsumerPreferredLayers(entry, { spatialLayer, temporalLayer }) {
   const layers = { spatialLayer, temporalLayer }
   entry.desiredPreferredLayers = layers
 
-  if (entry.preferredLayersRequest) return
+  if (entry.preferredLayersPending) return
   if (entry.preferredSpatial === spatialLayer && entry.preferredTemporal === temporalLayer) return
 
-  entry.preferredLayersRequest = layers
+  entry.preferredLayersPending = true
   send('SetConsumerPreferredLayers', {
     id: entry.consumerId,
     spatial_layer: spatialLayer,
@@ -4059,7 +3959,7 @@ function setConsumerPreferredLayers(entry, { spatialLayer, temporalLayer }) {
       console.warn('[Soup] SetConsumerPreferredLayers failed:', err)
     })
     .finally(() => {
-      entry.preferredLayersRequest = null
+      entry.preferredLayersPending = false
       const desired = entry.desiredPreferredLayers
       if (
         desired &&
@@ -4166,6 +4066,7 @@ export function resetMediaState() {
   stopRawStream(rawMicStream)
   setRawMicStream(null)
   lastCommittedMicSettings = null
+  lastCommittedAudioProfile = null
   // Idle the shared mic context between sessions; getMicContext() resumes it.
   if (micContext?.state === 'running') micContext.suspend().catch(() => {})
   subscribePromise = null
@@ -4372,11 +4273,11 @@ function streamDebugKbps(curBytes, curTs, prev) {
   return (8 * (curBytes - prev.bytes)) / dt
 }
 
-// Windowed jitter-buffer delay in ms: Δ accumulated delay / Δ emitted count — the
-// same average-per-emitted-sample math evaluateAudioHealth() uses. Null on the
+// Windowed jitter-buffer delay in ms: Δ accumulated delay / Δ emitted count.
+// Shared by the debug stats poller and evaluateAudioHealth(). Null on the
 // first sample or when the emitted count didn't advance this window (no fresh
 // playout), so a stalled buffer reads as null rather than a stale huge number.
-function streamDebugJitterBufferMs(curDelay, curEmitted, prev) {
+function jitterBufferAvgMs(curDelay, curEmitted, prev) {
   if (!prev) return null
   if (
     ![curDelay, curEmitted, prev.jitterBufferDelay, prev.jitterBufferEmittedCount].every(
@@ -4441,7 +4342,7 @@ function extractRecvVideoMetrics(report, prev) {
     nackCount: inbound.nackCount ?? null,
     packetsLost: inbound.packetsLost ?? null,
     jitterMs: inbound.jitter != null ? inbound.jitter * 1000 : null,
-    jitterBufferMs: streamDebugJitterBufferMs(
+    jitterBufferMs: jitterBufferAvgMs(
       inbound.jitterBufferDelay,
       inbound.jitterBufferEmittedCount,
       prev
@@ -4480,7 +4381,7 @@ function extractRecvAudioMetrics(report, prev) {
     packetsReceived: inbound.packetsReceived ?? null,
     packetsLost: inbound.packetsLost ?? null,
     jitterMs: inbound.jitter != null ? inbound.jitter * 1000 : null,
-    jitterBufferMs: streamDebugJitterBufferMs(
+    jitterBufferMs: jitterBufferAvgMs(
       inbound.jitterBufferDelay,
       inbound.jitterBufferEmittedCount,
       prev
@@ -4503,6 +4404,31 @@ function extractRecvAudioMetrics(report, prev) {
 // once per tick with { ts, streams:[...] } (see the stream shape below). Returns a
 // stop() that clears the interval and drops this call's delta state. Each call
 // owns its closure state, so independent calls never corrupt one another.
+// The send transport's aggregate bandwidth estimate. availableOutgoingBitrate is
+// exposed ONLY on the ICE candidate-pair report, which RTCRtpSender.getStats()
+// never includes (it returns just the sender-relevant subset: outbound-rtp,
+// remote-inbound-rtp, codec, media-source). So it must be read from the shared
+// send transport's transport-level getStats(). Returns null when the transport is
+// gone or hasn't produced an estimate yet.
+async function readOutgoingBitrate() {
+  const transport = producerTransport
+  if (!transport?.getStats) return null
+  try {
+    const report = await transport.getStats()
+    let anyWithBwe = null
+    for (const s of report.values()) {
+      if (s.type !== 'candidate-pair') continue
+      if (typeof s.availableOutgoingBitrate !== 'number') continue
+      anyWithBwe = s.availableOutgoingBitrate
+      // The selected pair is the authoritative one; prefer it when present.
+      if (s.nominated && s.state === 'succeeded') return s.availableOutgoingBitrate
+    }
+    return anyWithBwe
+  } catch {
+    return null
+  }
+}
+
 export function startStreamDebugStats(onSample, intervalMs = 1000) {
   // send/video only: key -> the per-producer previousByOutboundId map that
   // computeOutboundVideoSample() mutates. Never shared across streams or with the
@@ -4522,6 +4448,9 @@ export function startStreamDebugStats(onSample, intervalMs = 1000) {
       // Keys observed this tick, to prune delta state for streams that departed.
       const seenKeys = new Set()
       const jobs = []
+      // Set when a send-video row is enumerated below, so the transport-wide BWE
+      // read (only ever stamped onto send-video rows) is skipped otherwise.
+      let hasSendVideo = false
 
       // Module state is read LIVE here: producers is reassigned on reset and
       // screenShareCtx / remoteConsumers churn constantly, so a captured reference
@@ -4531,6 +4460,7 @@ export function startStreamDebugStats(onSample, intervalMs = 1000) {
         const sender = producer.rtpSender
         // Mirror startEncoderStatsLog's guard: no sender/getStats → omit the stream.
         if (!sender?.getStats) return
+        if (kind === 'video') hasSendVideo = true
         const key = `send:${producer.id}`
         seenKeys.add(key)
         const base = {
@@ -4630,7 +4560,25 @@ export function startStreamDebugStats(onSample, intervalMs = 1000) {
         pushRecv(producerId, entry)
       }
 
-      const streams = (await Promise.all(jobs)).filter((s) => s != null)
+      // Enumeration above already kicked off the per-stream getStats jobs, so
+      // starting the transport-wide BWE read now still runs it concurrently with
+      // them — just skip it entirely when no send-video row will use it.
+      const bwePromise = hasSendVideo ? readOutgoingBitrate() : Promise.resolve(null)
+
+      const [streams, availableOutgoingBitrate] = await Promise.all([
+        Promise.all(jobs).then((all) => all.filter((s) => s != null)),
+        bwePromise
+      ])
+
+      // The estimate is transport-wide, so every video send stream (they all share
+      // the one send transport) reports the same value.
+      if (availableOutgoingBitrate != null) {
+        for (const s of streams) {
+          if (s.direction === 'send' && s.kind === 'video' && s.metrics) {
+            s.metrics.availableOutgoingBitrate = availableOutgoingBitrate
+          }
+        }
+      }
 
       // Prune delta state for keys not present this tick so a reused id (returning
       // after a gap) can't diff against an ancient sample.
