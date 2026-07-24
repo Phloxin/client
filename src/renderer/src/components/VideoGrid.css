@@ -656,3 +656,146 @@
   text-overflow: ellipsis;
   pointer-events: none;
 }
+
+/* ============================================================================
+   THEATRE MODE — the viewer escapes the chat canvas to fill the window, with
+   the voice-channel participant rail (left) and mic/deafen controls (bottom-
+   left) overlaid on the stream. Portaled to <body>, so it sits over the whole
+   layout; the custom title bar stays visible/interactive above it.
+   ============================================================================ */
+
+.video-viewer.theatre {
+  position: fixed;
+  top: var(--title-bar-height, 40px);
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 950;
+  padding: 12px;
+  background: #000;
+}
+
+/* Fill edge-to-edge: the focus frame drops its rounding in theatre. */
+.video-viewer.theatre .video-focus {
+  border-radius: 0;
+}
+
+/* ── Participant rail (left) ──────────────────────────────────────────────── */
+
+/* The container passes clicks through its gaps to the video beneath; only the
+   chips themselves are interactive. */
+.theatre-rail {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  max-height: 100%;
+  padding: 16px 12px;
+  overflow-y: auto;
+  pointer-events: none;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border-light) transparent;
+}
+
+.theatre-participant {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 240px;
+  padding: 5px 12px 5px 5px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(4px);
+  color: #fff;
+}
+
+.theatre-avatar {
+  position: relative;
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: var(--font-weight-bold);
+  background: color-mix(in srgb, var(--color-primary) 30%, #000);
+  color: #fff;
+  box-shadow: 0 0 0 2px transparent;
+  transition: box-shadow 0.12s ease;
+}
+
+.theatre-avatar-img {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+/* Speaking ring — green glow, matching the sidebar's speaking indicator. */
+.theatre-participant.speaking .theatre-avatar {
+  box-shadow:
+    0 0 0 2px var(--color-success),
+    0 0 10px color-mix(in srgb, var(--color-success) 70%, transparent);
+}
+
+/* Mute/deafen badge, notched into the avatar's bottom-right. */
+.theatre-avatar-badge {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  background: #0c0c10;
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.55);
+}
+
+.theatre-avatar-badge.muted {
+  color: var(--color-danger);
+}
+
+.theatre-participant-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 0.85rem;
+}
+
+.theatre-streaming-icon {
+  flex-shrink: 0;
+  color: var(--color-primary);
+}
+
+/* ── Voice controls (bottom-left) ────────────────────────────────────────── */
+
+/* Always visible (not hover-gated) so mute/deafen stay one click away with the
+   sidebar hidden. */
+.theatre-voice-controls {
+  position: absolute;
+  left: 16px;
+  bottom: 16px;
+  z-index: 6;
+  display: flex;
+  gap: 8px;
+}
+
+.theatre-voice-controls .vid-btn {
+  width: 40px;
+  height: 40px;
+}
+
+/* Muted/deafened controls read danger, matching the sidebar dock buttons. */
+.vid-btn.danger {
+  color: var(--color-danger);
+}

@@ -213,6 +213,54 @@ function Main() {
   const [streamVolume, setStreamVolume] = useState(100)
   const [streamMuted, setStreamMuted] = useState(false)
   const [watchedStreamClientIds, setWatchedStreamClientIds] = useState(() => new Set())
+
+  // Voice self-state (mic mute / deafen). Owned here rather than in SideBar so
+  // the stream view's theatre mode can read and toggle it alongside the sidebar
+  // (which mirrors it into soup, the tray, and our broadcast status). Refs hold
+  // the latest value so the globally-bound keybind listener never reads stale
+  // state; the chime plays here since this is the single toggle path.
+  const [micMuted, setMicMutedState] = useState(false)
+  const [deafened, setDeafenedState] = useState(false)
+  const micMutedRef = useRef(false)
+  const deafenedRef = useRef(false)
+  useEffect(() => {
+    micMutedRef.current = micMuted
+  }, [micMuted])
+  useEffect(() => {
+    deafenedRef.current = deafened
+  }, [deafened])
+  const toggleMic = useCallback(() => {
+    const next = !micMutedRef.current
+    micMutedRef.current = next
+    setMicMutedState(next)
+    playUiSound(next ? 'mic-mute' : 'mic-unmute')
+  }, [])
+  const toggleDeafen = useCallback(() => {
+    const next = !deafenedRef.current
+    deafenedRef.current = next
+    setDeafenedState(next)
+    playUiSound(next ? 'sound-mute' : 'sound-unmute')
+  }, [])
+
+  // Live per-client speaking map from the joined voice channel, surfaced by the
+  // active VoiceChannel for the theatre participant rail's speaking rings.
+  const [speakingClients, setSpeakingClients] = useState({})
+  const handleSpeakingClientsChange = useCallback((map) => setSpeakingClients(map || {}), [])
+
+  // Theatre mode: the stream view fills the window with the voice-channel
+  // participant icons and mic/deafen controls overlaid. It's a property of the
+  // stream view, so the effect below clears it whenever that view goes away
+  // (chat tab, popout, or no streams left).
+  const [theatre, setTheatre] = useState(false)
+  const toggleTheatre = useCallback((next) => {
+    setTheatre((v) => (typeof next === 'boolean' ? next : !v))
+  }, [])
+  useEffect(() => {
+    if (theatre && (viewMode !== 'video' || poppedOut || allVideoStreams.length === 0)) {
+      setTheatre(false)
+    }
+  }, [theatre, viewMode, poppedOut, allVideoStreams])
+
   const [notifications, setNotifications] = useState([])
   const [dmNotifications, setDmNotifications] = useState([])
   const [readStates, setReadStates] = useState({})
@@ -2605,6 +2653,11 @@ function Main() {
             self={client}
             onStreamsUpdate={handleStreamsUpdate}
             isReconnectRecovering={isReconnectRecovering}
+            micMuted={micMuted}
+            deafened={deafened}
+            onToggleMic={toggleMic}
+            onToggleDeafen={toggleDeafen}
+            onSpeakingClientsChange={handleSpeakingClientsChange}
             onStatusChange={sendStatus}
             onSelfChannelChange={(channelId) => {
               // Joining/leaving a voice channel is a navigation — drop the
@@ -2821,6 +2874,17 @@ function Main() {
                   muted={streamMuted}
                   onVolumeChange={setStreamVolume}
                   onMutedChange={setStreamMuted}
+                  theatre={theatre}
+                  onToggleTheatre={toggleTheatre}
+                  voiceClients={clients
+                    .filter((c) => c.channel_id === selfChannelId)
+                    .sort((a, b) => (a.name || '').localeCompare(b.name || ''))}
+                  speakingClients={speakingClients}
+                  selfId={client?.id}
+                  micMuted={micMuted}
+                  deafened={deafened}
+                  onToggleMic={toggleMic}
+                  onToggleDeafen={toggleDeafen}
                 />
               )}
             </div>

@@ -46,6 +46,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     deafened,
     onStreamsUpdate,
     onSelfSpeaking,
+    onSpeakingClientsChange,
     onSelfChannelChange,
     onJoinedChange,
     onSharingChange,
@@ -136,6 +137,18 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   useEffect(() => {
     onSharingChange?.(channel.id, sharing)
   }, [sharing])
+
+  // Surface the joined channel's live speaking map up to Main (for the stream
+  // view's theatre-mode participant rail). Only the joined channel reports —
+  // inactive channels always hold an empty map — and it clears on leave so a
+  // stale speaker can't linger after we've moved on.
+  useEffect(() => {
+    if (joined) onSpeakingClientsChange?.(speakingClients)
+  }, [joined, speakingClients])
+  useEffect(() => {
+    if (!joined) return
+    return () => onSpeakingClientsChange?.({})
+  }, [joined])
 
   // Mirror this channel's stream tiles up to the sidebar/Main. Done in an effect
   // rather than inside the setVideoStreams updaters so the parent's setState
