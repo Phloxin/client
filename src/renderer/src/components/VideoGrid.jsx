@@ -613,7 +613,23 @@ function VideoGrid({
                 )}
               </div>
             )}
-            {/* Viewer count, top-right. Same hover gate as .video-controls. */}
+            {/* Stop watching, top-right corner. Available even while focused (the
+                tile-level toggle only shows in the grid/carousel). Unwatch drops
+                the consumer; unfocusing returns to the grid. */}
+            <button
+              type="button"
+              className="vid-btn focus-stop-btn"
+              title="Stop watching"
+              onClick={(e) => {
+                e.stopPropagation()
+                onSetStreamWatched?.(selectedStream.clientId, false)
+                onSelect?.(null)
+              }}
+            >
+              <IconPlayerStopFilled size={16} />
+            </button>
+            {/* Viewer count, top-right (just left of the stop button). Same hover
+                gate as .video-controls. */}
             <div className="focus-viewers" onClick={(e) => e.stopPropagation()}>
               <button
                 type="button"

@@ -421,6 +421,32 @@ function Main() {
       return next
     })
 
+  // Jump to watching a client's stream — the click target on the streaming
+  // (camera) icon next to a channel member. Mirrors VideoGrid's focusStream:
+  // start consuming the stream and focus it. The camera icon only appears for
+  // streamers in the channel we've joined, so the Streams view always has their
+  // tile to land on. When popped out, the tab is disabled and the streams live
+  // in the popout window — the watch/select still propagate there over the
+  // bridge, so just surface that window instead of switching the in-app view.
+  const handleWatchStream = (clientId) => {
+    handleSetStreamWatched(clientId, true)
+    setSelectedStreamClientId(clientId)
+    if (poppedOut) {
+      if (popoutWindowRef.current && !popoutWindowRef.current.closed) {
+        popoutWindowRef.current.focus()
+      }
+      return
+    }
+    // Bring the joined channel's stream view to the front of the canvas,
+    // clearing any peek/summary/traffic override that would otherwise cover it.
+    setPreviewChannelId(null)
+    setSummaryClientId(null)
+    setSummaryChannelId(null)
+    setShowTraffic(false)
+    setShowServerSummary(false)
+    setViewMode('video')
+  }
+
   // Replacement handoffs retain a placeholder tile (the SFU marks their
   // ProducerClosed event), so any client absent here genuinely stopped sharing.
   // Clear intent immediately: a later unrelated share must require a new click.
@@ -2612,6 +2638,7 @@ function Main() {
     onToggleVanity: handleToggleVanity,
     onOpenRolesGroups: () => setRolesGroupsOpen(true),
     onOpenStreamDebug: () => setStreamDebugOpen(true),
+    onWatchStream: handleWatchStream,
     canKickMembers,
     canBanMembers,
     canMuteMembers

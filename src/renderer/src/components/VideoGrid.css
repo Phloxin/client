@@ -346,7 +346,8 @@
 .focus-viewers {
   position: absolute;
   top: 12px;
-  right: 12px;
+  /* Sits just left of the stop button in the corner (32px btn + 8px gap). */
+  right: 52px;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
@@ -358,6 +359,28 @@
 .video-focus:hover .focus-viewers,
 .video-focus:focus-within .focus-viewers,
 .focus-viewers:has(.focus-viewers-list) {
+  opacity: 1;
+}
+
+/* Stop-watching button, top-right corner of the focused stream. Solid red so
+   it reads as the "stop" action at a glance; fades in with the rest of the
+   focus chrome. */
+/* Red stop icon on the standard translucent .vid-btn chrome (dark at rest,
+   grey on hover — same as its neighbours). Compound selector so the red icon
+   colour outranks the equal-specificity .vid-btn `color` declared later. */
+.vid-btn.focus-stop-btn {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  color: var(--color-danger);
+  opacity: 0;
+  transition:
+    opacity 0.15s ease,
+    background 0.15s ease;
+}
+
+.video-focus:hover .focus-stop-btn,
+.video-focus:focus-within .focus-stop-btn {
   opacity: 1;
 }
 

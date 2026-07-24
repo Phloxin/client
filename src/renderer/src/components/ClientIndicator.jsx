@@ -249,7 +249,8 @@ function ClientIndicator({
     setLocalMuted(false)
   }
 
-  const { onSetNickname, onSetPresence, onOpenStreamDebug, presences } = useClientActions()
+  const { onSetNickname, onSetPresence, onOpenStreamDebug, onWatchStream, presences } =
+    useClientActions()
 
   // Absent presence = offline. A status message stays visible while offline, so
   // it's appended independently of the status itself.
@@ -395,9 +396,27 @@ function ClientIndicator({
           )}
         </span>
       )}
-      {streaming && (
-        <IconVideoFilled size={15} className="client-streaming-icon" aria-label="Streaming" />
-      )}
+      {streaming &&
+        (onWatchStream ? (
+          // Click to jump to this client's stream in the Streams view. stopPropagation
+          // + clearing the row's deferred single-click keeps it off the summary/DM
+          // handlers on the enclosing row.
+          <button
+            type="button"
+            className="client-streaming-btn"
+            title={`Watch ${client.name}'s stream`}
+            onClick={(e) => {
+              e.stopPropagation()
+              clearTimeout(clickTimerRef.current)
+              onWatchStream(client.id)
+            }}
+            onDoubleClick={(e) => e.stopPropagation()}
+          >
+            <IconVideoFilled size={15} className="client-streaming-icon" aria-label="Streaming" />
+          </button>
+        ) : (
+          <IconVideoFilled size={15} className="client-streaming-icon" aria-label="Streaming" />
+        ))}
       {rosterMode && !isSelf && onOpenDm && (
         <button
           type="button"
