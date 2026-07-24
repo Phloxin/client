@@ -187,6 +187,34 @@
   background: #06070d;
 }
 
+/* Green "Watch stream" call-to-action centred in a not-yet-watched tile. */
+.stream-watch-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 15px;
+  border: none;
+  border-radius: 999px;
+  background: var(--color-success);
+  color: #fff;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    transform 0.12s ease;
+}
+
+.stream-watch-cta:hover {
+  background: color-mix(in srgb, var(--color-success) 85%, #000);
+  transform: scale(1.04);
+}
+
+/* Icon-only and compact inside the small carousel thumbnails. */
+.video-thumbnail .stream-watch-cta {
+  padding: 7px;
+}
+
 .video-thumbnail.stopped,
 .video-grid-tile.stopped {
   border-color: transparent;

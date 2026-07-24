@@ -410,7 +410,26 @@ function VideoGrid({
         tabIndex={0}
         onClick={() => focusStream(s)}
       >
-        {stopped ? (
+        {isStopped(s) ? (
+          // Not watching: a clear green call-to-action to start the stream, in
+          // place of the passive "video off" placeholder.
+          <div className="stream-stopped">
+            <button
+              type="button"
+              className="stream-watch-cta"
+              title="Watch"
+              onClick={(e) => {
+                e.stopPropagation()
+                onSetStreamWatched?.(s.clientId, true)
+              }}
+            >
+              <IconPlayerPlayFilled size={variant === 'thumbnail' ? 15 : 18} />
+              {variant !== 'thumbnail' && <span>Watch</span>}
+            </button>
+          </div>
+        ) : !s.stream ? (
+        // Watching, but the consumer hasn't produced a track yet — hold the
+        // placeholder rather than flash a blank <video>.
           <div className="stream-stopped">
             <IconVideoOff size={variant === 'thumbnail' ? 22 : 32} />
           </div>
@@ -424,14 +443,18 @@ function VideoGrid({
             }}
           />
         )}
-        <button
-          type="button"
-          className={`stream-toggle-btn ${stopped ? 'play' : 'stop'}`}
-          title={stopped ? 'Watch stream' : 'Close stream'}
-          onClick={(e) => toggleStopped(s, e)}
-        >
-          {stopped ? <IconPlayerPlayFilled size={15} /> : <IconPlayerStopFilled size={15} />}
-        </button>
+        {/* Close control — only while watching; starting a stopped stream is
+            handled by the centre call-to-action above. */}
+        {!isStopped(s) && (
+          <button
+            type="button"
+            className="stream-toggle-btn stop"
+            title="Close stream"
+            onClick={(e) => toggleStopped(s, e)}
+          >
+            <IconPlayerStopFilled size={15} />
+          </button>
+        )}
         <div className={labelClass}>{resolveLabel(s)}</div>
       </div>
     )
