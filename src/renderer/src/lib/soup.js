@@ -294,6 +294,16 @@ async function closeServerProducer(id) {
 // driven by this — a stream is listed as soon as it exists, whether or not we
 // have chosen to watch it.
 const knownVideoProducers = new Map() // producerId -> { clientId, producedType }
+// Remote screen-share audio producers we know about but only consume while the
+// user is actually watching that client's stream. Screen audio is bound to the
+// stream exactly like the video is (see setWatchedProducers) — pulling it for
+// unwatched streams wastes bandwidth on audio nobody can hear (only the focused
+// stream is ever audible, and focus implies watching).
+const knownScreenAudioProducers = new Map() // producerId -> { clientId }
+// Client ids whose streams are currently watched. Persisted so a ScreenShareAudio
+// producer that arrives *after* the watch starts is consumed on arrival, mirroring
+// how setWatchedProducers consumes ones that are already known.
+let watchedClientIds = new Set()
 
 const consumerOwners = new Map() // consumerId -> { producerId, clientId }
 const producerViewers = new Map() // producerId -> Set<clientId>
@@ -354,14 +364,24 @@ export function subscribeStreamViewers(cb) {
 // every time the carousel collapsed or the chat tab was selected.
 export function setWatchedProducers(producerIds = []) {
   const wanted = new Set(producerIds.filter((id) => knownVideoProducers.has(id)))
+  // Screen-share audio follows the same watch set as the video, but keyed by
+  // client: the audio producer is separate from the video producer, so we bind it
+  // by whose stream is watched. Persisted so a ScreenShareAudio producer arriving
+  // after the watch starts (NewProducer) gets consumed on arrival.
+  watchedClientIds = new Set([...wanted].map((id) => knownVideoProducers.get(id).clientId))
 
   // The server takes a batch, so collect the whole diff and send one message —
-  // switching away from a multi-stream view closes several at once.
+  // switching away from a multi-stream view closes several at once. A stream's
+  // video consumer and its screen-audio consumer go out in the same batch.
   const closedIds = []
   for (const [producerId, entry] of remoteConsumers) {
-    if (entry.kind !== 'video' || wanted.has(producerId)) continue
-    closedIds.push(entry.consumerId)
-    closeVideoConsumer(producerId)
+    if (entry.kind === 'video' && !wanted.has(producerId)) {
+      closedIds.push(entry.consumerId)
+      closeVideoConsumer(producerId)
+    } else if (entry.producedType === 'ScreenShareAudio' && !watchedClientIds.has(entry.clientId)) {
+      closedIds.push(entry.consumerId)
+      closeScreenAudioConsumer(producerId)
+    }
   }
   if (closedIds.length > 0) notify('CloseConsumer', { ids: closedIds })
 
@@ -375,6 +395,15 @@ export function setWatchedProducers(producerIds = []) {
       clientId,
       producedType
     ).catch((err) => console.error(`[Soup] Failed to consume producer ${producerId}:`, err))
+  }
+
+  // Consume screen audio for every watched client whose audio producer we know
+  // about and aren't already consuming.
+  for (const [producerId, { clientId }] of knownScreenAudioProducers) {
+    if (!watchedClientIds.has(clientId) || remoteConsumers.has(producerId)) continue
+    consumeProducer(producerId, 'audio', null, clientId, 'ScreenShareAudio').catch((err) =>
+      console.error(`[Soup] Failed to consume screen audio ${producerId}:`, err)
+    )
   }
 }
 
@@ -398,6 +427,21 @@ function closeVideoConsumer(producerId) {
     producerId,
     clientId: entry.clientId
   })
+}
+
+// Local half of "stop watching" for a stream's audio. Mirrors closeVideoConsumer:
+// tear down the consumer and its Web Audio graph. The server is told via the same
+// batched CloseConsumer as the video, so the RTP flow actually stops rather than
+// just being muted. The producer still exists — we simply stop pulling it.
+function closeScreenAudioConsumer(producerId) {
+  const entry = remoteConsumers.get(producerId)
+  if (!entry) return
+  remoteConsumers.delete(producerId)
+  entry.consumer.close()
+  if (entry.cleanup) {
+    entry.cleanup()
+    remoteCleanups = remoteCleanups.filter((fn) => fn !== entry.cleanup)
+  }
 }
 
 // ─── Connect to signaling server ────────────────────────────────
@@ -542,7 +586,23 @@ async function openSocket() {
       console.log(`[Soup] New producer: ${id} (${kind}, ${produced_type})`)
       activeCallbacks.onNewProducer?.({ producerId: id, kind })
 
-      // Audio must be audible the moment it exists, so it still consumes eagerly.
+      // Screen-share audio is bound to a stream: like video, it waits for an
+      // actual watch. Consuming it eagerly makes every client in the channel pull
+      // every stream's audio — audio that is inaudible anyway unless the stream is
+      // focused. Register it and consume immediately only if this client's stream
+      // is already watched; setWatchedProducers() consumes/closes it as the watch
+      // set changes.
+      if (produced_type === 'ScreenShareAudio') {
+        knownScreenAudioProducers.set(id, { clientId: client_id })
+        if (watchedClientIds.has(client_id)) {
+          consumeProducer(id, kind, null, client_id, produced_type).catch((err) =>
+            console.error(`[Soup] Failed to consume screen audio ${id}:`, err)
+          )
+        }
+        return
+      }
+
+      // Mic audio must be audible the moment it exists, so it still consumes eagerly.
       if (kind !== 'video') {
         consumeProducer(id, kind, activeCallbacks.onVideoStream, client_id, produced_type).catch(
           (err) => console.error(`[Soup] Failed to consume producer ${id}:`, err)
@@ -584,6 +644,7 @@ async function openSocket() {
       const { id, replaced = false } = message.data
       const known = knownVideoProducers.get(id)
       knownVideoProducers.delete(id)
+      knownScreenAudioProducers.delete(id)
       // A genuinely new producer with this id deserves a fresh cooldown, so drop
       // any heal backoff we were tracking for the one that just closed.
       audioHealHistory.delete(id)
@@ -4091,6 +4152,10 @@ export function resetMediaState() {
   producers = []
   localProducerIds.clear()
   knownVideoProducers.clear()
+  knownScreenAudioProducers.clear()
+  // Watch intent lives in the UI (React) and is re-asserted via setWatchedProducers
+  // once producers replay after a reconnect/channel switch, so start from empty.
+  watchedClientIds = new Set()
   // Audience is per-channel and replayed by NewConsumer on the next join, so a
   // channel switch must start from empty rather than showing the old room's.
   clearViewers()
