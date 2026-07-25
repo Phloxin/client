@@ -87,7 +87,11 @@ function Sidebar({
   deafened,
   onToggleMic,
   onToggleDeafen,
-  onSpeakingClientsChange
+  onSpeakingClientsChange,
+  // Filled with the sharing channel's imperative handle (or null when we aren't
+  // sharing) so the stream view can stop/restart our share without owning the
+  // voice-channel refs.
+  shareControlRef
 }) {
   const { keybindSettings } = useSettings()
   const [width, setWidth] = useState(() => {
@@ -110,6 +114,14 @@ function Sidebar({
   // Our own speaking state, reported up from the active VoiceChannel — drives the system tray icons
   const [selfSpeaking, setSelfSpeaking] = useState(false)
   const channelRefs = useRef({})
+
+  // The joined channel's handle, sharing or not — the stream view starts shares
+  // through it as well as stopping them. `sharing` stays in the deps so the
+  // (mutable) ref is re-read after a share begins.
+  useEffect(() => {
+    if (!shareControlRef) return
+    shareControlRef.current = channelRefs.current[joinedChannelId] ?? null
+  }, [shareControlRef, sharing, joinedChannelId])
 
   // Which list the sidebar body shows: the channel tree or a flat roster of every
   // connected client. Toggled by the segmented control in the section header.

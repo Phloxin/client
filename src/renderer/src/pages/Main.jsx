@@ -279,6 +279,16 @@ function Main() {
   //Stream Ref Hooks
   const popoutWindowRef = useRef(null)
   const popoutListenersRef = useRef(new Set())
+  // Set by the sidebar to the sharing channel's handle while we're sharing; lets
+  // the stream view stop or retune our own share.
+  const shareControlRef = useRef(null)
+  // Stable object so both windows can drive the share through the ref above.
+  const shareControl = useRef({
+    stop: () => shareControlRef.current?.stopShare(),
+    restart: (patch) => shareControlRef.current?.restartShare(patch),
+    pickSource: () => shareControlRef.current?.openSourcePicker(),
+    getOptions: () => shareControlRef.current?.getShareOptions() ?? null
+  }).current
   const allVideoStreamsRef = useRef([])
   const selectedStreamClientIdRef = useRef(null)
   const streamVolumeRef = useRef(100)
@@ -490,6 +500,7 @@ function Main() {
       setVolume: (v) => setStreamVolume(v),
       setMuted: (m) => setStreamMuted(m),
       setStreamWatched: (id, watched) => handleSetStreamWatched(id, watched),
+      shareControl,
       setFocusedAudio: (clientId, opts) => setFocusedScreenAudio(clientId, opts),
       setStreamRoles: (payload) => setVideoStreamRoles(payload),
       subscribe: (cb) => {
@@ -2685,6 +2696,7 @@ function Main() {
             onToggleMic={toggleMic}
             onToggleDeafen={toggleDeafen}
             onSpeakingClientsChange={handleSpeakingClientsChange}
+            shareControlRef={shareControlRef}
             onStatusChange={sendStatus}
             onSelfChannelChange={(channelId) => {
               // Joining/leaving a voice channel is a navigation — drop the
@@ -2897,6 +2909,8 @@ function Main() {
                   onPopout={handlePopout}
                   watchedStreamClientIds={watchedStreamClientIds}
                   onSetStreamWatched={handleSetStreamWatched}
+                  onStopSharing={shareControl.stop}
+                  shareControl={shareControl}
                   volume={streamVolume}
                   muted={streamMuted}
                   onVolumeChange={setStreamVolume}

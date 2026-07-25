@@ -49,6 +49,8 @@ function Popout() {
         onSetStreamRoles={(payload) => bridge.setStreamRoles(payload)}
         watchedStreamClientIds={data.watchedStreamClientIds}
         onSetStreamWatched={(id, watched) => bridge.setStreamWatched(id, watched)}
+        onStopSharing={bridge.shareControl?.stop}
+        shareControl={bridge.shareControl}
         streamViewers={data.streamViewers}
       />
     </div>

@@ -8,6 +8,14 @@ import { apiBase, wsBase, getServerHost } from './serverConfig'
 import { authFetch } from './auth'
 import { startScreenAudio, onScreenAudioError } from './screenAudio'
 import { detachRtpSender, recoverMicRepublish, runBeforeServerProduce } from './mediaRecovery'
+import { createMonoVoiceGraph } from './voiceAudio'
+import {
+  buildMicOpusOptions,
+  micAudioProfileKey,
+  micSettingsForPublishedStream
+} from './micAudioProfile'
+
+export { buildMicOpusOptions } from './micAudioProfile'
 
 // ─── State ──────────────────────────────────────────────────────
 let device
@@ -22,14 +30,14 @@ let shareProduceQueue = Promise.resolve()
 // ICE servers from the server's Authenticated reply; transports are only
 // created after auth, so this is always populated before use.
 let iceServers = []
-// Stop function for the active local audio processing chain (RNNoise / volume
-// gate). Tears down its AudioContext and analysis loop; null when no chain is active.
+// Stop function for the active local audio processing chain (mono fold plus
+// optional RNNoise / volume gate). Tears down its nodes and analysis loop; null
+// when no chain is active.
 let audioProcessorStop = null
-// The raw getUserMedia capture backing the current audio producer. When RNNoise
-// or the gate is on, the producer gets a different (processed) track, so this
-// handle is the only way to release the OS mic. Held until the producer it feeds
-// is torn down or its track replaced — stopping it while live would kill the
-// send in the passthrough case (where the produced track IS this raw track).
+// The raw getUserMedia capture backing the current audio producer. Voice is
+// always published through a separate mono processing track, so this handle is
+// the only way to release the OS mic. Held until the producer it feeds is torn
+// down or its track is replaced.
 let rawMicStream = null
 // The last capture configuration that was successfully committed to the live
 // audio producer(s). Republish must be able to reopen this profile after it has
@@ -871,9 +879,9 @@ async function getMicContext() {
 }
 
 // ─── Build the local audio processing chain ──────────────────────
-// Wires the captured mic stream through optional RNNoise denoising (an
-// AudioWorklet that suppresses keyboard/typing and steady background noise
-// while preserving voice) and the optional volume gate, in that order.
+// Folds the captured mic stream to mono first, then wires it through optional
+// RNNoise denoising (an AudioWorklet that suppresses keyboard/typing and steady
+// background noise while preserving voice) and the optional volume gate.
 // Returns the processed stream plus a stop() that tears the chain down. The
 // processed stream is also the source of truth for the local speaking indicator,
 // so it reflects everything that can affect what peers receive (including
@@ -881,18 +889,14 @@ async function getMicContext() {
 async function buildAudioProcessor(stream, micSettings) {
   const needsRnnoise = micSettings.useRnnoise
   const needsGate = micSettings.useVolumeGate
-  if (!needsRnnoise && !needsGate) {
-    return { stream, stop: () => {} }
-  }
 
   const audioContext = await getMicContext()
-  const source = audioContext.createMediaStreamSource(stream)
-  const destination = audioContext.createMediaStreamDestination()
+  const { source, input, destination } = createMonoVoiceGraph(audioContext, stream)
   // Every node this chain creates, so stop() can detach them from the shared
   // context (which lives on for the next publish, unlike the old
   // context-per-publish teardown).
-  const chainNodes = [source, destination]
-  let node = source
+  const chainNodes = [source, input, destination]
+  let node = input
   let rnnoiseNode = null
   let stopGateTicker = null
 
@@ -903,7 +907,7 @@ async function buildAudioProcessor(stream, micSettings) {
       node = rnnoiseNode
       console.log('[Soup] RNNoise denoiser applied')
     } catch (err) {
-      // Fall through to whatever processing remains (or the raw stream).
+      // Fall through to the mono fold and whatever processing remains.
       console.error('[Soup] RNNoise init failed, skipping:', err)
     }
   }
@@ -953,16 +957,14 @@ async function buildAudioProcessor(stream, micSettings) {
 }
 
 // Stop the currently active audio processing chain (if any), releasing its
-// AudioContext, worklet, and level-check loop.
+// nodes, worklet, and level-check loop.
 function stopAudioProcessor() {
   audioProcessorStop?.()
   audioProcessorStop = null
 }
 
 // Release a raw getUserMedia capture, closing the OS mic handle. Safe on null.
-// Only call once the capture no longer feeds a live producer — in the
-// passthrough case its track IS the produced track, so stopping it mid-use
-// would kill the outgoing audio.
+// Only call once the capture no longer feeds a live processing graph.
 function stopRawStream(stream) {
   stream?.getTracks().forEach((track) => track.stop())
 }
@@ -1320,9 +1322,8 @@ export function setTalkingWhileMutedHandler(fn) {
 // Detect speech on the RAW mic capture, which stays live while muted — muting
 // pauses the producer, disabling the *processed* track the self indicator taps,
 // not the raw stream. So when we speak while muted, this fires the warning
-// (throttled). In passthrough mode (no RNNoise/gate) the raw track IS the
-// produced track and gets disabled on mute, so detection is skipped there — an
-// accepted gap for that non-default config.
+// (throttled). The raw track remains separate from the always-mono published
+// track even when RNNoise and the gate are disabled.
 function startMutedTalkDetector(stream) {
   mutedTalkStop?.()
   mutedTalkStop = createSpeakingDetector(
@@ -1346,80 +1347,6 @@ function mapTransportParams(params) {
     iceCandidates: params.ice_candidates,
     dtlsParameters: params.dtls_parameters
   }
-}
-
-// The persisted `bitrate` field predates the current voice profiles and is kept
-// only for settings compatibility. Encoding ceilings live here so initial
-// publish and every produce-based republish use the same source of truth.
-const MIC_AUDIO_PROFILES = {
-  speech: {
-    name: 'speech',
-    maxBitrate: 96_000,
-    maxPlaybackRate: 48_000,
-    dtx: true,
-    fec: true,
-    nack: true,
-    ptime: 20
-  },
-  // The setting is introduced with the HiFi UI in Phase 3. Keeping its Opus
-  // profile here means that profile-changing republish already has one place to
-  // compare negotiated parameters when that toggle lands.
-  hifi: {
-    name: 'hifi',
-    maxBitrate: 192_000,
-    maxPlaybackRate: 48_000,
-    dtx: false,
-    fec: true,
-    nack: true,
-    ptime: 20
-  }
-}
-
-function selectedMicAudioProfile(micSettings) {
-  return micSettings?.hifiVoice === true ? MIC_AUDIO_PROFILES.hifi : MIC_AUDIO_PROFILES.speech
-}
-
-// `resolvedChannelCount` is supplied internally from the track returned by
-// getUserMedia. It intentionally wins over the ideal/requested setting: a
-// device may satisfy an ideal stereo request with a mono track.
-export function buildMicOpusOptions(micSettings) {
-  const profile = selectedMicAudioProfile(micSettings)
-  const resolvedChannelCount = Number(
-    micSettings?.resolvedChannelCount ?? micSettings?.channelCount ?? 1
-  )
-
-  return {
-    encodings: [{ maxBitrate: profile.maxBitrate }],
-    codecOptions: {
-      opusStereo: resolvedChannelCount === 2,
-      opusMaxPlaybackRate: profile.maxPlaybackRate,
-      opusMaxAverageBitrate: profile.maxBitrate,
-      opusDtx: profile.dtx,
-      opusPtime: profile.ptime,
-      opusFec: profile.fec,
-      opusNack: profile.nack
-    }
-  }
-}
-
-function micSettingsWithResolvedChannelCount(micSettings, stream) {
-  let resolvedChannelCount
-  try {
-    resolvedChannelCount = stream?.getAudioTracks?.()[0]?.getSettings?.().channelCount
-  } catch {
-    // getSettings() is best-effort; the constraint remains a sensible fallback.
-  }
-  if (!Number.isFinite(resolvedChannelCount) || resolvedChannelCount < 1) {
-    resolvedChannelCount = micSettings?.channelCount ?? 1
-  }
-  return { ...micSettings, resolvedChannelCount }
-}
-
-// The negotiated Opus profile is fully determined by the profile name
-// (speech/hifi selects every fmtp field) and whether the track is stereo, so a
-// `name:stereo` key is enough to detect a profile change on republish.
-function micAudioProfileKey(micSettings, opusOptions) {
-  return `${selectedMicAudioProfile(micSettings).name}:${opusOptions.codecOptions.opusStereo}`
 }
 
 // ─── Publish: send local audio ───────────────────────────────────
@@ -1513,7 +1440,9 @@ async function doPublish(micSettings, onStream) {
   // Separate raw-stream tap that survives muting, for the talking-while-muted warning.
   startMutedTalkDetector(stream)
 
-  const resolvedMicSettings = micSettingsWithResolvedChannelCount(micSettings, stream)
+  // Negotiate the channel layout of the track actually handed to mediasoup,
+  // not the raw capture feeding the processing graph.
+  const resolvedMicSettings = micSettingsForPublishedStream(micSettings, processedStream)
   const opusOptions = buildMicOpusOptions(resolvedMicSettings)
   const audioProfile = micAudioProfileKey(resolvedMicSettings, opusOptions)
 
@@ -1648,8 +1577,8 @@ async function doRepublish(micSettings, onStream, expectedGeneration) {
   // The raw capture backing the current producer(s). Released *before* the new
   // one opens — it has to be, or Chromium hands back the old processing config
   // and the settings the user just applied are silently ignored (see
-  // acquireMicCapture). Cost is a sub-second gap in outgoing audio in the
-  // passthrough case, where the raw track IS the produced track.
+  // acquireMicCapture). Cost is a sub-second gap in outgoing audio while the
+  // raw source feeding the published mono graph is reopened.
   const previousRawStream = rawMicStream
   const previousProcessorStop = audioProcessorStop
 
@@ -1685,7 +1614,9 @@ async function doRepublish(micSettings, onStream, expectedGeneration) {
     console.error('[Soup] republish audio processor failed:', err)
   }
 
-  const resolvedMicSettings = micSettingsWithResolvedChannelCount(micSettings, stream)
+  // Profile comparison must describe the candidate track that will be
+  // published. The raw device may be stereo, but the voice graph is mono.
+  const resolvedMicSettings = micSettingsForPublishedStream(micSettings, processedStream)
   const opusOptions = buildMicOpusOptions(resolvedMicSettings)
   const audioProfile = micAudioProfileKey(resolvedMicSettings, opusOptions)
   const newTracks = processedStream.getTracks()
