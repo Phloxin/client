@@ -24,6 +24,7 @@
 /* ── Main viewer wrapper ─────────────────────────────────────────────────── */
 
 .video-viewer {
+  position: relative; /* anchor for the control bar, which spans the whole area */
   user-select: none;
   min-width: 0;
   display: flex;
@@ -67,22 +68,6 @@
   overflow: hidden;
 }
 
-.video-grid-controls {
-  position: absolute;
-  bottom: 12px;
-  right: 12px;
-  z-index: 2;
-  display: flex;
-  gap: 8px;
-  opacity: 0;
-  transition: opacity 0.15s ease;
-}
-
-.video-grid-layout:hover .video-grid-controls,
-.video-grid-layout:focus-within .video-grid-controls {
-  opacity: 1;
-}
-
 .video-grid-tile {
   position: relative;
   /* Uniform 16:9 tiles sized in JS (see bestUniformTileWidth) so every tile is
@@ -115,14 +100,18 @@
   display: block;
 }
 
-.tile-label {
+/* Name plate, bottom-left of a tile: a solid pill rather than a scrim, so it
+   reads the same over video, a placeholder, or a bright avatar colour. */
+.tile-label,
+.thumb-label {
   position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  padding: 8px 12px;
+  left: 8px;
+  bottom: 8px;
+  max-width: calc(100% - 16px);
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
   color: #fff;
-  background: linear-gradient(to top, rgba(0, 0, 0, 0.65) 0%, transparent 100%);
+  background: rgba(0, 0, 0, 0.75);
   font-size: 0.85rem;
   white-space: nowrap;
   overflow: hidden;
@@ -132,77 +121,38 @@
 
 /* ── Per-stream watch / close toggle + stopped placeholder ──────────────── */
 
-/* Top-right toggle on each thumbnail / grid tile. Hidden until hover, but
-   always shown while stopped so the stream can be resumed. */
+/* The top-right control on each thumbnail / grid tile: one pill in two colours —
+   green to start watching, red to close a stream we're watching. The close pill
+   is hidden until hover, since it only applies to a tile already showing video. */
+.stream-watch-cta,
 .stream-toggle-btn {
   position: absolute;
   top: 6px;
   right: 6px;
   z-index: 2;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  padding: 0;
-  border: none;
-  border-radius: 8px;
-  background: rgba(0, 0, 0, 0.5);
-  cursor: pointer;
-  opacity: 0;
-  transition:
-    opacity 0.15s ease,
-    background 0.15s ease;
-}
-
-.video-thumbnail:hover .stream-toggle-btn,
-.video-grid-tile:hover .stream-toggle-btn,
-.video-thumbnail.stopped .stream-toggle-btn,
-.video-grid-tile.stopped .stream-toggle-btn {
-  opacity: 1;
-}
-
-/* Same hover treatment as the fullscreen / popout buttons (.vid-btn). */
-.stream-toggle-btn:hover {
-  background: rgba(255, 255, 255, 0.2);
-}
-
-/* Stop = danger (matches the muted mic/sound indicators); play = success. */
-.stream-toggle-btn.stop {
-  color: var(--color-danger);
-}
-
-.stream-toggle-btn.play {
-  color: var(--color-success);
-}
-
-/* Placeholder shown in place of the video when a stream is closed. */
-.stream-stopped {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--color-text-muted);
-  background: #06070d;
-}
-
-/* Green "Watch stream" call-to-action centred in a not-yet-watched tile. */
-.stream-watch-cta {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  padding: 8px 15px;
+  gap: 6px;
+  padding: 6px 12px;
   border: none;
   border-radius: 999px;
-  background: var(--color-success);
   color: #fff;
-  font-size: 0.85rem;
+  font-size: 0.8rem;
   font-weight: 600;
   cursor: pointer;
   transition:
     background 0.15s ease,
+    opacity 0.15s ease,
     transform 0.12s ease;
+}
+
+.stream-watch-cta {
+  background: var(--color-success);
+}
+
+.stream-toggle-btn {
+  background: var(--color-danger);
+  opacity: 0;
 }
 
 .stream-watch-cta:hover {
@@ -210,14 +160,69 @@
   transform: scale(1.04);
 }
 
+.stream-toggle-btn:hover {
+  background: color-mix(in srgb, var(--color-danger) 85%, #000);
+  transform: scale(1.04);
+}
+
+.video-thumbnail:hover .stream-toggle-btn,
+.video-grid-tile:hover .stream-toggle-btn {
+  opacity: 1;
+}
+
 /* Icon-only and compact inside the small carousel thumbnails. */
-.video-thumbnail .stream-watch-cta {
+.video-thumbnail .stream-watch-cta,
+.video-thumbnail .stream-toggle-btn {
   padding: 7px;
 }
 
+/* Placeholder shown in place of the video when a stream is closed. The flat
+   colour is sampled from the sharer's avatar inline (see StreamPlaceholder);
+   this is the fallback for the initial-letter avatar, tinted to match it. */
+.stream-stopped {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-muted);
+  background: color-mix(in srgb, var(--color-primary) 22%, var(--color-background-mute));
+}
+
+/* Same circle as the theatre rail's participant avatars, sized up for a tile. */
+.stream-placeholder-avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 84px;
+  height: 84px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--color-primary) 30%, #000);
+  color: #fff;
+  font-size: 34px;
+  font-weight: var(--font-weight-bold);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+}
+
+.stream-placeholder-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.video-thumbnail .stream-placeholder-avatar {
+  width: 46px;
+  height: 46px;
+  font-size: 19px;
+}
+
+/* The placeholder fills the padding box, so the tile's own black would show
+   through the (transparent) border as a dark ring and swallow the hover
+   outline. Drop it and let the border sit on the page background instead. */
 .video-thumbnail.stopped,
 .video-grid-tile.stopped {
-  border-color: transparent;
+  background: transparent;
 }
 
 /* ── Focus (large) view ──────────────────────────────────────────────────── */
@@ -275,8 +280,7 @@
   cursor: grabbing;
 }
 
-.video-focus:hover .zoom-minimap,
-.video-focus:focus-within .zoom-minimap {
+.video-viewer.chrome-shown .zoom-minimap {
   opacity: 1;
 }
 
@@ -314,9 +318,8 @@
   transition: opacity 0.15s ease;
 }
 
-/* Fade in on hover, matching the volume/fullscreen controls and viewer count. */
-.video-focus:hover .focus-label,
-.video-focus:focus-within .focus-label {
+/* Fades with the control bar and viewer count — all one piece of chrome. */
+.video-viewer.chrome-shown .focus-label {
   opacity: 1;
 }
 
@@ -349,21 +352,48 @@
   color: #fbbf24;
 }
 
-/* ── Hover controls (fullscreen / collapse carousel) ────────────────────── */
+/* ── Control bar (anchored to the viewer, not the video frame) ───────────── */
 
-.video-controls {
+/* Spans the viewer's bottom edge: centre dock in the middle cell, volume and
+   window controls at the right. Fades as one with the rest of the chrome. */
+.viewer-controls {
   position: absolute;
-  bottom: 12px;
-  right: 12px;
-  display: flex;
-  gap: 8px;
+  left: var(--spacing-lg);
+  right: var(--spacing-lg);
+  bottom: var(--spacing-lg);
+  z-index: 4;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: end;
+  /* Click-through only while hidden; once shown the whole strip is chrome, so
+     the gaps between clusters must not fall through to the video underneath. */
+  pointer-events: none;
   opacity: 0;
   transition: opacity 0.15s ease;
 }
 
-.video-focus:hover .video-controls,
-.video-focus:focus-within .video-controls {
+/* Scrim behind the bar so the controls read against a bright stream. Stretches
+   to the viewer's edges and fades upward; z-index -1 keeps it under the controls
+   but inside .viewer-controls, so it fades in and out with them. */
+.viewer-controls::before {
+  content: '';
+  position: absolute;
+  inset: -80px calc(-1 * var(--spacing-lg)) calc(-1 * var(--spacing-lg));
+  z-index: -1;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.65), transparent);
+  pointer-events: none;
+}
+
+.video-viewer.chrome-shown .viewer-controls {
   opacity: 1;
+  pointer-events: auto;
+}
+
+.video-controls {
+  grid-column: 3;
+  justify-self: end;
+  display: flex;
+  gap: 8px;
 }
 
 /* ── Viewer count (top-right of the focused frame) ───────────────────────── */
@@ -374,8 +404,7 @@
 .focus-viewers {
   position: absolute;
   top: 12px;
-  /* Sits just left of the stop button in the corner (32px btn + 8px gap). */
-  right: 52px;
+  right: 12px;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
@@ -384,31 +413,7 @@
   transition: opacity 0.15s ease;
 }
 
-.video-focus:hover .focus-viewers,
-.video-focus:focus-within .focus-viewers,
-.focus-viewers:has(.focus-viewers-list) {
-  opacity: 1;
-}
-
-/* Stop-watching button, top-right corner of the focused stream. Solid red so
-   it reads as the "stop" action at a glance; fades in with the rest of the
-   focus chrome. */
-/* Red stop icon on the standard translucent .vid-btn chrome (dark at rest,
-   grey on hover — same as its neighbours). Compound selector so the red icon
-   colour outranks the equal-specificity .vid-btn `color` declared later. */
-.vid-btn.focus-stop-btn {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  color: var(--color-danger);
-  opacity: 0;
-  transition:
-    opacity 0.15s ease,
-    background 0.15s ease;
-}
-
-.video-focus:hover .focus-stop-btn,
-.video-focus:focus-within .focus-stop-btn {
+.video-viewer.chrome-shown .focus-viewers {
   opacity: 1;
 }
 
@@ -470,9 +475,10 @@
 
 /* ── Carousel show/hide toggle (centered along the bottom edge) ──────────── */
 
+/* Centred just above the control bar, wearing the same panel treatment. */
 .carousel-toggle {
   position: absolute;
-  bottom: 12px;
+  bottom: calc(100% + 8px);
   left: 50%;
   transform: translateX(-50%);
   display: flex;
@@ -481,24 +487,154 @@
   width: 48px;
   height: 24px;
   padding: 0;
-  border: none;
-  border-radius: 8px;
-  background: rgba(0, 0, 0, 0.5);
-  color: #fff;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--gradient-footer);
+  box-shadow: var(--shadow-2);
+  color: var(--color-text-secondary);
   cursor: pointer;
-  opacity: 0;
   transition:
     background 0.15s ease,
-    opacity 0.15s ease;
+    color 0.15s ease;
 }
 
 .carousel-toggle:hover {
-  background: rgba(255, 255, 255, 0.2);
+  background: var(--color-surface);
+  color: var(--color-text);
 }
 
-.video-focus:hover .carousel-toggle,
-.video-focus:focus-within .carousel-toggle {
-  opacity: 1;
+/* ── Centred stream controls (middle cell of the control bar) ────────────── */
+
+/* A floating dock, same panel treatment as the sidebar's .control-dock. */
+.focus-stream-controls {
+  position: relative; /* anchors the capture-settings popover */
+  grid-column: 2;
+  justify-self: center;
+  display: flex;
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+  background: var(--gradient-footer);
+  box-shadow: var(--shadow-2);
+}
+
+/* Nothing to show (popout, no voice controls) — don't float an empty panel. */
+.focus-stream-controls:empty {
+  display: none;
+}
+
+/* Buttons sit on the panel, so they drop .vid-btn's own dark chrome and take
+   the sidebar's .control-btn treatment instead. Compound selectors so these
+   outrank the equal-specificity .vid-btn rules declared later. */
+.focus-stream-controls .vid-btn {
+  width: 46px;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+}
+
+.focus-stream-controls .vid-btn:hover {
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.focus-stream-controls .vid-btn.success,
+.focus-stream-controls .vid-btn.danger {
+  background: color-mix(in srgb, var(--tint) 16%, transparent);
+  color: var(--tint);
+}
+
+.focus-stream-controls .vid-btn.success:hover,
+.focus-stream-controls .vid-btn.danger:hover {
+  background: color-mix(in srgb, var(--tint) 26%, transparent);
+  color: var(--tint);
+}
+
+.focus-stream-controls .vid-btn.success {
+  --tint: var(--color-success);
+}
+
+.focus-stream-controls .vid-btn.danger {
+  --tint: var(--color-danger);
+}
+
+/* Split button: the stop action plus a narrow arrow that opens the capture
+   settings. The halves share one tinted block, so their inner corners square
+   off and a hairline separates them. */
+.vid-split {
+  display: flex;
+  gap: 1px;
+}
+
+.vid-split:has(.vid-split-more) .vid-btn:first-child {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.focus-stream-controls .vid-btn.vid-split-more {
+  width: 22px;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+/* Capture settings popover. Anchored to the controls dock rather than the split
+   button it hangs off (hence no positioning on .vid-split), so it sits centred
+   above the whole panel. */
+.stream-settings-menu {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 250px;
+  padding: 10px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+  background: var(--gradient-footer);
+  box-shadow: var(--shadow-2);
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+}
+
+/* In focus view the carousel toggle sits directly above the dock — clear it. */
+.viewer-controls:has(.carousel-toggle) .stream-settings-menu {
+  bottom: calc(100% + 42px);
+}
+
+.stream-settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  white-space: nowrap;
+}
+
+.stream-settings-action {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.stream-settings-action:hover {
+  background: var(--color-surface);
+}
+
+.stream-settings-note {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-xs);
 }
 
 /* ── Volume control ──────────────────────────────────────────────────────── */
@@ -626,6 +762,9 @@
   overflow-y: hidden;
   flex-shrink: 0; /* never squish the carousel row */
   margin-top: 12px;
+  /* Ride above the control bar (46px) and its carousel toggle (24px + gaps),
+     which float over this same bottom edge. */
+  margin-bottom: 86px;
   max-height: 140px; /* room for 200x112.5 thumbnails + scrollbar */
   padding-bottom: 4px; /* room for scrollbar without clipping thumbnails */
   scrollbar-width: thin;
@@ -693,19 +832,12 @@
   display: block;
 }
 
+/* Same plate, scaled down for the carousel's small thumbnails. */
 .thumb-label {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  padding: 8px 10px;
-  color: #fff;
-  background: linear-gradient(to top, rgba(0, 0, 0, 0.65) 0%, transparent 100%);
+  left: 6px;
+  bottom: 6px;
+  max-width: calc(100% - 12px);
   font-size: 0.78rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  pointer-events: none;
 }
 
 /* ============================================================================
@@ -724,6 +856,9 @@
   z-index: 950;
   padding: 12px;
   background: #000;
+  /* The insets define the box; inheriting the base 100% would measure against
+     the viewport and hang the bottom controls off-screen by the title bar. */
+  height: auto;
 }
 
 /* Fill edge-to-edge: the focus frame drops its rounding in theatre. */

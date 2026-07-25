@@ -18,6 +18,8 @@ import { cdnUrl } from '../lib/serverConfig'
 import { useMenuPosition } from '../lib/menuPosition'
 import ClientIndicator from './ClientIndicator'
 import ScreenSourcePicker from './ScreenSourcePicker'
+import { getScreenAudioCapabilities } from '../lib/screenAudio'
+import { audioOptionsFor } from '../lib/captureOptions'
 import './VoiceChannel.css'
 import {
   IconDiamondsFilled,
@@ -111,6 +113,11 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   // can arrive after a successor share starts, so they must never call the
   // singleton/global stop path or clear the successor's tile.
   const activeShareRef = useRef(null)
+  // What the live share was started with, so the stream view's quick menu can
+  // restart it with one option changed; lastAudioRef remembers the audio setup
+  // to restore when that menu toggles audio back on.
+  const lastShareRef = useRef(null)
+  const lastAudioRef = useRef(null)
   const menuRef = useRef(null)
   const menuStyle = useMenuPosition(menuRef, menuPos)
   // Latest mic settings, read by the (re)publish path so a background reconnect
@@ -447,6 +454,13 @@ const VoiceChannel = forwardRef(function VoiceChannel(
 
   const startShareWithSource = async (sourceId, options = {}) => {
     setShowSourcePicker(false)
+    // Re-picking a source (or changing quality) while live replaces the current
+    // share — stop it first so we never publish two at once.
+    await stopCurrentShare()
+    lastShareRef.current = { sourceId, options }
+    if (options.audioMode && options.audioMode !== 'none') {
+      lastAudioRef.current = { audioMode: options.audioMode, audioTargets: options.audioTargets }
+    }
     try {
       let screen
       // Bound to the self tile once we know its consumerId (screen.id below).
@@ -533,23 +547,64 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     }
   }
 
+  const stopCurrentShare = async () => {
+    if (!activeShareRef.current && !sharing) return
+    const activeShare = activeShareRef.current
+    activeShareRef.current = null
+    if (activeShare?.stop) await activeShare.stop()
+    else await stopScreenShare()
+    setSharing(false)
+    clearSelfStream(activeShare?.id ?? null)
+  }
+
   const handleScreenShare = async () => {
-    if (sharing) {
-      const activeShare = activeShareRef.current
-      activeShareRef.current = null
-      if (activeShare?.stop) await activeShare.stop()
-      else await stopScreenShare()
-      setSharing(false)
-      clearSelfStream(activeShare?.id ?? null)
-    } else {
-      // Let the user choose a screen/window before capturing
-      setShowSourcePicker(true)
+    if (sharing) await stopCurrentShare()
+    // Let the user choose a screen/window before capturing
+    else setShowSourcePicker(true)
+  }
+
+  // Restart the live share with tweaked capture options (fps/resolution/audio).
+  // Nothing in the publish path can be retuned in place, so this is a stop and
+  // re-start of the same source; on Wayland the OS portal asks again.
+  const restartShare = async (patch = {}) => {
+    const last = lastShareRef.current
+    if (!last) return
+    const { audio, ...rest } = patch
+    const options = { ...last.options, ...rest }
+    if (audio != null) {
+      const next = audio
+        ? await audioOnOptions(last.sourceId)
+        : { audioMode: 'none', audioTargets: null }
+      // No usable audio mode without more input — let the picker collect it.
+      if (audio && !next.audioMode) {
+        setShowSourcePicker(true)
+        return
+      }
+      Object.assign(options, next)
     }
+    await startShareWithSource(last.sourceId, options)
+  }
+
+  // The audio settings to restore when the quick menu turns audio back on: what
+  // we last shared with, else the default the picker would have chosen.
+  const audioOnOptions = async (sourceId) => {
+    if (lastAudioRef.current) return lastAudioRef.current
+    const caps = await getScreenAudioCapabilities().catch(() => null)
+    const tab = sourceId?.startsWith('window') ? 'windows' : 'screens'
+    const mode = audioOptionsFor(tab, caps).find((o) => o.value !== 'none')?.value
+    // Per-app audio needs a chosen app list, which only the picker can collect
+    // (Windows infers it from the shared window itself).
+    if (!mode || (mode === 'app' && caps?.platform !== 'win32')) return { audioMode: null }
+    return { audioMode: mode, audioTargets: mode === 'app' ? [sourceId] : null }
   }
 
   useImperativeHandle(ref, () => ({
     leave: handleLeave,
     toggleShare: handleScreenShare,
+    stopShare: stopCurrentShare,
+    restartShare,
+    openSourcePicker: () => setShowSourcePicker(true),
+    getShareOptions: () => lastShareRef.current?.options ?? null,
     switchTo,
     adopt,
     deactivate
