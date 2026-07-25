@@ -163,9 +163,28 @@ function Main() {
   // roster no longer lists, and `clients` is replaced wholesale by Ready.
   const [presences, setPresences] = useState({})
   // Server-traffic log (newest first): members crossing the online/offline
-  // boundary while we're lurking. Fed by PresenceUpdate below, cleared on
+  // boundary while we're lurking, plus moderation events (kick/ban). Fed by
+  // PresenceUpdate / ClientKicked / ClientBanned below, cleared on
   // connect/disconnect. Rendered by ServerTraffic when not in a voice channel.
   const [traffic, setTraffic] = useState([])
+  // Append one entry. `action` is the rendered verb; `online` drives the presence
+  // dot, or null for non-member subjects (channels) which render as `#` instead.
+  const logTraffic = useCallback((subjectId, name, action, online) => {
+    const now = Date.now()
+    setTraffic((prev) =>
+      [
+        {
+          id: `${subjectId}-${now}`,
+          clientId: online === null ? null : subjectId,
+          name,
+          action,
+          online,
+          ts: now
+        },
+        ...prev
+      ].slice(0, MAX_LOG_ENTRIES)
+    )
+  }, [])
   const [feed, setFeed] = useState([])
   const [viewMode, setViewMode] = useState('log') // 'log' or 'video'
   const [servers, setServers] = useState([])
@@ -1809,19 +1828,7 @@ function Main() {
         const isOffline = statusOf(data) === 'offline'
         if (wasOffline !== isOffline && data.client_id !== selfIdRef.current) {
           const name = clientsRef.current.find((c) => c.id === data.client_id)?.name || 'Someone'
-          const now = Date.now()
-          setTraffic((prev) =>
-            [
-              {
-                id: `${data.client_id}-${now}`,
-                clientId: data.client_id,
-                name,
-                online: !isOffline,
-                ts: now
-              },
-              ...prev
-            ].slice(0, MAX_LOG_ENTRIES)
-          )
+          logTraffic(data.client_id, name, isOffline ? 'went offline' : 'came online', !isOffline)
         }
         // Our own away status toggling (set from the status menu, echoed back).
         if (data.client_id === selfIdRef.current) {
@@ -2082,6 +2089,10 @@ function Main() {
         }
       } else if (ev === 'ChannelCreated' || ev === 'ChannelUpdated') {
         queueChannelUpsert(data)
+        // DMs are private, so only server channels reach the traffic log.
+        if (ev === 'ChannelCreated' && data.type !== 'dm') {
+          logTraffic(data.id, data.name || 'A channel', 'was created', null)
+        }
         // Someone else edited the channel we're currently in. Our own edits play
         // the plain "channel edited" cue and mark the echo (consumed here) so this
         // stays silent for them.
@@ -2095,6 +2106,12 @@ function Main() {
       } else if (ev === 'ChannelDeleted') {
         // Tolerate either a full channel object or a bare id.
         const removedId = data !== null && typeof data === 'object' ? data.id : data
+        // Name only travels on the full-object form, so fall back to the roster
+        // copy (still present — this runs before the filter below).
+        const removed = channelsRef.current.find((ch) => ch.id === removedId)
+        if (removed?.type !== 'dm') {
+          logTraffic(removedId, removed?.name || data?.name || 'A channel', 'was deleted', null)
+        }
         setChannels((prev) => prev.filter((ch) => ch.id !== removedId))
       } else if (ev === 'TypingStarted') {
         // { channel_id, timestamp, client } — refresh this client's typing entry
@@ -2128,6 +2145,9 @@ function Main() {
         ) {
           playUiSound('neutral_kicked_server_currentchannel')
         }
+        if (data.client?.id !== selfIdRef.current) {
+          logTraffic(data.client?.id, data.client?.name || 'Someone', 'was kicked', false)
+        }
       } else if (ev === 'ClientBanned') {
         // { client, duration_seconds, reason }. Drop from the roster and record
         // the ban so they surface in the Users tab (where they can be unbanned).
@@ -2137,6 +2157,9 @@ function Main() {
           data.client?.channel_id === selfChannelIdRef.current
         ) {
           playUiSound('neutral_banned_server_currentchannel')
+        }
+        if (data.client?.id !== selfIdRef.current) {
+          logTraffic(data.client.id, data.client.name || 'Someone', 'was banned', false)
         }
         setClients((prev) => prev.filter((c) => c.id !== data.client.id))
         setBans((prev) =>
@@ -2308,7 +2331,7 @@ function Main() {
       if (ws) ws.close()
       eventsWsRef.current = null
     }
-  }, [token, loadChannelHistory, handleDisconnect])
+  }, [token, loadChannelHistory, handleDisconnect, logTraffic])
 
   // Drop typing entries as they expire. Re-scheduled to the soonest expiry each
   // time the set changes (no always-on interval); a fresh TypingStarted bumps an
