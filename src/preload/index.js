@@ -18,10 +18,19 @@ function preferredScreenshareCodec() {
   return raw === 'H264' || raw === 'AV1' || raw === 'VP9' ? raw : null
 }
 
+// Dev-only escape hatch: launch with PYLON_INSECURE=1 to reach a server over
+// plain http/ws instead of https/wss (a self-hosted test box without TLS). The
+// import.meta.env.DEV guard is a compile-time constant, so this whole path is
+// stripped from packaged builds — production can never be coerced into an
+// insecure connection. Consumed by apiBase/wsBase in
+// renderer/src/lib/serverConfig.js.
+const insecureConnections = import.meta.env.DEV && process.env.PYLON_INSECURE === '1'
+
 // Custom APIs for renderer
 const api = {
   platform: process.platform,
   preferScreenshareCodec: preferredScreenshareCodec(),
+  insecureConnections,
   screenAudio: {
     getCapabilities: () => ipcRenderer.invoke('audiocapture:get-capabilities'),
     listApps: () => ipcRenderer.invoke('audiocapture:list-apps'),

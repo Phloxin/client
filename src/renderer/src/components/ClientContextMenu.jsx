@@ -18,7 +18,8 @@ import {
   IconPlus,
   IconPencil,
   IconMessage2,
-  IconX
+  IconX,
+  IconActivity
 } from '@tabler/icons-react'
 import { STATUSES, STATUS_LABELS, STATUS_MESSAGE_MAX, statusOf } from '../lib/presence'
 import { fileToAvatarDataUrl } from '../lib/avatarFile'
@@ -40,6 +41,10 @@ function capabilities(client, o) {
   const canSetAvatar = isSelf && !!o.onSetAvatar
   const canSetNickname = isSelf && !!o.onSetNickname
   const canSetPresence = isSelf && !!o.onSetPresence
+  // Stream Debug is a self-only diagnostics view (our own outbound/inbound
+  // stats), so it's gated the same way as avatar/nickname — offered in both
+  // channel view and rosterMode since it's not a voice-participant action.
+  const canStreamDebug = isSelf && !!o.onOpenStreamDebug
   // Moderation on another user, permission-gated by our own role permissions
   // (the server enforces them too). Kick only boots a live session, so it's
   // channel-view only; ban + roles also work from the Users roster.
@@ -75,6 +80,7 @@ function capabilities(client, o) {
       canSetAvatar ||
       canSetNickname ||
       canSetPresence ||
+      canStreamDebug ||
       canAssignGroup ||
       canModerate
   return {
@@ -83,6 +89,7 @@ function capabilities(client, o) {
     canSetAvatar,
     canSetNickname,
     canSetPresence,
+    canStreamDebug,
     canKick,
     canKickFromChannel,
     canBan,
@@ -414,6 +421,19 @@ function ClientContextMenu({ client, pos, onClose, opts, caps }) {
             </>
           )}
           {opts.isSelf && caps.canAssignGroup && groupPicker}
+          {caps.canStreamDebug && (
+            <button
+              type="button"
+              className="client-context-menu-item"
+              onClick={() => {
+                opts.onOpenStreamDebug?.()
+                onClose()
+              }}
+            >
+              <IconActivity size={16} />
+                Connection Info
+            </button>
+          )}
           {caps.canVolume && (
             <div className="client-context-menu-row">
               <button

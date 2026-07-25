@@ -477,6 +477,9 @@ html[data-transparency='true'] .control-dock {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  /* Row is line-height:1; without room here overflow:hidden crops descenders
+     (g, y, p). Centered by the row's align-items:center. */
+  line-height: 1.4;
 }
 
 .client-tags {

@@ -17,6 +17,7 @@ import TitleBar from '../components/TitleBar'
 import ConnectionOverlay from '../components/ConnectionOverlay'
 import Toast from '../components/Toast'
 import UpdatePrompt from '../components/UpdatePrompt'
+import StreamDebugPanel from '../components/StreamDebugPanel'
 import RolesGroupsMenu from '../components/RolesGroupsMenu'
 import IdleAnimation from '../components/IdleAnimation'
 import Settings from './Settings'
@@ -41,8 +42,7 @@ import {
   IconUser,
   IconUsersGroup,
   IconX,
-  IconVolume,
-  IconActivity
+  IconVolume
 } from '@tabler/icons-react'
 
 const APP_TITLE = 'Pylon'
@@ -176,6 +176,9 @@ function Main() {
   const [rolesGroupsOpen, setRolesGroupsOpen] = useState(false)
   const [bans, setBans] = useState([])
   const [connectedServer, setConnectedServer] = useState(null)
+  // The server's own name (GET /server), distinct from the list entry's local
+  // nickname. Shown in the title bar and lurking header once connected.
+  const [serverName, setServerName] = useState(null)
   const [connectionStatus, setConnectionStatus] = useState('connected')
   // Transient toast banner: { message, variant } or null when hidden. 'error'
   // reports partial failures (bad requests, permission denials, failed fetches);
@@ -210,6 +213,54 @@ function Main() {
   const [streamVolume, setStreamVolume] = useState(100)
   const [streamMuted, setStreamMuted] = useState(false)
   const [watchedStreamClientIds, setWatchedStreamClientIds] = useState(() => new Set())
+
+  // Voice self-state (mic mute / deafen). Owned here rather than in SideBar so
+  // the stream view's theatre mode can read and toggle it alongside the sidebar
+  // (which mirrors it into soup, the tray, and our broadcast status). Refs hold
+  // the latest value so the globally-bound keybind listener never reads stale
+  // state; the chime plays here since this is the single toggle path.
+  const [micMuted, setMicMutedState] = useState(false)
+  const [deafened, setDeafenedState] = useState(false)
+  const micMutedRef = useRef(false)
+  const deafenedRef = useRef(false)
+  useEffect(() => {
+    micMutedRef.current = micMuted
+  }, [micMuted])
+  useEffect(() => {
+    deafenedRef.current = deafened
+  }, [deafened])
+  const toggleMic = useCallback(() => {
+    const next = !micMutedRef.current
+    micMutedRef.current = next
+    setMicMutedState(next)
+    playUiSound(next ? 'mic-mute' : 'mic-unmute')
+  }, [])
+  const toggleDeafen = useCallback(() => {
+    const next = !deafenedRef.current
+    deafenedRef.current = next
+    setDeafenedState(next)
+    playUiSound(next ? 'sound-mute' : 'sound-unmute')
+  }, [])
+
+  // Live per-client speaking map from the joined voice channel, surfaced by the
+  // active VoiceChannel for the theatre participant rail's speaking rings.
+  const [speakingClients, setSpeakingClients] = useState({})
+  const handleSpeakingClientsChange = useCallback((map) => setSpeakingClients(map || {}), [])
+
+  // Theatre mode: the stream view fills the window with the voice-channel
+  // participant icons and mic/deafen controls overlaid. It's a property of the
+  // stream view, so the effect below clears it whenever that view goes away
+  // (chat tab, popout, or no streams left).
+  const [theatre, setTheatre] = useState(false)
+  const toggleTheatre = useCallback((next) => {
+    setTheatre((v) => (typeof next === 'boolean' ? next : !v))
+  }, [])
+  useEffect(() => {
+    if (theatre && (viewMode !== 'video' || poppedOut || allVideoStreams.length === 0)) {
+      setTheatre(false)
+    }
+  }, [theatre, viewMode, poppedOut, allVideoStreams])
+
   const [notifications, setNotifications] = useState([])
   const [dmNotifications, setDmNotifications] = useState([])
   const [readStates, setReadStates] = useState({})
@@ -369,6 +420,32 @@ function Main() {
       else next.delete(clientId)
       return next
     })
+
+  // Jump to watching a client's stream — the click target on the streaming
+  // (camera) icon next to a channel member. Mirrors VideoGrid's focusStream:
+  // start consuming the stream and focus it. The camera icon only appears for
+  // streamers in the channel we've joined, so the Streams view always has their
+  // tile to land on. When popped out, the tab is disabled and the streams live
+  // in the popout window — the watch/select still propagate there over the
+  // bridge, so just surface that window instead of switching the in-app view.
+  const handleWatchStream = (clientId) => {
+    handleSetStreamWatched(clientId, true)
+    setSelectedStreamClientId(clientId)
+    if (poppedOut) {
+      if (popoutWindowRef.current && !popoutWindowRef.current.closed) {
+        popoutWindowRef.current.focus()
+      }
+      return
+    }
+    // Bring the joined channel's stream view to the front of the canvas,
+    // clearing any peek/summary/traffic override that would otherwise cover it.
+    setPreviewChannelId(null)
+    setSummaryClientId(null)
+    setSummaryChannelId(null)
+    setShowTraffic(false)
+    setShowServerSummary(false)
+    setViewMode('video')
+  }
 
   // Replacement handoffs retain a placeholder tile (the SFU marks their
   // ProducerClosed event), so any client absent here genuinely stopped sharing.
@@ -1426,8 +1503,18 @@ function Main() {
       }
 
       if (result.response.ok && data.access_token) {
+        // Fetch the server's real name before revealing the connected UI, so the
+        // header/title show it from the first render instead of flashing the
+        // nickname first. Uses the fresh access token directly (auth state isn't
+        // applied yet). Falls back to the nickname if this fails.
+        const info = await httpFetch(`${apiBase()}/server`, {
+          headers: { Authorization: `Bearer ${data.access_token}` }
+        })
+          .then((res) => (res.ok ? res.json() : null))
+          .catch(() => null)
         applyAuthResponse(data)
         setConnectedServer(server)
+        setServerName(info?.name ?? null)
         playUiSound('connected')
       } else {
         setServerHost(null)
@@ -1444,29 +1531,33 @@ function Main() {
   // Single source of truth for dropping back to the disconnected state (the
   // reconnect paths call it too on a rejected token, so none leave half-cleared
   // state). Clearing the token tears down the events socket via effect cleanup.
-  const handleDisconnect = useCallback((opts) => {
-    if (popoutWindowRef.current && !popoutWindowRef.current.closed) {
-      popoutWindowRef.current.close()
-    }
-    popoutWindowRef.current = null
-    setPoppedOut(false)
-    disconnectVoice()
-    clearAuth()
-    setChannels([])
-    setClients([])
-    setFeed([])
-    setAllVideoStreams([])
-    setSelectedStreamClientId(null)
-    setWatchedStreamClientIds(new Set())
-    setConnectedServer(null)
-    setServerHost(null)
-    setPreviewChannelId(null)
-    setSummaryClientId(null)
-    setReadStates({})
-    setConnectionStatus('connected')
-    // Kick/ban paths play their own specific cue and pass skipSound.
-    if (!opts?.skipSound) playUiSound('disconnected')
-  }, [clearAuth])
+  const handleDisconnect = useCallback(
+    (opts) => {
+      if (popoutWindowRef.current && !popoutWindowRef.current.closed) {
+        popoutWindowRef.current.close()
+      }
+      popoutWindowRef.current = null
+      setPoppedOut(false)
+      disconnectVoice()
+      clearAuth()
+      setChannels([])
+      setClients([])
+      setFeed([])
+      setAllVideoStreams([])
+      setSelectedStreamClientId(null)
+      setWatchedStreamClientIds(new Set())
+      setConnectedServer(null)
+      setServerName(null)
+      setServerHost(null)
+      setPreviewChannelId(null)
+      setSummaryClientId(null)
+      setReadStates({})
+      setConnectionStatus('connected')
+      // Kick/ban paths play their own specific cue and pass skipSound.
+      if (!opts?.skipSound) playUiSound('disconnected')
+    },
+    [clearAuth]
+  )
 
   // A refresh the server rejects means the device session is revoked or
   // expired — drop to the disconnected state and require a fresh login.
@@ -1710,7 +1801,13 @@ function Main() {
           const now = Date.now()
           setTraffic((prev) =>
             [
-              { id: `${data.client_id}-${now}`, clientId: data.client_id, name, online: !isOffline, ts: now },
+              {
+                id: `${data.client_id}-${now}`,
+                clientId: data.client_id,
+                name,
+                online: !isOffline,
+                ts: now
+              },
               ...prev
             ].slice(0, MAX_LOG_ENTRIES)
           )
@@ -2014,14 +2111,20 @@ function Main() {
         // invisible to everyone else. Ban is different (see ClientBanned).
         // Chime if someone in our channel was kicked (not our own kick — that's
         // handled on the socket close).
-        if (data.client?.id !== selfIdRef.current && data.client?.channel_id === selfChannelIdRef.current) {
+        if (
+          data.client?.id !== selfIdRef.current &&
+          data.client?.channel_id === selfChannelIdRef.current
+        ) {
           playUiSound('neutral_kicked_server_currentchannel')
         }
       } else if (ev === 'ClientBanned') {
         // { client, duration_seconds, reason }. Drop from the roster and record
         // the ban so they surface in the Users tab (where they can be unbanned).
         // The event carries the full client, so no /server/bans refetch is needed.
-        if (data.client?.id !== selfIdRef.current && data.client?.channel_id === selfChannelIdRef.current) {
+        if (
+          data.client?.id !== selfIdRef.current &&
+          data.client?.channel_id === selfChannelIdRef.current
+        ) {
           playUiSound('neutral_banned_server_currentchannel')
         }
         setClients((prev) => prev.filter((c) => c.id !== data.client.id))
@@ -2068,6 +2171,11 @@ function Main() {
         scheduleReconnect()
         return
       }
+      // App version to report in the Identify handshake (server attaches it to
+      // our client record). Best-effort — null if the IPC isn't available.
+      const appVersion = await window.electron?.ipcRenderer
+        ?.invoke('get-app-version')
+        .catch(() => null)
       if (closedByUs) return
       ws = new WebSocket(`${wsBase()}/ws`)
       eventsWsRef.current = ws
@@ -2083,9 +2191,10 @@ function Main() {
         const data = canResume
           ? {
               token: accessToken,
+              version: appVersion,
               resume: { session_id: sessionIdRef.current, seq: lastEventSeqRef.current }
             }
-          : { token: accessToken }
+          : { token: accessToken, version: appVersion }
         ws.send(JSON.stringify({ op: 0, data }))
         // Heartbeat: prove we're still alive every interval, reporting the last
         // event sequence we've processed. If these stop arriving the server
@@ -2419,6 +2528,7 @@ function Main() {
   }
 
   const [showSettings, setShowSettings] = useState(false)
+  const [streamDebugOpen, setStreamDebugOpen] = useState(false)
   // Exit animation is handled by AnimatePresence in the JSX below, so open/
   // close are plain state flips — closing never blocks on a timer.
   const openSettings = () => setShowSettings(true)
@@ -2444,10 +2554,34 @@ function Main() {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [showSettings, rolesGroupsOpen, summaryChannelId, summaryClientId, previewChannelId, showTraffic, showServerSummary])
+  }, [
+    showSettings,
+    rolesGroupsOpen,
+    summaryChannelId,
+    summaryClientId,
+    previewChannelId,
+    showTraffic,
+    showServerSummary
+  ])
 
   const connected = !!token
-  const titleText = connectedServer ? `${APP_TITLE} — ${connectedServer.nickname}` : APP_TITLE
+  const serverDisplayName = serverName ?? connectedServer?.nickname ?? 'Connected'
+  const titleText = connectedServer ? `${APP_TITLE} — ${serverDisplayName}` : APP_TITLE
+
+  // Server-name header for the traffic canvas — shown both when lurking and when
+  // the traffic view is opened explicitly from the server menu, so the two land
+  // on the same header instead of one saying the server name and the other
+  // "Server Traffic".
+  const serverHeaderTitle = (
+    <div className="chat-title">
+      <span className="chat-title-icon">
+        <IconUsersGroup size={17} stroke={2} />
+      </span>
+      <span className="chat-title-text">
+        <span className="chat-title-name">{serverDisplayName}</span>
+      </span>
+    </div>
+  )
 
   // Canvas header title: the joined voice channel, or the server when lurking.
   const joinedChannel = channels.find((c) => c.id === selfChannelId)
@@ -2503,6 +2637,8 @@ function Main() {
     vanity,
     onToggleVanity: handleToggleVanity,
     onOpenRolesGroups: () => setRolesGroupsOpen(true),
+    onOpenStreamDebug: () => setStreamDebugOpen(true),
+    onWatchStream: handleWatchStream,
     canKickMembers,
     canBanMembers,
     canMuteMembers
@@ -2513,6 +2649,11 @@ function Main() {
       <div className="app-shell">
         <Toast toast={toast} onDismiss={dismissToast} />
         <UpdatePrompt />
+        {/* Non-modal, so intentionally left out of the Escape-key cascade below —
+            it should survive Escape while flipping through views mid-debug. */}
+        {streamDebugOpen && (
+          <StreamDebugPanel clients={clients} onClose={() => setStreamDebugOpen(false)} />
+        )}
         {rolesGroupsOpen && (
           <RolesGroupsMenu
             roles={roles}
@@ -2539,6 +2680,11 @@ function Main() {
             self={client}
             onStreamsUpdate={handleStreamsUpdate}
             isReconnectRecovering={isReconnectRecovering}
+            micMuted={micMuted}
+            deafened={deafened}
+            onToggleMic={toggleMic}
+            onToggleDeafen={toggleDeafen}
+            onSpeakingClientsChange={handleSpeakingClientsChange}
             onStatusChange={sendStatus}
             onSelfChannelChange={(channelId) => {
               // Joining/leaving a voice channel is a navigation — drop the
@@ -2597,17 +2743,21 @@ function Main() {
               <div className="chat-header">
                 <div className="header-content">
                   {showTraffic ? (
-                    // Forced traffic view (server menu). Title-only header like a
-                    // peek — Esc or navigating elsewhere returns to the channel.
-                    <span className="view-preview-title">
-                      <IconActivity size={18} stroke={2} />
-                      Server Traffic
-                    </span>
+                    // Forced traffic view (server menu). Same server-name header
+                    // as the lurking view below — Esc or navigating elsewhere
+                    // returns to the channel.
+                    serverHeaderTitle
                   ) : previewChannelId != null ? (
                     // Peeking into another channel's chat: no view tabs (no streams),
                     // just the channel name.
                     <span className="view-preview-title">
-                      {previewChannel?.type === 'dm' ? (
+                      {previewChannel?.channel_icon ? (
+                        <img
+                          className="preview-title-icon-img"
+                          src={cdnUrl(previewChannel.channel_icon)}
+                          alt=""
+                        />
+                      ) : previewChannel?.type === 'dm' ? (
                         <IconUser size={18} stroke={2} />
                       ) : (
                         <IconMessage size={18} stroke={2} />
@@ -2619,7 +2769,15 @@ function Main() {
                     <>
                       <div className="chat-title">
                         <span className="chat-title-icon">
-                          <IconVolume size={17} stroke={2} />
+                          {joinedChannel.channel_icon ? (
+                            <img
+                              className="chat-title-icon-img"
+                              src={cdnUrl(joinedChannel.channel_icon)}
+                              alt=""
+                            />
+                          ) : (
+                            <IconVolume size={17} stroke={2} />
+                          )}
                         </span>
                         <span className="chat-title-text">
                           <span className="chat-title-name">{joinedChannel.name}</span>
@@ -2649,16 +2807,7 @@ function Main() {
                   ) : connected ? (
                     // Lurking (not in a voice channel): just the server name — the
                     // canvas below shows server traffic, so no tabs or subtext.
-                    <div className="chat-title">
-                      <span className="chat-title-icon">
-                        <IconUsersGroup size={17} stroke={2} />
-                      </span>
-                      <span className="chat-title-text">
-                        <span className="chat-title-name">
-                          {connectedServer?.nickname ?? 'Connected'}
-                        </span>
-                      </span>
-                    </div>
+                    serverHeaderTitle
                   ) : (
                     <span aria-hidden="true" />
                   )}
@@ -2666,7 +2815,13 @@ function Main() {
               </div>
             )}
 
-            {/* Keyed so switching channel/tab remounts and replays the switch animation. */}
+            {/* Keyed so switching channel/tab remounts and replays the switch
+                animation. The key mirrors the render branches below and keys the
+                channel views by *content identity* (which channel + chat-vs-grid),
+                not by peek-vs-joined: peeking channel X shows `chat-X` and joining
+                that same channel (landing on the log tab) is still `chat-X`, so the
+                fade doesn't redundantly replay when only the titlebar gains its
+                voice counter. Switching channel or chat↔video still changes the key. */}
             <div
               className="chat-switch-region"
               key={
@@ -2678,11 +2833,11 @@ function Main() {
                       ? `summary-${summaryClientId}`
                       : showServerSummary
                         ? 'server-summary'
-                        : previewChannelId != null
-                        ? `preview-${previewChannelId}`
-                        : showTraffic || !joinedChannel
+                        : showTraffic || (previewChannelId == null && !joinedChannel)
                           ? 'lobby'
-                          : viewMode
+                          : previewChannelId != null || viewMode === 'log'
+                            ? `chat-${activeChatChannelId}`
+                            : `grid-${selfChannelId}`
               }
             >
               {!connected ? (
@@ -2746,6 +2901,17 @@ function Main() {
                   muted={streamMuted}
                   onVolumeChange={setStreamVolume}
                   onMutedChange={setStreamMuted}
+                  theatre={theatre}
+                  onToggleTheatre={toggleTheatre}
+                  voiceClients={clients
+                    .filter((c) => c.channel_id === selfChannelId)
+                    .sort((a, b) => (a.name || '').localeCompare(b.name || ''))}
+                  speakingClients={speakingClients}
+                  selfId={client?.id}
+                  micMuted={micMuted}
+                  deafened={deafened}
+                  onToggleMic={toggleMic}
+                  onToggleDeafen={toggleDeafen}
                 />
               )}
             </div>

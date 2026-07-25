@@ -5,6 +5,7 @@ import { overlayPop, scrimFade } from '../lib/motionPresets'
 import SegmentedTabs from './SegmentedTabs'
 import './ServerMenu.css'
 import { httpFetch } from '../lib/http'
+import { apiBaseForHost } from '../lib/serverConfig'
 import { useMenuPosition } from '../lib/menuPosition'
 import {
   IconPlus,
@@ -15,7 +16,8 @@ import {
   IconEye,
   IconEyeOff,
   IconActivity,
-  IconInfoCircle
+  IconInfoCircle,
+  IconServer
 } from '@tabler/icons-react'
 
 // Initial state for the add-server form
@@ -175,7 +177,7 @@ function ServerMenu({
     setRegistering(true)
     let res
     try {
-      res = await httpFetch(`https://${host}/register`, {
+      res = await httpFetch(`${apiBaseForHost(host)}/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password, device_name: DEVICE_NAME })
@@ -257,6 +259,15 @@ function ServerMenu({
                   className="server-menu-item"
                   onClick={() => handleConnect(server)}
                 >
+                  {/* Placeholder until the server sends its own icon on connect,
+                      at which point server.icon carries the image URL. */}
+                  <span className="server-menu-item-icon">
+                    {server.icon ? (
+                      <img src={server.icon} alt="" />
+                    ) : (
+                      <IconServer size={18} stroke={2} />
+                    )}
+                  </span>
                   <div className="server-menu-item-info">
                     <span className="server-menu-item-name">{server.nickname}</span>
                     <span className="server-menu-item-host">{server.host}</span>

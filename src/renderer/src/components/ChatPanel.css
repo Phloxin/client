@@ -154,6 +154,7 @@
   border: 1px solid var(--hairline-strong);
   border-radius: var(--radius-md);
   background: var(--color-background-soft);
+  user-select: none;
   box-shadow: var(--shadow-2);
 }
 
@@ -186,6 +187,8 @@
   flex-wrap: wrap;
   gap: 4px;
   margin-top: 4px;
+  /* Keep reaction chips out of a message text drag-selection/copy. */
+  user-select: none;
 }
 
 /* Always in the DOM (so exit animations can play); collapse when empty. */

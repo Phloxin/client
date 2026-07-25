@@ -88,9 +88,9 @@ export const SOUND_SECTIONS = [
     id: 'status',
     label: 'Status',
     sounds: [
-      { id: 'mic_muted', label: 'Microphone muted' },
-      { id: 'mic_activated', label: 'Microphone unmuted' },
-      { id: 'sound_muted', label: 'Sound muted / deafened' },
+      { id: 'mic_muted', label: 'Microphone muted', default: 'pin' },
+      { id: 'mic_activated', label: 'Microphone unmuted', default: 'pin' },
+      { id: 'sound_muted', label: 'Sound muted / deafened', default: 'pin' },
       { id: 'sound_resumed', label: 'Sound unmuted / undeafened', default: 'pin' },
       { id: 'away_activated', label: 'Mark self as away' },
       { id: 'away_deactivated', label: 'Unmark self as away' },
