@@ -484,19 +484,6 @@ app.whenReady().then(() => {
   // Auto-update wiring (GitHub Releases). IPC + events for the General tab.
   setupUpdater()
 
-  // Answers "is video encode/decode accelerated in THIS build" from any bug
-  // report — the answer drifts across Electron upgrades. Logged on
-  // gpu-info-update, NOT at ready: the GPU process only launches with the first
-  // window, so a ready-time snapshot reads all-software even on healthy
-  // machines. Deduped; the last line printed is the settled truth.
-  let lastGpuStatus = ''
-  app.on('gpu-info-update', () => {
-    const status = JSON.stringify(app.getGPUFeatureStatus())
-    if (status === lastGpuStatus) return
-    lastGpuStatus = status
-    console.log('[GPU] feature status:', status)
-  })
-
   // Default open or close DevTools by F12 in development
   // and ignore CommandOrControl + R in production.
   // see https://github.com/alex8088/electron-toolkit/tree/master/packages/utils
