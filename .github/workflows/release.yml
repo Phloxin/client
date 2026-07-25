@@ -113,6 +113,8 @@ jobs:
             dist/**/*.yml
             dist/**/*.blockmap
             !dist/**/*-unpacked/**
+            !dist/**/*.app/**
+            !dist/**/builder-debug.yml
           if-no-files-found: error
           compression-level: 0
 
@@ -191,4 +193,3 @@ jobs:
             release-assets/**/*.tar.gz
             release-assets/**/*.yml
             release-assets/**/*.blockmap
-            !release-assets/**/builder-debug.yml
