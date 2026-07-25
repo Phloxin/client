@@ -37,6 +37,10 @@ const GROUP_WINDOW_MS = 7 * 60 * 1000
 // Quick reactions shown in the hover bar on every message.
 const QUICK_REACTIONS = ['👍', '👎', '😂', '❤️', '🍅']
 
+// Names listed in a reaction's hover tooltip before the rest become "+N others".
+const MAX_REACTION_NAMES = 8
+const reactionNameList = new Intl.ListFormat('en', { type: 'conjunction' })
+
 // Unsent composer text per channel, so a draft survives switching chats (the
 // panel remounts per channel). ponytail: in-memory only — gone on app restart;
 // move to localStorage if drafts should survive relaunches.
@@ -789,6 +793,25 @@ function ChatPanel({
 
   const resolveAvatar = (entry) => clients?.find((c) => c.id === entry.authorId)?.avatar
 
+  // Hover text for a reaction chip: who reacted, with anyone we can't name
+  // (left the server, or ids the server didn't send) folded into "+N others".
+  // Ids compare as strings — roster ids may be numbers while the server's are
+  // snowflake strings.
+  const reactionTitle = (r) => {
+    const names = (r.users || []).map((id) =>
+      String(id) === String(selfId)
+        ? 'You'
+        : clients?.find((c) => String(c.id) === String(id))?.name || null
+    )
+    const known = names.filter(Boolean).slice(0, MAX_REACTION_NAMES)
+    const others = r.count - known.length
+    if (!known.length) return `${r.count} reaction${r.count === 1 ? '' : 's'}`
+    const list = reactionNameList.format(
+      others > 0 ? [...known, `${others} other${others === 1 ? '' : 's'}`] : known
+    )
+    return `${list} reacted with ${r.emoji}`
+  }
+
   // The message author's roster entry, or undefined if they've since left — in
   // which case their name/avatar stay inert (no summary link, no menu).
   const resolveClient = (entry) => clients?.find((c) => c.id === entry.authorId)
@@ -1029,7 +1052,7 @@ function ChatPanel({
                           key={r.emoji}
                           type="button"
                           className={`chat-reaction${r.me ? ' mine' : ''}`}
-                          title={`${r.count} reaction${r.count === 1 ? '' : 's'}`}
+                          title={reactionTitle(r)}
                           onClick={() => onReactMessage?.(entry.id, r.emoji)}
                           layout={msgAnim}
                           // Only re-measure when this message's own reactions
