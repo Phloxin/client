@@ -5,7 +5,7 @@ import VoiceChannel from './VoiceChannel'
 import ClientIndicator from './ClientIndicator'
 import ServerMenu from './ServerMenu'
 import { setMicMuted, setSoundMuted } from '../lib/soup'
-import { playUiSound, setSoundsDeafened } from '../lib/sounds'
+import { setSoundsDeafened } from '../lib/sounds'
 import { useAnimationCategory, useSettings } from '../context/SettingsContext'
 import { useAnimatedPresence, useBlockShift } from '../lib/animation'
 import { keyboardEventToAccelerator, normalizeAccelerator } from '../../../shared/keybinds'
@@ -80,7 +80,14 @@ function Sidebar({
   canMuteMembers,
   previewChannelId,
   summaryChannelId,
-  unreadChannelIds
+  unreadChannelIds,
+  // Voice self-state lives in Main so the stream view's theatre mode can share
+  // it; the sidebar drives the toggles and mirrors the state into soup/tray.
+  micMuted,
+  deafened,
+  onToggleMic,
+  onToggleDeafen,
+  onSpeakingClientsChange
 }) {
   const { keybindSettings } = useSettings()
   const [width, setWidth] = useState(() => {
@@ -100,8 +107,6 @@ function Sidebar({
       setSelfSpeaking(false)
     }
   }, [joinedChannelId])
-  const [micMuted, setMicMutedState] = useState(false)
-  const [soundMuted, setSoundMutedState] = useState(false)
   // Our own speaking state, reported up from the active VoiceChannel — drives the system tray icons
   const [selfSpeaking, setSelfSpeaking] = useState(false)
   const channelRefs = useRef({})
@@ -252,32 +257,6 @@ function Sidebar({
     setDropTarget(null)
   }
 
-  // Single toggle path for mic/sound mute, shared by the control buttons and the
-  // global keybind listener. Refs hold the latest value so the listener (bound
-  // once) never reads stale state.
-  const micMutedRef = useRef(micMuted)
-  const soundMutedRef = useRef(soundMuted)
-  useEffect(() => {
-    micMutedRef.current = micMuted
-  }, [micMuted])
-  useEffect(() => {
-    soundMutedRef.current = soundMuted
-  }, [soundMuted])
-
-  const toggleMic = useCallback(() => {
-    const next = !micMutedRef.current
-    micMutedRef.current = next
-    setMicMutedState(next)
-    playUiSound(next ? 'mic-mute' : 'mic-unmute')
-  }, [])
-
-  const toggleSound = useCallback(() => {
-    const next = !soundMutedRef.current
-    soundMutedRef.current = next
-    setSoundMutedState(next)
-    playUiSound(next ? 'sound-mute' : 'sound-unmute')
-  }, [])
-
   // Keep both global and focused-window shortcuts on one action path. A working
   // Wayland portal can report the same focused keystroke just after the DOM
   // event, so suppress that cross-backend duplicate instead of toggling twice.
@@ -291,10 +270,10 @@ function Sidebar({
       }
       lastKeybindTrigger.current = { action, source, time: now }
 
-      if (action === 'toggleMicMute') toggleMic()
-      else if (action === 'toggleSoundMute') toggleSound()
+      if (action === 'toggleMicMute') onToggleMic?.()
+      else if (action === 'toggleSoundMute') onToggleDeafen?.()
     },
-    [toggleMic, toggleSound]
+    [onToggleMic, onToggleDeafen]
   )
 
   // The main process owns the OS-wide keyboard hook and tells us which action
@@ -336,37 +315,31 @@ function Sidebar({
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [keybindSettings, runKeybindAction])
 
-  // Apply mute state to soup whenever it changes. Deafening (soundMuted)
+  // Apply mute state to soup whenever it changes. Deafening (deafened)
   // also silences the mic, regardless of the independent mic-mute toggle.
   useEffect(() => {
-    setMicMuted(micMuted || soundMuted)
-  }, [micMuted, soundMuted])
+    setMicMuted(micMuted || deafened)
+  }, [micMuted, deafened])
 
   useEffect(() => {
-    setSoundMuted(soundMuted)
+    setSoundMuted(deafened)
     // Deafening also silences notification sounds (message/channel/stream); the
     // sounds module gates on this the way soup.js gates remote audio.
-    setSoundsDeafened(soundMuted)
-  }, [soundMuted])
+    setSoundsDeafened(deafened)
+  }, [deafened])
 
   // Let other clients know our mic-mute / deafen status
   useEffect(() => {
-    onStatusChange?.(micMuted, soundMuted)
-  }, [micMuted, soundMuted])
+    onStatusChange?.(micMuted, deafened)
+  }, [micMuted, deafened])
 
   // Drive the Windows system-tray mic indicator. Deafen outranks mute outranks
   // talking; mute/deafen show even when not in a channel (they're global toggles),
   // matching TeamSpeak. No-op off Windows (main ignores the message).
   useEffect(() => {
-    const state = soundMuted
-      ? 'deafened'
-      : micMuted
-        ? 'muted'
-        : selfSpeaking
-          ? 'talking'
-          : 'idle'
+    const state = deafened ? 'deafened' : micMuted ? 'muted' : selfSpeaking ? 'talking' : 'idle'
     window.electron?.ipcRenderer?.send('tray:voice-state', state)
-  }, [micMuted, soundMuted, selfSpeaking])
+  }, [micMuted, deafened, selfSpeaking])
 
   // The channel the server says we're in (authoritative roster) can diverge from
   // the channel our live voice session is joined to when a moderator moves us
@@ -532,55 +505,55 @@ function Sidebar({
             <div className="client-context-menu user-filter-menu" ref={filterRef}>
               <div className="client-context-menu-header">Filter by</div>
               <div className="user-filter-scroll">
-              {roles.length === 0 && vanity.length === 0 && (
-                <div className="client-role-empty">No roles or groups</div>
-              )}
-              {roles.length > 0 && <div className="user-filter-section">Roles</div>}
-              {roles.map((r) => (
-                <button
-                  key={`r${r.id}`}
-                  type="button"
-                  className="client-context-menu-item"
-                  onClick={() => toggleFilter(`r${r.id}`)}
-                >
-                  <IconCheck
-                    size={16}
-                    style={{ visibility: filterIds.has(`r${r.id}`) ? 'visible' : 'hidden' }}
-                  />
-                  <RoleIcon role={r} size={16} />
-                  {r.name}
-                </button>
-              ))}
-              {vanity.length > 0 && <div className="user-filter-section">Groups</div>}
-              {vanity.map((g) => (
-                <button
-                  key={`g${g.id}`}
-                  type="button"
-                  className="client-context-menu-item"
-                  onClick={() => toggleFilter(`g${g.id}`)}
-                >
-                  <IconCheck
-                    size={16}
-                    style={{ visibility: filterIds.has(`g${g.id}`) ? 'visible' : 'hidden' }}
-                  />
-                  {g.avatar ? (
-                    <img src={g.avatar} alt="" className="client-group-icon" />
-                  ) : (
-                    <IconUsersGroup size={16} />
-                  )}
-                  {g.name}
-                </button>
-              ))}
-              {filterIds.size > 0 && (
-                <button
-                  type="button"
-                  className="client-context-menu-item danger"
-                  onClick={() => setFilterIds(new Set())}
-                >
-                  <IconX size={16} />
-                  Clear filters
-                </button>
-              )}
+                {roles.length === 0 && vanity.length === 0 && (
+                  <div className="client-role-empty">No roles or groups</div>
+                )}
+                {roles.length > 0 && <div className="user-filter-section">Roles</div>}
+                {roles.map((r) => (
+                  <button
+                    key={`r${r.id}`}
+                    type="button"
+                    className="client-context-menu-item"
+                    onClick={() => toggleFilter(`r${r.id}`)}
+                  >
+                    <IconCheck
+                      size={16}
+                      style={{ visibility: filterIds.has(`r${r.id}`) ? 'visible' : 'hidden' }}
+                    />
+                    <RoleIcon role={r} size={16} />
+                    {r.name}
+                  </button>
+                ))}
+                {vanity.length > 0 && <div className="user-filter-section">Groups</div>}
+                {vanity.map((g) => (
+                  <button
+                    key={`g${g.id}`}
+                    type="button"
+                    className="client-context-menu-item"
+                    onClick={() => toggleFilter(`g${g.id}`)}
+                  >
+                    <IconCheck
+                      size={16}
+                      style={{ visibility: filterIds.has(`g${g.id}`) ? 'visible' : 'hidden' }}
+                    />
+                    {g.avatar ? (
+                      <img src={g.avatar} alt="" className="client-group-icon" />
+                    ) : (
+                      <IconUsersGroup size={16} />
+                    )}
+                    {g.name}
+                  </button>
+                ))}
+                {filterIds.size > 0 && (
+                  <button
+                    type="button"
+                    className="client-context-menu-item danger"
+                    onClick={() => setFilterIds(new Set())}
+                  >
+                    <IconX size={16} />
+                    Clear filters
+                  </button>
+                )}
               </div>
             </div>
           )}
@@ -612,8 +585,9 @@ function Sidebar({
               .sort((a, b) => (a.name || '').localeCompare(b.name || ''))}
             self={self}
             micMuted={micMuted}
-            deafened={soundMuted}
+            deafened={deafened}
             onSelfSpeaking={setSelfSpeaking}
+            onSpeakingClientsChange={onSpeakingClientsChange}
             onSelfChannelChange={onSelfChannelChange}
             onDeleteChannel={onDeleteChannel}
             onRequestCreateChannel={openCreateChannel}
@@ -751,7 +725,7 @@ function Sidebar({
           <button
             className={`control-btn${micMuted ? ' active' : ''}`}
             title={micMuted ? 'Unmute Microphone' : 'Mute Microphone'}
-            onClick={toggleMic}
+            onClick={onToggleMic}
           >
             {micMuted ? (
               <IconMicrophoneOff className="control-icon" size={18} />
@@ -760,11 +734,11 @@ function Sidebar({
             )}
           </button>
           <button
-            className={`control-btn${soundMuted ? ' active' : ''}`}
-            title={soundMuted ? 'Unmute Sound' : 'Mute Sound'}
-            onClick={toggleSound}
+            className={`control-btn${deafened ? ' active' : ''}`}
+            title={deafened ? 'Unmute Sound' : 'Mute Sound'}
+            onClick={onToggleDeafen}
           >
-            {soundMuted ? (
+            {deafened ? (
               <IconHeadphonesOff className="control-icon" size={18} />
             ) : (
               <IconHeadphones className="control-icon" size={18} />

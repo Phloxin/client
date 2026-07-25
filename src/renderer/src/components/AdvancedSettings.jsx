@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { IconAlertTriangle } from '@tabler/icons-react'
 import { useSettings } from '../context/SettingsContext'
-import { resetScreenCodecPreference } from '../lib/soup'
+import { resetCameraCodecPreference, resetScreenCodecPreference } from '../lib/soup'
 
 // The keep-awake blocker is only wired up for Windows and Linux in main.
 const supportsIdleInhibitor = window.api?.platform === 'win32' || window.api?.platform === 'linux'
@@ -67,6 +67,9 @@ function AdvancedSettings() {
     // The set of available encoders is about to change, so a previously-learned
     // "AV1 is software → prefer H.264" verdict is stale — re-probe AV1 next share.
     resetScreenCodecPreference()
+    // The camera's VP9/H.264 verdict is independent, but the same encoder
+    // landscape change invalidates it too.
+    resetCameraCodecPreference()
   }
 
   const relaunch = () => window.electron?.ipcRenderer?.send('relaunch-app')

@@ -46,6 +46,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     deafened,
     onStreamsUpdate,
     onSelfSpeaking,
+    onSpeakingClientsChange,
     onSelfChannelChange,
     onJoinedChange,
     onSharingChange,
@@ -136,6 +137,18 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   useEffect(() => {
     onSharingChange?.(channel.id, sharing)
   }, [sharing])
+
+  // Surface the joined channel's live speaking map up to Main (for the stream
+  // view's theatre-mode participant rail). Only the joined channel reports —
+  // inactive channels always hold an empty map — and it clears on leave so a
+  // stale speaker can't linger after we've moved on.
+  useEffect(() => {
+    if (joined) onSpeakingClientsChange?.(speakingClients)
+  }, [joined, speakingClients])
+  useEffect(() => {
+    if (!joined) return
+    return () => onSpeakingClientsChange?.({})
+  }, [joined])
 
   // Mirror this channel's stream tiles up to the sidebar/Main. Done in an effect
   // rather than inside the setVideoStreams updaters so the parent's setState
@@ -438,10 +451,28 @@ const VoiceChannel = forwardRef(function VoiceChannel(
       let screen
       // Bound to the self tile once we know its consumerId (screen.id below).
       const onEncoderStats = (stats) => handleSelfEncoderStats(screen?.id, stats)
+      // Codec/SVC fallback publishes a replacement producer. Keep the self
+      // tile and its mutable share handle aligned with the server's new id so
+      // viewer updates continue to resolve against this stream.
+      const onProducerReplaced = ({ previousProducerId, producerId, codec }) => {
+        if (screen?.id === previousProducerId) screen.id = producerId
+        setVideoStreams((prev) =>
+          prev.map((stream) =>
+            stream.isSelf && stream.producerId === previousProducerId
+              ? {
+                  ...stream,
+                  consumerId: producerId,
+                  producerId,
+                  codec: codec ?? stream.codec
+                }
+              : stream
+          )
+        )
+      }
       if (options.isCamera) {
         // Webcams capture directly via getUserMedia - no main-process source
         // hand-off, and no audio/fps/resolution settings.
-        screen = await shareCamera(sourceId, onEncoderStats)
+        screen = await shareCamera(sourceId, onEncoderStats, onProducerReplaced)
       } else {
         // Tell the main process which source and audio mode the display-media
         // handler should use. sourceId is null on Wayland, where the OS portal
@@ -450,7 +481,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
           sourceId: sourceId ?? null,
           audioMode: options.audioMode ?? 'none'
         })
-        screen = await shareScreen({ ...options, onEncoderStats })
+        screen = await shareScreen({ ...options, onEncoderStats, onProducerReplaced })
       }
       if (screen?.stream) {
         activeShareRef.current = screen
