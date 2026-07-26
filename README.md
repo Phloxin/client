@@ -64,6 +64,7 @@ system-wide (WASAPI process loopback on Windows, PipeWire on Linux).
 
 - Per-channel message feed with markdown, syntax-highlighted code blocks, emoji (picker + shortcodes), and mentions (incl. `@everyone`).
 - Emoji reactions with live counts.
+- Replies (same-channel): a quoted line above the reply names the author and jumps to the original when clicked; it reads "Original message was deleted" once the target is gone.
 - File/image/video attachments (multipart upload), an in-app image viewer, and "download to disk" via a native save dialog.
 - Edit and delete your own messages; `(edited)` marker driven by the server.
 - Scroll-up history pagination (fetches older pages until the channel is exhausted).

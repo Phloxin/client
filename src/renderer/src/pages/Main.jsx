@@ -107,6 +107,17 @@ function messageFromApi(msg) {
       .map((r) => ({ emoji: r.emoji.value, count: r.count, me: r.me, users: r.users || [] })),
     mentions: msg.mentions || [],
     mentionEveryone: !!msg.mention_everyone,
+    // Reply target. `message_reference` survives the target's deletion while
+    // `referenced_message` goes null, which is how the preview knows to say the
+    // original is gone. The server bounds previews to one level (the referenced
+    // message always carries a null reference of its own), so this recursion
+    // can't run away.
+    replyTo: msg.message_reference
+      ? {
+          id: msg.message_reference.message_id,
+          message: msg.referenced_message ? messageFromApi(msg.referenced_message) : null
+        }
+      : null,
     // Server timestamp is seconds since the UNIX epoch; JS Date wants ms.
     ts: msg.timestamp,
     // Milliseconds since the UNIX epoch of the last edit, or null if never
@@ -2363,12 +2374,17 @@ function Main() {
   }
 
   // Send a chat message (with any attachments) to the channel we're currently in
-  const handleSendMessage = async (text, attachments) => {
+  const handleSendMessage = async (text, attachments, replyToId) => {
     if (activeChatChannelId == null) return
 
     const payload = {
       content: text || undefined,
-      attachments: attachments.map((a, i) => ({ id: i, filename: a.file.name, description: null }))
+      attachments: attachments.map((a, i) => ({ id: i, filename: a.file.name, description: null })),
+      // Replies are same-channel only, so `channel_id` is left off (the server
+      // rejects it when it names another channel). `fail_if_not_exists` keeps
+      // its default: replying to a message that's since been deleted fails
+      // loudly rather than silently sending a bare message.
+      message_reference: replyToId ? { message_id: replyToId } : undefined
     }
 
     const formData = new FormData()
