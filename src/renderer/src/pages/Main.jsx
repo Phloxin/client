@@ -102,9 +102,8 @@ function messageFromApi(msg) {
     // are skipped — the server marks them NOT YET IMPLEMENTED.
     reactions: (msg.reactions || [])
       .filter((r) => r.emoji?.type === 'basic')
-      // `users` (who reacted, for the hover tooltip) is only present once the
-      // server sends it; absent it, the chip falls back to the bare count.
-      .map((r) => ({ emoji: r.emoji.value, count: r.count, me: r.me, users: r.users || [] })),
+      // `user_ids` names everyone who reacted, for the chip's hover tooltip.
+      .map((r) => ({ emoji: r.emoji.value, count: r.count, me: r.me, userIds: r.user_ids || [] })),
     mentions: msg.mentions || [],
     mentionEveryone: !!msg.mention_everyone,
     // Reply target. `message_reference` survives the target's deletion while
@@ -2442,27 +2441,27 @@ function Main() {
         const reactions = e.reactions || []
         const existing = reactions.find((r) => r.emoji === emoji)
         const self = selfIdRef.current
-        // Keep `users` in step with the count so the hover tooltip doesn't lag
+        // Keep `userIds` in step with the count so the hover tooltip doesn't lag
         // behind the optimistic flip; the MessageUpdated broadcast overwrites it.
-        const withoutSelf = (users) => (users || []).filter((id) => String(id) !== String(self))
+        const withoutSelf = (ids) => (ids || []).filter((id) => String(id) !== String(self))
         let next
         if (existing?.me) {
           // Un-react: drop our count; remove the chip when it hits zero.
           next = reactions
             .map((r) =>
               r.emoji === emoji
-                ? { ...r, count: r.count - 1, me: false, users: withoutSelf(r.users) }
+                ? { ...r, count: r.count - 1, me: false, userIds: withoutSelf(r.userIds) }
                 : r
             )
             .filter((r) => r.count > 0)
         } else if (existing) {
           next = reactions.map((r) =>
             r.emoji === emoji
-              ? { ...r, count: r.count + 1, me: true, users: [...withoutSelf(r.users), self] }
+              ? { ...r, count: r.count + 1, me: true, userIds: [...withoutSelf(r.userIds), self] }
               : r
           )
         } else {
-          next = [...reactions, { emoji, count: 1, me: true, users: self == null ? [] : [self] }]
+          next = [...reactions, { emoji, count: 1, me: true, userIds: self == null ? [] : [self] }]
         }
         return { ...e, reactions: next }
       })

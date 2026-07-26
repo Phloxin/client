@@ -845,11 +845,11 @@ function ChatPanel({
   }
 
   // Hover text for a reaction chip: who reacted, with anyone we can't name
-  // (left the server, or ids the server didn't send) folded into "+N others".
-  // Ids compare as strings — roster ids may be numbers while the server's are
+  // (someone who has since left the server) folded into "+N others". Ids
+  // compare as strings — roster ids may be numbers while the server's are
   // snowflake strings.
   const reactionTitle = (r) => {
-    const names = (r.users || []).map((id) =>
+    const names = (r.userIds || []).map((id) =>
       String(id) === String(selfId)
         ? 'You'
         : clients?.find((c) => String(c.id) === String(id))?.name || null
