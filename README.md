@@ -28,6 +28,8 @@ system-wide (WASAPI process loopback on Windows, PipeWire on Linux).
 | Noise suppression  | `@sapphi-red/web-noise-suppressor` (RNNoise WASM)                              |
 | Global hotkeys     | `uiohook-napi` (passive hook) + XDG Global Shortcuts portal on Wayland         |
 | Chat rendering     | `simple-markdown` + `highlight.js` + `unicode-emoji-json`                      |
+| Charts             | `uplot` (live WebRTC stats in the stream debug panel)                          |
+| Auto-update        | `electron-updater` (manual check → download → install)                         |
 | Icons              | `@tabler/icons-react`                                                          |
 | Fonts              | Self-hosted `@fontsource-variable` (Inter, Open Sans, DM Sans, Roboto, Nunito) |
 | Styling            | CSS (theme variables, gradients, animations)                                   |
@@ -56,6 +58,7 @@ system-wide (WASAPI process loopback on Windows, PipeWire on Linux).
 - Scroll-to-zoom on the focused stream with drag-to-pan and a hover minimap showing the zoomed region (click/drag the minimap to navigate). Zoom resets when focus changes.
 - Only the focused stream's audio plays, with its own volume/mute.
 - Pop the video grid out into its own window (reads the live `MediaStream`s off `window.opener`); the main window falls back to chat while popped out.
+- Draggable stream debug panel: live uPlot charts of RTT, jitter, packet loss, encode time, jitter-buffer delay and concealment, with "should not be this high" guide lines.
 
 **Text chat**
 
@@ -71,8 +74,10 @@ system-wide (WASAPI process loopback on Windows, PipeWire on Linux).
 **Direct messages & presence**
 
 - 1:1 DMs are just `dm`-type channels; open via double-click or "poke" (fire a DM without leaving your view).
+- Presence: Online / Away / Do Not Disturb / Invisible plus a custom status message (128 code points). Presence is user-level and shared across that account's devices; invisible is indistinguishable from offline.
 - Read-state / unread tracking: a sidebar dot is derived from each channel's `last_message_id` vs. an acknowledged read cursor, synced across sessions.
 - Notification bell (mentions) and a DM inbox that seeds unread DMs on connect.
+- Server activity log: a live feed of members coming online / going offline plus kicks, bans, and channel create/delete, shown while you're in the server but not in a voice channel.
 
 **Moderation, roles & channels**
 
@@ -88,6 +93,7 @@ system-wide (WASAPI process loopback on Windows, PipeWire on Linux).
 - Auto-register on first connect if the account doesn't exist, then log in.
 - Refresh-token auth: short-lived access tokens rotated via `/auth/refresh`; token + client identity persisted encrypted so you stay logged in across restarts.
 - Resilient realtime: heartbeat, exponential backoff with jitter, and session resume that replays missed events; a full connection-lost overlay while reconnecting.
+- In-app updates: manual check → download → "restart & install" from General settings, plus an opt-out silent check on launch. Nothing downloads on its own; a downloaded update also installs on quit.
 
 **UI / appearance**
 
@@ -95,6 +101,9 @@ system-wide (WASAPI process loopback on Windows, PipeWire on Linux).
 - Ten themes: Studio (default), Daylight, Midnight, Aurora, Terra, Rosé Pine, Catppuccin Frappé, Catppuccin Mocha, Dracula, Gruvbox.
 - Appearance settings: background transparency (Acrylic on Windows 11 / compositor blur on Linux), surface gradients, shadows, interface font, cozy/compact messages, and per-category animation toggles (respects OS reduced-motion).
 - Configurable UI sound effects (join/leave, message, stream start/stop) with per-category toggles.
+- System tray (Windows) with a live mic indicator — idle / talking / muted / deafened — an Open/Mute/Deafen/Quit menu, and close-to-tray.
+- General settings: app version + update controls, launch on startup, and window size/position retention (Windows).
+- Advanced settings: hardware-acceleration toggle (a Chromium startup flag, so it needs a relaunch), keep-system-awake blocker (Windows/Linux), and the stream codec badge.
 
 ---
 
@@ -103,11 +112,12 @@ system-wide (WASAPI process loopback on Windows, PipeWire on Linux).
 ```
 pylon/
 ├── build/                          # Packaging resources (icons, mac entitlements)
-├── resources/                      # App icon (non-Windows)
+├── resources/                      # App icon (non-Windows) + tray icon set
 ├── native/
 │   └── audio-capture/              # Rust napi module: per-app/system screen-share audio
 ├── scripts/
-│   └── postinstall.cjs             # Builds/links the native module after install
+│   ├── postinstall.cjs             # Builds/links the native module after install
+│   └── gen-tray-icons.mjs          # Generates the tray icon variants
 ├── electron.vite.config.mjs        # electron-vite config
 ├── electron-builder.yml            # Win / mac / Linux packaging targets
 ├── src/
@@ -115,9 +125,11 @@ pylon/
 │   │   ├── index.js                # Electron main process (windows, IPC, persistence, capture)
 │   │   ├── keybinds.js             # Global passive keyboard hook (uiohook-napi / Wayland portal)
 │   │   ├── audioCapture.js         # Bridges renderer ↔ native audio-capture host
-│   │   └── audioCaptureHost.js     # Child-process host for the native capture module
+│   │   ├── audioCaptureHost.js     # Child-process host for the native capture module
+│   │   ├── tray.js                 # Windows tray icon (live mic state) + close-to-tray
+│   │   └── updater.js              # electron-updater flow (check / download / install)
 │   ├── preload/
-│   │   └── index.js                # Context-isolated bridge (exposes window.electron)
+│   │   └── index.js                # Context-isolated bridge (window.electron + window.api)
 │   └── renderer/
 │       ├── index.html              # Renderer entry + Content-Security-Policy
 │       └── src/
@@ -125,21 +137,30 @@ pylon/
 │           ├── App.jsx             # Routes: / , /settings , /popout
 │           ├── context/
 │           │   ├── AuthContext.jsx     # token + client identity (synced to main process)
-│           │   └── SettingsContext.jsx # mic / sound / appearance / animation / keybind settings
+│           │   ├── SettingsContext.jsx # mic / sound / appearance / animation / keybind settings
+│           │   └── ClientActionsContext.jsx # Shared roster actions behind the client menus
 │           ├── lib/
 │           │   ├── soup.js             # mediasoup client: transports, produce/consume, SVC roles, codecs
 │           │   ├── screenAudio.js      # Screen-share audio capture modes (native backends)
+│           │   ├── captureOptions.js   # Capture presets shared by the picker + quick settings
+│           │   ├── mediaRecovery.js    # Browser-independent recovery primitives for soup.js
+│           │   ├── voiceAudio.js       # Mono voice graph endpoints (creation/config)
+│           │   ├── micAudioProfile.js  # Voice codec policy for publish + republish
 │           │   ├── auth.js             # authFetch + refresh-token rotation
+│           │   ├── http.js             # Fetch with credential-redacted request logging
 │           │   ├── serverConfig.js     # Active host → apiBase/wsBase/cdnUrl/ICE servers
 │           │   ├── permissions.js      # Permission bitflags + overwrite math
+│           │   ├── presence.js         # Presence statuses, labels, status-message validation
 │           │   ├── markdown.jsx        # Message markdown renderer
 │           │   ├── emojiData.js        # Emoji dataset/lookup
 │           │   ├── sounds.js           # UI sound effects + categories
 │           │   ├── animation.js        # Reduced-motion + presence helpers
 │           │   ├── motionPresets.js    # Shared Motion spring/fade presets
+│           │   ├── menuPosition.js     # Keeps context menus on-screen
 │           │   ├── themeUtils.js       # Theme catalog + apply/persist (+ legacy id migration)
 │           │   ├── uiSettings.js       # Appearance/animation/font application
-│           │   └── avatarFile.js / imageColors.js / roleIcon.jsx
+│           │   ├── avatarFile.js / imageColors.js / roleIcon.jsx
+│           │   └── *.test.mjs          # Standalone node self-checks (see Getting Started)
 │           ├── pages/
 │           │   ├── Main.jsx            # Primary view: sidebar + chat/video + all realtime wiring
 │           │   ├── Settings.jsx        # In-app settings overlay
@@ -150,11 +171,16 @@ pylon/
 │           │   ├── ChatPanel.jsx / EmojiPicker.jsx / ImageViewer.jsx
 │           │   ├── VideoGrid.jsx / ScreenSourcePicker.jsx   # Streams, zoom/minimap, source picker
 │           │   ├── ChannelSummary.jsx / ChannelPermissions.jsx  # Channel details + overwrite editor
-│           │   ├── ClientSummary.jsx / RolesGroupsMenu.jsx      # Profiles, roles & vanity groups
+│           │   ├── ClientSummary.jsx / ClientContextMenu.jsx     # Profiles + shared roster menu
+│           │   ├── RolesGroupsMenu.jsx                           # Roles & vanity groups
+│           │   ├── ServerSummary.jsx / ServerTraffic.jsx         # Server details + activity log
 │           │   ├── AudioSettings.jsx / VolumeGateMeter.jsx / KeybindsSettings.jsx
+│           │   ├── GeneralSettings.jsx / AdvancedSettings.jsx    # Settings tabs
 │           │   ├── ThemeSwitcher.jsx / SegmentedTabs.jsx
 │           │   ├── TitleBar.jsx                     # Custom window controls
 │           │   ├── NotificationBell.jsx / Inbox.jsx # Notifications + DM inbox
+│           │   ├── StreamDebugPanel.jsx             # Live WebRTC stat charts (uPlot)
+│           │   ├── UpdatePrompt.jsx                 # Update available / download / install
 │           │   ├── ConnectionOverlay.jsx            # Reconnecting overlay
 │           │   ├── Toast.jsx                        # Transient error/success banner
 │           │   ├── IdleAnimation.jsx                # Disconnected/idle view (ASCII fire)
@@ -181,6 +207,9 @@ The Node.js backbone. Responsibilities:
 - **`get-channel-messages`** — history fetch proxy: the endpoint is `GET` but expects a JSON body (`limit`/`before`/`after`/`around`), which the Fetch spec forbids, so the request is made from the main process via `http`/`https` and handed back parsed.
 - **`download-file`** — native save dialog + fetch + write for chat attachments.
 - **Global keybinds** — sets up/tears down the passive OS key hook.
+- **System tray (Windows)** — tray icon reflecting live voice state (idle / talking / muted / deafened) with an Open/Mute/Deafen/Quit menu; closing the window hides to tray. No-op elsewhere (`tray.js`).
+- **Updates** (`updater.js`) — `electron-updater` driven manually from General settings (check → download → restart & install), with an opt-out silent check on launch. Nothing auto-downloads; a downloaded update installs on quit.
+- **App settings** (`app-settings.json`) — main-process-owned prefs that can't live in the renderer: hardware acceleration (a pre-`ready` Chromium flag, hence `relaunch-app`), keep-system-awake `powerSaveBlocker` (Windows/Linux), window-bounds retention (Windows), and the on-launch update check. Launch-on-startup goes through Electron's login-item settings.
 
 ### Screen-Share Audio (`native/audio-capture` + `lib/screenAudio.js`)
 
@@ -196,7 +225,7 @@ Uses `uiohook-napi` to observe keystrokes OS-wide **without consuming them** on 
 
 ### Preload (`src/preload/index.js`)
 
-Context-isolated bridge exposing `window.electron.ipcRenderer` (from `@electron-toolkit/preload`) so the renderer can do IPC without direct Node access.
+Context-isolated bridge exposing `window.electron.ipcRenderer` (from `@electron-toolkit/preload`) so the renderer can do IPC without direct Node access, plus `window.api`: the platform string, the native screen-audio capture calls, and two env-driven dev switches — `PREFER_SCREENSHARE_CODEC` (pin AV1/VP9/H264 and disable the adaptive downgrade) and `PYLON_INSECURE=1` (allow plain http/ws). The insecure switch is behind `import.meta.env.DEV`, so it is compiled out of packaged builds. The PCM MessagePort from main can't cross the bridge, so it's relayed into the page via `window.postMessage`.
 
 ### React Entry (`src/renderer/src/main.jsx`)
 
@@ -248,6 +277,10 @@ reconnect (exponential backoff + jitter, capped at 30s).
 `{ self_mute, self_deaf, channel_id }`, merged from a local ref so a mute toggle
 never drops the channel and a move never resets mute.
 
+**Presence (op 5):** sends `{ status, status_message }`. No optimistic update —
+the server echoes `PresenceUpdate` back to us, and that echo is the source of
+truth.
+
 **Dispatched events (op 3 / bare `{ ev, data }`):**
 
 | Event                                                  | Effect                                                                     |
@@ -255,6 +288,7 @@ never drops the channel and a move never resets mute.
 | `Ready`                                                | Authoritative snapshot: channels, clients, read states; seeds unread DMs    |
 | `NewUser` / `ClientModified` / `ClientRemoved`         | Roster add / merge (channel, roles, vanity, avatar, name) / remove          |
 | `VoiceStateUpdate`                                     | Another client's mute/deafen (incl. server mute/deafen)                     |
+| `PresenceUpdate`                                       | Status / status message for a client (replaces wholesale, never merged)     |
 | `ClientKicked` / `ClientBanned`                        | Drop from roster (and record ban)                                           |
 | `MessageCreated` / `MessageUpdated` / `MessageDeleted` | Chat feed + `last_message_id` upkeep; embeds/reactions via `MessageUpdated` |
 | `ReadStateUpdated`                                     | Read cursor moved (this or another session)                                 |
@@ -299,6 +333,8 @@ time in `serverConfig.js`). All authenticated requests send
 | `POST`          | `/login`                                | Authenticates a user and creates an independent device session                                             |
 | `POST`          | `/register`                             | Creates a user and its first device session                                                                |
 | `POST`          | `/auth/refresh`                         | Atomically rotates a refresh token and returns a replacement auth response                                 |
+| `GET`           | `/server`                               | Server details (name, etc.) — fetched before the connected UI is revealed                                  |
+| `GET`           | `/server/presences`                     | Presence resync after a resume that brought no fresh `Ready`                                               |
 | `GET`           | `/server/voice`                         | Single-use ticket for the voice socket                                                                     |
 | `GET`           | `/channels/:id/messages`                | Recent history — GET with JSON body (`limit`/`before`/`after`/`around`), routed through the main process   |
 | `POST`          | `/channels/:id/messages`                | Send a message (multipart: `payload_json` + `files[i]`)                                                    |
@@ -331,13 +367,19 @@ time in `serverConfig.js`). All authenticated requests send
 | `window-is-maximized` / `window-maximized-change`                           | invoke / Main → Renderer | Maximized state for the title bar icon      |
 | `store-token` / `get-token` / `store-client` / `get-client` / `clear-auth`  | Renderer ↔ Main          | Encrypted auth persistence                  |
 | `get-servers` / `store-servers`                                             | Renderer ↔ Main          | Encrypted saved-server list                 |
-| `get-screen-sources` / `set-screen-source` / `set-screen-audio-mode`        | Renderer ↔ Main          | Screen-share source picker + audio mode     |
+| `get-screen-sources` / `prepare-screen-share`                               | Renderer ↔ Main          | Source picker list + chosen source/audio mode for `getDisplayMedia` |
 | `audiocapture:get-capabilities` / `list-apps` / `start` / `stop`            | Renderer ↔ Main          | Native screen-share audio capture           |
 | `get-channel-messages`                                                      | Renderer → Main (invoke) | History fetch (GET-with-body proxy)         |
 | `download-file`                                                             | Renderer → Main (invoke) | Save an attachment via native dialog        |
 | `set-window-vibrancy`                                                       | Renderer → Main          | Toggle Acrylic on Windows 11                |
 | `keybinds:set` / `keybinds:get-status`                                      | Renderer → Main          | Push binds / query hook availability        |
 | `keybinds:trigger`                                                          | Main → Renderer          | Fire a bound action (mute/deafen)           |
+| `tray:voice-state`                                                          | Renderer → Main          | Live mic state for the tray icon            |
+| `get-app-settings` / `set-app-settings` / `relaunch-app`                    | Renderer ↔ Main          | Main-owned prefs (hardware accel, window bounds, …) + relaunch |
+| `get-launch-on-startup` / `set-launch-on-startup`                           | Renderer ↔ Main          | Login-item registration                     |
+| `set-idle-inhibitor`                                                        | Renderer → Main          | Keep the system awake (Windows/Linux)       |
+| `updater:check` / `check-on-launch` / `download` / `install`                | Renderer ↔ Main          | Update flow; progress/status broadcast back to all windows |
+| `get-app-version`                                                           | Renderer → Main (invoke) | Version shown in General settings           |
 | `theme-changed-ipc`                                                         | Renderer → Main → All    | Broadcast theme change across windows       |
 
 ---
@@ -374,6 +416,13 @@ npm run build:linux      # + AppImage / snap / deb
 
 Other scripts: `npm run lint`, `npm run format`, `npm start` (preview a build),
 `npm run build:native` (rebuild the Rust audio-capture module).
+
+There is no test runner. The few pieces of logic worth pinning have standalone
+self-checks that run on plain Node and fail loudly via `node:assert`:
+
+```bash
+node src/renderer/src/lib/menuPosition.test.mjs   # (also mediaRecovery, voiceAudio)
+```
 
 ---
 
