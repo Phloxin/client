@@ -529,6 +529,24 @@ app.whenReady().then(() => {
     return true
   })
 
+  // Packaged builds load the renderer from file://, which has a null origin, so
+  // framed YouTube requests carry no Referer and the player refuses to start
+  // ("error 153"). Dev serves the renderer over the vite dev server, which is
+  // why it only breaks in releases — so send what dev sends when the page can't
+  // supply a referrer of its own. YouTube rejects its own domain here (error
+  // 152), it has to look like an ordinary embedding site.
+  // ponytail: forged header; the real fix is serving the packaged renderer over
+  // http://127.0.0.1 so prod has a genuine origin, do that if this stops working.
+  session.defaultSession.webRequest.onBeforeSendHeaders(
+    { urls: ['https://www.youtube.com/*', 'https://www.youtube-nocookie.com/*'] },
+    (details, callback) => {
+      if (!details.requestHeaders.Referer) {
+        details.requestHeaders.Referer = 'http://localhost:5173/'
+      }
+      callback({ requestHeaders: details.requestHeaders })
+    }
+  )
+
   // Enable screen capture via getDisplayMedia in renderer. Honors the source
   // chosen via the picker; on Wayland the enumeration below opens the OS
   // portal dialog, which does the picking itself.
