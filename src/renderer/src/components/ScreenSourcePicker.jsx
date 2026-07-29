@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { motion } from 'motion/react'
 import { useAnimationCategory } from '../context/SettingsContext'
 import { overlayPop } from '../lib/motionPresets'
@@ -300,7 +301,10 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
         { id: 'windows', label: 'Apps', icon: <IconAppWindow size={15} /> }
       ]
 
-  return (
+  // Portalled to <body>: the owning VoiceChannel lives in the sidebar's channel
+  // list, which is display:none while the Users view is up — a fixed-position
+  // modal nested under it would never paint.
+  return createPortal(
     <div className="source-picker-overlay" onClick={onCancel}>
       <motion.div
         className="source-picker-modal"
@@ -496,7 +500,8 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
           </div>
         </div>
       </motion.div>
-    </div>
+    </div>,
+    document.body
   )
 }
 

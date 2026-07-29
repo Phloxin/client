@@ -211,9 +211,11 @@ function ServerMenu({
 
   return (
     <div className={`server-menu${connected ? '' : ' disconnected'}`}>
-      {/* Identity row. Right-click (connected) opens the traffic/summary menu. */}
+      {/* Identity row. Left-click (connected) opens the server logs; right-click
+          opens the logs/summary menu. */}
       <div
         className="server-menu-trigger"
+        onClick={() => connected && onViewServerTraffic?.()}
         onContextMenu={(e) => {
           // Right-click actions only apply to the connected server.
           if (!connected) return
@@ -231,7 +233,11 @@ function ServerMenu({
             className="server-menu-disconnect"
             title="Disconnect from server"
             aria-label="Disconnect from server"
-            onClick={handleDisconnect}
+            onClick={(e) => {
+              // Don't also trip the row's open-logs click.
+              e.stopPropagation()
+              handleDisconnect()
+            }}
           >
             <IconPlugConnectedX size={16} />
           </button>
@@ -311,7 +317,7 @@ function ServerMenu({
               onViewServerTraffic?.()
             }}
           >
-            <IconActivity size={16} /> View server traffic
+            <IconActivity size={16} /> Server logs
           </button>
           <button
             type="button"

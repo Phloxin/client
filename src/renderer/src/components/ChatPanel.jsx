@@ -13,7 +13,8 @@ import {
   IconPhoto,
   IconArrowDown,
   IconMoodPlus,
-  IconUsers
+  IconUsers,
+  IconArrowBackUp
 } from '@tabler/icons-react'
 import { motion, AnimatePresence } from 'motion/react'
 import ImageViewer from './ImageViewer'
@@ -36,6 +37,10 @@ const GROUP_WINDOW_MS = 7 * 60 * 1000
 
 // Quick reactions shown in the hover bar on every message.
 const QUICK_REACTIONS = ['👍', '👎', '😂', '❤️', '🍅']
+
+// Names listed in a reaction's hover tooltip before the rest become "+N others".
+const MAX_REACTION_NAMES = 8
+const reactionNameList = new Intl.ListFormat('en', { type: 'conjunction' })
 
 // Unsent composer text per channel, so a draft survives switching chats (the
 // panel remounts per channel). ponytail: in-memory only — gone on app restart;
@@ -358,6 +363,21 @@ function composerMentionNodes(text, clients) {
   return out
 }
 
+// One-line summary of a message for a reply preview. Markdown is left as-is
+// (a preview isn't the place to render it), but `<@id>` tokens are resolved the
+// same way the message body resolves them, and newlines collapse so a
+// multi-line quote can't push the preview open — CSS truncates the rest.
+function previewText(msg, resolveMention) {
+  const text = (msg.text || '')
+    .replace(/<@(\d+)>/g, (raw, id) => `@${resolveMention(id) ?? 'unknown'}`)
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (text) return text
+  const count = msg.attachments?.length || 0
+  if (count) return `${count} attachment${count === 1 ? '' : 's'}`
+  return msg.embeds?.length ? 'Embed' : ''
+}
+
 // "Alice is typing", "Alice and Bob are typing", etc.
 function formatTyping(names) {
   if (names.length === 1) return `${names[0]} is typing`
@@ -383,6 +403,9 @@ function ChatPanel({
 }) {
   const [text, setText] = useState(() => drafts.get(channelKey) || '')
   const [attachments, setAttachments] = useState([])
+  // Feed entry this message will reply to, or null. Declared before the
+  // channel-swap block below, which clears it during render.
+  const [replyTo, setReplyTo] = useState(null)
 
   // Swap the composer over to the new channel's draft when channelKey changes
   // without a remount (in-render state adjustment, per React docs).
@@ -390,6 +413,9 @@ function ChatPanel({
   if (draftKey !== channelKey) {
     setDraftKey(channelKey)
     setText(drafts.get(channelKey) || '')
+    // Replies are same-channel only, so the pending target can't survive a
+    // channel switch (drafts do — they're stored per channel).
+    setReplyTo(null)
   }
 
   const updateText = (value) => {
@@ -694,11 +720,12 @@ function ChatPanel({
     if (disabled) return
     const trimmed = text.trim()
     if (!trimmed && !attachments.length) return
-    onSend?.(encodeMentions(trimmed, clients), attachments)
+    onSend?.(encodeMentions(trimmed, clients), attachments, replyTo?.id)
     setMention(null)
     setText('')
     drafts.delete(channelKey)
     setAttachments([])
+    setReplyTo(null)
     setShowEmoji(false)
   }
 
@@ -721,6 +748,13 @@ function ChatPanel({
         setMention(null)
         return
       }
+    }
+    // Escape drops the pending reply (the mention popup above already claimed
+    // Escape for itself while it's open).
+    if (e.key === 'Escape' && replyTo) {
+      e.preventDefault()
+      setReplyTo(null)
+      return
     }
     // Up-arrow in an empty composer jumps straight to editing your own most
     // recent message (matching Discord/Slack). Only fires when the last message
@@ -788,6 +822,46 @@ function ChatPanel({
   )
 
   const resolveAvatar = (entry) => clients?.find((c) => c.id === entry.authorId)?.avatar
+
+  // Start replying to a message; the composer takes focus so typing can carry on
+  // from wherever the user was reading.
+  const startReply = (entry) => {
+    setReplyTo(entry)
+    inputRef.current?.focus()
+  }
+
+  // Jump to a reply's target. Only works for messages already loaded into the
+  // feed — nothing is fetched on demand, so a reply to something far up a long
+  // history just doesn't move.
+  // ponytail: no fetch-and-scroll; add it if replies to old messages get common.
+  const jumpToMessage = (id) => {
+    const el = listRef.current?.querySelector(`[data-mid="${CSS.escape(String(id))}"]`)
+    if (!el) return
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    // Restart the flash if the same message is jumped to twice in a row.
+    el.classList.remove('chat-message-flash')
+    void el.offsetWidth
+    el.classList.add('chat-message-flash')
+  }
+
+  // Hover text for a reaction chip: who reacted, with anyone we can't name
+  // (someone who has since left the server) folded into "+N others". Ids
+  // compare as strings — roster ids may be numbers while the server's are
+  // snowflake strings.
+  const reactionTitle = (r) => {
+    const names = (r.userIds || []).map((id) =>
+      String(id) === String(selfId)
+        ? 'You'
+        : clients?.find((c) => String(c.id) === String(id))?.name || null
+    )
+    const known = names.filter(Boolean).slice(0, MAX_REACTION_NAMES)
+    const others = r.count - known.length
+    if (!known.length) return `${r.count} reaction${r.count === 1 ? '' : 's'}`
+    const list = reactionNameList.format(
+      others > 0 ? [...known, `${others} other${others === 1 ? '' : 's'}`] : known
+    )
+    return `${list} reacted with ${r.emoji}`
+  }
 
   // The message author's roster entry, or undefined if they've since left — in
   // which case their name/avatar stay inert (no summary link, no menu).
@@ -858,9 +932,12 @@ function ChatPanel({
           // Group consecutive messages from the same author (within a short
           // window, and not split by a system notice or day divider): only the
           // first shows the avatar + author + time; the rest are bare lines.
+          // A reply always starts its own group: its preview line needs the
+          // header above it to make sense.
           const grouped =
             !compact &&
             !dayDivider &&
+            !entry.replyTo &&
             prev &&
             prev.type === 'message' &&
             prev.authorId === entry.authorId &&
@@ -885,12 +962,15 @@ function ChatPanel({
             visibleAttachments.find((a) => a.kind === 'image')?.url ||
             (entry.embeds || []).map((em) => (em.image || em.thumbnail)?.url).find(Boolean) ||
             null
-          const hasMenu = canManage || entry.text || imageUrl
+          // Replying needs a live composer, but copying doesn't — so a peeked
+          // (disabled) channel still gets a menu, just without Reply.
+          const canReply = !disabled && !isEditing
+          const hasMenu = canReply || canManage || entry.text || imageUrl
           // Accent wash on messages that mention us (directly or @everyone).
           const mentionsMe =
             entry.mentionEveryone || (selfId != null && (entry.mentions || []).includes(selfId))
           return (
-            <div key={entry.id} data-anim-status={status}>
+            <div key={entry.id} data-mid={entry.id} data-anim-status={status}>
               {dayDivider}
               <div
                 className={`chat-message${grouped ? ' grouped' : ''}${mentionsMe ? ' mentioned' : ''}`}
@@ -904,7 +984,10 @@ function ChatPanel({
                           y: e.clientY,
                           text: entry.text || null,
                           imageUrl,
-                          canManage
+                          canManage,
+                          // The whole entry, so Reply can seed the composer bar
+                          // with the author's name as well as the id.
+                          entry: canReply ? entry : null
                         })
                       }
                     : undefined
@@ -934,6 +1017,14 @@ function ChatPanel({
                     >
                       <IconMoodPlus size={16} />
                     </button>
+                    <button
+                      type="button"
+                      className="chat-hover-action"
+                      title="Reply"
+                      onClick={() => startReply(entry)}
+                    >
+                      <IconArrowBackUp size={16} />
+                    </button>
                   </div>
                 )}
                 {grouped ? (
@@ -954,6 +1045,28 @@ function ChatPanel({
                   </span>
                 )}
                 <div className="chat-message-body">
+                  {entry.replyTo &&
+                    (entry.replyTo.message ? (
+                      <button
+                        type="button"
+                        className="chat-reply-preview"
+                        title="Jump to the replied message"
+                        onClick={() => jumpToMessage(entry.replyTo.id)}
+                      >
+                        <IconArrowBackUp size={13} className="chat-reply-icon" />
+                        <span className="chat-reply-author">
+                          {resolveName(entry.replyTo.message)}
+                        </span>
+                        <span className="chat-reply-text">
+                          {previewText(entry.replyTo.message, resolveMention)}
+                        </span>
+                      </button>
+                    ) : (
+                      <div className="chat-reply-preview chat-reply-gone">
+                        <IconArrowBackUp size={13} className="chat-reply-icon" />
+                        <span className="chat-reply-text">Original message was deleted</span>
+                      </div>
+                    ))}
                   {!grouped && (
                     <div className="chat-message-header">
                       {resolveClient(entry) ? (
@@ -1029,7 +1142,7 @@ function ChatPanel({
                           key={r.emoji}
                           type="button"
                           className={`chat-reaction${r.me ? ' mine' : ''}`}
-                          title={`${r.count} reaction${r.count === 1 ? '' : 's'}`}
+                          title={reactionTitle(r)}
                           onClick={() => onReactMessage?.(entry.id, r.emoji)}
                           layout={msgAnim}
                           // Only re-measure when this message's own reactions
@@ -1088,6 +1201,23 @@ function ChatPanel({
           </button>
         )}
       </div>
+
+      {replyTo && (
+        <div className="chat-replying-bar">
+          <IconArrowBackUp size={14} className="chat-reply-icon" />
+          <span className="chat-replying-text">
+            Replying to <strong>{resolveName(replyTo)}</strong>
+          </span>
+          <button
+            type="button"
+            className="chat-replying-cancel"
+            title="Cancel reply (Esc)"
+            onClick={() => setReplyTo(null)}
+          >
+            <IconX size={14} />
+          </button>
+        </div>
+      )}
 
       {!!attachments.length && (
         <div className="chat-attachment-previews">
@@ -1251,6 +1381,22 @@ function ChatPanel({
           ref={msgMenuRef}
           style={msgMenuStyle}
         >
+          {msgMenu.entry && (
+            <button
+              type="button"
+              className="client-context-menu-item"
+              onClick={() => {
+                startReply(msgMenu.entry)
+                setMsgMenu(null)
+              }}
+            >
+              <IconArrowBackUp size={16} />
+              Reply
+            </button>
+          )}
+          {msgMenu.entry && (msgMenu.text || msgMenu.imageUrl) && (
+            <div className="client-context-menu-divider" aria-hidden="true" />
+          )}
           {msgMenu.text && (
             <button
               type="button"
@@ -1279,7 +1425,7 @@ function ChatPanel({
           )}
           {msgMenu.canManage && (
             <>
-              {(msgMenu.text || msgMenu.imageUrl) && (
+              {(msgMenu.entry || msgMenu.text || msgMenu.imageUrl) && (
                 <div className="client-context-menu-divider" aria-hidden="true" />
               )}
               <button

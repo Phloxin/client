@@ -102,9 +102,21 @@ function messageFromApi(msg) {
     // are skipped — the server marks them NOT YET IMPLEMENTED.
     reactions: (msg.reactions || [])
       .filter((r) => r.emoji?.type === 'basic')
-      .map((r) => ({ emoji: r.emoji.value, count: r.count, me: r.me })),
+      // `user_ids` names everyone who reacted, for the chip's hover tooltip.
+      .map((r) => ({ emoji: r.emoji.value, count: r.count, me: r.me, userIds: r.user_ids || [] })),
     mentions: msg.mentions || [],
     mentionEveryone: !!msg.mention_everyone,
+    // Reply target. `message_reference` survives the target's deletion while
+    // `referenced_message` goes null, which is how the preview knows to say the
+    // original is gone. The server bounds previews to one level (the referenced
+    // message always carries a null reference of its own), so this recursion
+    // can't run away.
+    replyTo: msg.message_reference
+      ? {
+          id: msg.message_reference.message_id,
+          message: msg.referenced_message ? messageFromApi(msg.referenced_message) : null
+        }
+      : null,
     // Server timestamp is seconds since the UNIX epoch; JS Date wants ms.
     ts: msg.timestamp,
     // Milliseconds since the UNIX epoch of the last edit, or null if never
@@ -163,9 +175,28 @@ function Main() {
   // roster no longer lists, and `clients` is replaced wholesale by Ready.
   const [presences, setPresences] = useState({})
   // Server-traffic log (newest first): members crossing the online/offline
-  // boundary while we're lurking. Fed by PresenceUpdate below, cleared on
+  // boundary while we're lurking, plus moderation events (kick/ban). Fed by
+  // PresenceUpdate / ClientKicked / ClientBanned below, cleared on
   // connect/disconnect. Rendered by ServerTraffic when not in a voice channel.
   const [traffic, setTraffic] = useState([])
+  // Append one entry. `action` is the rendered verb; `online` drives the presence
+  // dot, or null for non-member subjects (channels) which render as `#` instead.
+  const logTraffic = useCallback((subjectId, name, action, online) => {
+    const now = Date.now()
+    setTraffic((prev) =>
+      [
+        {
+          id: `${subjectId}-${now}`,
+          clientId: online === null ? null : subjectId,
+          name,
+          action,
+          online,
+          ts: now
+        },
+        ...prev
+      ].slice(0, MAX_LOG_ENTRIES)
+    )
+  }, [])
   const [feed, setFeed] = useState([])
   const [viewMode, setViewMode] = useState('log') // 'log' or 'video'
   const [servers, setServers] = useState([])
@@ -1809,19 +1840,7 @@ function Main() {
         const isOffline = statusOf(data) === 'offline'
         if (wasOffline !== isOffline && data.client_id !== selfIdRef.current) {
           const name = clientsRef.current.find((c) => c.id === data.client_id)?.name || 'Someone'
-          const now = Date.now()
-          setTraffic((prev) =>
-            [
-              {
-                id: `${data.client_id}-${now}`,
-                clientId: data.client_id,
-                name,
-                online: !isOffline,
-                ts: now
-              },
-              ...prev
-            ].slice(0, MAX_LOG_ENTRIES)
-          )
+          logTraffic(data.client_id, name, isOffline ? 'went offline' : 'came online', !isOffline)
         }
         // Our own away status toggling (set from the status menu, echoed back).
         if (data.client_id === selfIdRef.current) {
@@ -2082,6 +2101,10 @@ function Main() {
         }
       } else if (ev === 'ChannelCreated' || ev === 'ChannelUpdated') {
         queueChannelUpsert(data)
+        // DMs are private, so only server channels reach the traffic log.
+        if (ev === 'ChannelCreated' && data.type !== 'dm') {
+          logTraffic(data.id, data.name || 'A channel', 'was created', null)
+        }
         // Someone else edited the channel we're currently in. Our own edits play
         // the plain "channel edited" cue and mark the echo (consumed here) so this
         // stays silent for them.
@@ -2095,6 +2118,12 @@ function Main() {
       } else if (ev === 'ChannelDeleted') {
         // Tolerate either a full channel object or a bare id.
         const removedId = data !== null && typeof data === 'object' ? data.id : data
+        // Name only travels on the full-object form, so fall back to the roster
+        // copy (still present — this runs before the filter below).
+        const removed = channelsRef.current.find((ch) => ch.id === removedId)
+        if (removed?.type !== 'dm') {
+          logTraffic(removedId, removed?.name || data?.name || 'A channel', 'was deleted', null)
+        }
         setChannels((prev) => prev.filter((ch) => ch.id !== removedId))
       } else if (ev === 'TypingStarted') {
         // { channel_id, timestamp, client } — refresh this client's typing entry
@@ -2128,6 +2157,9 @@ function Main() {
         ) {
           playUiSound('neutral_kicked_server_currentchannel')
         }
+        if (data.client?.id !== selfIdRef.current) {
+          logTraffic(data.client?.id, data.client?.name || 'Someone', 'was kicked', false)
+        }
       } else if (ev === 'ClientBanned') {
         // { client, duration_seconds, reason }. Drop from the roster and record
         // the ban so they surface in the Users tab (where they can be unbanned).
@@ -2137,6 +2169,9 @@ function Main() {
           data.client?.channel_id === selfChannelIdRef.current
         ) {
           playUiSound('neutral_banned_server_currentchannel')
+        }
+        if (data.client?.id !== selfIdRef.current) {
+          logTraffic(data.client.id, data.client.name || 'Someone', 'was banned', false)
         }
         setClients((prev) => prev.filter((c) => c.id !== data.client.id))
         setBans((prev) =>
@@ -2244,9 +2279,11 @@ function Main() {
 
         // Voice ticket (op 6): the server's reply to a VoiceStateUpdate that
         // moved us from no channel into a voice one. Hand it to soup, which is
-        // opening (or about to open) the voice socket that needs it.
+        // opening (or about to open) the voice socket that needs it. The
+        // optional voice_endpoint says which host that ticket is good for, and
+        // has to travel with it.
         if (msg.op === 6) {
-          receiveVoiceTicket(msg.ticket)
+          receiveVoiceTicket(msg.ticket, msg.voice_endpoint)
           return
         }
 
@@ -2308,7 +2345,7 @@ function Main() {
       if (ws) ws.close()
       eventsWsRef.current = null
     }
-  }, [token, loadChannelHistory, handleDisconnect])
+  }, [token, loadChannelHistory, handleDisconnect, logTraffic])
 
   // Drop typing entries as they expire. Re-scheduled to the soonest expiry each
   // time the set changes (no always-on interval); a fresh TypingStarted bumps an
@@ -2338,12 +2375,17 @@ function Main() {
   }
 
   // Send a chat message (with any attachments) to the channel we're currently in
-  const handleSendMessage = async (text, attachments) => {
+  const handleSendMessage = async (text, attachments, replyToId) => {
     if (activeChatChannelId == null) return
 
     const payload = {
       content: text || undefined,
-      attachments: attachments.map((a, i) => ({ id: i, filename: a.file.name, description: null }))
+      attachments: attachments.map((a, i) => ({ id: i, filename: a.file.name, description: null })),
+      // Replies are same-channel only, so `channel_id` is left off (the server
+      // rejects it when it names another channel). `fail_if_not_exists` keeps
+      // its default: replying to a message that's since been deleted fails
+      // loudly rather than silently sending a bare message.
+      message_reference: replyToId ? { message_id: replyToId } : undefined
     }
 
     const formData = new FormData()
@@ -2400,18 +2442,28 @@ function Main() {
         if (e.type !== 'message' || e.id !== messageId) return e
         const reactions = e.reactions || []
         const existing = reactions.find((r) => r.emoji === emoji)
+        const self = selfIdRef.current
+        // Keep `userIds` in step with the count so the hover tooltip doesn't lag
+        // behind the optimistic flip; the MessageUpdated broadcast overwrites it.
+        const withoutSelf = (ids) => (ids || []).filter((id) => String(id) !== String(self))
         let next
         if (existing?.me) {
           // Un-react: drop our count; remove the chip when it hits zero.
           next = reactions
-            .map((r) => (r.emoji === emoji ? { ...r, count: r.count - 1, me: false } : r))
+            .map((r) =>
+              r.emoji === emoji
+                ? { ...r, count: r.count - 1, me: false, userIds: withoutSelf(r.userIds) }
+                : r
+            )
             .filter((r) => r.count > 0)
         } else if (existing) {
           next = reactions.map((r) =>
-            r.emoji === emoji ? { ...r, count: r.count + 1, me: true } : r
+            r.emoji === emoji
+              ? { ...r, count: r.count + 1, me: true, userIds: [...withoutSelf(r.userIds), self] }
+              : r
           )
         } else {
-          next = [...reactions, { emoji, count: 1, me: true }]
+          next = [...reactions, { emoji, count: 1, me: true, userIds: self == null ? [] : [self] }]
         }
         return { ...e, reactions: next }
       })

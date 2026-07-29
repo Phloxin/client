@@ -4,7 +4,7 @@ import { loadRnnoise, RnnoiseWorkletNode } from '@sapphi-red/web-noise-suppresso
 import rnnoiseWasmPath from '@sapphi-red/web-noise-suppressor/rnnoise.wasm?url'
 import rnnoiseSimdWasmPath from '@sapphi-red/web-noise-suppressor/rnnoise_simd.wasm?url'
 import rnnoiseWorkletPath from '@sapphi-red/web-noise-suppressor/rnnoiseWorklet.js?url'
-import { apiBase, wsBase, getServerHost } from './serverConfig'
+import { apiBase, voiceSocketUrl, getServerHost } from './serverConfig'
 import { authFetch } from './auth'
 import { startScreenAudio, onScreenAudioError } from './screenAudio'
 import { detachRtpSender, recoverMicRepublish, runBeforeServerProduce } from './mediaRecovery'
@@ -488,17 +488,23 @@ export async function connect(callbacks = {}) {
 // The REST endpoint stays as the fallback: a push we never see — events socket
 // down, or the server already considered us in the channel — must not strand a
 // join.
+//
+// A ticket also names the host it is good for: `voice_endpoint` is present when
+// the server serves /voice from somewhere other than the API host, and absent
+// otherwise. It travels with the ticket rather than being remembered, because a
+// server that moves its voice plane changes it — so the two are stashed,
+// consumed, and used together, and never separately.
 const VOICE_TICKET_PUSH_WAIT_MS = 3000
 const VOICE_TICKET_MAX_AGE_MS = 20_000
-let pushedTicket = null // { ticket, receivedAt } — unconsumed push
+let pushedTicket = null // { ticket, voiceEndpoint, receivedAt } — unconsumed push
 let ticketWaiter = null // resolver for an acquireTicket() currently waiting
 
 // Hand a server-pushed ticket to whoever is connecting (or stash it for the
 // connect that's about to start).
-export function receiveVoiceTicket(ticket) {
+export function receiveVoiceTicket(ticket, voiceEndpoint) {
   if (typeof ticket !== 'string' || ticket === '') return
   console.log('[Soup] Voice ticket pushed by server')
-  pushedTicket = { ticket, receivedAt: Date.now() }
+  pushedTicket = { ticket, voiceEndpoint, receivedAt: Date.now() }
   const waiter = ticketWaiter
   ticketWaiter = null
   waiter?.()
@@ -508,9 +514,9 @@ export function receiveVoiceTicket(ticket) {
 // expired it (presenting a dead ticket costs us a failed socket, not a retry).
 function takePushedTicket() {
   if (!pushedTicket) return null
-  const { ticket, receivedAt } = pushedTicket
+  const { ticket, voiceEndpoint, receivedAt } = pushedTicket
   pushedTicket = null
-  return Date.now() - receivedAt > VOICE_TICKET_MAX_AGE_MS ? null : ticket
+  return Date.now() - receivedAt > VOICE_TICKET_MAX_AGE_MS ? null : { ticket, voiceEndpoint }
 }
 
 function waitForPushedTicket() {
@@ -528,11 +534,11 @@ function waitForPushedTicket() {
   })
 }
 
-// A ticket for the connection we're about to open: the server's push if we have
-// (or shortly get) one, else minted over REST.
+// A ticket for the connection we're about to open, with the endpoint it is good
+// for: the server's push if we have (or shortly get) one, else minted over REST.
 async function acquireTicket() {
-  const ticket = takePushedTicket() ?? (await waitForPushedTicket())
-  if (ticket) return ticket
+  const pushed = takePushedTicket() ?? (await waitForPushedTicket())
+  if (pushed) return pushed
   // The user left while we were waiting — don't spend a request on a join
   // nobody is waiting for any more.
   if (intentionalClose) return null
@@ -543,8 +549,8 @@ async function acquireTicket() {
   console.warn('[Soup] No pushed voice ticket; requesting one over REST')
   const res = await authFetch(`${apiBase()}/server/voice`)
   if (!res.ok) throw new Error(`Voice ticket request failed: ${res.status}`)
-  const { ticket: fetched } = await res.json()
-  return fetched
+  const { ticket, voice_endpoint: voiceEndpoint } = await res.json()
+  return ticket ? { ticket, voiceEndpoint } : null
 }
 
 // Open the voice WebSocket: take a fresh (single-use, 30s) ticket, wire every
@@ -552,16 +558,20 @@ async function acquireTicket() {
 // reconnect attempt — each call replaces the shared `ws`. A stale-socket guard
 // on every handler ignores a superseded socket once a newer one takes over.
 async function openSocket() {
-  // Step 1 — get ticket
-  const ticket = await acquireTicket()
+  // Step 1 — get ticket, and the endpoint it is good for
+  const acquired = await acquireTicket()
   // Acquiring waits on the server's push (and possibly the network), so the
   // user may have left meanwhile — opening now would orphan a socket that
   // nothing is holding.
-  if (!ticket || intentionalClose) return
+  if (!acquired || intentionalClose) return
+  const { ticket, voiceEndpoint } = acquired
   console.log('[Soup] Got ticket:', ticket)
 
-  // Step 2 — connect to voice WebSocket
-  const socket = new WebSocket(`${wsBase()}/voice`)
+  // Step 2 — connect to voice WebSocket, on the voice host when the server
+  // named one and on the API host otherwise.
+  const url = voiceSocketUrl(voiceEndpoint)
+  console.log('[Soup] Voice endpoint:', url)
+  const socket = new WebSocket(url)
   ws = socket
   console.log('[Soup] WebSocket created, readyState:', socket.readyState)
 

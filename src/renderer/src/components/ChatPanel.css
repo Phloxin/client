@@ -823,6 +823,114 @@ a.chat-embed-title:hover {
   border: none;
 }
 
+/* ── Replies ───────────────────────────────────────────────────────────── */
+
+/* The quoted line above a reply. A button when the target is still around
+   (click to jump to it), a plain div once it's been deleted. */
+.chat-reply-preview {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  margin-bottom: 2px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  text-align: left;
+}
+
+button.chat-reply-preview {
+  cursor: pointer;
+}
+
+button.chat-reply-preview:hover .chat-reply-text,
+button.chat-reply-preview:hover .chat-reply-author {
+  color: var(--color-text);
+}
+
+button.chat-reply-preview:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+.chat-reply-icon {
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+}
+
+.chat-reply-author {
+  flex-shrink: 0;
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-secondary);
+}
+
+/* One line only — the summary is already newline-collapsed in JS. */
+.chat-reply-text {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.chat-reply-gone .chat-reply-text {
+  font-style: italic;
+}
+
+/* Brief tint on the message a reply jumped to, so it's obvious where you
+   landed. Class is added by hand in JS and left on until the next jump. */
+.chat-message-flash {
+  animation: chat-message-flash 1.2s ease-out;
+}
+
+@keyframes chat-message-flash {
+  from {
+    background: color-mix(in srgb, var(--color-primary) 18%, transparent);
+  }
+  to {
+    background: transparent;
+  }
+}
+
+/* "Replying to X" strip above the composer. */
+.chat-replying-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 20px 0;
+  padding: 5px 8px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--color-background-mute);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+.chat-replying-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.chat-replying-cancel {
+  display: flex;
+  flex-shrink: 0;
+  padding: 2px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.chat-replying-cancel:hover {
+  background: var(--color-background-soft);
+  color: var(--color-text);
+}
+
 /* ── Pending attachment previews (above the composer) ──────────────────── */
 
 .chat-attachment-previews {

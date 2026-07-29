@@ -484,19 +484,6 @@ app.whenReady().then(() => {
   // Auto-update wiring (GitHub Releases). IPC + events for the General tab.
   setupUpdater()
 
-  // Answers "is video encode/decode accelerated in THIS build" from any bug
-  // report — the answer drifts across Electron upgrades. Logged on
-  // gpu-info-update, NOT at ready: the GPU process only launches with the first
-  // window, so a ready-time snapshot reads all-software even on healthy
-  // machines. Deduped; the last line printed is the settled truth.
-  let lastGpuStatus = ''
-  app.on('gpu-info-update', () => {
-    const status = JSON.stringify(app.getGPUFeatureStatus())
-    if (status === lastGpuStatus) return
-    lastGpuStatus = status
-    console.log('[GPU] feature status:', status)
-  })
-
   // Default open or close DevTools by F12 in development
   // and ignore CommandOrControl + R in production.
   // see https://github.com/alex8088/electron-toolkit/tree/master/packages/utils
@@ -541,6 +528,24 @@ app.whenReady().then(() => {
     selectedAudioMode = typeof options.audioMode === 'string' ? options.audioMode : 'none'
     return true
   })
+
+  // Packaged builds load the renderer from file://, which has a null origin, so
+  // framed YouTube requests carry no Referer and the player refuses to start
+  // ("error 153"). Dev serves the renderer over the vite dev server, which is
+  // why it only breaks in releases — so send what dev sends when the page can't
+  // supply a referrer of its own. YouTube rejects its own domain here (error
+  // 152), it has to look like an ordinary embedding site.
+  // ponytail: forged header; the real fix is serving the packaged renderer over
+  // http://127.0.0.1 so prod has a genuine origin, do that if this stops working.
+  session.defaultSession.webRequest.onBeforeSendHeaders(
+    { urls: ['https://www.youtube.com/*', 'https://www.youtube-nocookie.com/*'] },
+    (details, callback) => {
+      if (!details.requestHeaders.Referer) {
+        details.requestHeaders.Referer = 'http://localhost:5173/'
+      }
+      callback({ requestHeaders: details.requestHeaders })
+    }
+  )
 
   // Enable screen capture via getDisplayMedia in renderer. Honors the source
   // chosen via the picker; on Wayland the enumeration below opens the OS

@@ -522,14 +522,14 @@ function VideoGrid({
           <button
             type="button"
             className="stream-watch-cta"
-            title="Watch"
+            title="Play stream"
             onClick={(e) => {
               e.stopPropagation()
               onSetStreamWatched?.(s.clientId, true)
             }}
           >
             <IconPlayerPlayFilled size={variant === 'thumbnail' ? 13 : 15} />
-            {variant !== 'thumbnail' && <span>Watch</span>}
+            {variant !== 'thumbnail' && <span>Play</span>}
           </button>
         ) : (
           <button
