@@ -41,6 +41,35 @@ export function wsBase() {
   return `${insecure() ? 'ws' : 'wss'}://${currentHost}`
 }
 
+// Full URL for the voice signaling socket.
+//
+// A server may serve /voice from a different host than the API — it can run the
+// SFU as a separate process — in which case every voice ticket it hands out
+// arrives with the origin that ticket is good for. The value travels with the
+// ticket rather than with the server, so pass whichever one came with the
+// ticket about to be presented rather than remembering an earlier one.
+//
+// Absent means /voice is on the API host: both the default deployment and what
+// every server did before the field existed.
+export function voiceSocketUrl(voiceEndpoint) {
+  return `${voiceOrigin(voiceEndpoint)}/voice`
+}
+
+// An origin is scheme, host, and optional port — nothing else, because we
+// append the path ourselves. Anything else is a server asking us to dial
+// somewhere we cannot build a URL for, so fall back to the API host and say so:
+// a bad endpoint otherwise surfaces only as voice that never connects.
+function voiceOrigin(voiceEndpoint) {
+  if (typeof voiceEndpoint !== 'string') return wsBase()
+  const origin = voiceEndpoint.trim().replace(/\/+$/, '')
+  if (origin === '') return wsBase()
+  if (!/^wss?:\/\/[^/?#]+$/.test(origin)) {
+    console.warn('[ServerConfig] Ignoring an unusable voice_endpoint:', voiceEndpoint)
+    return wsBase()
+  }
+  return origin
+}
+
 // Throw on a failed API response, preferring the server's human-readable
 // message. Handler errors come back as `{ "error": "..." }`; fall back to the
 // status code when there's no JSON body. Returns the response when it's ok, so
