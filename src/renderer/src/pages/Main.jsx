@@ -2279,9 +2279,11 @@ function Main() {
 
         // Voice ticket (op 6): the server's reply to a VoiceStateUpdate that
         // moved us from no channel into a voice one. Hand it to soup, which is
-        // opening (or about to open) the voice socket that needs it.
+        // opening (or about to open) the voice socket that needs it. The
+        // optional voice_endpoint says which host that ticket is good for, and
+        // has to travel with it.
         if (msg.op === 6) {
-          receiveVoiceTicket(msg.ticket)
+          receiveVoiceTicket(msg.ticket, msg.voice_endpoint)
           return
         }
 
