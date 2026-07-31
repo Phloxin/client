@@ -1,0 +1,274 @@
+:root {
+  --bg: #0d0f14;
+  --panel: #151922;
+  --text: #e6e9ef;
+  --muted: #9aa4b8;
+  --accent: #6d8cff;
+  --line: #232838;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.6 system-ui, -apple-system, Segoe UI, sans-serif;
+  background-image: radial-gradient(
+    80rem 40rem at 50% -10rem,
+    rgba(109, 140, 255, 0.18),
+    transparent 70%
+  );
+}
+
+main {
+  max-width: 60rem;
+  margin: 0 auto;
+  padding: 5rem 1.5rem 6rem;
+}
+
+/* Hero */
+
+header {
+  text-align: center;
+}
+
+header img {
+  width: 6.5rem;
+  height: 6.5rem;
+}
+
+h1 {
+  font-size: clamp(2.5rem, 7vw, 4rem);
+  margin: 1rem 0 0.5rem;
+  letter-spacing: -0.03em;
+}
+
+.tagline {
+  color: var(--muted);
+  font-size: 1.2rem;
+  max-width: 34rem;
+  margin: 0 auto 2.5rem;
+}
+
+.cta {
+  display: flex;
+  gap: 0.75rem;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+a.btn {
+  display: inline-block;
+  padding: 0.75rem 1.5rem;
+  border-radius: 0.6rem;
+  text-decoration: none;
+  font-weight: 600;
+  border: 1px solid var(--line);
+  color: var(--text);
+}
+
+a.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #0d0f14;
+}
+
+a.btn:hover {
+  filter: brightness(1.1);
+}
+
+.platforms {
+  color: var(--muted);
+  font-size: 0.9rem;
+  text-align: center;
+  margin-top: 1rem;
+}
+
+/* Screenshot tabs */
+
+.showcase {
+  margin-top: 6rem;
+}
+
+.showcase h2 {
+  text-align: center;
+  font-size: 2rem;
+  margin: 0 0 0.25rem;
+  letter-spacing: -0.02em;
+}
+
+.sub {
+  text-align: center;
+  color: var(--muted);
+  margin: 0 0 2rem;
+}
+
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  justify-content: center;
+  margin-bottom: 1.5rem;
+}
+
+.tabs button {
+  font: inherit;
+  font-weight: 600;
+  color: var(--muted);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  padding: 0.55rem 1rem;
+  cursor: pointer;
+}
+
+.tabs button:hover {
+  color: var(--text);
+}
+
+.tabs button[aria-selected='true'] {
+  color: var(--text);
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.panel {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr;
+  gap: 2rem;
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 0.8rem;
+  padding: 1.5rem;
+}
+
+.panel[hidden] {
+  display: none;
+}
+
+.panel:not([hidden]) {
+  animation: panel-in 0.35s ease;
+}
+
+@keyframes panel-in {
+  from {
+    opacity: 0;
+    transform: translateX(var(--from, 2.5rem));
+  }
+}
+
+.panel img {
+  width: 100%;
+  border-radius: 0.5rem;
+  border: 1px solid var(--line);
+}
+
+.panel h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1.4rem;
+  letter-spacing: -0.02em;
+}
+
+.panel p {
+  margin: 0 0 1rem;
+  color: var(--muted);
+}
+
+.panel ul {
+  margin: 0;
+  padding-left: 1.1rem;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.panel li {
+  margin-bottom: 0.35rem;
+}
+
+@media (max-width: 45rem) {
+  .panel {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .panel:not([hidden]) {
+    animation: none;
+  }
+}
+
+/* Scroll-in reveal. .reveal is added by script.js, so without JS nothing hides. */
+
+.reveal {
+  opacity: 0;
+  transform: translateY(1.25rem);
+  transition:
+    opacity 0.5s ease,
+    transform 0.5s ease;
+}
+
+.reveal.in {
+  opacity: 1;
+  transform: none;
+}
+
+/* Feature cards */
+
+.grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  margin-top: 5rem;
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 0.8rem;
+  padding: 1.25rem 1.4rem;
+}
+
+.card h3 {
+  margin: 0 0 0.4rem;
+  font-size: 1.05rem;
+}
+
+.card p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+/* A row of cards crosses the fold together; stagger so it doesn't pop as one. */
+.card:nth-child(2) {
+  transition-delay: 0.06s;
+}
+.card:nth-child(3) {
+  transition-delay: 0.12s;
+}
+.card:nth-child(4) {
+  transition-delay: 0.18s;
+}
+.card:nth-child(5) {
+  transition-delay: 0.24s;
+}
+.card:nth-child(6) {
+  transition-delay: 0.3s;
+}
+
+/* Footer */
+
+footer {
+  margin-top: 5rem;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+footer a {
+  color: var(--muted);
+}

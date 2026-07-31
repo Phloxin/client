@@ -15,112 +15,8 @@
       content="A desktop client for voice, video/screen-share, and text chat."
     />
     <meta property="og:image" content="icon.png" />
-    <style>
-      :root {
-        --bg: #0d0f14;
-        --panel: #151922;
-        --text: #e6e9ef;
-        --muted: #9aa4b8;
-        --accent: #6d8cff;
-        --line: #232838;
-      }
-      * {
-        box-sizing: border-box;
-      }
-      body {
-        margin: 0;
-        background: var(--bg);
-        color: var(--text);
-        font: 16px/1.6 system-ui, -apple-system, Segoe UI, sans-serif;
-        background-image: radial-gradient(
-          80rem 40rem at 50% -10rem,
-          rgba(109, 140, 255, 0.18),
-          transparent 70%
-        );
-      }
-      main {
-        max-width: 60rem;
-        margin: 0 auto;
-        padding: 5rem 1.5rem 6rem;
-      }
-      header {
-        text-align: center;
-      }
-      header img {
-        width: 6.5rem;
-        height: 6.5rem;
-      }
-      h1 {
-        font-size: clamp(2.5rem, 7vw, 4rem);
-        margin: 1rem 0 0.5rem;
-        letter-spacing: -0.03em;
-      }
-      .tagline {
-        color: var(--muted);
-        font-size: 1.2rem;
-        max-width: 34rem;
-        margin: 0 auto 2.5rem;
-      }
-      .cta {
-        display: flex;
-        gap: 0.75rem;
-        justify-content: center;
-        flex-wrap: wrap;
-      }
-      a.btn {
-        display: inline-block;
-        padding: 0.75rem 1.5rem;
-        border-radius: 0.6rem;
-        text-decoration: none;
-        font-weight: 600;
-        border: 1px solid var(--line);
-        color: var(--text);
-      }
-      a.primary {
-        background: var(--accent);
-        border-color: var(--accent);
-        color: #0d0f14;
-      }
-      a.btn:hover {
-        filter: brightness(1.1);
-      }
-      .platforms {
-        color: var(--muted);
-        font-size: 0.9rem;
-        text-align: center;
-        margin-top: 1rem;
-      }
-      .grid {
-        display: grid;
-        gap: 1rem;
-        grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
-        margin-top: 5rem;
-      }
-      .card {
-        background: var(--panel);
-        border: 1px solid var(--line);
-        border-radius: 0.8rem;
-        padding: 1.25rem 1.4rem;
-      }
-      .card h3 {
-        margin: 0 0 0.4rem;
-        font-size: 1.05rem;
-      }
-      .card p {
-        margin: 0;
-        color: var(--muted);
-        font-size: 0.95rem;
-      }
-      footer {
-        margin-top: 5rem;
-        text-align: center;
-        color: var(--muted);
-        font-size: 0.9rem;
-      }
-      footer a {
-        color: var(--muted);
-      }
-    </style>
+    <link rel="stylesheet" href="style.css" />
+    <script src="script.js" defer></script>
   </head>
   <body>
     <main>
@@ -128,8 +24,8 @@
         <img src="icon.png" alt="Pylon icon" />
         <h1>Pylon</h1>
         <p class="tagline">
-          A desktop client for voice, video/screen-share, and text chat. Self-hosted servers,
-          ten themes, no browser tab required.
+          Voice, screen share, and chat for you and your friends. Self-hosted, no subscription,
+          nothing trying to sell you anything.
         </p>
         <div class="cta">
           <a class="btn primary" href="https://github.com/Phloxin/client/releases/latest"
@@ -140,33 +36,161 @@
         <p class="platforms">Windows &middot; macOS &middot; Linux (AppImage, deb, snap)</p>
       </header>
 
+      <section class="showcase">
+        <h2>A look around</h2>
+        <p class="sub">Everything below is the app as it ships today.</p>
+
+        <div class="tabs" role="tablist">
+          <button role="tab" aria-selected="true" aria-controls="p-chat">Voice &amp; chat</button>
+          <button role="tab" aria-selected="false" aria-controls="p-stream">Streaming</button>
+          <button role="tab" aria-selected="false" aria-controls="p-dm">Direct messages</button>
+          <button role="tab" aria-selected="false" aria-controls="p-look">Make it yours</button>
+          <button role="tab" aria-selected="false" aria-controls="p-audio">Audio control</button>
+          <button role="tab" aria-selected="false" aria-controls="p-servers">Your servers</button>
+        </div>
+
+        <div class="panel" id="p-chat" role="tabpanel">
+          <img src="screenshots/voice_channel_and_chat.png" alt="A voice channel with its chat open beside it" />
+          <div>
+            <h3>Talk and type in the same place</h3>
+            <p>
+              Every voice channel has its own chat, so the link you're talking about lands where
+              everyone already is.
+            </p>
+            <ul>
+              <li>Markdown and syntax-highlighted code blocks</li>
+              <li>YouTube and link embeds inline</li>
+              <li>Replies, reactions, and editing</li>
+              <li>See who's talking without leaving the conversation</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="panel" id="p-stream" role="tabpanel" hidden>
+          <img src="screenshots/stream_view.png" alt="Watching a screen share in the stream view" loading="lazy" />
+          <div>
+            <h3>Share a screen worth watching</h3>
+            <p>
+              Up to 1440p at 60 FPS, with the audio from the thing you're sharing — not a blurry
+              rectangle with the sound muted.
+            </p>
+            <ul>
+              <li>1440p60, no quality tier to buy</li>
+              <li>Share one app's audio or the whole system</li>
+              <li>Theatre mode and a resizable video grid</li>
+              <li>Live connection stats when something feels off</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="panel" id="p-dm" role="tabpanel" hidden>
+          <img src="screenshots/dm_and_user_view.png" alt="A direct message conversation and a user profile" loading="lazy" />
+          <div>
+            <h3>Or just talk to one person</h3>
+            <p>
+              Direct messages sit alongside the servers you're in, for the conversations that don't
+              need an audience.
+            </p>
+            <ul>
+              <li>The same chat features as anywhere else</li>
+              <li>Profiles without a feed attached</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="panel" id="p-look" role="tabpanel" hidden>
+          <img src="screenshots/themes.png" alt="The appearance settings showing theme options" loading="lazy" />
+          <div>
+            <h3>Make it look like yours</h3>
+            <p>
+              Appearance settings go past a light/dark switch. Set it up once and it stays out of
+              your way.
+            </p>
+            <ul>
+              <li>A full set of themes, plus window transparency</li>
+              <li>Chat formatting and density to taste</li>
+              <li>Turn animations off entirely if they bother you</li>
+              <li>Soundpacks you can swap or silence — custom sounds coming</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="panel" id="p-audio" role="tabpanel" hidden>
+          <img src="screenshots/audio_settings.png" alt="The audio settings panel" loading="lazy" />
+          <div>
+            <h3>Sound like yourself</h3>
+            <p>
+              Noise suppression runs on your machine before anything is sent, and the settings that
+              matter are one panel deep.
+            </p>
+            <ul>
+              <li>Pick your input and output device explicitly</li>
+              <li>Voice gate with a live meter to set it by</li>
+              <li>Push-to-talk on a global hotkey</li>
+              <li>Local noise suppression, on by choice</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="panel" id="p-servers" role="tabpanel" hidden>
+          <img src="screenshots/home_page.png" alt="The server list on the home screen" loading="lazy" />
+          <div>
+            <h3>As many servers as you want</h3>
+            <p>
+              Save every server you use and jump between them. They're yours to host, and your
+              logins are kept in the OS keychain.
+            </p>
+            <ul>
+              <li>No limit on saved servers</li>
+              <li>Self-hosted — the data stays on your hardware</li>
+              <li>Nothing in between you and the people you're talking to</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
       <section class="grid">
         <div class="card">
-          <h3>Voice &amp; video</h3>
-          <p>WebRTC through a mediasoup SFU, with SVC video and live connection stats.</p>
-        </div>
-        <div class="card">
-          <h3>Screen share with audio</h3>
+          <h3>Quality isn't a subscription</h3>
           <p>
-            Native per-app or system-wide capture — WASAPI process loopback on Windows, PipeWire
-            on Linux.
+            1440p60 screen share and high-bitrate voice are just the settings. There is no upgrade
+            tier, because there is nothing to sell you.
           </p>
         </div>
         <div class="card">
-          <h3>Noise suppression</h3>
-          <p>RNNoise runs locally on your mic before anything leaves the machine.</p>
+          <h3>Nothing but the conversation</h3>
+          <p>
+            No ads, no popups, no storefront, no feed. You open it to talk to your friends, and
+            that is all it tries to do.
+          </p>
         </div>
         <div class="card">
-          <h3>Any server you like</h3>
-          <p>Save as many Pylon servers as you want and switch between them instantly.</p>
+          <h3>It stays in its lane</h3>
+          <p>
+            It doesn't watch what else you have open, hook into your other apps, or phone home with
+            analytics.
+          </p>
         </div>
         <div class="card">
-          <h3>Logins stay encrypted</h3>
-          <p>Credentials and saved servers are held in the OS keychain, not a plaintext file.</p>
+          <h3>Built for a group of friends</h3>
+          <p>
+            Not a forum with forty channels and a rules page nobody reads. A place to hang out,
+            talk, share a screen, and go.
+          </p>
         </div>
         <div class="card">
-          <h3>Auto-updates</h3>
-          <p>Check, download, and install new versions from inside the app.</p>
+          <h3>The server is yours</h3>
+          <p>
+            Host it yourself. Your conversations live on hardware you control, not on a company's
+            terms of service.
+          </p>
+        </div>
+        <div class="card">
+          <h3>Familiar on the first launch</h3>
+          <p>
+            A clean, quiet interface that works the way you'd expect, and looks however you want it
+            to.
+          </p>
         </div>
       </section>
 
