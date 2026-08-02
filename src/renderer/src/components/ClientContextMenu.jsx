@@ -25,6 +25,7 @@ import { STATUSES, STATUS_LABELS, STATUS_MESSAGE_MAX, statusOf } from '../lib/pr
 import { fileToAvatarDataUrl } from '../lib/avatarFile'
 import { RoleIcon } from '../lib/roleIcon'
 import { useMenuPosition } from '../lib/menuPosition'
+import { useWheelSlider } from '../lib/useWheelSlider'
 
 // The right-click menu for a client, shared by every place a client is shown:
 // the sidebar roster, a voice channel's participant list, and a chat message's
@@ -127,6 +128,7 @@ function ClientContextMenu({ client, pos, onClose, opts, caps }) {
   const menuStyle = useMenuPosition(menuRef, pos)
 
   const { isBanned, roles = [], vanity = [], volume } = opts
+  const volumeWheelRef = useWheelSlider(volume?.onChange)
   const myStatus = statusOf(opts.presence)
 
   // Close on outside click or Escape. Escape is marked handled so the app-level
@@ -447,6 +449,7 @@ function ClientContextMenu({ client, pos, onClose, opts, caps }) {
               <div className="client-volume-slider-wrap">
                 <span className="client-volume-center-tick" aria-hidden="true" />
                 <input
+                  ref={volumeWheelRef}
                   type="range"
                   className="client-volume-slider"
                   min={0}

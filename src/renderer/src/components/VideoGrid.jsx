@@ -30,6 +30,7 @@ import {
 import { RESOLUTIONS } from '../lib/captureOptions'
 import { setFocusedScreenAudio, setVideoStreamRoles, subscribeStreamViewers } from '../lib/soup'
 import { useImageColors } from '../lib/imageColors'
+import { useWheelSlider } from '../lib/useWheelSlider'
 import { useSettings } from '../context/SettingsContext'
 
 // Stable empty default so the role effect doesn't churn when no watched set is
@@ -429,6 +430,8 @@ function VideoGrid({
     if (muted) onMutedChange(false)
   }
 
+  const volumeWheelRef = useWheelSlider(handleVolumeChange)
+
   const VolumeIcon =
     muted || volume === 0
       ? IconVolumeOff
@@ -810,6 +813,7 @@ function VideoGrid({
           <div className="volume-slider-wrap">
             <span className="volume-center-tick" aria-hidden="true" />
             <input
+              ref={volumeWheelRef}
               type="range"
               className="volume-slider"
               min={0}
