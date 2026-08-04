@@ -6,7 +6,7 @@ import {
   setActiveSoundpack,
   setSoundVolume
 } from '../lib/sounds'
-import { applyAppearanceSettings, applyAnimationSettings } from '../lib/uiSettings'
+import { applyAppearanceSettings, applyAnimationSettings, UI_FONTS } from '../lib/uiSettings'
 import { prefersReducedMotion } from '../lib/animation'
 
 const SettingsContext = createContext(null)
@@ -82,6 +82,15 @@ function migrateAnimations(settings) {
   return next
 }
 
+// Fonts have been retired from the picker (Open Sans, DM Sans, …). A saved id
+// that's no longer offered leaves the Settings dropdown showing nothing while
+// applyAppearanceSettings quietly renders the default — fold it back on load so
+// the two agree.
+function migrateAppearance(settings) {
+  if (UI_FONTS.some((f) => f.id === settings.fontFamily)) return settings
+  return { ...settings, fontFamily: DEFAULT_APPEARANCE.fontFamily }
+}
+
 // Reset thresholds saved against an older meter scale. Version 2 introduced the
 // shared speech-band RMS metric; version 3 gives speech more usable headroom by
 // moving its dBFS range, so an old numeric threshold is no longer comparable.
@@ -98,7 +107,9 @@ export function SettingsProvider({ children }) {
   const [appearanceSettings, setAppearanceSettings] = useState(() => {
     try {
       const saved = localStorage.getItem('appearanceSettings')
-      return saved ? { ...DEFAULT_APPEARANCE, ...JSON.parse(saved) } : DEFAULT_APPEARANCE
+      return saved
+        ? migrateAppearance({ ...DEFAULT_APPEARANCE, ...JSON.parse(saved) })
+        : DEFAULT_APPEARANCE
     } catch {
       return DEFAULT_APPEARANCE
     }

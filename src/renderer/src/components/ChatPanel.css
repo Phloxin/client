@@ -33,6 +33,68 @@
   color: var(--color-text);
 }
 
+/* ── Message search (Ctrl+F) ───────────────────────────────────────────── */
+
+.chat-search-bar {
+  position: absolute;
+  top: 8px;
+  right: 20px;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-md);
+  /* Raised off the canvas, which is --color-background-soft — matching it
+     would leave the bar floating with only its hairline to read as separate. */
+  background: var(--color-surface);
+  box-shadow: var(--shadow-3);
+}
+
+.chat-search-icon {
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+}
+
+.chat-search-input {
+  width: 170px;
+  border: none;
+  background: none;
+  outline: none;
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+  font-family: var(--font-family-primary);
+}
+
+.chat-search-count {
+  flex-shrink: 0;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.chat-search-btn {
+  display: flex;
+  flex-shrink: 0;
+  padding: 2px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.chat-search-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-text) 12%, transparent);
+  color: var(--color-text);
+}
+
+.chat-search-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 /* ── Message list ──────────────────────────────────────────────────────── */
 
 .chat-messages {
@@ -140,6 +202,13 @@
 
 .chat-message.mentioned:hover {
   background: color-mix(in srgb, var(--color-mention, var(--color-primary)) 7%, transparent);
+}
+
+/* The search hit currently selected. Declared after .mentioned so it wins the
+   equal-specificity tie on a row that is both. */
+.chat-message.search-match,
+.chat-message.search-match:hover {
+  background: color-mix(in srgb, var(--color-primary) 16%, transparent);
 }
 
 /* Reaction hover bar: floats over the row's top-right corner, only on hover. */
