@@ -331,11 +331,44 @@
   background: var(--hairline);
 }
 
-/* Expanded role picker under the Assign Role item: indented, scrolls if long. */
+/* Anchor for the role / group picker flyouts. */
+.client-submenu {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Role / group picker: a panel that flies out to the side of its parent item
+   (like a native submenu) instead of pushing the rest of the menu down. `.flip`
+   / `.up` are set by Submenu when the window edge is too close. */
 .client-role-list {
-  margin-left: var(--spacing-sm);
-  max-height: 180px;
+  position: absolute;
+  top: 0;
+  left: 100%;
+  z-index: 1;
+  margin-left: 4px;
+  min-width: 190px;
+  max-height: 240px;
   overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  padding: var(--spacing-xs);
+  background: var(--color-background-soft);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-3);
+}
+
+.client-role-list.flip {
+  left: auto;
+  right: 100%;
+  margin-left: 0;
+  margin-right: 4px;
+}
+
+.client-role-list.up {
+  top: auto;
+  bottom: 0;
 }
 
 /* Server-group icon in the group picker (and the new-group composer preview). */

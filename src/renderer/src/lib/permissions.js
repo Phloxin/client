@@ -42,6 +42,12 @@ const BITS = {
 
 export const permBit = (flag) => 1n << BigInt(BITS[flag])
 
+// The server's built-in default role (EVERYONE_ROLE_ID). Every client holds it
+// implicitly, so it never appears in a client's role_ids — but it is a real
+// overwrite target, and the one you deny to make a channel role-gated. String
+// because ids cross the wire both ways; compare with String(r.id).
+export const EVERYONE_ROLE_ID = '1'
+
 // Parse a decimal permission string (allow/deny bitfield) to BigInt, tolerating
 // null/undefined/garbage by returning 0.
 export const toBits = (decimal) => {
@@ -50,4 +56,36 @@ export const toBits = (decimal) => {
   } catch {
     return 0n
   }
+}
+
+// Resolve what a channel's overwrites alone say about VIEW_CHANNEL for us, in
+// the server's precedence order: @everyone, then the roles we hold (an allow on
+// any beats a deny on another), then our own user overwrite. Returns
+// true / false / null, where null means no overwrite mentions the bit and our
+// base role permissions decide.
+//
+// ponytail: deliberately ignores base role permissions, so this can only ever
+// answer "explicitly denied" — the client can't compute a trustworthy base (the
+// implicit @everyone role isn't in /server/roles), and guessing wrong there
+// would hide channels the server actually grants. The server stays authoritative.
+export function viewChannelOverride(overwrites = [], { roleIds = [], userId } = {}) {
+  const bit = permBit('VIEW_CHANNEL')
+  const says = (o, field) => (toBits(o[field]) & bit) !== 0n
+  // deny first, then allow, so an overwrite setting both resolves to allow.
+  const apply = (o, state) => (says(o, 'deny') ? false : says(o, 'allow') ? true : state)
+
+  let state = null
+  const roleOf = (id) => overwrites.find((o) => o.type === 'role' && String(o.id) === String(id))
+
+  const everyone = roleOf(EVERYONE_ROLE_ID)
+  if (everyone) state = apply(everyone, state)
+
+  const mine = roleIds.map(roleOf).filter((o) => o && String(o.id) !== EVERYONE_ROLE_ID)
+  if (mine.some((o) => says(o, 'deny'))) state = false
+  if (mine.some((o) => says(o, 'allow'))) state = true
+
+  const user = overwrites.find((o) => o.type === 'user' && String(o.id) === String(userId))
+  if (user) state = apply(user, state)
+
+  return state
 }

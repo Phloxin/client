@@ -35,6 +35,7 @@ import { setServerHost, apiBase, wsBase, cdnUrl, throwIfError } from '../lib/ser
 import { validateMessage, statusOf } from '../lib/presence'
 import { authFetch, getFreshToken, setOnSessionExpired } from '../lib/auth'
 import { httpFetch } from '../lib/http'
+import { EVERYONE_ROLE_ID, viewChannelOverride } from '../lib/permissions'
 import SegmentedTabs from '../components/SegmentedTabs'
 import {
   IconVideo,
@@ -203,6 +204,42 @@ function Main() {
   const [roles, setRoles] = useState([])
   // Vanity items (cosmetic server groups: name + icon, no permissions).
   const [vanity, setVanity] = useState([])
+
+  // Our effective permissions: the OR of every role we hold (explicit role_ids
+  // plus the implicit 'everyone' role). ADMINISTRATOR implies all. Computed from
+  // the live roster entry so it tracks role changes via ClientModified.
+  const myPermissions = useMemo(() => {
+    const self = clients.find((c) => c.id === client?.id)
+    const myRoleIds = new Set(self?.role_ids || client?.role_ids || [])
+    let bits = 0n
+    for (const r of roles) {
+      if (String(r.id) === EVERYONE_ROLE_ID || myRoleIds.has(r.id)) {
+        try {
+          bits |= BigInt(r.permissions ?? 0)
+        } catch {
+          // Ignore a malformed permission string rather than crash the menu.
+        }
+      }
+    }
+    return bits
+  }, [roles, clients, client])
+
+  const isAdmin = (myPermissions & PERM_ADMINISTRATOR) !== 0n
+
+  // Channels minus the ones an overwrite explicitly denies us VIEW_CHANNEL on.
+  // The server pushes a channel to a client the moment it becomes visible, but a
+  // revoke only broadcasts ChannelUpdated — which we'd otherwise merge and keep
+  // rendering until the next reconnect. Derived, so it tracks both directions
+  // live. Everything below treats this as the channel list; `channels` stays the
+  // raw one the event handlers merge into.
+  const visibleChannels = useMemo(() => {
+    if (isAdmin) return channels
+    const self = clients.find((c) => c.id === client?.id)
+    const roleIds = self?.role_ids || client?.role_ids || []
+    return channels.filter(
+      (ch) => viewChannelOverride(ch.overwrites, { roleIds, userId: client?.id }) !== false
+    )
+  }, [channels, isAdmin, clients, client])
   // 'Roles and Groups' popup, opened from a client context menu.
   const [rolesGroupsOpen, setRolesGroupsOpen] = useState(false)
   const [bans, setBans] = useState([])
@@ -721,13 +758,17 @@ function Main() {
     prevStreamIdsRef.current = curIds
   }, [allVideoStreams])
 
-  // Drop the preview once we've actually joined that channel, or it's deleted.
+  // Drop the preview once we've actually joined that channel, or it's deleted —
+  // or our view permission on it is revoked while we're peeking.
   useEffect(() => {
     if (previewChannelId == null) return
-    if (previewChannelId === selfChannelId || !channels.some((c) => c.id === previewChannelId)) {
+    if (
+      previewChannelId === selfChannelId ||
+      !visibleChannels.some((c) => c.id === previewChannelId)
+    ) {
       setPreviewChannelId(null)
     }
-  }, [previewChannelId, selfChannelId, channels])
+  }, [previewChannelId, selfChannelId, visibleChannels])
 
   // Single-click a channel: peek into its chat. Clicking the one we're already
   // in just returns to the normal view. Closes any open client summary.
@@ -807,12 +848,13 @@ function Main() {
     }
   }, [summaryClientId, clients])
 
-  // Close the channel summary if the channel is deleted out from under us.
+  // Close the channel summary if the channel is deleted (or hidden from us) out
+  // from under us.
   useEffect(() => {
-    if (summaryChannelId != null && !channels.some((c) => c.id === summaryChannelId)) {
+    if (summaryChannelId != null && !visibleChannels.some((c) => c.id === summaryChannelId)) {
       setSummaryChannelId(null)
     }
-  }, [summaryChannelId, channels])
+  }, [summaryChannelId, visibleChannels])
 
   // Get-or-create the 1:1 DM channel with another user and make it known to
   // `channels`, returning its id. Shared by handleOpenDm (peek) and handlePoke
@@ -945,26 +987,6 @@ function Main() {
       .catch((err) => console.error('Failed to load vanity groups:', err))
   }, [token])
 
-  // Our effective permissions: the OR of every role we hold (explicit role_ids
-  // plus the implicit 'everyone' role). ADMINISTRATOR implies all. Computed from
-  // the live roster entry so it tracks role changes via ClientModified.
-  const myPermissions = useMemo(() => {
-    const self = clients.find((c) => c.id === client?.id)
-    const myRoleIds = new Set(self?.role_ids || client?.role_ids || [])
-    let bits = 0n
-    for (const r of roles) {
-      if (r.name?.toLowerCase() === 'everyone' || myRoleIds.has(r.id)) {
-        try {
-          bits |= BigInt(r.permissions ?? 0)
-        } catch {
-          // Ignore a malformed permission string rather than crash the menu.
-        }
-      }
-    }
-    return bits
-  }, [roles, clients, client])
-
-  const isAdmin = (myPermissions & PERM_ADMINISTRATOR) !== 0n
   const canKickMembers = isAdmin || (myPermissions & PERM_KICK_MEMBERS) !== 0n
   const canBanMembers = isAdmin || (myPermissions & PERM_BAN_MEMBERS) !== 0n
   const canMuteMembers = isAdmin || (myPermissions & PERM_MUTE_MEMBERS) !== 0n
@@ -2682,6 +2704,9 @@ function Main() {
   // Handed to ClientActionsProvider so a client context menu can be opened from
   // anywhere (currently the sidebar roster and chat message authors).
   const clientActions = {
+    // The live roster, so an open context menu re-reads its client each render
+    // instead of showing the snapshot it was opened with.
+    clients,
     onOpenDm: handleOpenDm,
     onPoke: handlePoke,
     onKick: handleKickUser,
@@ -2738,7 +2763,7 @@ function Main() {
         />
         <div className="layout">
           <SideBar
-            channels={channels}
+            channels={visibleChannels}
             clients={clients}
             self={client}
             onStreamsUpdate={handleStreamsUpdate}

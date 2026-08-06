@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react'
 import {
   IconVolume,
   IconVolume2,
@@ -18,6 +18,7 @@ import {
   IconPlus,
   IconPencil,
   IconMessage2,
+  IconMessageCircleFilled,
   IconX,
   IconActivity
 } from '@tabler/icons-react'
@@ -26,6 +27,7 @@ import { fileToAvatarDataUrl } from '../lib/avatarFile'
 import { RoleIcon } from '../lib/roleIcon'
 import { useMenuPosition } from '../lib/menuPosition'
 import { useWheelSlider } from '../lib/useWheelSlider'
+import { useClientActions } from '../context/ClientActionsContext'
 
 // The right-click menu for a client, shared by every place a client is shown:
 // the sidebar roster, a voice channel's participant list, and a chat message's
@@ -39,6 +41,7 @@ function capabilities(client, o) {
   // voice participants, so no volume there.)
   const canVolume = !isSelf && !rosterMode && !!o.volume
   const canPoke = !isSelf && !!o.onPoke
+  const canOpenDm = !isSelf && !!o.onOpenDm
   const canSetAvatar = isSelf && !!o.onSetAvatar
   const canSetNickname = isSelf && !!o.onSetNickname
   const canSetPresence = isSelf && !!o.onSetPresence
@@ -78,6 +81,7 @@ function capabilities(client, o) {
     ? canUnban
     : canVolume ||
       canPoke ||
+      canOpenDm ||
       canSetAvatar ||
       canSetNickname ||
       canSetPresence ||
@@ -87,6 +91,7 @@ function capabilities(client, o) {
   return {
     canVolume,
     canPoke,
+    canOpenDm,
     canSetAvatar,
     canSetNickname,
     canSetPresence,
@@ -100,6 +105,26 @@ function capabilities(client, o) {
     canModerate,
     canOpen
   }
+}
+
+// A picker that flies out to the right of its parent item instead of pushing the
+// rest of the menu down. Measured once at mount and flipped to the left / bottom-
+// aligned when the window edge is closer than the panel is wide/tall.
+function Submenu({ children }) {
+  const ref = useRef(null)
+  const [place, setPlace] = useState('')
+  useLayoutEffect(() => {
+    const r = ref.current?.getBoundingClientRect()
+    if (!r) return
+    setPlace(
+      `${r.right > window.innerWidth - 8 ? ' flip' : ''}${r.bottom > window.innerHeight - 8 ? ' up' : ''}`
+    )
+  }, [])
+  return (
+    <div ref={ref} className={`client-role-list${place}`}>
+      {children}
+    </div>
+  )
 }
 
 function ClientContextMenu({ client, pos, onClose, opts, caps }) {
@@ -116,9 +141,9 @@ function ClientContextMenu({ client, pos, onClose, opts, caps }) {
   // its optional reason, and the ban duration in seconds (0 = permanent).
   const [modAction, setModAction] = useState(null)
   const [modReason, setModReason] = useState('')
-  // True when the role / server-group picker is expanded.
-  const [roleOpen, setRoleOpen] = useState(false)
-  const [groupOpen, setGroupOpen] = useState(false)
+  // Which picker flyout is open ('role' | 'group' | null) — only one at a time so
+  // two panels can't overlap in the same spot.
+  const [submenu, setSubmenu] = useState(null)
   const [banDuration, setBanDuration] = useState(0)
   // True when the duration select is in "Custom…" mode (banDuration comes from a
   // free-form seconds input rather than a preset).
@@ -198,17 +223,28 @@ function ClientContextMenu({ client, pos, onClose, opts, caps }) {
   // Server-group picker, rendered in our own menu (below Set Avatar) and in the
   // moderation section of someone else's menu.
   const groupPicker = (
-    <>
+    <div className="client-submenu">
       <button
         type="button"
         className="client-context-menu-item"
-        onClick={() => setGroupOpen((v) => !v)}
+        onClick={() => setSubmenu((v) => (v === 'group' ? null : 'group'))}
       >
         <IconUsersGroup size={16} />
         Assign Server Groups
       </button>
-      {groupOpen && (
-        <div className="client-role-list">
+      {submenu === 'group' && (
+        <Submenu>
+          <button
+            type="button"
+            className="client-context-menu-item"
+            onClick={() => {
+              onClose()
+              opts.onOpenRolesGroups?.()
+            }}
+          >
+            <IconPlus size={16} />
+            Create Group
+          </button>
           {vanity.map((g) => {
             const has = (client.vanity_ids || []).includes(g.id)
             return (
@@ -228,20 +264,9 @@ function ClientContextMenu({ client, pos, onClose, opts, caps }) {
               </button>
             )
           })}
-          <button
-            type="button"
-            className="client-context-menu-item"
-            onClick={() => {
-              onClose()
-              opts.onOpenRolesGroups?.()
-            }}
-          >
-            <IconPlus size={16} />
-            Create Group
-          </button>
-        </div>
+        </Submenu>
       )}
-    </>
+    </div>
   )
 
   const VolumeIcon =
@@ -463,6 +488,19 @@ function ClientContextMenu({ client, pos, onClose, opts, caps }) {
               <span className="client-volume-value">{volume.muted ? 0 : volume.value}%</span>
             </div>
           )}
+          {caps.canOpenDm && (
+            <button
+              type="button"
+              className="client-context-menu-item"
+              onClick={() => {
+                opts.onOpenDm?.(client.id)
+                onClose()
+              }}
+            >
+              <IconMessageCircleFilled size={16} />
+              Direct Message
+            </button>
+          )}
           {caps.canPoke &&
             (pokeOpen ? (
               <div className="client-poke-row">
@@ -566,44 +604,46 @@ function ClientContextMenu({ client, pos, onClose, opts, caps }) {
                 </div>
               ) : (
                 <>
-                  <button
-                    type="button"
-                    className="client-context-menu-item"
-                    onClick={() => setRoleOpen((v) => !v)}
-                  >
-                    <IconUserShield size={16} />
-                    Assign Role
-                  </button>
-                  {roleOpen && (
-                    <div className="client-role-list">
-                      {assignableRoles.length === 0 ? (
-                        <div className="client-role-empty">No roles</div>
-                      ) : (
-                        assignableRoles.map((role) => {
-                          const has = (client.role_ids || []).includes(role.id)
-                          return (
-                            <button
-                              key={role.id}
-                              type="button"
-                              className="client-context-menu-item"
-                              onClick={() =>
-                                has
-                                  ? opts.onRemoveRole?.(client.id, role.id)
-                                  : opts.onAssignRole?.(client.id, role.id)
-                              }
-                            >
-                              <IconCheck
-                                size={16}
-                                style={{ visibility: has ? 'visible' : 'hidden' }}
-                              />
-                              <RoleIcon role={role} size={16} />
-                              {role.name}
-                            </button>
-                          )
-                        })
-                      )}
-                    </div>
-                  )}
+                  <div className="client-submenu">
+                    <button
+                      type="button"
+                      className="client-context-menu-item"
+                      onClick={() => setSubmenu((v) => (v === 'role' ? null : 'role'))}
+                    >
+                      <IconUserShield size={16} />
+                      Assign Role
+                    </button>
+                    {submenu === 'role' && (
+                      <Submenu>
+                        {assignableRoles.length === 0 ? (
+                          <div className="client-role-empty">No roles</div>
+                        ) : (
+                          assignableRoles.map((role) => {
+                            const has = (client.role_ids || []).includes(role.id)
+                            return (
+                              <button
+                                key={role.id}
+                                type="button"
+                                className="client-context-menu-item"
+                                onClick={() =>
+                                  has
+                                    ? opts.onRemoveRole?.(client.id, role.id)
+                                    : opts.onAssignRole?.(client.id, role.id)
+                                }
+                              >
+                                <IconCheck
+                                  size={16}
+                                  style={{ visibility: has ? 'visible' : 'hidden' }}
+                                />
+                                <RoleIcon role={role} size={16} />
+                                {role.name}
+                              </button>
+                            )
+                          })
+                        )}
+                      </Submenu>
+                    )}
+                  </div>
                   {caps.canAssignGroup && groupPicker}
                   {caps.canKickFromChannel && (
                     <button
@@ -670,6 +710,10 @@ function ClientContextMenu({ client, pos, onClose, opts, caps }) {
 export function useClientMenu(opts) {
   const [target, setTarget] = useState(null)
   const close = useCallback(() => setTarget(null), [])
+  // The roster straight from the provider, not `opts` — callers build their own
+  // opts object and none of them carry it. Used to re-read the open client every
+  // render so role/group toggles show up in the picker without reopening.
+  const { clients } = useClientActions()
 
   const openMenu = (e, client, extraOpts) => {
     if (!client) return
@@ -682,14 +726,17 @@ export function useClientMenu(opts) {
   // Only the per-client extras are captured at open time; `opts` is re-read every
   // render so live values (the volume slider's position) stay current.
   const merged = target ? { ...opts, ...target.extra } : null
+  const live = target
+    ? (clients?.find((c) => c.id === target.client.id) ?? target.client)
+    : null
   const menu = target ? (
     <ClientContextMenu
       key={`${target.client.id}:${target.pos.x},${target.pos.y}`}
-      client={target.client}
+      client={live}
       pos={target.pos}
       onClose={close}
       opts={merged}
-      caps={capabilities(target.client, merged)}
+      caps={capabilities(live, merged)}
     />
   ) : null
 

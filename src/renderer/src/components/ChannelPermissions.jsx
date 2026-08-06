@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { IconX, IconCheck, IconMinus, IconTrash, IconPencil } from '@tabler/icons-react'
-import { PERMISSIONS, permBit, toBits } from '../lib/permissions'
+import { PERMISSIONS, permBit, toBits, EVERYONE_ROLE_ID } from '../lib/permissions'
 import './ChannelPermissions.css'
 
 // Tri-state of a single permission within one overwrite: allowed, denied, or
@@ -83,14 +83,23 @@ function ChannelPermissions({ channel, roles = [], clients = [], canManage, onSe
   const [editing, setEditing] = useState(null)
 
   const nameFor = (o) => {
-    if (o.type === 'role') return roles.find((r) => String(r.id) === String(o.id))?.name || 'Role'
-    return clients.find((c) => String(c.id) === String(o.id))?.name || 'User'
+    if (o.type !== 'role') return clients.find((c) => String(c.id) === String(o.id))?.name || 'User'
+    if (String(o.id) === EVERYONE_ROLE_ID) return '@everyone'
+    return roles.find((r) => String(r.id) === String(o.id))?.name || 'Role'
   }
 
   // Targets that don't yet have an overwrite, for the "Add override" picker.
+  // @everyone is listed first and synthesised rather than taken from `roles` —
+  // it's the server's implicit default role, so it may not come back from
+  // /server/roles at all, and it's the one you deny to gate a channel.
   const addable = useMemo(() => {
     const taken = new Set(overwrites.map((o) => `${o.type}:${o.id}`))
-    const roleOpts = roles.map((r) => ({ id: String(r.id), type: 'role', name: r.name }))
+    const roleOpts = [
+      { id: EVERYONE_ROLE_ID, type: 'role', name: '@everyone' },
+      ...roles
+        .filter((r) => String(r.id) !== EVERYONE_ROLE_ID)
+        .map((r) => ({ id: String(r.id), type: 'role', name: r.name }))
+    ]
     const userOpts = clients.map((c) => ({ id: String(c.id), type: 'user', name: c.name }))
     return [...roleOpts, ...userOpts].filter((t) => !taken.has(`${t.type}:${t.id}`))
   }, [overwrites, roles, clients])
