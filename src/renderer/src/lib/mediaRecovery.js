@@ -73,10 +73,12 @@ export async function recoverMicRepublish({
 
   let restoredProcessedStream = restoredStream
   let restoredProcessorStop = () => {}
+  let restoredProcessorTap = null
   try {
     const processed = await buildAudioProcessor(restoredStream, micSettings)
     restoredProcessedStream = processed.stream
     restoredProcessorStop = processed.stop
+    restoredProcessorTap = processed.tap
   } catch (err) {
     // A live raw capture is still a better rollback than a silent producer if
     // the optional processing graph cannot be rebuilt.
@@ -138,6 +140,7 @@ export async function recoverMicRepublish({
     stream: restoredStream,
     processedStream: restoredProcessedStream,
     processorStop: restoredProcessorStop,
+    processorTap: restoredProcessorTap,
     previousStop,
     micSettings,
     onStream

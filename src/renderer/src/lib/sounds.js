@@ -140,7 +140,10 @@ export const SOUND_SECTIONS = [
   {
     id: 'warnings',
     label: 'Warnings',
-    sounds: [{ id: 'error', label: 'An error occurred' }]
+    sounds: [
+      { id: 'error', label: 'An error occurred' },
+      { id: 'stop_talking', label: 'You spoke while muted' }
+    ]
   }
 ]
 

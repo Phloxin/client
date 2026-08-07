@@ -1633,13 +1633,14 @@ function Main() {
     return () => setOnSessionExpired(null)
   }, [handleDisconnect, showError])
 
-  // Warn (toast only) when we speak while our mic is muted — soup detects this on
-  // the raw mic stream and calls back here. No sound: the raw detector doesn't
-  // share the stream's noise reduction / gate, so it'd chime on noise the mic
-  // wouldn't actually transmit.
+  // Warn when we speak while our mic is muted. soup detects this downstream of
+  // noise reduction and the volume gate, so it only fires on audio peers would
+  // actually have received — quiet enough to chime for, unlike the old raw-stream
+  // detector. soup also throttles the callback, so no extra rate limiting here.
   useEffect(() => {
     setTalkingWhileMutedHandler(() => {
       showWarning('Your microphone is muted')
+      playUiSound('stop_talking')
     })
     return () => setTalkingWhileMutedHandler(null)
   }, [showWarning])
