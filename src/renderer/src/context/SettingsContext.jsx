@@ -2,6 +2,7 @@ import { createContext, useContext, useState, useEffect } from 'react'
 import { setOutputDevice, setMasterVolume } from '../lib/soup'
 import {
   setSoundStateMap,
+  setToastStateMap,
   setSoundOutputDevice,
   setActiveSoundpack,
   setSoundVolume
@@ -207,6 +208,21 @@ export function SettingsProvider({ children }) {
     setSoundStateMap(soundState)
   }, [soundState])
 
+  // Per-notification toast state, keyed by the same sound id: false = banner
+  // suppressed. Absent = shown, so only toasts the user turned off are stored.
+  const [toastState, setToastStateObj] = useState(() => {
+    try {
+      const saved = localStorage.getItem('toastState')
+      return saved ? JSON.parse(saved) : {}
+    } catch {
+      return {}
+    }
+  })
+
+  useEffect(() => {
+    setToastStateMap(toastState)
+  }, [toastState])
+
   const [soundpack, setSoundpackState] = useState(() => localStorage.getItem('soundpack') || 'default')
 
   // Mirror the chosen soundpack into the sounds module on load and on change.
@@ -247,6 +263,15 @@ export function SettingsProvider({ children }) {
     })
   }
 
+  // `changes` is a map of soundId -> boolean (false hides that notification's toast).
+  const setToastState = (changes) => {
+    setToastStateObj((prev) => {
+      const merged = { ...prev, ...changes }
+      localStorage.setItem('toastState', JSON.stringify(merged))
+      return merged
+    })
+  }
+
   // Push playback (output) settings into the media layer so they apply to any
   // audio already playing as well as future streams — on load and on change.
   useEffect(() => {
@@ -279,6 +304,8 @@ export function SettingsProvider({ children }) {
         updateMicSettings,
         soundState,
         setSoundState,
+        toastState,
+        setToastState,
         soundpack,
         setSoundpack,
         soundVolume,
