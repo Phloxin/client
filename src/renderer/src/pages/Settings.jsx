@@ -7,6 +7,8 @@ import {
   IconCheck,
   IconX,
   IconPin,
+  IconBreadFilled,
+  IconBreadOff,
   IconPlayerPlayFilled,
   IconAdjustments,
   IconSettings
@@ -23,7 +25,8 @@ import {
   SOUNDPACK_OPTIONS,
   getSoundFilename,
   playUiSound,
-  UNWIRED_SOUNDS
+  UNWIRED_SOUNDS,
+  TOAST_SOUNDS
 } from '../lib/sounds'
 import { UI_FONTS } from '../lib/uiSettings'
 import './Settings.css'
@@ -73,6 +76,8 @@ function Settings() {
     updateMicSettings,
     soundState,
     setSoundState,
+    toastState,
+    setToastState,
     soundpack,
     setSoundpack,
     soundVolume,
@@ -492,6 +497,10 @@ function Settings() {
 
                     {sounds.map(({ id, label, filename }) => {
                       const state = resolve(id)
+                      // Only notifications that actually raise a banner get the
+                      // toast toggle; absent = shown.
+                      const hasToast = TOAST_SOUNDS.has(id)
+                      const toastOn = toastState[id] !== false
                       return (
                         <div key={id} className="settings-section settings-toggle-row">
                           <div className="settings-toggle-copy">
@@ -514,6 +523,21 @@ function Settings() {
                             >
                               <IconPlayerPlayFilled size={14} />
                             </button>
+                            {hasToast && (
+                              <button
+                                type="button"
+                                className={`sound-preview-btn sound-toast-btn${toastOn ? ' active' : ''}`}
+                                title={
+                                  toastOn
+                                    ? 'Banner shown — click to hide the toast for this notification'
+                                    : 'Banner hidden — click to show the toast for this notification'
+                                }
+                                aria-pressed={toastOn}
+                                onClick={() => setToastState({ [id]: !toastOn })}
+                              >
+                                {toastOn ? <IconBreadFilled size={14} /> : <IconBreadOff size={14} />}
+                              </button>
+                            )}
                           </div>
                           <div className="sound-state" role="group" aria-label={filename}>
                             {[

@@ -2,11 +2,12 @@ import { createContext, useContext, useState, useEffect } from 'react'
 import { setOutputDevice, setMasterVolume } from '../lib/soup'
 import {
   setSoundStateMap,
+  setToastStateMap,
   setSoundOutputDevice,
   setActiveSoundpack,
   setSoundVolume
 } from '../lib/sounds'
-import { applyAppearanceSettings, applyAnimationSettings } from '../lib/uiSettings'
+import { applyAppearanceSettings, applyAnimationSettings, UI_FONTS } from '../lib/uiSettings'
 import { prefersReducedMotion } from '../lib/animation'
 
 const SettingsContext = createContext(null)
@@ -82,6 +83,15 @@ function migrateAnimations(settings) {
   return next
 }
 
+// Fonts have been retired from the picker (Open Sans, DM Sans, …). A saved id
+// that's no longer offered leaves the Settings dropdown showing nothing while
+// applyAppearanceSettings quietly renders the default — fold it back on load so
+// the two agree.
+function migrateAppearance(settings) {
+  if (UI_FONTS.some((f) => f.id === settings.fontFamily)) return settings
+  return { ...settings, fontFamily: DEFAULT_APPEARANCE.fontFamily }
+}
+
 // Reset thresholds saved against an older meter scale. Version 2 introduced the
 // shared speech-band RMS metric; version 3 gives speech more usable headroom by
 // moving its dBFS range, so an old numeric threshold is no longer comparable.
@@ -98,7 +108,9 @@ export function SettingsProvider({ children }) {
   const [appearanceSettings, setAppearanceSettings] = useState(() => {
     try {
       const saved = localStorage.getItem('appearanceSettings')
-      return saved ? { ...DEFAULT_APPEARANCE, ...JSON.parse(saved) } : DEFAULT_APPEARANCE
+      return saved
+        ? migrateAppearance({ ...DEFAULT_APPEARANCE, ...JSON.parse(saved) })
+        : DEFAULT_APPEARANCE
     } catch {
       return DEFAULT_APPEARANCE
     }
@@ -196,6 +208,21 @@ export function SettingsProvider({ children }) {
     setSoundStateMap(soundState)
   }, [soundState])
 
+  // Per-notification toast state, keyed by the same sound id: false = banner
+  // suppressed. Absent = shown, so only toasts the user turned off are stored.
+  const [toastState, setToastStateObj] = useState(() => {
+    try {
+      const saved = localStorage.getItem('toastState')
+      return saved ? JSON.parse(saved) : {}
+    } catch {
+      return {}
+    }
+  })
+
+  useEffect(() => {
+    setToastStateMap(toastState)
+  }, [toastState])
+
   const [soundpack, setSoundpackState] = useState(() => localStorage.getItem('soundpack') || 'default')
 
   // Mirror the chosen soundpack into the sounds module on load and on change.
@@ -236,6 +263,15 @@ export function SettingsProvider({ children }) {
     })
   }
 
+  // `changes` is a map of soundId -> boolean (false hides that notification's toast).
+  const setToastState = (changes) => {
+    setToastStateObj((prev) => {
+      const merged = { ...prev, ...changes }
+      localStorage.setItem('toastState', JSON.stringify(merged))
+      return merged
+    })
+  }
+
   // Push playback (output) settings into the media layer so they apply to any
   // audio already playing as well as future streams — on load and on change.
   useEffect(() => {
@@ -268,6 +304,8 @@ export function SettingsProvider({ children }) {
         updateMicSettings,
         soundState,
         setSoundState,
+        toastState,
+        setToastState,
         soundpack,
         setSoundpack,
         soundVolume,

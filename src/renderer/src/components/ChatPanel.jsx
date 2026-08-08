@@ -14,7 +14,10 @@ import {
   IconArrowDown,
   IconMoodPlus,
   IconUsers,
-  IconArrowBackUp
+  IconArrowBackUp,
+  IconSearch,
+  IconChevronUp,
+  IconChevronDown
 } from '@tabler/icons-react'
 import { motion, AnimatePresence } from 'motion/react'
 import ImageViewer from './ImageViewer'
@@ -406,6 +409,12 @@ function ChatPanel({
   // Feed entry this message will reply to, or null. Declared before the
   // channel-swap block below, which clears it during render.
   const [replyTo, setReplyTo] = useState(null)
+  // Ctrl+F search over the loaded feed: the query while the bar is open, else
+  // null. `matchIndex` picks which hit the list is scrolled to.
+  // ponytail: searches loaded messages only — no server-side history search.
+  const [search, setSearch] = useState(null)
+  const [matchIndex, setMatchIndex] = useState(0)
+  const searchRef = useRef(null)
 
   // Swap the composer over to the new channel's draft when channelKey changes
   // without a remount (in-render state adjustment, per React docs).
@@ -416,6 +425,7 @@ function ChatPanel({
     // Replies are same-channel only, so the pending target can't survive a
     // channel switch (drafts do — they're stored per channel).
     setReplyTo(null)
+    setSearch(null)
   }
 
   const updateText = (value) => {
@@ -629,6 +639,42 @@ function ChatPanel({
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
   }, [pendingDeleteId])
+
+  // Ctrl+F opens the search bar (or reselects the query when it's already up),
+  // replacing the browser's own find — its highlights would cover the whole
+  // window, not just the message list.
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key !== 'f' || !(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return
+      e.preventDefault()
+      setSearch((s) => s ?? '')
+      searchRef.current?.select() // no-op on first open; autoFocus handles that
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  const matches = useMemo(() => {
+    const q = search?.trim().toLowerCase()
+    if (!q) return []
+    return feed
+      .filter((e) => e.type === 'message' && e.text?.toLowerCase().includes(q))
+      .map((e) => e.id)
+  }, [feed, search])
+
+  // Messages arriving (or ageing out) can shrink the list under a held index.
+  const currentIndex = matches.length ? matchIndex % matches.length : 0
+  const currentMatch = matches[currentIndex]
+
+  const stepMatch = (delta) => {
+    if (matches.length) setMatchIndex((i) => (i + delta + matches.length) % matches.length)
+  }
+
+  const closeSearch = () => {
+    setSearch(null)
+    setMatchIndex(0)
+    inputRef.current?.focus()
+  }
 
   const handleFiles = (e) => {
     const files = Array.from(e.target.files || [])
@@ -844,6 +890,11 @@ function ChatPanel({
     el.classList.add('chat-message-flash')
   }
 
+  // Bring the active search hit into view as the query or selection changes.
+  useEffect(() => {
+    if (currentMatch != null) jumpToMessage(currentMatch)
+  }, [currentMatch])
+
   // Hover text for a reaction chip: who reacted, with anyone we can't name
   // (someone who has since left the server) folded into "+N others". Ids
   // compare as strings — roster ids may be numbers while the server's are
@@ -901,6 +952,60 @@ function ChatPanel({
       {dragging && (
         <div className="chat-drop-overlay">
           <div className="chat-drop-overlay-inner">Drop files to attach</div>
+        </div>
+      )}
+      {search !== null && (
+        <div className="chat-search-bar">
+          <IconSearch size={14} className="chat-search-icon" />
+          <input
+            ref={searchRef}
+            className="chat-search-input"
+            autoFocus
+            placeholder="Search messages"
+            value={search}
+            onChange={(e) => {
+              setSearch(e.target.value)
+              setMatchIndex(0)
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                e.preventDefault()
+                closeSearch()
+              } else if (e.key === 'Enter') {
+                e.preventDefault()
+                stepMatch(e.shiftKey ? -1 : 1)
+              }
+            }}
+          />
+          <span className="chat-search-count">
+            {search.trim() ? `${matches.length ? currentIndex + 1 : 0}/${matches.length}` : ''}
+          </span>
+          <button
+            type="button"
+            className="chat-search-btn"
+            title="Previous match (Shift+Enter)"
+            disabled={!matches.length}
+            onClick={() => stepMatch(-1)}
+          >
+            <IconChevronUp size={14} />
+          </button>
+          <button
+            type="button"
+            className="chat-search-btn"
+            title="Next match (Enter)"
+            disabled={!matches.length}
+            onClick={() => stepMatch(1)}
+          >
+            <IconChevronDown size={14} />
+          </button>
+          <button
+            type="button"
+            className="chat-search-btn"
+            title="Close search (Esc)"
+            onClick={closeSearch}
+          >
+            <IconX size={14} />
+          </button>
         </div>
       )}
       <div
@@ -973,7 +1078,7 @@ function ChatPanel({
             <div key={entry.id} data-mid={entry.id} data-anim-status={status}>
               {dayDivider}
               <div
-                className={`chat-message${grouped ? ' grouped' : ''}${mentionsMe ? ' mentioned' : ''}`}
+                className={`chat-message${grouped ? ' grouped' : ''}${mentionsMe ? ' mentioned' : ''}${entry.id === currentMatch ? ' search-match' : ''}`}
                 onContextMenu={
                   hasMenu
                     ? (e) => {

@@ -52,13 +52,16 @@ let lastCommittedAudioProfile = null
 // survives ownership changes: a moderator move rebinds onClientSpeaking to the new
 // channel, and the detector reports our own speaking through that live callback.
 let selfSpeakingStop = null
-// Separate detector on the RAW mic stream (stays live while muted, unlike the
-// processed track the self indicator taps), used to warn when we talk while
-// muted. Its handler + cooldown are set from the UI layer.
+// Separate detector on the processing chain's output node (stays live while
+// muted, unlike the published track), used to warn when we talk while muted.
+// Its handler is set from the UI layer.
 let mutedTalkStop = null
 let onTalkingWhileMuted = null
 let lastTalkingWhileMutedAt = 0
-const TALKING_WHILE_MUTED_COOLDOWN_MS = 2500
+// The warning is a toast plus a chime, so it nags rather than informs if it
+// repeats every couple of seconds. Long enough that continuous talking gets
+// re-warned occasionally; the count resets on each fresh mute (setMicMuted).
+const TALKING_WHILE_MUTED_COOLDOWN_MS = 10_000
 let localClientId = null
 // Set while a publish() is mid-flight so a concurrent caller joins the same
 // promise instead of allocating a second producer transport (the server rejects a
@@ -963,7 +966,12 @@ async function buildAudioProcessor(stream, micSettings) {
     // compiled worklet module is reused by the next publish.
   }
 
-  return { stream: destination.stream, stop }
+  // `tap` is the last graph node before the destination — everything that decides
+  // what peers receive (mono fold, RNNoise, volume gate) has already been applied.
+  // The muted-talk detector listens there instead of the raw capture, so it only
+  // hears audio that would really be transmitted, and it keeps hearing it while
+  // muted (muting disables the destination's *track*, not the graph feeding it).
+  return { stream: destination.stream, stop, tap: { context: audioContext, node } }
 }
 
 // Stop the currently active audio processing chain (if any), releasing its
@@ -1329,12 +1337,13 @@ export function setTalkingWhileMutedHandler(fn) {
   onTalkingWhileMuted = fn
 }
 
-// Detect speech on the RAW mic capture, which stays live while muted — muting
-// pauses the producer, disabling the *processed* track the self indicator taps,
-// not the raw stream. So when we speak while muted, this fires the warning
-// (throttled). The raw track remains separate from the always-mono published
-// track even when RNNoise and the gate are disabled.
-function startMutedTalkDetector(stream) {
+// Warn (throttled) when we speak while muted. `tap` is the processing chain's
+// pre-destination node (see buildAudioProcessor): it stays live while muted, and
+// it has already been through RNNoise and the volume gate, so a warning only
+// fires on audio loud/clean enough that peers would have received it. Without a
+// chain (processor build failed) we fall back to the raw capture, which is then
+// what would have been published anyway.
+function startMutedTalkDetector(stream, tap) {
   mutedTalkStop?.()
   mutedTalkStop = createSpeakingDetector(
     stream,
@@ -1345,7 +1354,9 @@ function startMutedTalkDetector(stream) {
       lastTalkingWhileMutedAt = now
       onTalkingWhileMuted?.()
     },
-    { audioContext: getPlaybackContext() }
+    tap
+      ? { audioContext: tap.context, sourceNode: tap.node }
+      : { audioContext: getPlaybackContext() }
   )
 }
 
@@ -1433,10 +1444,12 @@ async function doPublish(micSettings, onStream) {
   // previous chain first so its AudioContext and worklet don't leak.
   stopAudioProcessor()
   let processedStream = stream
+  let processorTap = null
   try {
     const processed = await buildAudioProcessor(stream, micSettings)
     processedStream = processed.stream
     audioProcessorStop = processed.stop
+    processorTap = processed.tap
   } catch (err) {
     console.error('[Soup] Failed to build audio processor:', err)
     // Fall back to unprocessed stream
@@ -1447,8 +1460,8 @@ async function doPublish(micSettings, onStream) {
   // particular, quiet audio rejected by RNNoise or the volume gate must not
   // light the local indicator when peers cannot receive it.
   startSelfSpeakingDetector(processedStream)
-  // Separate raw-stream tap that survives muting, for the talking-while-muted warning.
-  startMutedTalkDetector(stream)
+  // Separate in-graph tap that survives muting, for the talking-while-muted warning.
+  startMutedTalkDetector(stream, processorTap)
 
   // Negotiate the channel layout of the track actually handed to mediasoup,
   // not the raw capture feeding the processing graph.
@@ -1505,6 +1518,7 @@ function commitRepublishedMicProcessing({
   stream,
   processedStream,
   processorStop,
+  processorTap,
   previousStop,
   micSettings,
   onStream
@@ -1516,7 +1530,7 @@ function commitRepublishedMicProcessing({
   // Keep both detectors tied to the same capture transaction that just became
   // current. Starting either one tears down its previous callback/tap.
   startSelfSpeakingDetector(processedStream)
-  startMutedTalkDetector(stream)
+  startMutedTalkDetector(stream, processorTap)
   onStream?.(processedStream)
 }
 
@@ -1616,10 +1630,12 @@ async function doRepublish(micSettings, onStream, expectedGeneration) {
   // produce fails.
   let processedStream = stream
   let candidateProcessorStop = () => {}
+  let candidateProcessorTap = null
   try {
     const processed = await buildAudioProcessor(stream, micSettings)
     processedStream = processed.stream
     candidateProcessorStop = processed.stop
+    candidateProcessorTap = processed.tap
   } catch (err) {
     console.error('[Soup] republish audio processor failed:', err)
   }
@@ -1657,6 +1673,7 @@ async function doRepublish(micSettings, onStream, expectedGeneration) {
       stream,
       processedStream,
       processorStop: candidateProcessorStop,
+      processorTap: candidateProcessorTap,
       previousStop: previousProcessorStop,
       micSettings: resolvedMicSettings,
       onStream
@@ -4033,6 +4050,9 @@ export function rebindCallbacks(newCallbacks) {
 // Pauses/resumes local audio producers so other clients stop receiving them.
 export function setMicMuted(muted) {
   micMuted = muted
+  // Each mute starts a fresh warning budget, so muting and immediately talking
+  // is always warned about even if the last warning was seconds ago.
+  if (muted) lastTalkingWhileMutedAt = 0
   producers.filter((p) => p.kind === 'audio').forEach((p) => (muted ? p.pause() : p.resume()))
 }
 

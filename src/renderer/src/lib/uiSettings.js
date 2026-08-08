@@ -3,21 +3,39 @@
 
 // Selectable interface fonts. Each `stack` ends in the system sans so it still
 // renders if the bundled woff2 (imported in main.jsx) somehow fails to load.
-// `id` is what's persisted; the Settings dropdown is built from this list.
+// `id` is what's persisted; the Settings dropdown is built from this list. Kept
+// deliberately short — each entry is a distinct voice rather than another
+// neutral grotesque, so the list is worth scrolling. An id that's no longer here
+// falls back to UI_FONTS[0] below.
 export const UI_FONTS = [
+  // Neutral UI grotesque — the default.
   { id: 'inter', label: 'Inter', stack: "'Inter Variable', Inter, system-ui, sans-serif" },
-  {
-    id: 'open-sans',
-    label: 'Open Sans',
-    stack: "'Open Sans Variable', 'Open Sans', system-ui, sans-serif"
-  },
-  {
-    id: 'dm-sans',
-    label: 'DM Sans',
-    stack: "'DM Sans Variable', 'DM Sans', system-ui, sans-serif"
-  },
+  // Neo-grotesque, the Android/Google look.
   { id: 'roboto', label: 'Roboto', stack: "'Roboto Variable', Roboto, system-ui, sans-serif" },
-  { id: 'nunito', label: 'Nunito', stack: "'Nunito Variable', Nunito, system-ui, sans-serif" }
+  // Technical humanist, more character than the two above.
+  {
+    id: 'ibm-plex-sans',
+    label: 'IBM Plex Sans',
+    stack: "'IBM Plex Sans Variable', 'IBM Plex Sans', system-ui, sans-serif"
+  },
+  // Widest glyph coverage — the safe pick for non-Latin names.
+  {
+    id: 'noto-sans',
+    label: 'Noto Sans',
+    stack: "'Noto Sans Variable', 'Noto Sans', system-ui, sans-serif"
+  },
+  // Geometric and tight.
+  { id: 'manrope', label: 'Manrope', stack: "'Manrope Variable', Manrope, system-ui, sans-serif" },
+  // Rounded terminals — the soft one.
+  { id: 'nunito', label: 'Nunito', stack: "'Nunito Variable', Nunito, system-ui, sans-serif" },
+  // Monospace throughout, for the terminal look.
+  {
+    id: 'jetbrains-mono',
+    label: 'JetBrains Mono',
+    stack: "'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, monospace"
+  },
+  // No webfont — whatever the OS uses for its own UI (Segoe UI, SF, Cantarell).
+  { id: 'system', label: 'System Default', stack: 'system-ui, sans-serif' }
 ]
 
 export function applyAppearanceSettings({

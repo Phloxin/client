@@ -280,6 +280,7 @@ function ClientIndicator({
     onOpenStreamDebug,
     // The menu edits our own presence; `presence` here is this row's client.
     presence,
+    onOpenDm,
     onPoke,
     onKick,
     onKickFromChannel,

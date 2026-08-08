@@ -30,11 +30,12 @@ import {
   subscribeStreamViewers,
   setTalkingWhileMutedHandler
 } from '../lib/soup'
-import { playUiSound } from '../lib/sounds'
+import { playUiSound, isToastEnabled } from '../lib/sounds'
 import { setServerHost, apiBase, wsBase, cdnUrl, throwIfError } from '../lib/serverConfig'
 import { validateMessage, statusOf } from '../lib/presence'
 import { authFetch, getFreshToken, setOnSessionExpired } from '../lib/auth'
 import { httpFetch } from '../lib/http'
+import { EVERYONE_ROLE_ID, viewChannelOverride } from '../lib/permissions'
 import SegmentedTabs from '../components/SegmentedTabs'
 import {
   IconVideo,
@@ -203,6 +204,42 @@ function Main() {
   const [roles, setRoles] = useState([])
   // Vanity items (cosmetic server groups: name + icon, no permissions).
   const [vanity, setVanity] = useState([])
+
+  // Our effective permissions: the OR of every role we hold (explicit role_ids
+  // plus the implicit 'everyone' role). ADMINISTRATOR implies all. Computed from
+  // the live roster entry so it tracks role changes via ClientModified.
+  const myPermissions = useMemo(() => {
+    const self = clients.find((c) => c.id === client?.id)
+    const myRoleIds = new Set(self?.role_ids || client?.role_ids || [])
+    let bits = 0n
+    for (const r of roles) {
+      if (String(r.id) === EVERYONE_ROLE_ID || myRoleIds.has(r.id)) {
+        try {
+          bits |= BigInt(r.permissions ?? 0)
+        } catch {
+          // Ignore a malformed permission string rather than crash the menu.
+        }
+      }
+    }
+    return bits
+  }, [roles, clients, client])
+
+  const isAdmin = (myPermissions & PERM_ADMINISTRATOR) !== 0n
+
+  // Channels minus the ones an overwrite explicitly denies us VIEW_CHANNEL on.
+  // The server pushes a channel to a client the moment it becomes visible, but a
+  // revoke only broadcasts ChannelUpdated — which we'd otherwise merge and keep
+  // rendering until the next reconnect. Derived, so it tracks both directions
+  // live. Everything below treats this as the channel list; `channels` stays the
+  // raw one the event handlers merge into.
+  const visibleChannels = useMemo(() => {
+    if (isAdmin) return channels
+    const self = clients.find((c) => c.id === client?.id)
+    const roleIds = self?.role_ids || client?.role_ids || []
+    return channels.filter(
+      (ch) => viewChannelOverride(ch.overwrites, { roleIds, userId: client?.id }) !== false
+    )
+  }, [channels, isAdmin, clients, client])
   // 'Roles and Groups' popup, opened from a client context menu.
   const [rolesGroupsOpen, setRolesGroupsOpen] = useState(false)
   const [bans, setBans] = useState([])
@@ -218,20 +255,39 @@ function Main() {
   // True while a connect attempt is in flight (login → token), so the idle view
   // can say so. Cleared on success (we leave the idle view) or failure.
   const [connecting, setConnecting] = useState(false)
+  // Raise a toast, unless it belongs to a soundpack notification whose banner the
+  // user turned off in Settings → Notifications. `soundId` is that notification's
+  // sound id (see TOAST_SOUNDS in lib/sounds); omit it for toasts with no
+  // notification behind them, which are always shown.
+  const showToast = useCallback((message, variant, soundId) => {
+    if (soundId && !isToastEnabled(soundId)) return
+    setToast({ message, variant })
+  }, [])
   // Every error toast is also the single place we chime an error cue. The second
   // arg is the caught Error (its `.status` distinguishes a 403 permission failure)
-  // or `{ silent: true }` where the caller already plays its own specific sound.
-  const showError = useCallback((message, err) => {
-    setToast({ message, variant: 'error' })
-    if (err?.silent) return
-    const permission =
-      err?.status === 403 || /permission|forbidden|not allowed|insufficient/i.test(message)
-    playUiSound(permission ? 'insufficient_permissions' : 'error')
-  }, [])
-  const showSuccess = useCallback((message) => setToast({ message, variant: 'success' }), [])
+  // or `{ silent: true }` where the caller already plays its own specific sound —
+  // such a caller passes `soundId` too, so its toast follows that notification.
+  const showError = useCallback(
+    (message, err) => {
+      if (err?.silent) return showToast(message, 'error', err.soundId)
+      const permission =
+        err?.status === 403 || /permission|forbidden|not allowed|insufficient/i.test(message)
+      const soundId = permission ? 'insufficient_permissions' : 'error'
+      showToast(message, 'error', soundId)
+      playUiSound(soundId)
+    },
+    [showToast]
+  )
+  const showSuccess = useCallback(
+    (message, soundId) => showToast(message, 'success', soundId),
+    [showToast]
+  )
   // Warning toast (amber) — non-error advisories like talking while muted. Plays
   // no sound itself; callers add a cue where appropriate.
-  const showWarning = useCallback((message) => setToast({ message, variant: 'warning' }), [])
+  const showWarning = useCallback(
+    (message, soundId) => showToast(message, 'warning', soundId),
+    [showToast]
+  )
   const dismissToast = useCallback(() => setToast(null), [])
 
   //Client UI Hooks
@@ -721,13 +777,17 @@ function Main() {
     prevStreamIdsRef.current = curIds
   }, [allVideoStreams])
 
-  // Drop the preview once we've actually joined that channel, or it's deleted.
+  // Drop the preview once we've actually joined that channel, or it's deleted —
+  // or our view permission on it is revoked while we're peeking.
   useEffect(() => {
     if (previewChannelId == null) return
-    if (previewChannelId === selfChannelId || !channels.some((c) => c.id === previewChannelId)) {
+    if (
+      previewChannelId === selfChannelId ||
+      !visibleChannels.some((c) => c.id === previewChannelId)
+    ) {
       setPreviewChannelId(null)
     }
-  }, [previewChannelId, selfChannelId, channels])
+  }, [previewChannelId, selfChannelId, visibleChannels])
 
   // Single-click a channel: peek into its chat. Clicking the one we're already
   // in just returns to the normal view. Closes any open client summary.
@@ -807,12 +867,13 @@ function Main() {
     }
   }, [summaryClientId, clients])
 
-  // Close the channel summary if the channel is deleted out from under us.
+  // Close the channel summary if the channel is deleted (or hidden from us) out
+  // from under us.
   useEffect(() => {
-    if (summaryChannelId != null && !channels.some((c) => c.id === summaryChannelId)) {
+    if (summaryChannelId != null && !visibleChannels.some((c) => c.id === summaryChannelId)) {
       setSummaryChannelId(null)
     }
-  }, [summaryChannelId, channels])
+  }, [summaryChannelId, visibleChannels])
 
   // Get-or-create the 1:1 DM channel with another user and make it known to
   // `channels`, returning its id. Shared by handleOpenDm (peek) and handlePoke
@@ -945,26 +1006,6 @@ function Main() {
       .catch((err) => console.error('Failed to load vanity groups:', err))
   }, [token])
 
-  // Our effective permissions: the OR of every role we hold (explicit role_ids
-  // plus the implicit 'everyone' role). ADMINISTRATOR implies all. Computed from
-  // the live roster entry so it tracks role changes via ClientModified.
-  const myPermissions = useMemo(() => {
-    const self = clients.find((c) => c.id === client?.id)
-    const myRoleIds = new Set(self?.role_ids || client?.role_ids || [])
-    let bits = 0n
-    for (const r of roles) {
-      if (r.name?.toLowerCase() === 'everyone' || myRoleIds.has(r.id)) {
-        try {
-          bits |= BigInt(r.permissions ?? 0)
-        } catch {
-          // Ignore a malformed permission string rather than crash the menu.
-        }
-      }
-    }
-    return bits
-  }, [roles, clients, client])
-
-  const isAdmin = (myPermissions & PERM_ADMINISTRATOR) !== 0n
   const canKickMembers = isAdmin || (myPermissions & PERM_KICK_MEMBERS) !== 0n
   const canBanMembers = isAdmin || (myPermissions & PERM_BAN_MEMBERS) !== 0n
   const canMuteMembers = isAdmin || (myPermissions & PERM_MUTE_MEMBERS) !== 0n
@@ -1371,7 +1412,7 @@ function Main() {
       })
       await throwIfError(res)
       playUiSound('channel_moved')
-      showSuccess('Channel moved')
+      showSuccess('Channel moved', 'channel_moved')
     } catch (err) {
       showError(`Failed to reorder channel: ${err.message}`, err)
     }
@@ -1390,7 +1431,7 @@ function Main() {
       })
       await throwIfError(res)
       playUiSound('channel_edited')
-      showSuccess('Channel description updated')
+      showSuccess('Channel description updated', 'channel_edited')
     } catch (err) {
       showError(`Failed to update channel description: ${err.message}`, err)
     }
@@ -1409,7 +1450,7 @@ function Main() {
       })
       await throwIfError(res)
       playUiSound('channel_edited')
-      showSuccess(channel_icon ? 'Channel icon updated' : 'Channel icon removed')
+      showSuccess(channel_icon ? 'Channel icon updated' : 'Channel icon removed', 'channel_edited')
     } catch (err) {
       showError(`Failed to set channel icon: ${err.message}`, err)
     }
@@ -1429,7 +1470,7 @@ function Main() {
       })
       await throwIfError(res)
       playUiSound('channel_edited')
-      showSuccess('Channel permissions updated')
+      showSuccess('Channel permissions updated', 'channel_edited')
     } catch (err) {
       showError(`Failed to update channel permissions: ${err.message}`, err)
     }
@@ -1443,7 +1484,7 @@ function Main() {
       })
       await throwIfError(res)
       playUiSound('channel_edited')
-      showSuccess('Channel permission removed')
+      showSuccess('Channel permission removed', 'channel_edited')
     } catch (err) {
       showError(`Failed to remove channel permission: ${err.message}`, err)
     }
@@ -1611,13 +1652,14 @@ function Main() {
     return () => setOnSessionExpired(null)
   }, [handleDisconnect, showError])
 
-  // Warn (toast only) when we speak while our mic is muted — soup detects this on
-  // the raw mic stream and calls back here. No sound: the raw detector doesn't
-  // share the stream's noise reduction / gate, so it'd chime on noise the mic
-  // wouldn't actually transmit.
+  // Warn when we speak while our mic is muted. soup detects this downstream of
+  // noise reduction and the volume gate, so it only fires on audio peers would
+  // actually have received — quiet enough to chime for, unlike the old raw-stream
+  // detector. soup also throttles the callback, so no extra rate limiting here.
   useEffect(() => {
     setTalkingWhileMutedHandler(() => {
-      showWarning('Your microphone is muted')
+      showWarning('Your microphone is muted', 'stop_talking')
+      playUiSound('stop_talking')
     })
     return () => setTalkingWhileMutedHandler(null)
   }, [showWarning])
@@ -1917,10 +1959,13 @@ function Main() {
           const added = [...after].find((id) => !before.has(id))
           const removed = [...before].find((id) => !after.has(id))
           if (added != null) {
-            showSuccess(`You were given the "${roleName(added)}" role`)
+            showSuccess(`You were given the "${roleName(added)}" role`, 'servergroup_assigned')
             playUiSound('servergroup_assigned')
           } else if (removed != null) {
-            showError(`Your "${roleName(removed)}" role was revoked`, { silent: true })
+            showError(`Your "${roleName(removed)}" role was revoked`, {
+              silent: true,
+              soundId: 'servergroup_revoked'
+            })
             playUiSound('servergroup_revoked')
           }
         }
@@ -1937,10 +1982,13 @@ function Main() {
           const added = [...after].find((id) => !before.has(id))
           const removed = [...before].find((id) => !after.has(id))
           if (added != null) {
-            showSuccess(`You were added to the "${groupName(added)}" group`)
+            showSuccess(`You were added to the "${groupName(added)}" group`, 'servergroup_assigned')
             playUiSound('servergroup_assigned')
           } else if (removed != null) {
-            showError(`You were removed from the "${groupName(removed)}" group`, { silent: true })
+            showError(`You were removed from the "${groupName(removed)}" group`, {
+              silent: true,
+              soundId: 'servergroup_revoked'
+            })
             playUiSound('servergroup_revoked')
           }
         }
@@ -2317,7 +2365,8 @@ function Main() {
         if (banned || kicked) {
           closedByUs = true // suppress the reconnect path below
           showError(`You have been ${banned ? 'banned' : 'kicked'} from the server`, {
-            silent: true
+            silent: true,
+            soundId: banned ? 'you_were_banned' : 'you_kicked_server'
           })
           playUiSound(banned ? 'you_were_banned' : 'you_kicked_server')
           handleDisconnect({ skipSound: true })
@@ -2682,6 +2731,9 @@ function Main() {
   // Handed to ClientActionsProvider so a client context menu can be opened from
   // anywhere (currently the sidebar roster and chat message authors).
   const clientActions = {
+    // The live roster, so an open context menu re-reads its client each render
+    // instead of showing the snapshot it was opened with.
+    clients,
     onOpenDm: handleOpenDm,
     onPoke: handlePoke,
     onKick: handleKickUser,
@@ -2738,7 +2790,7 @@ function Main() {
         />
         <div className="layout">
           <SideBar
-            channels={channels}
+            channels={visibleChannels}
             clients={clients}
             self={client}
             onStreamsUpdate={handleStreamsUpdate}

@@ -51,6 +51,9 @@ export function setActiveSoundpack(id) {
 // readable `label` (the filename is still shown as a tooltip). A section only
 // shows the sounds the active pack actually contains, so the list follows the
 // selected pack.
+// `toast: true` marks a sound whose event ALSO raises a toast banner in Main.jsx;
+// those rows get a second toggle so the banner can be silenced independently of
+// the sound (see TOAST_SOUNDS / isToastEnabled below).
 // ponytail: grouping and labels are best-guess from the TeamSpeak sound names —
 // reorder / retitle freely, nothing keys off this order.
 export const SOUND_SECTIONS = [
@@ -94,8 +97,8 @@ export const SOUND_SECTIONS = [
       { id: 'sound_resumed', label: 'Sound unmuted / undeafened', default: 'pin' },
       { id: 'away_activated', label: 'Mark self as away' },
       { id: 'away_deactivated', label: 'Unmark self as away' },
-      { id: 'servergroup_assigned', label: 'Server group assigned' },
-      { id: 'servergroup_revoked', label: 'Server group revoked' }
+      { id: 'servergroup_assigned', label: 'Server group assigned', toast: true },
+      { id: 'servergroup_revoked', label: 'Server group revoked', toast: true }
     ]
   },
   {
@@ -103,14 +106,14 @@ export const SOUND_SECTIONS = [
     label: 'Moderation',
     sounds: [
       { id: 'you_kicked_channel', label: 'You were kicked from a channel' },
-      { id: 'you_kicked_server', label: 'You were kicked from the server' },
+      { id: 'you_kicked_server', label: 'You were kicked from the server', toast: true },
       { id: 'neutral_kicked_channel_awayfromcurrentchannel', label: 'Someone was kicked from your channel' },
       { id: 'neutral_kicked_server_currentchannel', label: 'Someone was kicked from the server' },
-      { id: 'you_were_banned', label: 'You were banned' },
+      { id: 'you_were_banned', label: 'You were banned', toast: true },
       { id: 'neutral_banned_server_currentchannel', label: 'Someone was banned from the server' },
       { id: 'you_were_gagged', label: 'You were gagged' },
       { id: 'you_were_ungagged', label: 'You were ungagged' },
-      { id: 'insufficient_permissions', label: 'Insufficient permissions' }
+      { id: 'insufficient_permissions', label: 'Insufficient permissions', toast: true }
     ]
   },
   {
@@ -119,8 +122,8 @@ export const SOUND_SECTIONS = [
     sounds: [
       { id: 'channel_created', label: 'Channel created' },
       { id: 'channel_deleted', label: 'Channel deleted' },
-      { id: 'channel_edited', label: 'Channel edited' },
-      { id: 'channel_moved', label: 'Channel moved' },
+      { id: 'channel_edited', label: 'Channel edited', toast: true },
+      { id: 'channel_moved', label: 'Channel moved', toast: true },
       { id: 'your_channel_was_edited', label: 'Current channel was edited' }
     ]
   },
@@ -140,7 +143,10 @@ export const SOUND_SECTIONS = [
   {
     id: 'warnings',
     label: 'Warnings',
-    sounds: [{ id: 'error', label: 'An error occurred' }]
+    sounds: [
+      { id: 'error', label: 'An error occurred', toast: true },
+      { id: 'stop_talking', label: 'You spoke while muted', toast: true }
+    ]
   }
 ]
 
@@ -148,8 +154,31 @@ export const SOUND_SECTIONS = [
 // Used wherever a sound's state is resolved, so a sound the user hasn't touched
 // still honours its intended default.
 export const SOUND_DEFAULTS = {}
+// Sound ids whose event also raises a toast banner (from the `toast` field above).
+// Settings only offers the toast toggle for these.
+export const TOAST_SOUNDS = new Set()
 for (const section of SOUND_SECTIONS) {
-  for (const s of section.sounds) if (s.default) SOUND_DEFAULTS[s.id] = s.default
+  for (const s of section.sounds) {
+    if (s.default) SOUND_DEFAULTS[s.id] = s.default
+    if (s.toast) TOAST_SOUNDS.add(s.id)
+  }
+}
+
+// Per-sound toast state (sound id -> false when the user turned the banner off).
+// Absent = on. Separate axis from soundState: a sound can chime with no banner,
+// or banner with no chime. Pushed in from SettingsContext like the map above.
+let toastState = {}
+
+export function setToastStateMap(map) {
+  toastState = { ...toastState, ...map }
+}
+
+// Whether the toast tied to `soundId` should be shown. Ids with no toast wired
+// (not in TOAST_SOUNDS) are always allowed, so an un-flagged caller isn't muted
+// by an accidental leftover entry in the saved map.
+export function isToastEnabled(soundId) {
+  if (!TOAST_SOUNDS.has(soundId)) return true
+  return toastState[soundId] !== false
 }
 
 // The app fires playback by these event names (Main.jsx / SideBar.jsx); each maps

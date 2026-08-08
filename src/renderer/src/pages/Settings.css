@@ -373,6 +373,17 @@
   transform: scale(0.9);
 }
 
+/* Toast toggle — only on notifications that raise a banner. Tinted while the
+   banner is on, muted (and crossed-out icon) once it's suppressed. */
+.sound-toast-btn.active {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.sound-toast-btn:not(.active) {
+  color: var(--color-text-tertiary);
+}
+
 /* Header row of a notification-sound section: section title + master toggle. */
 .sound-section-head > label {
   font-size: var(--font-size-md, 15px);
