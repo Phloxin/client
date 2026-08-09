@@ -31,5 +31,5 @@ export function createVoiceGraph(audioContext, stream, { stereo = false } = {}) 
 
 // Mono voice graph — the default for every profile except Hi-Fi Voice.
 export function createMonoVoiceGraph(audioContext, stream) {
-  return createVoiceGraph(audioContext, stream, { stereo: false })
+  return createVoiceGraph(audioContext, stream)
 }

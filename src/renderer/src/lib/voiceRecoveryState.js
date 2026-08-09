@@ -2,6 +2,12 @@
 // small lets the failure policy be tested without WebSocket/WebRTC globals.
 
 export const AUDIO_CONSUME_RETRY_DELAYS_MS = [250, 750, 2000]
+const PERMANENT_MIC_ERRORS = new Set([
+  'NotAllowedError',
+  'SecurityError',
+  'OverconstrainedError',
+  'NotFoundError'
+])
 
 export function nextAudioConsumeRetryDelay(attempt) {
   return AUDIO_CONSUME_RETRY_DELAYS_MS[attempt] ?? null
@@ -10,9 +16,7 @@ export function nextAudioConsumeRetryDelay(attempt) {
 // These errors need user action (permission, a vanished device, or impossible
 // constraints); retrying them on every reconnect only creates a noisy loop.
 export function isPermanentMicError(error) {
-  return ['NotAllowedError', 'SecurityError', 'OverconstrainedError', 'NotFoundError'].includes(
-    error?.name
-  )
+  return PERMANENT_MIC_ERRORS.has(error?.name)
 }
 
 export function allKnownAudioConsumersReady(knownProducerIds, activeConsumerIds) {

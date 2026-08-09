@@ -1,3 +1,4 @@
+/* eslint-disable react/prop-types -- This JavaScript renderer does not use runtime PropTypes. */
 import {
   IconShieldHalfFilled,
   IconShieldFilled,

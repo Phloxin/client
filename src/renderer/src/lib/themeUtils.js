@@ -12,7 +12,7 @@ const DEFAULT_THEME = 'studio'
 
 // `swatch` mirrors the theme's [chrome, canvas, accent] colors for the picker
 // preview tiles — keep in sync with styles/themes.css.
-export const AVAILABLE_THEMES = [
+const AVAILABLE_THEMES = [
   {
     id: 'studio',
     name: 'Studio',
@@ -75,21 +75,25 @@ export const AVAILABLE_THEMES = [
   }
 ]
 
+const THEMES_BY_ID = new Map(AVAILABLE_THEMES.map((theme) => [theme.id, theme]))
+
 // Saved ids from the pre-redesign catalog map to their nearest new theme so an
 // existing preference never dangles on an unknown id.
-const LEGACY_THEME_MAP = {
-  'classic-dark': 'studio',
-  'classic-light': 'daylight',
-  'catppuccin-frappe': 'frappe',
-  'catppuccin-mocha': 'mocha',
-  nord: 'aurora',
-  'tokyo-night': 'midnight',
-  'one-dark-pro': 'studio'
-}
+const LEGACY_THEME_MAP = new Map(
+  Object.entries({
+    'classic-dark': 'studio',
+    'classic-light': 'daylight',
+    'catppuccin-frappe': 'frappe',
+    'catppuccin-mocha': 'mocha',
+    nord: 'aurora',
+    'tokyo-night': 'midnight',
+    'one-dark-pro': 'studio'
+  })
+)
 
 function resolveThemeId(themeId) {
-  if (AVAILABLE_THEMES.some((t) => t.id === themeId)) return themeId
-  return LEGACY_THEME_MAP[themeId] || null
+  if (THEMES_BY_ID.has(themeId)) return themeId
+  return LEGACY_THEME_MAP.get(themeId) ?? null
 }
 
 /**
@@ -125,7 +129,7 @@ function notifyThemeChange(themeId) {
 export function setTheme(themeId) {
   const resolved = resolveThemeId(themeId)
   if (!resolved) {
-    console.warn(`Theme '${themeId}' not found. Using default theme.`)
+    console.warn(`Theme '${themeId}' not found.`)
     return false
   }
 
@@ -159,8 +163,12 @@ export function initializeTheme() {
   let theme = DEFAULT_THEME
 
   try {
-    const saved = resolveThemeId(localStorage.getItem(THEME_KEY))
-    if (saved) theme = saved
+    const stored = localStorage.getItem(THEME_KEY)
+    const saved = resolveThemeId(stored)
+    if (saved) {
+      theme = saved
+      if (stored !== saved) localStorage.setItem(THEME_KEY, saved)
+    }
   } catch (e) {
     console.warn('Could not read theme from localStorage', e)
   }
@@ -175,8 +183,9 @@ export function listenForThemeUpdates() {
   try {
     if (window?.electron?.ipcRenderer?.on) {
       window.electron.ipcRenderer.on('theme-changed-ipc', (_, themeId) => {
-        if (themeId && themeId !== getTheme()) {
-          applyTheme(themeId)
+        const resolved = resolveThemeId(themeId)
+        if (resolved && resolved !== getTheme()) {
+          applyTheme(resolved)
         }
       })
     }
@@ -199,5 +208,5 @@ export function getAvailableThemes() {
  * @returns {Object|null}
  */
 export function getThemeById(themeId) {
-  return AVAILABLE_THEMES.find((t) => t.id === themeId) || null
+  return THEMES_BY_ID.get(themeId) ?? null
 }

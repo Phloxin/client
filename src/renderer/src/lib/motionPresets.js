@@ -7,12 +7,16 @@
 export const spring = { type: 'spring', stiffness: 520, damping: 36, mass: 0.8 }
 
 // Softer spring for large surfaces (modal panels, view swaps).
-export const springSoft = { type: 'spring', stiffness: 330, damping: 32, mass: 0.9 }
+const springSoft = { type: 'spring', stiffness: 330, damping: 32, mass: 0.9 }
+
+// Shared pass-through props avoid allocating an identical object in every
+// disabled animation category on every render.
+const noMotion = { initial: false }
 
 // Overlay panel: pop up from slightly below at 96% scale. Exit is a quick fade
 // so dismissal always feels instant.
 export function overlayPop(enabled) {
-  if (!enabled) return { initial: false }
+  if (!enabled) return noMotion
   return {
     initial: { opacity: 0, scale: 0.96, y: 10 },
     animate: { opacity: 1, scale: 1, y: 0, transition: springSoft },
@@ -22,7 +26,7 @@ export function overlayPop(enabled) {
 
 // Backdrop scrim fade behind modals.
 export function scrimFade(enabled) {
-  if (!enabled) return { initial: false }
+  if (!enabled) return noMotion
   return {
     initial: { opacity: 0 },
     animate: { opacity: 1, transition: { duration: 0.16, ease: 'easeOut' } },
@@ -32,7 +36,7 @@ export function scrimFade(enabled) {
 
 // Anchored popover/menu: scale from its origin corner with a spring.
 export function menuPop(enabled) {
-  if (!enabled) return { initial: false }
+  if (!enabled) return noMotion
   return {
     initial: { opacity: 0, scale: 0.92, y: -4 },
     animate: { opacity: 1, scale: 1, y: 0, transition: spring },
@@ -42,7 +46,7 @@ export function menuPop(enabled) {
 
 // Toast: drop in from above with a spring, lift away on dismiss.
 export function toastSlide(enabled) {
-  if (!enabled) return { initial: false }
+  if (!enabled) return noMotion
   return {
     initial: { opacity: 0, y: -18, scale: 0.98 },
     animate: { opacity: 1, y: 0, scale: 1, transition: spring },
@@ -55,7 +59,7 @@ export function toastSlide(enabled) {
 // than the fold so the rows are gone before the gap finishes closing. Exit is
 // tighter than enter — collapsing should feel decisive, expanding relaxed.
 export function collapseSection(enabled) {
-  if (!enabled) return { initial: false }
+  if (!enabled) return noMotion
   return {
     initial: { height: 0, opacity: 0 },
     animate: {
@@ -81,7 +85,7 @@ export function collapseSection(enabled) {
 // user rows fold away (and blink straight back out when they unfold). Children
 // must carry `avatarStackItem` as their variants for the stagger to reach them.
 export function avatarStack(enabled) {
-  if (!enabled) return { initial: false }
+  if (!enabled) return noMotion
   return {
     initial: 'hidden',
     animate: 'shown',
@@ -104,7 +108,7 @@ export const avatarStackItem = {
 
 // New chat message: slide up a few pixels and fade.
 export function messageSlide(enabled) {
-  if (!enabled) return { initial: false }
+  if (!enabled) return noMotion
   return {
     initial: { opacity: 0, y: 10 },
     animate: { opacity: 1, y: 0, transition: { type: 'spring', stiffness: 480, damping: 40 } }
