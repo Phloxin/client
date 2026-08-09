@@ -6,6 +6,7 @@ import {
   getRawMicStream,
   onRawMicStreamChange
 } from '../lib/soup'
+import { micProfileWantsStereo } from '../lib/micAudioProfile'
 
 function VolumeGateMeter({ threshold, onThresholdChange, micSettings, gateEnabled }) {
   const [audioLevel, setAudioLevel] = useState(0)
@@ -77,6 +78,7 @@ function VolumeGateMeter({ threshold, onThresholdChange, micSettings, gateEnable
     micSettings.noiseSuppression,
     micSettings.autoGainControl,
     micSettings.useRnnoise,
+    micSettings.hifiVoice,
     liveMicStream
   ])
 
@@ -112,7 +114,10 @@ function VolumeGateMeter({ threshold, onThresholdChange, micSettings, gateEnable
 
         if (ctx.state === 'suspended') await ctx.resume()
         monitor = await createMicLevelMonitor(ctx, stream, {
-          useRnnoise: micSettings.useRnnoise
+          // Mirror buildAudioProcessor: the mono RNNoise worklet is skipped on a
+          // stereo (Hi-Fi Voice) capture, so the meter must skip it too or it
+          // would show processing the call will not apply.
+          useRnnoise: micSettings.useRnnoise && !micProfileWantsStereo(micSettings)
         })
 
         if (cancelled) {
@@ -162,6 +167,9 @@ function VolumeGateMeter({ threshold, onThresholdChange, micSettings, gateEnable
     micSettings.useRnnoise,
     micSettings.sampleRate,
     micSettings.channelCount,
+    // Hi-Fi Voice changes the capture layout and disables the browser DSP, so
+    // the meter has to reopen on it like any other constraint-affecting setting.
+    micSettings.hifiVoice,
     liveMicStream
   ])
 

@@ -8,17 +8,33 @@ import { apiBase, voiceSocketUrl, getServerHost } from './serverConfig'
 import { authFetch } from './auth'
 import { startScreenAudio, onScreenAudioError } from './screenAudio'
 import { detachRtpSender, recoverMicRepublish, runBeforeServerProduce } from './mediaRecovery'
-import { createMonoVoiceGraph } from './voiceAudio'
+import { createVoiceGraph } from './voiceAudio'
 import {
   buildMicOpusOptions,
   micAudioProfileKey,
-  micSettingsForPublishedStream
+  micConstraints,
+  micProfileUsesRnnoise,
+  micProfileWantsStereo,
+  micSettingsForPublishedStream,
+  MUSIC_AUDIO_BITRATE
 } from './micAudioProfile'
+import { screenCodecOptionsFor, screenEncodingFor } from './screenVideoProfile'
+import { isProducerWatched, resolveWatchIntent } from './watchIntent'
+import { micCaptureKey } from './micRepublishScope'
+import {
+  allKnownAudioConsumersReady,
+  isPermanentMicError,
+  nextAudioConsumeRetryDelay
+} from './voiceRecoveryState'
 
-export { buildMicOpusOptions } from './micAudioProfile'
+export { buildMicOpusOptions, micConstraints } from './micAudioProfile'
 
 // ─── State ──────────────────────────────────────────────────────
 let device
+// Device loading is shared by the send and receive paths.  Keep it single-flight
+// per media generation so replayed NewProducer messages cannot race the mic
+// publish and install two different Device instances.
+let deviceLoadInFlight = null // { generation, promise }
 let ws
 let producerTransport
 let consumerTransport
@@ -66,6 +82,8 @@ let localClientId = null
 // Set while a publish() is mid-flight so a concurrent caller joins the same
 // promise instead of allocating a second producer transport (the server rejects a
 // duplicate). Both the reset-driven republish and an adopt() can race here.
+// { generation, promise }.  A publish started before a reset is never allowed
+// to satisfy callers in the new media session.
 let publishInFlight = null
 // Republish serializes the entire capture -> processing -> producer update
 // transaction. micAcquireChain alone only protects getUserMedia; without this
@@ -194,6 +212,97 @@ let reconnectTimer = null
 let reconnectInFlight = false // an attempt is mid-flight; don't start a second
 let intentionalClose = false // set by disconnect() so onclose won't reconnect
 let everAuthenticated = false // only auto-reconnect drops that follow a real auth
+let mediaWatchdogTimer = null
+let mediaReadyTimer = null
+let mediaWatchdogRecoveryUsed = false
+const MEDIA_WATCHDOG_DELAY_MS = 5000
+const MEDIA_READY_SETTLE_MS = 300
+
+function clearMediaWatchdog() {
+  if (mediaWatchdogTimer != null) clearTimeout(mediaWatchdogTimer)
+  mediaWatchdogTimer = null
+}
+
+function clearMediaReadyTimer() {
+  if (mediaReadyTimer != null) clearTimeout(mediaReadyTimer)
+  mediaReadyTimer = null
+}
+
+function emitMediaState(state, details = {}) {
+  activeCallbacks.onMediaState?.({ state, generation: mediaStateGeneration, ...details })
+}
+
+function remoteAudioIsReady() {
+  return allKnownAudioConsumersReady(knownAudioProducers.keys(), remoteConsumers.keys())
+}
+
+// Existing-producer replay has no explicit "snapshot complete" message.  A
+// short quiet period lets its NewProducer frames arrive before an empty room is
+// declared ready; every announcement/consume completion re-evaluates the gate.
+function scheduleMediaReadyCheck(generation = mediaStateGeneration) {
+  clearMediaReadyTimer()
+  if (
+    intentionalClose ||
+    generation !== mediaStateGeneration ||
+    !hasLiveAudioProducer() ||
+    !remoteAudioIsReady()
+  )
+    return
+
+  mediaReadyTimer = setTimeout(() => {
+    mediaReadyTimer = null
+    if (
+      intentionalClose ||
+      generation !== mediaStateGeneration ||
+      !hasLiveAudioProducer() ||
+      !remoteAudioIsReady()
+    )
+      return
+    clearMediaWatchdog()
+    mediaWatchdogRecoveryUsed = false
+    audioConsumeRecoveryUsed = false
+    emitMediaState('ready')
+  }, MEDIA_READY_SETTLE_MS)
+}
+
+// A transient local-media failure gets one full voice reconnect.  If the same
+// recovery budget is already spent, report a bounded failure instead of looping
+// forever or leaving the UI on an endless reconnect overlay.
+export function requestVoiceMediaRecovery(reason = 'Voice media recovery failed') {
+  if (intentionalClose || !everAuthenticated) return false
+  if (mediaWatchdogRecoveryUsed) {
+    emitMediaState('failed', { reason })
+    return false
+  }
+  mediaWatchdogRecoveryUsed = true
+  emitMediaState('reconnecting', { reason })
+  forceVoiceReconnect(reason)
+  return true
+}
+
+function armMediaWatchdog(generation) {
+  clearMediaWatchdog()
+  mediaWatchdogTimer = setTimeout(() => {
+    mediaWatchdogTimer = null
+    if (intentionalClose || generation !== mediaStateGeneration) return
+    const expectedRemote = knownAudioProducers.size
+    const activeRemote = [...remoteConsumers.keys()].filter((id) =>
+      knownAudioProducers.has(id)
+    ).length
+    const localReady = hasLiveAudioProducer()
+    console.warn(
+      `[Soup] media watchdog generation=${generation} local=${localReady} remote=${activeRemote}/${expectedRemote}`
+    )
+    if (!localReady) {
+      requestVoiceMediaRecovery('Local microphone was not ready after reconnect')
+      return
+    }
+    // A missing remote is retried by ensureAudioConsumer; invoke it again here
+    // in case an earlier timer was canceled while the transport was resetting.
+    for (const producerId of knownAudioProducers.keys()) ensureAudioConsumer(producerId)
+    scheduleMediaReadyCheck(generation)
+  }, MEDIA_WATCHDOG_DELAY_MS)
+}
 
 // ─── Pending response handlers ───────────────────────────────────
 const pendingHandlers = []
@@ -308,10 +417,26 @@ const knownVideoProducers = new Map() // producerId -> { clientId, producedType 
 // unwatched streams wastes bandwidth on audio nobody can hear (only the focused
 // stream is ever audible, and focus implies watching).
 const knownScreenAudioProducers = new Map() // producerId -> { clientId }
+// Mic producer announcements are replayed only once by the server after a
+// reconnect. Keep them until ProducerClosed so a transient consumer setup
+// failure can be retried locally instead of leaving already-present peers mute.
+const knownAudioProducers = new Map() // producerId -> { kind, clientId, producedType, generation }
+const audioConsumeRetryTimers = new Map()
+const audioConsumeRetryAttempts = new Map()
+let audioConsumeRecoveryUsed = false
 // Client ids whose streams are currently watched. Persisted so a ScreenShareAudio
 // producer that arrives *after* the watch starts is consumed on arrival, mirroring
 // how setWatchedProducers consumes ones that are already known.
 let watchedClientIds = new Set()
+// The video producers those clients are watched *through*. Held alongside the
+// client set so a consume that lands after the watch moved on can re-check the
+// current intent before deciding to tear itself down.
+let watchedProducerIds = new Set()
+// producerId -> in-flight consumeProducer() promise. A consume is invisible to
+// remoteConsumers for several round-trips, so every "already consuming?" test
+// has to consult this too; otherwise a watch→unwatch→watch race starts a second
+// consumer and orphans the first server-side (see watchIntent.js).
+const pendingConsumes = new Map()
 
 const consumerOwners = new Map() // consumerId -> { producerId, clientId }
 const producerViewers = new Map() // producerId -> Set<clientId>
@@ -371,48 +496,147 @@ export function subscribeStreamViewers(cb) {
 // that; binding it to visibility instead would also churn full renegotiations
 // every time the carousel collapsed or the chat tab was selected.
 export function setWatchedProducers(producerIds = []) {
-  const wanted = new Set(producerIds.filter((id) => knownVideoProducers.has(id)))
-  // Screen-share audio follows the same watch set as the video, but keyed by
-  // client: the audio producer is separate from the video producer, so we bind it
-  // by whose stream is watched. Persisted so a ScreenShareAudio producer arriving
-  // after the watch starts (NewProducer) gets consumed on arrival.
-  watchedClientIds = new Set([...wanted].map((id) => knownVideoProducers.get(id).clientId))
+  const intent = resolveWatchIntent({
+    requestedProducerIds: producerIds,
+    videoProducers: knownVideoProducers,
+    screenAudioProducers: knownScreenAudioProducers,
+    activeConsumers: remoteConsumers,
+    pendingConsumeIds: pendingConsumes.keys()
+  })
+  // Persisted so a ScreenShareAudio producer arriving after the watch starts
+  // (NewProducer) gets consumed on arrival, and so a consume that lands late can
+  // re-check whether it is still wanted.
+  watchedProducerIds = intent.watchedProducerIds
+  watchedClientIds = intent.watchedClientIds
 
-  // The server takes a batch, so collect the whole diff and send one message —
-  // switching away from a multi-stream view closes several at once. A stream's
-  // video consumer and its screen-audio consumer go out in the same batch.
+  // The server takes a batch, so send the whole diff in one message — switching
+  // away from a multi-stream view closes several at once. A stream's video
+  // consumer and its screen-audio consumer go out in the same batch.
   const closedIds = []
-  for (const [producerId, entry] of remoteConsumers) {
-    if (entry.kind === 'video' && !wanted.has(producerId)) {
-      closedIds.push(entry.consumerId)
-      closeVideoConsumer(producerId)
-    } else if (entry.producedType === 'ScreenShareAudio' && !watchedClientIds.has(entry.clientId)) {
-      closedIds.push(entry.consumerId)
-      closeScreenAudioConsumer(producerId)
-    }
+  for (const { producerId, kind, consumerId } of intent.close) {
+    closedIds.push(consumerId)
+    if (kind === 'video') closeVideoConsumer(producerId)
+    else closeScreenAudioConsumer(producerId)
   }
   if (closedIds.length > 0) notify('CloseConsumer', { ids: closedIds })
 
-  for (const producerId of wanted) {
-    if (remoteConsumers.has(producerId)) continue
-    const { clientId, producedType } = knownVideoProducers.get(producerId)
+  // Consumes still in flight for a producer nobody wants any more. They own no
+  // consumer to close yet, so their teardown rides the consume itself.
+  for (const producerId of intent.abandon) closeConsumeWhenItLands(producerId)
+
+  for (const { producerId, kind, clientId, producedType } of intent.consume) {
     consumeProducer(
       producerId,
-      'video',
-      activeCallbacks.onVideoStream,
+      kind,
+      kind === 'video' ? activeCallbacks.onVideoStream : null,
       clientId,
       producedType
     ).catch((err) => console.error(`[Soup] Failed to consume producer ${producerId}:`, err))
   }
+}
 
-  // Consume screen audio for every watched client whose audio producer we know
-  // about and aren't already consuming.
-  for (const [producerId, { clientId }] of knownScreenAudioProducers) {
-    if (!watchedClientIds.has(clientId) || remoteConsumers.has(producerId)) continue
-    consumeProducer(producerId, 'audio', null, clientId, 'ScreenShareAudio').catch((err) =>
-      console.error(`[Soup] Failed to consume screen audio ${producerId}:`, err)
-    )
-  }
+// Are we consuming this producer, or about to be? Both halves matter: the map
+// only fills in after the consume completes.
+function isConsumingProducer(producerId) {
+  return remoteConsumers.has(producerId) || pendingConsumes.has(producerId)
+}
+
+// Does the current watch intent still cover this producer?
+function producerIsWatched(producerId) {
+  return isProducerWatched({
+    producerId,
+    watchedProducerIds,
+    watchedClientIds,
+    videoProducers: knownVideoProducers,
+    screenAudioProducers: knownScreenAudioProducers
+  })
+}
+
+function clearAudioConsumeRetry(producerId) {
+  const timer = audioConsumeRetryTimers.get(producerId)
+  if (timer != null) clearTimeout(timer)
+  audioConsumeRetryTimers.delete(producerId)
+  audioConsumeRetryAttempts.delete(producerId)
+}
+
+// Consume replayed microphone producers with a small, idempotent local retry
+// budget. NewProducer is edge-triggered on the server, so merely clearing the
+// failed subscribe promise does not bring peers that were already in the room
+// back. A failed budget escalates once per media generation to the normal full
+// reconnect, which causes the server to replay the complete producer list.
+function ensureAudioConsumer(producerId) {
+  const known = knownAudioProducers.get(producerId)
+  if (
+    !known ||
+    known.generation !== mediaStateGeneration ||
+    isConsumingProducer(producerId) ||
+    audioConsumeRetryTimers.has(producerId)
+  )
+    return
+
+  const generation = mediaStateGeneration
+  consumeProducer(
+    producerId,
+    known.kind,
+    activeCallbacks.onVideoStream,
+    known.clientId,
+    known.producedType
+  )
+    .then(() => {
+      clearAudioConsumeRetry(producerId)
+      scheduleMediaReadyCheck(generation)
+    })
+    .catch((err) => {
+      if (
+        knownAudioProducers.get(producerId) !== known ||
+        generation !== mediaStateGeneration ||
+        intentionalClose
+      )
+        return
+      const attempt = audioConsumeRetryAttempts.get(producerId) ?? 0
+      const delay = nextAudioConsumeRetryDelay(attempt)
+      if (delay == null) {
+        clearAudioConsumeRetry(producerId)
+        console.error(`[Soup] Audio consume retries exhausted for ${producerId}:`, err)
+        if (!audioConsumeRecoveryUsed) {
+          audioConsumeRecoveryUsed = true
+          emitMediaState('reconnecting', { reason: 'Remote audio recovery failed' })
+          forceVoiceReconnect('Remote audio recovery failed')
+        } else {
+          emitMediaState('failed', { reason: 'Remote audio recovery failed' })
+        }
+        return
+      }
+      audioConsumeRetryAttempts.set(producerId, attempt + 1)
+      console.warn(`[Soup] Retrying audio consumer ${producerId} in ${delay}ms:`, err)
+      const timer = setTimeout(() => {
+        audioConsumeRetryTimers.delete(producerId)
+        ensureAudioConsumer(producerId)
+      }, delay)
+      audioConsumeRetryTimers.set(producerId, timer)
+    })
+}
+
+// Stop watching something whose consume hasn't landed yet: chain the close onto
+// the in-flight consume so the consumer is torn down (and the server told) the
+// moment it exists. The intent is re-checked when it lands — the user may have
+// started watching again meanwhile — and this CloseConsumer can't ride the
+// caller's batch because it necessarily happens later.
+function closeConsumeWhenItLands(producerId, { forceClose = false } = {}) {
+  const pending = pendingConsumes.get(producerId)
+  if (!pending) return
+  pending
+    .then(() => {
+      if (!forceClose && producerIsWatched(producerId)) return
+      const entry = remoteConsumers.get(producerId)
+      if (!entry) return
+      const { consumerId } = entry
+      if (entry.kind === 'video') closeVideoConsumer(producerId)
+      else closeScreenAudioConsumer(producerId)
+      notify('CloseConsumer', { ids: [consumerId] })
+    })
+    // A consume that failed left nothing behind to close.
+    .catch(() => {})
 }
 
 // Local half of "stop watching". The server is told separately, in one batched
@@ -464,6 +688,8 @@ export async function connect(callbacks = {}) {
   intentionalClose = false
   everAuthenticated = false
   reconnectAttempts = 0
+  audioConsumeRecoveryUsed = false
+  mediaWatchdogRecoveryUsed = false
   // Cancel any pending reconnect from a prior session so it can't fire alongside
   // this fresh connection.
   if (reconnectTimer) {
@@ -566,7 +792,14 @@ async function openSocket() {
   // Acquiring waits on the server's push (and possibly the network), so the
   // user may have left meanwhile — opening now would orphan a socket that
   // nothing is holding.
-  if (!acquired || intentionalClose) return
+  if (intentionalClose) return
+  // No ticket while we still want to be connected is a *failure*, not a
+  // no-op: returning cleanly here would let attemptReconnect() treat it as a
+  // success and schedule nothing, stranding the user "reconnecting" forever.
+  // Throwing puts the attempt back on the backoff ladder, which is what a
+  // dual-drop needs — the events socket has to come back before the server
+  // will mint a ticket at all.
+  if (!acquired) throw new Error('Voice ticket unavailable')
   const { ticket, voiceEndpoint } = acquired
   console.log('[Soup] Got ticket:', ticket)
 
@@ -581,7 +814,18 @@ async function openSocket() {
   // ─── Assign ALL handlers before anything can fire ───────────────
   socket.onmessage = (event) => {
     if (ws !== socket) return // superseded by a newer socket
-    const message = JSON.parse(event.data)
+    // Never let a malformed frame throw out of the handler: doing so skips the
+    // FIFO routing below, so a dropped *response* would desync every later
+    // request instead of costing us one frame. A response we genuinely lose
+    // still hits the 15s pending timeout, which forces a reconnect — the
+    // correct last resort, and much rarer than this path.
+    let message
+    try {
+      message = JSON.parse(event.data)
+    } catch (err) {
+      console.error('[Soup] Dropping unparseable frame:', err)
+      return
+    }
     console.log('[Soup] Received:', message)
 
     // Authenticated confirmation
@@ -590,6 +834,8 @@ async function openSocket() {
       iceServers = message.ice_servers ?? []
       everAuthenticated = true
       reconnectAttempts = 0
+      emitMediaState('authenticated')
+      armMediaWatchdog(mediaStateGeneration)
       activeCallbacks.onConnect?.()
       return
     }
@@ -612,7 +858,7 @@ async function openSocket() {
       // set changes.
       if (produced_type === 'ScreenShareAudio') {
         knownScreenAudioProducers.set(id, { clientId: client_id })
-        if (watchedClientIds.has(client_id)) {
+        if (watchedClientIds.has(client_id) && !isConsumingProducer(id)) {
           consumeProducer(id, kind, null, client_id, produced_type).catch((err) =>
             console.error(`[Soup] Failed to consume screen audio ${id}:`, err)
           )
@@ -622,9 +868,16 @@ async function openSocket() {
 
       // Mic audio must be audible the moment it exists, so it still consumes eagerly.
       if (kind !== 'video') {
-        consumeProducer(id, kind, activeCallbacks.onVideoStream, client_id, produced_type).catch(
-          (err) => console.error(`[Soup] Failed to consume producer ${id}:`, err)
-        )
+        knownAudioProducers.set(id, {
+          kind,
+          clientId: client_id,
+          producedType: produced_type,
+          generation: mediaStateGeneration
+        })
+        // A producer replay arriving during the settle window makes inbound
+        // audio part of the readiness barrier.
+        scheduleMediaReadyCheck(mediaStateGeneration)
+        ensureAudioConsumer(id)
         return
       }
 
@@ -663,6 +916,16 @@ async function openSocket() {
       const known = knownVideoProducers.get(id)
       knownVideoProducers.delete(id)
       knownScreenAudioProducers.delete(id)
+      knownAudioProducers.delete(id)
+      clearAudioConsumeRetry(id)
+      scheduleMediaReadyCheck(mediaStateGeneration)
+      // The Consume may still resolve after this close notification. Chain a
+      // CloseConsumer onto it so a late consumer cannot become a ghost
+      // subscription; the producer is definitively gone, regardless of whether
+      // its metadata still identifies it as watched.
+      if (pendingConsumes.has(id)) {
+        closeConsumeWhenItLands(id, { forceClose: true })
+      }
       // A genuinely new producer with this id deserves a fresh cooldown, so drop
       // any heal backoff we were tracking for the one that just closed.
       audioHealHistory.delete(id)
@@ -834,11 +1097,30 @@ export function disconnect() {
 }
 
 // ─── Load mediasoup Device ───────────────────────────────────────
-async function loadDevice() {
-  const rtpCapabilities = await send('GetRouterRtpCapabilities')
-  device = new Device()
-  await device.load({ routerRtpCapabilities: rtpCapabilities })
-  console.log('[Soup] Device loaded')
+async function loadDevice(generation = mediaStateGeneration) {
+  if (generation !== mediaStateGeneration) throw mediaResetError()
+  if (device) return device
+  if (deviceLoadInFlight?.generation === generation) return deviceLoadInFlight.promise
+
+  const promise = (async () => {
+    const rtpCapabilities = await send('GetRouterRtpCapabilities')
+    if (generation !== mediaStateGeneration) throw mediaResetError()
+
+    // Do not publish a half-loaded Device globally.  A reset can occur while
+    // mediasoup validates capabilities; only the generation that started this
+    // load may install the result.
+    const candidate = new Device()
+    await candidate.load({ routerRtpCapabilities: rtpCapabilities })
+    if (generation !== mediaStateGeneration) throw mediaResetError()
+    device = candidate
+    console.log('[Soup] Device loaded')
+    return candidate
+  })().finally(() => {
+    if (deviceLoadInFlight?.promise === promise) deviceLoadInFlight = null
+  })
+
+  deviceLoadInFlight = { generation, promise }
+  return promise
 }
 
 // Fetch (once) the RNNoise WASM binary. The SIMD build is used automatically
@@ -900,11 +1182,17 @@ async function getMicContext() {
 // so it reflects everything that can affect what peers receive (including
 // RNNoise and a closed volume gate).
 async function buildAudioProcessor(stream, micSettings) {
-  const needsRnnoise = micSettings.useRnnoise
+  const stereo = micProfileWantsStereo(micSettings)
+  // The RNNoise worklet is a mono, speech-trained denoiser: it cannot preserve a
+  // stereo image and would gut music, which is exactly what Hi-Fi Voice is for.
+  const needsRnnoise = micProfileUsesRnnoise(micSettings)
   const needsGate = micSettings.useVolumeGate
+  // Seed the live threshold from the settings this chain is being built with, so
+  // a rebuild and a live drag can't disagree about the current value.
+  setVolumeGateThreshold(micSettings.volumeGateThreshold)
 
   const audioContext = await getMicContext()
-  const { source, input, destination } = createMonoVoiceGraph(audioContext, stream)
+  const { source, input, destination } = createVoiceGraph(audioContext, stream, { stereo })
   // Every node this chain creates, so stop() can detach them from the shared
   // context (which lives on for the next publish, unlike the old
   // context-per-publish teardown).
@@ -941,7 +1229,9 @@ async function buildAudioProcessor(stream, micSettings) {
     // 25Hz via the shared ticker, not rAF: level detection needs far less than
     // display rate, and rAF is throttled/paused when the window is hidden — which
     // would stall the gate and stick outgoing audio gated/ungated while minimized.
-    stopGateTicker = registerAudioTickerCallback(() => gateController.update())
+    // The threshold is read per tick from module state rather than captured, so
+    // dragging the slider moves the gate live instead of needing a republish.
+    stopGateTicker = registerAudioTickerCallback(() => gateController.update(liveGateThreshold))
     console.log('[Soup] Volume gate applied, threshold:', micSettings.volumeGateThreshold)
   }
 
@@ -995,22 +1285,9 @@ function stopRawStream(stream) {
 // applyConstraints() does not reconfigure these flags either.
 //
 // So: serialize every mic acquisition, release the previous capture first, and
-// let the source actually tear down before asking for a new one.
-export function micConstraints(micSettings) {
-  return {
-    deviceId:
-      micSettings.deviceId && micSettings.deviceId !== 'default'
-        ? { exact: micSettings.deviceId }
-        : undefined,
-    echoCancellation: micSettings.echoCancellation,
-    // RNNoise replaces the browser suppressor - never run both (they're
-    // mutually exclusive in the UI; this guards against any stale state).
-    noiseSuppression: micSettings.useRnnoise ? false : micSettings.noiseSuppression,
-    autoGainControl: micSettings.autoGainControl,
-    sampleRate: micSettings.sampleRate,
-    channelCount: micSettings.channelCount
-  }
-}
+// let the source actually tear down before asking for a new one. The constraints
+// themselves live in micAudioProfile.js, where the republish classifier can read
+// them without pulling in this module.
 
 // track.stop() returns before Chromium has torn the capture source down; a short
 // hop lets the release land so the next open is cold.
@@ -1025,6 +1302,7 @@ let micAcquireChain = Promise.resolve()
 // (the settings meter) has to read this one rather than open its own — a second
 // capture would inherit stale processing *and* poison the next republish.
 const rawMicStreamListeners = new Set()
+let rawMicEndedRepairGeneration = null
 
 export function getRawMicStream() {
   return rawMicStream
@@ -1040,6 +1318,33 @@ export function onRawMicStreamChange(listener) {
 function setRawMicStream(stream) {
   if (rawMicStream === stream) return
   rawMicStream = stream
+  for (const track of stream?.getAudioTracks?.() ?? []) {
+    track.addEventListener('ended', () => {
+      // resetMediaState deliberately stops this track. Only repair a capture
+      // that is still the live session's source, and only once per generation.
+      if (
+        rawMicStream !== stream ||
+        intentionalClose ||
+        rawMicEndedRepairGeneration === mediaStateGeneration
+      )
+        return
+      rawMicEndedRepairGeneration = mediaStateGeneration
+      const settings = lastCommittedMicSettings
+      console.warn('[Soup] Raw microphone track ended; attempting one repair')
+      if (!settings || !producerTransport || producerTransport.closed) {
+        requestVoiceMediaRecovery('Microphone capture ended')
+        return
+      }
+      republish(settings).catch((err) => {
+        if (isPermanentMicError(err)) {
+          console.error('[Soup] Microphone capture needs user action:', err.name, err.message)
+          emitMediaState('failed', { reason: err.name })
+          return
+        }
+        requestVoiceMediaRecovery('Microphone republish failed')
+      })
+    })
+  }
   rawMicStreamListeners.forEach((listener) => {
     try {
       listener(stream)
@@ -1134,13 +1439,36 @@ export function createSpeechLevelReader(audioContext) {
   }
 }
 
+// Opening level for the volume gate when nothing has set one, on the shared
+// speech-band RMS scale (see createSpeechLevelReader).
+const DEFAULT_VOLUME_GATE_THRESHOLD = 15
+
+// The threshold the *live* mic gate is currently using. Held at module scope
+// because the controller already accepts a per-tick threshold: the value can
+// therefore move without rebuilding the processing graph, which is what makes a
+// threshold drag free rather than a full republish.
+let liveGateThreshold = DEFAULT_VOLUME_GATE_THRESHOLD
+
+// Move the live gate's opening level. Takes effect on the next 40ms tick; no
+// capture, graph, or producer work involved.
+export function setVolumeGateThreshold(threshold) {
+  const value = Number(threshold)
+  if (!Number.isFinite(value)) return
+  liveGateThreshold = value
+}
+
 // Gate state shared by the live mic path and the settings test. A lower release
 // threshold plus a short hold bridges syllable gaps; gain ramps avoid clicks.
 export function createLevelGateController(
   audioContext,
   gate,
   read,
-  { threshold = 15, hysteresis = 3, holdMs = 200, rampSeconds = 0.03 } = {}
+  {
+    threshold = DEFAULT_VOLUME_GATE_THRESHOLD,
+    hysteresis = 3,
+    holdMs = 200,
+    rampSeconds = 0.03
+  } = {}
 ) {
   let open = false
   let lastVoiceAt = 0
@@ -1374,52 +1702,93 @@ function mapTransportParams(params) {
 // Single-flight: a forced-move MediaStateReset (re-establish via the previously
 // joined channel) and the adopt() of the new channel can both call this at once.
 // Allocating two producer transports makes the server error out, so a second
-// concurrent caller joins the in-flight promise, and a call while already
-// published is a no-op.
+// concurrent caller joins the in-flight promise.
+//
+// The fast-path guard is "we are already transmitting", NOT "a transport
+// exists": a publish that died between creating the transport and producing
+// (getUserMedia denied, processor or produce failure) must stay retryable, or
+// the user sits in the channel sending nothing until something else happens to
+// trigger a republish. The transport itself is reused across those retries —
+// the server rejects a second producer-transport allocation for one session.
 export async function publish(micSettings, onStream) {
-  if (producerTransport) return
-  if (publishInFlight) return publishInFlight
-  publishInFlight = doPublish(micSettings, onStream).finally(() => {
-    publishInFlight = null
+  if (hasLiveAudioProducer()) return
+  const generation = mediaStateGeneration
+  if (publishInFlight?.generation === generation) return publishInFlight.promise
+  const promise = doPublish(micSettings, onStream, generation).finally(() => {
+    if (publishInFlight?.promise === promise) publishInFlight = null
   })
-  return publishInFlight
+  publishInFlight = { generation, promise }
+  return promise
 }
 
-async function doPublish(micSettings, onStream) {
-  if (!device) await loadDevice()
+function hasLiveAudioProducer() {
+  const rawTrack = rawMicStream?.getAudioTracks?.().find((track) => track.readyState === 'live')
+  return (
+    !!rawTrack &&
+    producers.some(
+      (producer) =>
+        producer.kind === 'audio' && !producer.closed && producer.track?.readyState === 'live'
+    )
+  )
+}
 
+// Create the send transport, or hand back the one this session already owns.
+// Never recreates: a duplicate CreateProducerTransport is a server-side error,
+// so a retried publish has to build on the existing transport.
+async function ensureProducerTransport(generation) {
+  if (generation !== mediaStateGeneration) throw mediaResetError()
+  if (producerTransport && !producerTransport.closed) return producerTransport
+  const loadedDevice = await loadDevice(generation)
+  if (generation !== mediaStateGeneration) throw mediaResetError()
   const rawParams = await send('CreateProducerTransport')
-  producerTransport = device.createSendTransport({
+  if (generation !== mediaStateGeneration) throw mediaResetError()
+  const transport = loadedDevice.createSendTransport({
     ...mapTransportParams(rawParams),
     iceServers
   })
 
-  producerTransport.on('connectionstatechange', (state) => {
+  const isCurrentTransport = () =>
+    generation === mediaStateGeneration && producerTransport === transport && !transport.closed
+
+  transport.on('connectionstatechange', (state) => {
     console.log('[Soup] Producer transport connection state:', state)
     // ICE gave up (network died without the socket noticing) — recover. Our own
     // teardown closes transports as 'closed', not 'failed', so this won't loop.
-    if (state === 'failed') forceVoiceReconnect('Producer transport failed')
+    if (state === 'failed' && isCurrentTransport()) {
+      forceVoiceReconnect('Producer transport failed')
+    }
   })
 
-  producerTransport.on('connect', ({ dtlsParameters }, callback, errback) => {
+  transport.on('connect', ({ dtlsParameters }, callback, errback) => {
+    if (!isCurrentTransport()) {
+      errback(mediaResetError())
+      return
+    }
     send('ConnectProducerTransport', { dtlsParameters })
-      .then(() => callback())
+      .then(() => {
+        if (!isCurrentTransport()) throw mediaResetError()
+        callback()
+      })
       .catch((err) => errback(err))
   })
 
-  producerTransport.on('produce', ({ kind, rtpParameters, appData }, callback, errback) => {
+  transport.on('produce', ({ kind, rtpParameters, appData }, callback, errback) => {
     const produceOnServer = async () => {
+      if (!isCurrentTransport()) throw mediaResetError()
       // Screen rung validation must finish before the SFU sees Produce. The SFU
       // atomically replaces a same-type producer, so validating afterward could
       // destroy the last live share when the candidate is rejected.
       await runBeforeServerProduce(appData, rtpParameters)
-      return send('Produce', {
+      if (!isCurrentTransport()) throw mediaResetError()
+      const response = await send('Produce', {
         produce_params: {
           rtp_params: rtpParameters,
           kind
         },
         produced_type: appData?.produced ?? 'Audio'
       })
+      if (!isCurrentTransport()) throw mediaResetError()
+      return response
     }
 
     produceOnServer()
@@ -1427,12 +1796,39 @@ async function doPublish(micSettings, onStream) {
       .catch((err) => errback(err))
   })
 
+  if (generation !== mediaStateGeneration) {
+    transport.close()
+    throw mediaResetError()
+  }
+  producerTransport = transport
+  return transport
+}
+
+function mediaResetError() {
+  const error = new Error('Voice media state reset during operation')
+  error.name = 'VoiceMediaResetError'
+  return error
+}
+
+async function doPublish(micSettings, onStream, generation) {
+  const transport = await ensureProducerTransport(generation)
+  const isCurrent = () =>
+    generation === mediaStateGeneration && producerTransport === transport && !transport.closed
+  if (!isCurrent()) throw mediaResetError()
+
   let stream
   try {
     stream = await acquireMicCapture(micSettings, rawMicStream)
   } catch (err) {
     console.error('[Soup] getUserMedia failed:', err.name, err.message)
-    throw new Error(`Failed to get audio device: ${err.message}`)
+    // Preserve the browser error name so callers can distinguish a temporary
+    // device handoff from permission/constraint failures that need user action.
+    throw err
+  }
+
+  if (!isCurrent()) {
+    stopRawStream(stream)
+    throw mediaResetError()
   }
 
   // Track the raw capture so its OS mic handle can be released on teardown —
@@ -1445,14 +1841,27 @@ async function doPublish(micSettings, onStream) {
   stopAudioProcessor()
   let processedStream = stream
   let processorTap = null
+  let processorStop = null
   try {
     const processed = await buildAudioProcessor(stream, micSettings)
     processedStream = processed.stream
     audioProcessorStop = processed.stop
+    processorStop = processed.stop
     processorTap = processed.tap
   } catch (err) {
     console.error('[Soup] Failed to build audio processor:', err)
     // Fall back to unprocessed stream
+  }
+
+  // A reset (socket drop, channel switch) can land while we were awaiting the
+  // capture and the processing graph — it closes this transport. Drop the
+  // candidate rather than produce on a corpse; the reconnect's publish() starts
+  // over on a fresh transport.
+  if (!isCurrent()) {
+    stopMicRepublishCandidate(stream, processedStream, processorStop)
+    if (audioProcessorStop === processorStop) audioProcessorStop = null
+    if (rawMicStream === stream) setRawMicStream(null)
+    throw mediaResetError()
   }
 
   onStream?.(processedStream)
@@ -1469,22 +1878,47 @@ async function doPublish(micSettings, onStream) {
   const opusOptions = buildMicOpusOptions(resolvedMicSettings)
   const audioProfile = micAudioProfileKey(resolvedMicSettings, opusOptions)
 
-  for (const track of processedStream.getTracks()) {
-    const producer = await producerTransport.produce({
-      track,
-      ...opusOptions,
-      appData: { produced: 'Audio' }
-    })
-    producers.push(producer)
-    localProducerIds.add(producer.id)
-    if (micMuted) producer.pause()
-    console.log(`[Soup] Producing ${track.kind} [id:${producer.id}]`)
+  const published = []
+  try {
+    const tracks = processedStream.getAudioTracks()
+    if (tracks.length === 0)
+      throw new Error('The selected microphone did not provide an audio track')
+    for (const track of tracks) {
+      if (!isCurrent()) throw mediaResetError()
+      const producer = await transport.produce({
+        track,
+        ...opusOptions,
+        appData: { produced: 'Audio' }
+      })
+      if (!isCurrent()) {
+        producer.close()
+        throw mediaResetError()
+      }
+      published.push(producer)
+      producers.push(producer)
+      localProducerIds.add(producer.id)
+      if (micMuted) producer.pause()
+      console.log(`[Soup] Producing ${track.kind} [id:${producer.id}]`)
+    }
+  } catch (err) {
+    for (const producer of published) {
+      producer.close()
+      localProducerIds.delete(producer.id)
+      producers = producers.filter((current) => current !== producer)
+      void closeServerProducer(producer.id)
+    }
+    stopMicRepublishCandidate(stream, processedStream, processorStop)
+    if (rawMicStream === stream) setRawMicStream(null)
+    if (audioProcessorStop === processorStop) audioProcessorStop = null
+    throw err
   }
 
   lastCommittedMicSettings = { ...resolvedMicSettings }
   lastCommittedAudioProfile = audioProfile
 
   console.log('[Soup] Publishing audio')
+  emitMediaState('local-producer-ready')
+  scheduleMediaReadyCheck(generation)
 }
 
 // Release a republish candidate that never became the current producer. This is
@@ -1500,7 +1934,7 @@ function stopMicRepublishCandidate(stream, processedStream, processorStop) {
   for (const track of tracks) track.stop()
 }
 
-async function disposeMicProducers(producerList) {
+async function disposeMicProducers(producerList, { notifyServer = true } = {}) {
   const ids = []
   for (const producer of producerList) {
     const track = producer.track
@@ -1511,7 +1945,7 @@ async function disposeMicProducers(producerList) {
     localProducerIds.delete(producer.id)
     ids.push(producer.id)
   }
-  await Promise.all(ids.map((id) => closeServerProducer(id)))
+  if (notifyServer) await Promise.all(ids.map((id) => closeServerProducer(id)))
 }
 
 function commitRepublishedMicProcessing({
@@ -1576,25 +2010,33 @@ function restoreCommittedMicCapture(options) {
 // changes. A profile change (for example mono speech -> future HiFi stereo) is
 // produced first; only a successful replacement commits the producer list and
 // its profile metadata.
-export function republish(micSettings, onStream) {
+//
+// `graphOnly` asks for the cheap tier: the caller has established that the
+// capture doesn't change (see micRepublishScope), so the processing graph is
+// rebuilt on the capture we already hold — no gUM, no 50ms source release, no
+// audible gap beyond the replaceTrack. It is a request, not an assertion: this
+// path re-checks the capture key itself and falls back to the full transaction
+// if they disagree.
+export function republish(micSettings, onStream, { graphOnly = false } = {}) {
   const generation = mediaStateGeneration
-  const operation = republishChain.then(
-    () => doRepublish(micSettings, onStream, generation),
-    () => doRepublish(micSettings, onStream, generation)
-  )
+  const run = () => doRepublish(micSettings, onStream, generation, { graphOnly })
+  const operation = republishChain.then(run, run)
   // Keep the chain usable after a rejected operation while returning the
   // original rejection to the caller.
   republishChain = operation.catch(() => {})
   return operation
 }
 
-async function doRepublish(micSettings, onStream, expectedGeneration) {
-  if (expectedGeneration !== mediaStateGeneration) return
+async function doRepublish(micSettings, onStream, expectedGeneration, { graphOnly = false } = {}) {
+  if (expectedGeneration !== mediaStateGeneration) throw mediaResetError()
 
   const transport = producerTransport
   if (!transport) throw new Error('Not connected to voice')
 
-  const isCurrent = () => producerTransport === transport && !transport.closed
+  const isCurrent = () =>
+    expectedGeneration === mediaStateGeneration &&
+    producerTransport === transport &&
+    !transport.closed
 
   const audioProducers = producers.filter((p) => p.kind === 'audio' && !p.closed)
   const previousMicSettings = lastCommittedMicSettings ? { ...lastCommittedMicSettings } : null
@@ -1606,11 +2048,33 @@ async function doRepublish(micSettings, onStream, expectedGeneration) {
   const previousRawStream = rawMicStream
   const previousProcessorStop = audioProcessorStop
 
+  // The cheap tier needs a live capture to build on, live producers to swap the
+  // track onto, and a committed profile that really does ask for the same
+  // capture. Anything else falls through to the full transaction — which is
+  // always correct, just slower.
+  if (
+    graphOnly &&
+    previousRawStream &&
+    audioProducers.length > 0 &&
+    previousMicSettings &&
+    micCaptureKey(previousMicSettings) === micCaptureKey(micSettings)
+  ) {
+    return doGraphOnlyRepublish({
+      micSettings,
+      onStream,
+      audioProducers,
+      rawStream: previousRawStream,
+      previousProcessorStop,
+      isCurrent
+    })
+  }
+
   let stream
   try {
     stream = await acquireMicCapture(micSettings, previousRawStream)
   } catch (err) {
     console.error('[Soup] republish getUserMedia failed:', err.name, err.message)
+    if (!isCurrent()) throw mediaResetError()
     await restoreCommittedMicCapture({
       audioProducers,
       micSettings: previousMicSettings,
@@ -1621,7 +2085,9 @@ async function doRepublish(micSettings, onStream, expectedGeneration) {
       onStream,
       isCurrent
     })
-    throw new Error(`Failed to get audio device: ${err.message}`)
+    const wrapped = new Error(`Failed to get audio device: ${err.message}`, { cause: err })
+    wrapped.name = err?.name ?? 'Error'
+    throw wrapped
   }
 
   // Build the candidate graph without tearing down the current graph yet. The
@@ -1685,7 +2151,7 @@ async function doRepublish(micSettings, onStream, expectedGeneration) {
   // corpse (InvalidStateError: closed) — the reconnect path re-publishes fresh.
   if (!isCurrent()) {
     discardCandidate()
-    return
+    throw mediaResetError()
   }
 
   if (audioProducers.length === 0) {
@@ -1702,12 +2168,10 @@ async function doRepublish(micSettings, onStream, expectedGeneration) {
         freshProducers.push(producer)
       }
       if (!isCurrent()) {
-        await disposeMicProducers(freshProducers)
-        discardCandidate()
-        return
+        throw mediaResetError()
       }
     } catch (err) {
-      await disposeMicProducers(freshProducers)
+      await disposeMicProducers(freshProducers, { notifyServer: isCurrent() })
       discardCandidate()
       throw err
     }
@@ -1749,11 +2213,14 @@ async function doRepublish(micSettings, onStream, expectedGeneration) {
         replacementProducers.push(producer)
       }
       if (!isCurrent()) {
-        await disposeMicProducers(replacementProducers)
-        discardCandidate()
-        return
+        throw mediaResetError()
       }
     } catch (err) {
+      if (!isCurrent()) {
+        await disposeMicProducers(replacementProducers, { notifyServer: false })
+        discardCandidate()
+        throw mediaResetError()
+      }
       // Restoring the committed capture and tearing down the rejected
       // replacement producers touch disjoint resources, so run them together.
       await Promise.all([restoreCommitted(), disposeMicProducers(replacementProducers)])
@@ -1819,7 +2286,7 @@ async function doRepublish(micSettings, onStream, expectedGeneration) {
   } catch (err) {
     if (!isCurrent()) {
       discardCandidate()
-      return
+      throw mediaResetError()
     }
 
     await restoreCommitted()
@@ -1828,6 +2295,114 @@ async function doRepublish(micSettings, onStream, expectedGeneration) {
 
   commitCandidate()
   console.log('[Soup] Audio republished with new settings')
+}
+
+// Rebuild only the processing graph, on the capture that is already open.
+//
+// The expensive part of a republish is the capture, not the graph: Chromium
+// requires the old source to be fully released before new constraints take
+// effect, which costs a release, a settle delay, and a cold getUserMedia. When
+// the constraints are identical none of that buys anything — the gate, RNNoise
+// and the mono/stereo fold all live downstream of the raw track.
+//
+// The old graph deliberately stays live until every producer has taken the new
+// track, so a failure anywhere here can put the previous tracks straight back
+// rather than leaving a producer holding an ended one. Opus options can't change
+// on this path (a profile change alters the capture, so it never gets here), so
+// producers and their negotiated parameters are untouched.
+async function doGraphOnlyRepublish({
+  micSettings,
+  onStream,
+  audioProducers,
+  rawStream,
+  previousProcessorStop,
+  isCurrent
+}) {
+  let processedStream = rawStream
+  let candidateProcessorStop = () => {}
+  try {
+    const processed = await buildAudioProcessor(rawStream, micSettings)
+    processedStream = processed.stream
+    candidateProcessorStop = processed.stop
+  } catch (err) {
+    console.error('[Soup] republish audio processor failed:', err)
+  }
+
+  // Only the candidate graph is ours to tear down here — the raw capture is
+  // still the committed one, feeding the live chain.
+  const discardCandidate = () =>
+    stopMicRepublishCandidate(
+      null,
+      processedStream === rawStream ? null : processedStream,
+      candidateProcessorStop
+    )
+
+  // A reset can land while the graph was building; it closed the transport and
+  // the producers, and its own publish will rebuild everything from scratch.
+  if (!isCurrent()) {
+    discardCandidate()
+    throw mediaResetError()
+  }
+
+  const newTracks = processedStream.getTracks()
+  if (newTracks.length !== audioProducers.length) {
+    discardCandidate()
+    throw new Error('Microphone track count changed during republish')
+  }
+
+  // Previous processed tracks, kept alive until the swap is complete so it can
+  // be undone; stopped only once the whole transaction commits.
+  const replaced = []
+  try {
+    for (let i = 0; i < audioProducers.length; i++) {
+      const producer = audioProducers[i]
+      const track = newTracks[i]
+      if (!track || producer.closed) continue
+      if (!isCurrent()) throw new Error('Voice transport reset during republish')
+
+      const oldTrack = producer.track
+      await producer.replaceTrack({ track })
+      replaced.push({ producer, oldTrack })
+
+      if (micMuted) producer.pause()
+      else producer.resume()
+      console.log(`[Soup] Rebuilt processing graph on producer [id:${producer.id}]`)
+    }
+  } catch (err) {
+    if (!isCurrent()) {
+      discardCandidate()
+      throw mediaResetError()
+    }
+    // Put the still-running old graph back on everything we already swapped.
+    for (const { producer, oldTrack } of replaced) {
+      if (!oldTrack || oldTrack.readyState === 'ended' || producer.closed) continue
+      try {
+        await producer.replaceTrack({ track: oldTrack })
+      } catch (restoreErr) {
+        console.error('[Soup] Failed graph-only rollback:', restoreErr)
+      }
+    }
+    discardCandidate()
+    throw err
+  }
+
+  // A processor-build failure can leave the current producer on the raw capture
+  // track. That same raw track is the input to the candidate graph, so stopping
+  // it here would turn the newly installed graph silent. Destination tracks from
+  // the old graph are still safe (and necessary) to stop after the swap.
+  const rawTracks = new Set(rawStream.getTracks())
+  for (const { oldTrack } of replaced) {
+    if (!rawTracks.has(oldTrack)) oldTrack?.stop()
+  }
+  commitRepublishedMicProcessing({
+    stream: rawStream,
+    processedStream,
+    processorStop: candidateProcessorStop,
+    previousStop: previousProcessorStop,
+    micSettings: micSettingsForPublishedStream(micSettings, processedStream),
+    onStream
+  })
+  console.log('[Soup] Audio processing graph rebuilt without reopening the capture')
 }
 
 // Native capture dying mid-share (utility process crash, PipeWire/WASAPI
@@ -1885,29 +2460,6 @@ function screenSvcRungsFor(codec, startRung) {
   const rungs = supportsScreenTemporalSvc(codec) ? SCREEN_SVC_RUNGS : ['plain']
   const startIndex = startRung == null ? 0 : rungs.indexOf(startRung)
   return startIndex >= 0 ? rungs.slice(startIndex) : rungs
-}
-
-// Ceiling for the single full-resolution screen encoding. Sixty FPS needs more
-// bits than 30 FPS, and the H.264 hardware fallback needs more than AV1/VP9 for
-// comparable screen-text quality. These remain congestion-control ceilings, not
-// forced targets; Transport-CC can send below them on a constrained link.
-function screenEncodingFor({ width, height, fps, codec, optimizeFor }) {
-  const pixels = Math.max(1, width * height)
-  // Scale continuously from the 720p-ish floor through the 1440p ceiling.
-  // Exact resolution tiers under-budgeted slightly cropped/aligned windows and
-  // ultrawides despite nearly identical (or greater) pixel counts.
-  const base = Math.min(12_000_000, Math.max(5_000_000, (8_000_000 * pixels) / (1920 * 1080)))
-  const frameRateFactor = fps >= 50 ? 1.45 : 1
-  const motionFactor = optimizeFor === 'motion' ? 1.05 : 1
-  const mime = codec?.mimeType ?? ''
-  const codecFactor = /h264/i.test(mime) ? 1.2 : /vp9/i.test(mime) ? 1.08 : 1
-  const maxBitrate = Math.min(
-    // The SFU currently caps the aggregate producer transport at 25 Mbps.
-    // Leave room for screen audio, microphone audio, and RTX bursts.
-    20_000_000,
-    Math.round((base * frameRateFactor * motionFactor * codecFactor) / 250_000) * 250_000
-  )
-  return { maxBitrate, maxFramerate: Math.max(1, Math.round(fps)) }
 }
 
 // Chromium's WebRTC sender is the only path that can use temporal SVC. Keep
@@ -2515,7 +3067,7 @@ function screenProducerOptions(ctx, codec, encoding) {
     // A failed produce/parameter attempt must not end the capture track: the
     // next SVC rung reuses it, and stopShareContext() remains its sole owner.
     stopTracks: false,
-    codecOptions: { videoGoogleStartBitrate: 2500 },
+    codecOptions: screenCodecOptionsFor(encoding),
     onRtpSender: (rtpSender) => {
       sender = rtpSender
     },
@@ -3068,15 +3620,17 @@ export async function shareScreen({
         const audioProducer = await produceForShare(ctx, {
           track: audioTrack,
           // Stereo + a real bitrate: captured app/system audio is music/media,
-          // not speech, and the old mono default audibly degraded it.
+          // not speech, and the old mono default audibly degraded it. Shares the
+          // hi-fi mic profile's ceiling (micAudioProfile.js) because it is the
+          // same content class — the two must not drift apart.
           codecOptions: {
             opusStereo: true,
             opusDtx: false,
             opusFec: true,
-            opusMaxAverageBitrate: 96000,
+            opusMaxAverageBitrate: MUSIC_AUDIO_BITRATE,
             opusPtime: 20
           },
-          encodings: [{ maxBitrate: 96000 }],
+          encodings: [{ maxBitrate: MUSIC_AUDIO_BITRATE }],
           appData: { produced: 'ScreenShareAudio' }
         })
 
@@ -3386,38 +3940,75 @@ export async function stopScreenShare() {
 // Promise lock — concurrent NewProducer events share one in-flight
 // transport setup instead of each creating their own and stomping.
 export async function subscribe() {
-  if (consumerTransport) return
+  if (consumerTransport && !consumerTransport.closed) return
+  if (consumerTransport?.closed) consumerTransport = null
 
   if (subscribePromise) {
     await subscribePromise
     return
   }
 
-  subscribePromise = (async () => {
-    if (!device) await loadDevice()
+  const generation = mediaStateGeneration
+  const setup = (async () => {
+    const loadedDevice = await loadDevice(generation)
+    if (generation !== mediaStateGeneration) throw mediaResetError()
 
     const rawParams = await send('CreateConsumerTransport')
-    consumerTransport = device.createRecvTransport({
+    if (generation !== mediaStateGeneration) throw mediaResetError()
+    const transport = loadedDevice.createRecvTransport({
       ...mapTransportParams(rawParams),
       iceServers
     })
 
-    consumerTransport.on('connectionstatechange', (state) => {
+    const isCurrentTransport = () =>
+      generation === mediaStateGeneration && consumerTransport === transport && !transport.closed
+
+    transport.on('connectionstatechange', (state) => {
       console.log('[Soup] Consumer transport connection state:', state)
-      if (state === 'failed') forceVoiceReconnect('Consumer transport failed')
+      if (state === 'failed' && isCurrentTransport()) {
+        forceVoiceReconnect('Consumer transport failed')
+      }
     })
 
-    consumerTransport.on('connect', ({ dtlsParameters }, callback, errback) => {
+    transport.on('connect', ({ dtlsParameters }, callback, errback) => {
+      if (!isCurrentTransport()) {
+        errback(mediaResetError())
+        return
+      }
       send('ConnectConsumerTransport', { dtlsParameters })
-        .then(() => callback())
+        .then(() => {
+          if (!isCurrentTransport()) throw mediaResetError()
+          callback()
+        })
         .catch((err) => errback(err))
     })
 
+    // A reset while we were setting up already tore the session down. Adopting
+    // this transport would leave every later consume pointed at a dead one with
+    // nothing to clear it.
+    if (generation !== mediaStateGeneration) {
+      transport.close()
+      throw mediaResetError()
+    }
+
+    consumerTransport = transport
     console.log('[Soup] Consumer transport ready')
   })()
+  subscribePromise = setup
 
-  await subscribePromise
-  subscribePromise = null
+  // The setup promise must never outlive its own failure: leaving a rejected
+  // promise in `subscribePromise` makes every later consumeProducer re-await the
+  // same rejection, so one transient signaling error would kill all remote
+  // consumption until a full media reset. `consumerTransport` needs no unwinding
+  // here — the setup above publishes it only once it is fully built and still
+  // current, and closes it itself otherwise.
+  try {
+    await setup
+  } finally {
+    // Only clear our own registration: a reset may have nulled it already and a
+    // newer subscribe() may own the slot by now.
+    if (subscribePromise === setup) subscribePromise = null
+  }
 }
 
 // ─── Rebuildable remote-audio Web Audio graph ────────────────────
@@ -3724,8 +4315,52 @@ function consumerLayerCapabilities(rtpParameters) {
 }
 
 // ─── Consume a remote producer ───────────────────────────────────
-export async function consumeProducer(producerId, kind, onStream, clientId, producedType) {
+// Registered in `pendingConsumes` for its whole lifetime so the watch
+// bookkeeping can see a consume that hasn't landed yet (see watchIntent.js).
+export function consumeProducer(producerId, kind, onStream, clientId, producedType) {
+  const existing = pendingConsumes.get(producerId)
+  if (existing) return existing
+  const active = remoteConsumers.get(producerId)
+  if (active) {
+    return Promise.resolve({
+      stream: active.stream,
+      kind: active.kind,
+      consumerId: active.consumerId
+    })
+  }
+  const pending = doConsumeProducer(producerId, kind, onStream, clientId, producedType).finally(
+    () => {
+      // Only clear our own registration — a later consume for the same producer
+      // (a self-heal re-consume, say) may already own the slot.
+      if (pendingConsumes.get(producerId) === pending) {
+        pendingConsumes.delete(producerId)
+      }
+    }
+  )
+  pendingConsumes.set(producerId, pending)
+  return pending
+}
+
+async function discardUncommittedConsumer(consumer, generation, transport) {
+  consumer.close()
+  if (
+    generation !== mediaStateGeneration ||
+    consumerTransport !== transport ||
+    ws?.readyState !== WebSocket.OPEN
+  )
+    return
+  try {
+    await send('CloseConsumer', { ids: [consumer.id] })
+  } catch (cleanupError) {
+    console.warn(`[Soup] Failed to clean up consumer ${consumer.id}:`, cleanupError)
+  }
+}
+
+async function doConsumeProducer(producerId, kind, onStream, clientId, producedType) {
+  const generation = mediaStateGeneration
   if (!consumerTransport) await subscribe()
+  const transport = consumerTransport
+  if (!transport || generation !== mediaStateGeneration || transport.closed) throw mediaResetError()
 
   const consumerParams = await send('Consume', {
     id: producerId,
@@ -3733,16 +4368,24 @@ export async function consumeProducer(producerId, kind, onStream, clientId, prod
   })
 
   if (consumerParams.error) {
-    console.error('[Soup] Cannot consume:', consumerParams.error)
-    return null
+    throw new Error(`Cannot consume producer ${producerId}: ${consumerParams.error}`)
   }
 
-  const consumer = await consumerTransport.consume({
+  if (generation !== mediaStateGeneration || consumerTransport !== transport || transport.closed) {
+    throw mediaResetError()
+  }
+
+  const consumer = await transport.consume({
     id: consumerParams.id,
     producerId: consumerParams.producer_id,
     kind: consumerParams.kind,
     rtpParameters: consumerParams.rtp_parameters
   })
+
+  if (generation !== mediaStateGeneration || consumerTransport !== transport || transport.closed) {
+    consumer.close()
+    throw mediaResetError()
+  }
 
   // Set once before ResumeConsumer so the first decoded packets use the
   // requested target. Re-consumes from audio self-heal come through this same
@@ -3767,12 +4410,26 @@ export async function consumeProducer(producerId, kind, onStream, clientId, prod
   // per stream via setVideoStreamRoles(). Resuming video here would pull full
   // bitrate for every already-live stream the instant we join a channel, before
   // any view role has been applied.
-  if (kind === 'audio') {
-    await send('ResumeConsumer', { id: consumer.id })
-    console.log(`[Soup] Consumer resumed [id:${consumer.id}]`)
-  } else {
-    await send('PauseConsumer', { id: consumer.id })
-    console.log(`[Soup] Video consumer created paused [id:${consumer.id}]`)
+  try {
+    if (kind === 'audio') {
+      await send('ResumeConsumer', { id: consumer.id })
+      console.log(`[Soup] Consumer resumed [id:${consumer.id}]`)
+    } else {
+      await send('PauseConsumer', { id: consumer.id })
+      console.log(`[Soup] Video consumer created paused [id:${consumer.id}]`)
+    }
+  } catch (err) {
+    // The server has already allocated this consumer.  Do not leave a failed
+    // Resume/Pause attempt as an untracked local receiver while the retry creates
+    // another one.  When signaling is still current, close the server half in the
+    // same response queue before retrying; a socket-reset path tears it down there.
+    await discardUncommittedConsumer(consumer, generation, transport)
+    throw err
+  }
+
+  if (generation !== mediaStateGeneration || consumerTransport !== transport || transport.closed) {
+    consumer.close()
+    throw mediaResetError()
   }
 
   // Build the entry up front so the audio graph, cleanup, and a later
@@ -3796,25 +4453,35 @@ export async function consumeProducer(producerId, kind, onStream, clientId, prod
     // part of the drift problem and must keep pulling the track continuously,
     // even across a health-driven graph rebuild.
     const audioEl = document.createElement('audio')
-    audioEl.srcObject = stream
-    audioEl.autoplay = true
-    audioEl.muted = true
-    document.body.appendChild(audioEl)
-    audioEl.play().catch((err) => console.error('[Soup] Audio pump play failed:', err))
-    remoteAudioElements.push(audioEl)
-    entry.audioEl = audioEl
+    try {
+      audioEl.srcObject = stream
+      audioEl.autoplay = true
+      audioEl.muted = true
+      document.body.appendChild(audioEl)
+      audioEl.play().catch((err) => console.error('[Soup] Audio pump play failed:', err))
+      remoteAudioElements.push(audioEl)
+      entry.audioEl = audioEl
 
-    // Rebuildable part: source -> gain -> destination (+ speaking detector).
-    buildAudioGraph(entry)
+      // Rebuildable part: source -> gain -> destination (+ speaking detector).
+      buildAudioGraph(entry)
 
-    entry.cleanup = () => {
+      entry.cleanup = () => {
+        teardownAudioGraph(entry)
+        audioEl.pause()
+        audioEl.srcObject = null
+        audioEl.remove()
+        remoteAudioElements = remoteAudioElements.filter((el) => el !== audioEl)
+      }
+      remoteCleanups.push(entry.cleanup)
+    } catch (err) {
       teardownAudioGraph(entry)
       audioEl.pause()
       audioEl.srcObject = null
       audioEl.remove()
       remoteAudioElements = remoteAudioElements.filter((el) => el !== audioEl)
+      await discardUncommittedConsumer(consumer, generation, transport)
+      throw err
     }
-    remoteCleanups.push(entry.cleanup)
   } else if (kind === 'video') {
     // If this client already had a video producer (e.g. restarted screen
     // share before a ProducerClosed notice arrived), close out the stale
@@ -3848,6 +4515,21 @@ export async function consumeProducer(producerId, kind, onStream, clientId, prod
       clientId,
       codec: codecLabel(consumer.rtpParameters)
     })
+  }
+
+  // Never silently overwrite an existing entry: its consumer and Web Audio graph
+  // would keep pulling RTP with nothing left pointing at them. Close-then-replace
+  // instead, and tell the server so the stale consumer doesn't linger there too.
+  const superseded = remoteConsumers.get(producerId)
+  if (superseded) {
+    console.warn(`[Soup] Replacing an existing consumer for producer ${producerId}`)
+    remoteConsumers.delete(producerId)
+    superseded.consumer.close()
+    if (superseded.cleanup) {
+      superseded.cleanup()
+      remoteCleanups = remoteCleanups.filter((fn) => fn !== superseded.cleanup)
+    }
+    notify('CloseConsumer', { ids: [superseded.consumerId] })
   }
 
   remoteConsumers.set(producerId, entry)
@@ -3988,6 +4670,10 @@ export function setVideoStreamRoles({ focusedConsumerId = null, visibleConsumerI
 // ─── Reset all media state ───────────────────────────────────────
 export function resetMediaState() {
   mediaStateGeneration++
+  rawMicEndedRepairGeneration = null
+  clearMediaWatchdog()
+  clearMediaReadyTimer()
+  emitMediaState('reconnecting')
   selfSpeakingStop?.()
   selfSpeakingStop = null
   mutedTalkStop?.()
@@ -4011,18 +4697,29 @@ export function resetMediaState() {
   localProducerIds.clear()
   knownVideoProducers.clear()
   knownScreenAudioProducers.clear()
+  knownAudioProducers.clear()
+  for (const producerId of audioConsumeRetryTimers.keys()) clearAudioConsumeRetry(producerId)
+  audioConsumeRetryTimers.clear()
+  audioConsumeRetryAttempts.clear()
   // Watch intent lives in the UI (React) and is re-asserted via setWatchedProducers
   // once producers replay after a reconnect/channel switch, so start from empty.
   watchedClientIds = new Set()
+  watchedProducerIds = new Set()
+  // In-flight consumes belong to the session being torn down. Their promises
+  // reject (or resolve against a dead transport) on their own; dropping the
+  // registrations here keeps the next session's bookkeeping clean.
+  pendingConsumes.clear()
   // Audience is per-channel and replayed by NewConsumer on the next join, so a
   // channel switch must start from empty rather than showing the old room's.
   clearViewers()
   device = null
+  deviceLoadInFlight = null
   stopAudioProcessor()
   // Release the raw mic capture — the producers above are closed, so no live
   // producer references it anymore (nothing to keep the OS mic open for).
-  stopRawStream(rawMicStream)
+  const releasedRawMicStream = rawMicStream
   setRawMicStream(null)
+  stopRawStream(releasedRawMicStream)
   lastCommittedMicSettings = null
   lastCommittedAudioProfile = null
   // Idle the shared mic context between sessions; getMicContext() resumes it.
@@ -4108,6 +4805,24 @@ export function setSoundMuted(muted) {
   applyAllAudioState()
 }
 
+// Volume changes on live audio are ramped rather than stepped. A direct
+// `gain.value =` is a discontinuity in the signal, which is audible as a click —
+// on every volume drag frame, mute, deafen, and focus switch. ~15ms is fast
+// enough to feel instant and slow enough to be inaudible.
+const GAIN_RAMP_TIME_CONSTANT = 0.015
+
+function rampGainTo(gainNode, target) {
+  const now = gainNode.context.currentTime
+  const param = gainNode.gain
+  // Anchor at the value the ramp has actually reached before scheduling the
+  // next one; cancelScheduledValues alone would snap back to the last
+  // explicitly scheduled value.
+  const current = param.value
+  param.cancelScheduledValues(now)
+  param.setValueAtTime(current, now)
+  param.setTargetAtTime(target, now, GAIN_RAMP_TIME_CONSTANT)
+}
+
 // Applies the focus-driven ScreenShareAudio state and the per-client mic
 // volume/mute overrides to every remote stream's gain node. A per-client
 // override volume above 1 boosts that client louder than their natural level.
@@ -4126,7 +4841,7 @@ function applyAllAudioState() {
       const muted = soundMuted || !!override?.muted
       gain = muted ? 0 : (override?.volume ?? 1) * masterVolume
     }
-    entry.gain.gain.value = gain
+    rampGainTo(entry.gain, gain)
   }
 }
 

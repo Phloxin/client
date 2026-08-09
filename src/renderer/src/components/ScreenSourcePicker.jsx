@@ -469,7 +469,7 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
                 <div className="picker-segment">
                   {[
                     { value: 'detail', label: 'Detail' },
-                    { value: 'motion', label: 'Motion' }
+                    { value: 'motion', label: 'Motion (games)' }
                   ].map(({ value, label }) => (
                     <button
                       key={value}

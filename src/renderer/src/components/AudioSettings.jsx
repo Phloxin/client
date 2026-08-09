@@ -235,6 +235,26 @@ function AudioSettings({ micSettings, updateMicSettings }) {
             <span className="toggle-slider" />
           </label>
         </div>
+
+        {/* 9. Hi-Fi Voice — music-grade Opus; bypasses the speech-tuned processing above */}
+        <div className="settings-section settings-toggle-row">
+          <div className="settings-toggle-copy">
+            <label htmlFor="hifiVoice">Hi-Fi Voice</label>
+            <p className="settings-section-desc">
+              Higher-quality stereo audio for music (uses more bandwidth). Echo cancellation, noise
+              suppression, and auto gain control are bypassed while this is on.
+            </p>
+          </div>
+          <label className="toggle-switch">
+            <input
+              type="checkbox"
+              id="hifiVoice"
+              checked={draftSettings.hifiVoice === true}
+              onChange={(e) => updateDraft({ hifiVoice: e.target.checked })}
+            />
+            <span className="toggle-slider" />
+          </label>
+        </div>
       </div>
 
       {isDirty && (

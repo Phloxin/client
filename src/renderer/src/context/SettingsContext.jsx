@@ -32,6 +32,10 @@ const DEFAULT_SETTINGS = {
   // On the shared speech-band RMS scale (see createSpeechLevelReader in soup.js).
   volumeGateThreshold: 15,
   useRnnoise: true,
+  // Off by default: publishes stereo 128 kbps Opus in music mode with the
+  // browser's speech DSP disabled (see micAudioProfile.js). Costs bandwidth and
+  // gives up echo cancellation / noise suppression, so it stays opt-in.
+  hifiVoice: false,
   outputDeviceId: 'default',
   outputVolume: 100,
   // Bumped when a change makes an existing stored value mean something different;

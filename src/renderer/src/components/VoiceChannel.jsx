@@ -8,8 +8,12 @@ import {
   shareCamera,
   stopScreenShare,
   rebindCallbacks,
-  setLocalClientId
+  requestVoiceMediaRecovery,
+  setLocalClientId,
+  setVolumeGateThreshold
 } from '../lib/soup'
+import { REPUBLISH_SCOPE, classifyMicSettingsChange } from '../lib/micRepublishScope'
+import { isPermanentMicError } from '../lib/voiceRecoveryState'
 import { motion, AnimatePresence } from 'motion/react'
 import { useSettings, useAnimationCategory } from '../context/SettingsContext'
 import { useAnimatedPresence } from '../lib/animation'
@@ -31,6 +35,10 @@ import {
 } from '@tabler/icons-react'
 
 const STACK_MAX = 3
+// A publish that loses the race with the previous capture's release fails fast;
+// long enough for the OS mic handle to actually close, short enough that the
+// user reads it as part of reconnecting rather than as a stall.
+const PUBLISH_RETRY_DELAY_MS = 750
 
 const VoiceChannel = forwardRef(function VoiceChannel(
   {
@@ -49,6 +57,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     onStreamsUpdate,
     onSelfSpeaking,
     onSpeakingClientsChange,
+    onVoiceMediaState,
     onSelfChannelChange,
     onJoinedChange,
     onSharingChange,
@@ -123,6 +132,10 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   // Latest mic settings, read by the (re)publish path so a background reconnect
   // re-publishes with current settings rather than those captured at join time.
   const micSettingsRef = useRef(micSettings)
+  // The settings the live capture/graph was last built from, and the baseline the
+  // republish classifier diffs against. Null means "unknown" — the next change
+  // takes the full path, which is always safe.
+  const lastAppliedMicSettingsRef = useRef(null)
 
   // Keep joinedRef in sync with joined state
   useEffect(() => {
@@ -212,27 +225,83 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   // publish() is single-flight in soup, so an adopt() racing the reset-driven
   // republish can't allocate a duplicate producer transport. The self speaking
   // detector is started inside soup off the published stream.
+  //
+  // One silent retry: at reconnect time the OS mic is routinely still held by
+  // the capture we just tore down, and that failure is transient. publish() is
+  // re-runnable (it reuses the existing producer transport), so the retry costs
+  // nothing but the delay. Only a second failure is worth a banner.
   const publishMic = async () => {
-    try {
-      await publish(micSettingsRef.current)
-    } catch (err) {
-      console.error('[VoiceChannel] Publish failed:', err)
-      setError(err.message)
+    for (let attempt = 0; ; attempt++) {
+      // A failed publish may be waiting out its retry delay while the user
+      // leaves or switches channels. Do not reopen the mic for a session this
+      // channel no longer owns.
+      if (!joinedRef.current) return
+      try {
+        const settings = micSettingsRef.current
+        await publish(settings)
+        lastAppliedMicSettingsRef.current = settings
+        setError(null)
+        return
+      } catch (err) {
+        const permanent = isPermanentMicError(err)
+        if (!permanent && attempt === 0 && joinedRef.current) {
+          console.warn('[VoiceChannel] Publish failed, retrying:', err)
+          await new Promise((resolve) => setTimeout(resolve, PUBLISH_RETRY_DELAY_MS))
+          continue
+        }
+        console.error('[VoiceChannel] Publish failed:', err)
+        setError(err.message)
+        if (permanent) {
+          onVoiceMediaState?.(channel.id, { state: 'failed', reason: err.name })
+        } else if (!requestVoiceMediaRecovery('Microphone publish failed')) {
+          onVoiceMediaState?.(channel.id, { state: 'failed', reason: 'publish-failed' })
+        }
+        return
+      }
     }
+  }
+
+  const handleMediaState = (state) => {
+    if (state?.state === 'ready') setError(null)
+    onVoiceMediaState?.(channel.id, state)
   }
 
   // Set our own channel on the server (join / switch / rejoin-on-reconnect) by
   // sending a VoiceStateUpdate over the event websocket instead of PATCHing
-  // /server/client. Wrapped in Promise.resolve so the soup reconnect path can
-  // await it the same way it awaited the old REST call. The merge in
-  // sendVoiceState carries our current mute/deafen alongside the channel.
-  const patchChannel = (channelId) => Promise.resolve(onSelfChannelChange?.(channelId))
+  // /server/client. Async so the soup reconnect path can await it the same way
+  // it awaited the old REST call. The merge in sendVoiceState carries our
+  // current mute/deafen alongside the channel.
+  //
+  // A declaration that never left the client must reject: the server only mints
+  // a voice ticket in response to it, so connecting anyway would dead-end on a
+  // ticket that never arrives. Rejecting instead sends the reconnect back to its
+  // backoff, which keeps retrying until the events socket is back.
+  const patchChannel = async (channelId) => {
+    const sent = await onSelfChannelChange?.(channelId)
+    if (sent === false) throw new Error('Not connected to server')
+    return sent
+  }
 
   // Fired after every successful (re)auth: mark joined and (re)publish the mic.
+  // joinedRef is set here rather than waiting for its sync effect so publishMic's
+  // retry can tell "still in the channel" from "left while we were failing".
   const handleConnectEstablished = async () => {
+    joinedRef.current = true
     setJoined(true)
     setConnecting(false)
     await publishMic()
+  }
+
+  // Fired on an intentional/unrecoverable teardown. Named (rather than inlined at
+  // the initial connect) so switchTo/adopt can rebind it too — left pointing at
+  // the first-joined channel's closure, a later disconnect would clear that dead
+  // component's state and leave the channel we're actually in showing as joined.
+  const handleDisconnected = () => {
+    joinedRef.current = false
+    setJoined(false)
+    setSharing(false)
+    setVideoStreams([])
+    setSpeakingClients({})
   }
 
   // Fired on an unexpected drop: tear down local media UI but stay "joined" â€”
@@ -247,13 +316,35 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     onSelfSpeaking?.(false)
   }
 
-  // Republish audio whenever mic settings change while in a channel
+  // Apply changed mic settings to the live capture — at the cheapest tier that
+  // actually applies them. updateMicSettings always hands us a new object, so
+  // without this classification an output-volume drag would re-open the OS mic
+  // and gap outgoing audio for a change that never reaches the capture at all.
   useEffect(() => {
     if (!joinedRef.current) return
-    republish(micSettings).catch((err) => {
-      console.error('[VoiceChannel] Republish failed:', err)
-      setError(err.message)
-    })
+    const scope = classifyMicSettingsChange(lastAppliedMicSettingsRef.current, micSettings)
+    if (scope === REPUBLISH_SCOPE.NONE) return
+
+    if (scope === REPUBLISH_SCOPE.THRESHOLD) {
+      setVolumeGateThreshold(micSettings.volumeGateThreshold)
+      lastAppliedMicSettingsRef.current = micSettings
+      return
+    }
+
+    // Optimistic: republish is serialized in soup, so a burst of changes still
+    // commits in order and the last one wins.
+    lastAppliedMicSettingsRef.current = micSettings
+    republish(micSettings, undefined, { graphOnly: scope === REPUBLISH_SCOPE.GRAPH }).catch(
+      (err) => {
+        console.error('[VoiceChannel] Republish failed:', err)
+        // A failed republish restores the *previously committed* capture, so the
+        // baseline no longer describes anything live. Forget it and let the next
+        // change take the full path rather than diff against settings that never
+        // landed.
+        lastAppliedMicSettingsRef.current = null
+        setError(err.message)
+      }
+    )
   }, [micSettings])
 
   // Unmount cleanup. If this channel is being deleted out from under us *while
@@ -333,13 +424,9 @@ const VoiceChannel = forwardRef(function VoiceChannel(
 
       await connect({
         onConnect: handleConnectEstablished,
-        onDisconnect: () => {
-          setJoined(false)
-          setSharing(false)
-          setVideoStreams([])
-          setSpeakingClients({})
-        },
+        onDisconnect: handleDisconnected,
         onReconnecting: handleReconnecting,
+        onMediaState: handleMediaState,
         // Server drops us from the channel when the socket dies â€” re-assert
         // membership before each reconnect's ticket fetch.
         onReconnectRejoin: () => patchChannel(channel.id),
@@ -367,7 +454,9 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     // callbacks at the new channel, so a drop after the switch recovers here.
     rebindCallbacks({
       onConnect: handleConnectEstablished,
+      onDisconnect: handleDisconnected,
       onReconnecting: handleReconnecting,
+      onMediaState: handleMediaState,
       onReconnectRejoin: () => patchChannel(channel.id),
       onVideoStream: handleVideoStream,
       onClientSpeaking: handleClientSpeaking,
@@ -394,7 +483,9 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   const adopt = async () => {
     rebindCallbacks({
       onConnect: handleConnectEstablished,
+      onDisconnect: handleDisconnected,
       onReconnecting: handleReconnecting,
+      onMediaState: handleMediaState,
       onReconnectRejoin: () => patchChannel(channel.id),
       onVideoStream: handleVideoStream,
       onClientSpeaking: handleClientSpeaking,
@@ -404,6 +495,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     })
     setError(null)
     setConnecting(false)
+    joinedRef.current = true
     setJoined(true)
     await publishMic()
   }
@@ -412,6 +504,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   // websocket (used when switching to a different channel).
   const deactivate = () => {
     activeShareRef.current = null
+    joinedRef.current = false
     setJoined(false)
     setSharing(false)
     setVideoStreams([])
@@ -420,6 +513,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
 
   const handleLeave = () => {
     activeShareRef.current = null
+    joinedRef.current = false
     disconnect()
     setJoined(false)
     setSharing(false)

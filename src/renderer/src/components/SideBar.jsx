@@ -39,6 +39,7 @@ function Sidebar({
   self,
   onStreamsUpdate,
   isReconnectRecovering,
+  recoveryEpoch,
   onOpenSettings,
   onStatusChange,
   onSelfChannelChange,
@@ -88,6 +89,7 @@ function Sidebar({
   onToggleMic,
   onToggleDeafen,
   onSpeakingClientsChange,
+  onVoiceMediaState,
   // Filled with the sharing channel's imperative handle (or null when we aren't
   // sharing) so the stream view can stop/restart our share without owning the
   // voice-channel refs.
@@ -367,6 +369,10 @@ function Sidebar({
       // reconnecting and re-asserting membership, and leaving would tear that
       // down and yank us out for good. It restores selfServerChannelId when it
       // lands, re-running this effect to a consistent state.
+      //
+      // recoveryEpoch is what makes the *other* outcome work: when the rejoin
+      // never lands and the recovery times out, the bump re-runs this effect,
+      // and we now take the leave path instead of showing a phantom joined state.
       if (isReconnectRecovering?.()) return
       // Moved out of every channel — leave voice locally.
       channelRefs.current[joinedChannelId]?.leave()
@@ -374,7 +380,7 @@ function Sidebar({
     }
     channelRefs.current[joinedChannelId]?.deactivate()
     channelRefs.current[selfServerChannelId]?.adopt()
-  }, [selfServerChannelId, joinedChannelId, isReconnectRecovering])
+  }, [selfServerChannelId, joinedChannelId, isReconnectRecovering, recoveryEpoch])
 
   const isDragging = useRef(false)
   const sidebarRef = useRef(null)
@@ -600,6 +606,7 @@ function Sidebar({
             deafened={deafened}
             onSelfSpeaking={setSelfSpeaking}
             onSpeakingClientsChange={onSpeakingClientsChange}
+            onVoiceMediaState={onVoiceMediaState}
             onSelfChannelChange={onSelfChannelChange}
             onDeleteChannel={onDeleteChannel}
             onRequestCreateChannel={openCreateChannel}
