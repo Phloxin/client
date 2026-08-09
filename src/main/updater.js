@@ -38,6 +38,7 @@ export function setupUpdater() {
   autoUpdater.on('download-progress', (p) => broadcast('progress', { percent: p.percent }))
   autoUpdater.on('update-downloaded', (info) => broadcast('downloaded', { version: info.version }))
   autoUpdater.on('error', (err) => {
+    console.error('[updater] Auto-update error:', err)
     if (launchCheckActive) launchCheckActive = false
     else broadcast('error', { message: String(err?.message || err) })
   })
@@ -49,6 +50,7 @@ export function setupUpdater() {
     try {
       await autoUpdater.checkForUpdates()
     } catch (err) {
+      console.error('[updater] Manual update check failed:', err)
       broadcast('error', { message: String(err?.message || err) })
     }
   })
@@ -59,7 +61,8 @@ export function setupUpdater() {
     launchCheckActive = true
     try {
       await autoUpdater.checkForUpdates()
-    } catch {
+    } catch (err) {
+      console.error('[updater] Launch update check failed:', err)
       launchCheckActive = false
     }
   })
@@ -68,6 +71,7 @@ export function setupUpdater() {
     try {
       await autoUpdater.downloadUpdate()
     } catch (err) {
+      console.error('[updater] Update download failed:', err)
       broadcast('error', { message: String(err?.message || err) })
     }
   })

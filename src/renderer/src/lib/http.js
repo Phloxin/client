@@ -64,11 +64,40 @@ async function logResponse(response, method, url, startedAt) {
   })
 }
 
-// Drop-in fetch wrapper. Packaged builds take the direct path: the body clone,
-// parsing, redaction, and diagnostic objects are development-only work.
+// Drop-in fetch wrapper. Packaged builds skip body cloning entirely and retain
+// only compact method/status/URL metadata when a request actually fails.
 export function httpFetch(input, options = {}) {
-  if (!HTTP_LOGGING_ENABLED) return fetch(input, options)
+  if (!HTTP_LOGGING_ENABLED) return productionHttpFetch(input, options)
   return loggedHttpFetch(input, options)
+}
+
+function productionSafeUrl(input) {
+  try {
+    const raw =
+      typeof Request !== 'undefined' && input instanceof Request
+        ? input.url
+        : (input?.url ?? String(input))
+    const url = new URL(raw)
+    return `${url.origin}${url.pathname}`
+  } catch {
+    return '[invalid URL]'
+  }
+}
+
+async function productionHttpFetch(input, options) {
+  const request = typeof Request !== 'undefined' && input instanceof Request ? input : null
+  const method = String(options?.method || request?.method || 'GET').toUpperCase()
+  const url = productionSafeUrl(input)
+  try {
+    const response = await fetch(input, options)
+    if (response.status >= 500 || [401, 403, 429].includes(response.status)) {
+      console.warn('[HTTP] Request failed:', { method, url, status: response.status })
+    }
+    return response
+  } catch (error) {
+    console.error('[HTTP] Network request failed:', { method, url, error })
+    throw error
+  }
 }
 
 async function loggedHttpFetch(input, options) {
