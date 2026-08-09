@@ -406,16 +406,6 @@ function VideoGrid({
     return () => ro.disconnect()
   }, [gridShown, gridTileCount, theatre])
 
-  if (!streams.length)
-    return (
-      <div className="video-grid empty">
-        <div className="empty-message">
-          <IconVideoMinus size={100} />
-          No Active Streams
-        </div>
-      </div>
-    )
-
   const toggleMute = () => onMutedChange(!muted)
 
   const handleVolumeChange = (e) => {
@@ -430,7 +420,19 @@ function VideoGrid({
     if (muted) onMutedChange(false)
   }
 
+  // Hook, so it stays above the early return below — the last stream ending
+  // drops us into that branch and skipping a hook is a React #300 crash.
   const volumeWheelRef = useWheelSlider(handleVolumeChange)
+
+  if (!streams.length)
+    return (
+      <div className="video-grid empty">
+        <div className="empty-message">
+          <IconVideoMinus size={100} />
+          No Active Streams
+        </div>
+      </div>
+    )
 
   const VolumeIcon =
     muted || volume === 0
