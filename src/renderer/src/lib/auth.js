@@ -14,6 +14,7 @@ import { httpFetch } from './http.js'
 
 const REFRESH_EARLY_MS = 90_000 // refresh this long before access expiry
 const REFRESH_RETRY_MS = 30_000 // retry delay after a network-level refresh failure
+const REFRESH_REQUEST_TIMEOUT_MS = 15_000
 
 let tokens = null // { access_token, access_expires_at, refresh_token, refresh_expires_at }
 let tokenGeneration = 0
@@ -84,7 +85,8 @@ async function doRefresh() {
     res = await httpFetch(`${apiBase()}/auth/refresh`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refresh_token: refreshToken })
+      body: JSON.stringify({ refresh_token: refreshToken }),
+      signal: AbortSignal.timeout(REFRESH_REQUEST_TIMEOUT_MS)
     })
   } catch {
     // Logout or a fresh login superseded this request while it was in flight.
@@ -102,12 +104,24 @@ async function doRefresh() {
     if (tokens) return tokens
     throw new Error('Not authenticated')
   }
-  if (!res.ok || !data.access_token) {
-    // The server rejected the refresh token — the device session is gone
-    // (expired, revoked, or the token was already used). Fresh login required.
+  if (res.status === 401 || res.status === 403) {
+    // Only an explicit authentication rejection proves the device session is
+    // gone (expired, revoked, reused, or banned). A proxy/server failure must
+    // not turn a temporary outage into a local logout.
     clearAuthTokens()
     sessionExpired()
     throw new Error(data.error || `Refresh failed (${res.status})`)
+  }
+  if (
+    !res.ok ||
+    typeof data.access_token !== 'string' ||
+    typeof data.refresh_token !== 'string' ||
+    !Number.isFinite(data.access_expires_at) ||
+    !Number.isFinite(data.refresh_expires_at)
+  ) {
+    throw Object.assign(new Error(data.error || `Refresh failed (${res.status})`), {
+      transient: true
+    })
   }
   setAuthTokens(data)
   return data

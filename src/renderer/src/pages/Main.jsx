@@ -393,6 +393,7 @@ function Main() {
   const sessionIdRef = useRef(null)
   const selfIdRef = useRef(null)
   const selfChannelIdRef = useRef(null)
+  const voiceStateRef = useRef({ self_mute: false, self_deaf: false, channel_id: null })
   // Timestamp of our last own channel action (create/edit/move/etc). The server
   // echoes ChannelUpdated back to us, and a reorder also reindexes sibling
   // channels — so within a short window after acting we suppress the "your
@@ -413,11 +414,17 @@ function Main() {
   // suppressed, and the sidebar won't leave voice on the transient drop-to-null.
   const awaitingRejoinRef = useRef(null)
   const rejoinTimeoutRef = useRef(null)
+  const requiredVoiceMediaUpdateRef = useRef(null)
+  const voiceMediaUpdateIdRef = useRef(0)
+  const eventsRecoveringRef = useRef(false)
   // This is a diagnostic/recovery boundary, not a success boundary. Membership
   // alone only proves events recovered; soup must also rebuild a live local
   // media producer before the UI may claim voice is connected again.
   const VOICE_REJOIN_TIMEOUT_MS = 20000
-  const isReconnectRecovering = useCallback(() => awaitingRejoinRef.current != null, [])
+  const isReconnectRecovering = useCallback(
+    () => eventsRecoveringRef.current || awaitingRejoinRef.current != null,
+    []
+  )
   // Bumped whenever a recovery ends. The ref alone is invisible to React, so
   // consumers that *defer* work while recovering (SideBar's adopt/leave effect)
   // would never re-evaluate when the rejoin times out — leaving the UI claiming
@@ -430,8 +437,10 @@ function Main() {
   // Finish a reconnect recovery: we're truly back now, so play the connected cue
   // and drop the overlay. Safe to call more than once (the ref guard no-ops).
   const completeRecovery = useCallback(() => {
-    if (awaitingRejoinRef.current == null) return
+    if (awaitingRejoinRef.current == null || eventsRecoveringRef.current) return
     awaitingRejoinRef.current = null
+    requiredVoiceMediaUpdateRef.current = null
+    preDropChannelRef.current = null
     clearTimeout(rejoinTimeoutRef.current)
     setConnectionStatus('connected')
     playUiSound('connected')
@@ -443,19 +452,60 @@ function Main() {
     ) => {
       if (awaitingRejoinRef.current == null) return
       awaitingRejoinRef.current = null
+      requiredVoiceMediaUpdateRef.current = null
       clearTimeout(rejoinTimeoutRef.current)
       // The events connection is healthy; remove its network overlay without a
       // false success chime, then expose voice as the failed subsystem.
-      setConnectionStatus('connected')
+      if (!eventsRecoveringRef.current) setConnectionStatus('connected')
       setRecoveryEpoch((epoch) => epoch + 1)
       showError(message)
     },
     [showError]
   )
-  const handleVoiceMediaState = useCallback((channelId, state) => {
-    console.log(`[Voice] media ${state?.state ?? 'unknown'} for channel ${channelId}`)
-    setVoiceMediaRecovery({ channelId, ...state, state: state?.state ?? 'unknown' })
-  }, [])
+  const handleVoiceMediaState = useCallback(
+    (channelId, state) => {
+      const stateName = state?.state ?? 'unknown'
+      const updateId = ++voiceMediaUpdateIdRef.current
+      const next = { channelId, ...state, state: stateName, updateId }
+      console.log(`[Voice] media ${stateName} for channel ${channelId}`)
+      setVoiceMediaRecovery(next)
+
+      if (stateName === 'reconnecting' && channelId != null) {
+        // Ownership can legitimately move to another channel while recovery is
+        // already active (moderator move racing the transport-reset event).
+        // Follow the callback owner that will publish the replacement media.
+        awaitingRejoinRef.current = channelId
+        requiredVoiceMediaUpdateRef.current = Math.max(
+          requiredVoiceMediaUpdateRef.current ?? -1,
+          updateId
+        )
+        setConnectionStatus('reconnecting')
+        clearTimeout(rejoinTimeoutRef.current)
+        rejoinTimeoutRef.current = setTimeout(() => {
+          if (awaitingRejoinRef.current != null && !eventsRecoveringRef.current) {
+            failRecovery(
+              'Server connection recovered, but voice audio did not. Leave and rejoin the channel to retry.'
+            )
+          }
+        }, VOICE_REJOIN_TIMEOUT_MS)
+      } else if (stateName === 'authenticated' && awaitingRejoinRef.current != null) {
+        // The active VoiceChannel callback is authoritative after auth. This
+        // also resolves a moderator move that raced an earlier reset callback
+        // from the channel we previously owned.
+        awaitingRejoinRef.current = channelId
+      } else if (stateName === 'idle' && awaitingRejoinRef.current === channelId) {
+        awaitingRejoinRef.current = null
+        requiredVoiceMediaUpdateRef.current = null
+        clearTimeout(rejoinTimeoutRef.current)
+        if (!eventsRecoveringRef.current) setConnectionStatus('connected')
+      }
+
+      // Voice state is stored in refs so SideBar needs an explicit wake-up when
+      // an authoritative null arrived before the browser reported socket close.
+      setRecoveryEpoch((epoch) => epoch + 1)
+    },
+    [failRecovery]
+  )
   const activeChatChannelIdRef = useRef(null)
   const chatVisibleRef = useRef(true)
   const feedRef = useRef([])
@@ -579,6 +629,10 @@ function Main() {
   // ProducerClosed event), so any client absent here genuinely stopped sharing.
   // Clear intent immediately: a later unrelated share must require a new click.
   useEffect(() => {
+    // Voice recovery deliberately clears tiles before the SFU replays producers.
+    // Preserve the client-level watch/focus intent across that empty snapshot so
+    // replayed screen video and audio are consumed again automatically.
+    if (isReconnectRecovering()) return
     const liveClientIds = new Set(allVideoStreams.map((stream) => stream.clientId))
     setWatchedStreamClientIds((prev) => {
       if (prev.size === 0) return prev
@@ -588,7 +642,7 @@ function Main() {
     setSelectedStreamClientId((current) =>
       current != null && !liveClientIds.has(current) ? null : current
     )
-  }, [allVideoStreams])
+  }, [allVideoStreams, recoveryEpoch, isReconnectRecovering])
 
   // Clear notification + unread history on connect/disconnect only — switching
   // channels shouldn't wipe what you've already been notified of.
@@ -717,18 +771,24 @@ function Main() {
   // hear me" state after a short network interruption.
   useEffect(() => {
     if (
+      !eventsRecoveringRef.current &&
       isVoiceRecoveryReady({
         awaitingChannelId: awaitingRejoinRef.current,
         channelId: selfChannelId,
         mediaState:
-          voiceMediaRecovery.channelId === selfChannelId ? voiceMediaRecovery.state : 'idle'
+          voiceMediaRecovery.channelId === selfChannelId ? voiceMediaRecovery.state : 'idle',
+        mediaUpdateId: voiceMediaRecovery.updateId,
+        minimumMediaUpdateId: requiredVoiceMediaUpdateRef.current
       })
     ) {
       completeRecovery()
     } else if (
+      !eventsRecoveringRef.current &&
       awaitingRejoinRef.current != null &&
       voiceMediaRecovery.channelId === awaitingRejoinRef.current &&
-      voiceMediaRecovery.state === 'failed'
+      voiceMediaRecovery.state === 'failed' &&
+      (requiredVoiceMediaUpdateRef.current == null ||
+        voiceMediaRecovery.updateId > requiredVoiceMediaUpdateRef.current)
     ) {
       // The events connection is healthy but the browser rejected a mic/device
       // request. End the network-reconnect overlay and leave the channel's
@@ -1670,7 +1730,14 @@ function Main() {
       setPoppedOut(false)
       awaitingRejoinRef.current = null
       preDropChannelRef.current = null
+      requiredVoiceMediaUpdateRef.current = null
+      eventsRecoveringRef.current = false
       clearTimeout(rejoinTimeoutRef.current)
+      voiceStateRef.current = {
+        self_mute: micMutedRef.current,
+        self_deaf: deafenedRef.current,
+        channel_id: null
+      }
       disconnectVoice()
       clearAuth()
       setChannels([])
@@ -1778,14 +1845,21 @@ function Main() {
     // Exponential backoff with jitter, capped, so a blip recovers quickly but a
     // downed server isn't hammered. Reset to 0 on a successful handshake.
     const scheduleReconnect = () => {
-      if (closedByUs || reconnectTimer) return
+      if (closedByUs) return
+      eventsRecoveringRef.current = true
+      // A voice-recovery timeout must never claim the app is connected while
+      // the events link is down. It is re-armed after a successful identify.
+      clearTimeout(rejoinTimeoutRef.current)
+      if (reconnectTimer) return
       // Chime once on the drop (the overlay appears now), not on each retry.
       if (!dropAnnounced) {
         dropAnnounced = true
         playUiSound('connection_lost')
         // Remember the voice channel we were in, so recovery can wait until we're
         // actually back in it before declaring "connected".
-        preDropChannelRef.current = selfChannelIdRef.current
+        preDropChannelRef.current =
+          awaitingRejoinRef.current ?? preDropChannelRef.current ?? selfChannelIdRef.current
+        requiredVoiceMediaUpdateRef.current = voiceMediaUpdateIdRef.current
       }
       // Surface the drop to the user (full-app overlay) while we retry.
       setConnectionStatus('reconnecting')
@@ -1821,14 +1895,16 @@ function Main() {
       // announcement rather than the attempt counter, which the OS `online`
       // signal resets mid-outage to shorten the backoff.
       const wasReconnecting = dropAnnounced
-      reconnectAttempts = 0
-      dropAnnounced = false
       if (reply.kind === 'Authenticated' || reply.kind === 'Resumed') {
+        reconnectAttempts = 0
+        dropAnnounced = false
+        eventsRecoveringRef.current = false
         if (!wasReconnecting) {
           // Initial connect — handleConnect already chimed.
           setConnectionStatus('connected')
         } else if (preDropChannelRef.current == null) {
           // Recovered, and we weren't in a voice channel — fully back now.
+          requiredVoiceMediaUpdateRef.current = null
           setConnectionStatus('connected')
           playUiSound('connected')
         } else {
@@ -1839,10 +1915,10 @@ function Main() {
           // watchdog performs one full voice reconnect; this timer only records
           // why we are still waiting and must never turn a failed recovery into
           // a false "connected" success.
-          awaitingRejoinRef.current = preDropChannelRef.current
+          awaitingRejoinRef.current ??= preDropChannelRef.current
           // The ref assignment itself is invisible to React. Wake the readiness
-          // effect so an events-only blip can immediately accept media that never
-          // dropped, while a voice reset continues waiting for its new generation.
+          // effect, which now requires a media update newer than the outage so a
+          // cached ready state cannot complete recovery before voice is rebuilt.
           setRecoveryEpoch((epoch) => epoch + 1)
           clearTimeout(rejoinTimeoutRef.current)
           rejoinTimeoutRef.current = setTimeout(() => {
@@ -1889,6 +1965,7 @@ function Main() {
         // next connect identify without a resume object.
         sessionIdRef.current = null
         lastEventSeqRef.current = null
+        reconnectAttempts = 0
         reloadHistory()
         closedByUs = false
         ws.close()
@@ -2099,7 +2176,11 @@ function Main() {
         // us sending a VoiceStateUpdate, so sync the declarative voice-state ref.
         // Otherwise the next mute/deafen merges our stale channel_id and yanks us
         // back to the channel we were moved out of.
-        if (data.id === selfIdRef.current && 'channel_id' in data) {
+        if (
+          data.id === selfIdRef.current &&
+          'channel_id' in data &&
+          !(data.channel_id == null && isReconnectRecovering())
+        ) {
           voiceStateRef.current = { ...voiceStateRef.current, channel_id: data.channel_id }
         }
 
@@ -2513,7 +2594,7 @@ function Main() {
       if (ws) ws.close()
       eventsWsRef.current = null
     }
-  }, [token, loadChannelHistory, handleDisconnect, logTraffic, failRecovery])
+  }, [token, loadChannelHistory, handleDisconnect, logTraffic, failRecovery, isReconnectRecovering])
 
   // Drop typing entries as they expire. Re-scheduled to the soonest expiry each
   // time the set changes (no always-on interval); a fresh TypingStarted bumps an
@@ -2691,20 +2772,28 @@ function Main() {
   // but callers that depend on the server acting on it — voice join / rejoin,
   // which is what mints a voice ticket — must be able to fail and retry rather
   // than proceed as if membership had been asserted.
-  const voiceStateRef = useRef({ self_mute: false, self_deaf: false, channel_id: null })
-  const sendVoiceState = useCallback((patch) => {
-    const next = { ...voiceStateRef.current, ...patch }
-    voiceStateRef.current = next
-    // A channel change (join/leave/switch) tears down and rebuilds media, so the
-    // streams that vanish/appear are the transition — not real stops/starts.
-    // Disarm the stream chimes now, synchronously, before handleLeave's teardown
-    // empties allVideoStreams and the diff effect mistakes it for a stream ending.
-    // The baseline effect re-arms once we've settled in the new channel (or none).
-    if ('channel_id' in patch) streamSoundsArmedRef.current = false
-    if (eventsWsRef.current?.readyState !== WebSocket.OPEN) return false
-    eventsWsRef.current.send(JSON.stringify({ op: 1, data: next }))
-    return true
-  }, [])
+  const sendVoiceState = useCallback(
+    (patch) => {
+      const channelChanged =
+        'channel_id' in patch && patch.channel_id !== voiceStateRef.current.channel_id
+      const next = { ...voiceStateRef.current, ...patch }
+      voiceStateRef.current = next
+      // A channel change (join/leave/switch) tears down and rebuilds media, so the
+      // streams that vanish/appear are the transition — not real stops/starts.
+      // Disarm the stream chimes now, synchronously, before handleLeave's teardown
+      // empties allVideoStreams and the diff effect mistakes it for a stream ending.
+      // The baseline effect re-arms once we've settled in the new channel (or none).
+      if ('channel_id' in patch) streamSoundsArmedRef.current = false
+      if (channelChanged && !isReconnectRecovering()) {
+        setWatchedStreamClientIds(new Set())
+        setSelectedStreamClientId(null)
+      }
+      if (eventsWsRef.current?.readyState !== WebSocket.OPEN) return false
+      eventsWsRef.current.send(JSON.stringify({ op: 1, data: next }))
+      return true
+    },
+    [isReconnectRecovering]
+  )
 
   // Broadcast our mic-mute / deafen status, keeping our current channel.
   const sendStatus = (selfMute, selfDeaf) =>

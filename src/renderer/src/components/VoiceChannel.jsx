@@ -243,6 +243,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
         setError(null)
         return
       } catch (err) {
+        if (!joinedRef.current) return
         const permanent = isPermanentMicError(err)
         if (!permanent && attempt === 0 && joinedRef.current) {
           console.warn('[VoiceChannel] Publish failed, retrying:', err)
@@ -299,9 +300,11 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   const handleDisconnected = () => {
     joinedRef.current = false
     setJoined(false)
+    setConnecting(false)
     setSharing(false)
     setVideoStreams([])
     setSpeakingClients({})
+    onVoiceMediaState?.(channel.id, { state: 'idle' })
   }
 
   // Fired on an unexpected drop: tear down local media UI but stay "joined" â€”
@@ -358,6 +361,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     () => () => {
       if (joinedRef.current) {
         activeShareRef.current = null
+        joinedRef.current = false
         disconnect()
         onJoinedChange?.(channel.id, false)
       }
@@ -441,9 +445,9 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     }
   }
 
-  // Move to this channel without closing the websocket. The server will
-  // respond with TransportsDisconnected, which resets media state and
-  // triggers a republish via the rebound onTransportsDisconnected callback.
+  // Move to this channel. The server responds with TransportsDisconnected;
+  // soup then authenticates a fresh SFU session because the old router peer no
+  // longer exists, and onConnect publishes into that replacement session.
   const switchTo = async () => {
     setConnecting(true)
     setError(null)
@@ -461,7 +465,6 @@ const VoiceChannel = forwardRef(function VoiceChannel(
       onVideoStream: handleVideoStream,
       onClientSpeaking: handleClientSpeaking,
       onStreamEnded: handleStreamEnded,
-      onTransportsDisconnected: handleConnectEstablished,
       onScreenAudioError: handleScreenAudioError
     })
 
@@ -470,6 +473,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     } catch (err) {
       setError(err.message)
       setConnecting(false)
+      throw err
     }
   }
 
@@ -480,7 +484,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   // may land before or after we adopt; publish() is single-flight, so calling it
   // here can't collide with a reset-driven republish. onClientSpeaking is rebound
   // to us, so soup's self speaking detector now reports to this channel.
-  const adopt = async () => {
+  const adopt = async ({ reassert = false } = {}) => {
     rebindCallbacks({
       onConnect: handleConnectEstablished,
       onDisconnect: handleDisconnected,
@@ -490,9 +494,13 @@ const VoiceChannel = forwardRef(function VoiceChannel(
       onVideoStream: handleVideoStream,
       onClientSpeaking: handleClientSpeaking,
       onStreamEnded: handleStreamEnded,
-      onTransportsDisconnected: handleConnectEstablished,
       onScreenAudioError: handleScreenAudioError
     })
+    // A switch declaration can fail after callbacks and desired membership were
+    // pointed at the target. Reasserting here restores both to the still-live
+    // previous owner; ordinary moderator adoption must not send this declaration.
+    if (reassert) await patchChannel(channel.id)
+    else onVoiceMediaState?.(channel.id, { state: 'reconnecting', reason: 'channel-adopted' })
     setError(null)
     setConnecting(false)
     joinedRef.current = true
@@ -701,6 +709,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     getShareOptions: () => lastShareRef.current?.options ?? null,
     switchTo,
     adopt,
+    restoreAfterFailedSwitch: () => adopt({ reassert: true }),
     deactivate
   }))
 

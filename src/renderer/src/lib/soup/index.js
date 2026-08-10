@@ -12,8 +12,11 @@ import { isProducerWatched, resolveWatchIntent } from '../watchIntent'
 import { micCaptureKey } from '../micRepublishScope'
 import {
   allKnownAudioConsumersReady,
+  isConsumerClosedEvent,
   isPermanentMicError,
-  nextAudioConsumeRetryDelay
+  nextAudioConsumeRetryDelay,
+  voiceRequestError,
+  voiceSocketRecoveryAction
 } from '../voiceRecoveryState'
 import { createSerialQueue } from '../serialQueue'
 import { codecLabel, jitterBufferAvgMs } from '../streamStats'
@@ -179,16 +182,24 @@ const audioHealsInFlight = new Set()
 // replay NewProducer for everyone in the channel.
 const VOICE_RECONNECT_BASE_DELAY_MS = 1000
 const VOICE_RECONNECT_MAX_DELAY_MS = 30000
+const VOICE_AUTH_TIMEOUT_MS = 15000
 let reconnectAttempts = 0
 let reconnectTimer = null
 let reconnectInFlight = false // an attempt is mid-flight; don't start a second
 let intentionalClose = false // set by disconnect() so onclose won't reconnect
 let everAuthenticated = false // only auto-reconnect drops that follow a real auth
+// Invalidates a ticket fetch/socket open that outlives disconnect followed by a
+// new join. Without this, the old single-use ticket can install a stale socket
+// after the new session has already cleared intentionalClose.
+let voiceConnectionGeneration = 0
+let currentSocketCloseHandler = null
+let socketCloseDeadlineTimer = null
 let mediaWatchdogTimer = null
 let mediaReadyTimer = null
 let mediaWatchdogRecoveryUsed = false
-const MEDIA_WATCHDOG_DELAY_MS = 5000
+const MEDIA_WATCHDOG_DELAY_MS = 15000
 const MEDIA_READY_SETTLE_MS = 300
+const TRANSPORT_DISCONNECTED_GRACE_MS = 8000
 
 function clearMediaWatchdog() {
   if (mediaWatchdogTimer != null) clearTimeout(mediaWatchdogTimer)
@@ -205,7 +216,19 @@ function emitMediaState(state, details = {}) {
 }
 
 function remoteAudioIsReady() {
-  return allKnownAudioConsumersReady(knownAudioProducers.keys(), remoteConsumers.keys())
+  return (
+    (knownAudioProducers.size === 0 ||
+      (!consumerTransport?.closed && consumerTransport?.connectionState === 'connected')) &&
+    allKnownAudioConsumersReady(knownAudioProducers.keys(), remoteConsumers.keys())
+  )
+}
+
+function localAudioIsReady() {
+  return (
+    hasLiveAudioProducer() &&
+    !producerTransport?.closed &&
+    producerTransport?.connectionState === 'connected'
+  )
 }
 
 // Existing-producer replay has no explicit "snapshot complete" message.  A
@@ -216,7 +239,7 @@ function scheduleMediaReadyCheck(generation = mediaStateGeneration) {
   if (
     intentionalClose ||
     generation !== mediaStateGeneration ||
-    !hasLiveAudioProducer() ||
+    !localAudioIsReady() ||
     !remoteAudioIsReady()
   )
     return
@@ -226,7 +249,7 @@ function scheduleMediaReadyCheck(generation = mediaStateGeneration) {
     if (
       intentionalClose ||
       generation !== mediaStateGeneration ||
-      !hasLiveAudioProducer() ||
+      !localAudioIsReady() ||
       !remoteAudioIsReady()
     )
       return
@@ -261,7 +284,7 @@ function armMediaWatchdog(generation) {
     const activeRemote = [...remoteConsumers.keys()].filter((id) =>
       knownAudioProducers.has(id)
     ).length
-    const localReady = hasLiveAudioProducer()
+    const localReady = localAudioIsReady()
     console.warn(
       `[Soup] media watchdog generation=${generation} local=${localReady} remote=${activeRemote}/${expectedRemote}`
     )
@@ -306,22 +329,6 @@ function rejectPendingRequests(error) {
   }
 }
 
-// Fire-and-forget: send without queuing a response handler. `send()` matches
-// replies positionally and force-reconnects the socket if the queue head goes
-// unanswered for 15s, so a message the server may not implement must NOT go
-// through it — one unanswered request would drop the call.
-// ponytail: switch this to send() once the server implements CloseConsumer AND
-// is confirmed to reply to it; until then silence is the expected outcome.
-function notify(type, data = null) {
-  if (ws?.readyState !== WebSocket.OPEN) return
-  try {
-    ws.send(JSON.stringify(data ? { type, data } : { type }))
-    console.log(`[Soup] Sent (no reply expected): ${type}`, data)
-  } catch (err) {
-    console.warn(`[Soup] Failed to send ${type}:`, err)
-  }
-}
-
 // ─── Send a message and wait for a response ──────────────────────
 function send(type, data = null) {
   return new Promise((resolve, reject) => {
@@ -332,18 +339,15 @@ function send(type, data = null) {
       reject(new Error(`Voice socket not open (cannot send ${type})`))
       return
     }
-    // Reject on a server UserError (e.g. a Produce refused for a missing STREAM
-    // permission) instead of resolving it — otherwise callers proceed on a
-    // response with no payload (undefined id) and start a phantom local-only
-    // producer. Shape is the externally-tagged { UserError: "..." }.
+    // Both externally-tagged SFU error variants are failures. Resolving a
+    // ServerError lets callers commit a transport/consumer that the server did
+    // not create, which looks locally healthy but carries no media.
     const pending = {
       type,
       reject,
       handle: (message) => {
-        const userError =
-          message?.UserError ?? (message?.type === 'UserError' ? message.data : null)
-        if (userError != null)
-          reject(new Error(typeof userError === 'string' ? userError : 'Request failed'))
+        const error = voiceRequestError(message)
+        if (error) reject(error)
         else resolve(message)
       }
     }
@@ -371,6 +375,19 @@ async function closeServerProducer(id) {
     await send('CloseProducer', { id })
   } catch (err) {
     console.warn(`[Soup] Failed to close server producer ${id}:`, err)
+  }
+}
+
+// CloseConsumer is a normal request and the SFU always replies with the unit
+// ConsumerClosed acknowledgement. Account for it in the FIFO response queue;
+// sending it fire-and-forget would shift every later response onto the wrong
+// request and eventually strand signaling.
+async function closeServerConsumers(ids) {
+  if (ids.length === 0) return
+  try {
+    await send('CloseConsumer', { ids })
+  } catch (err) {
+    console.warn(`[Soup] Failed to close server consumers ${ids.join(', ')}:`, err)
   }
 }
 
@@ -491,7 +508,7 @@ export function setWatchedProducers(producerIds = []) {
     if (kind === 'video') closeVideoConsumer(producerId)
     else closeScreenAudioConsumer(producerId)
   }
-  if (closedIds.length > 0) notify('CloseConsumer', { ids: closedIds })
+  void closeServerConsumers(closedIds)
 
   // Consumes still in flight for a producer nobody wants any more. They own no
   // consumer to close yet, so their teardown rides the consume itself.
@@ -606,7 +623,7 @@ function closeConsumeWhenItLands(producerId, { forceClose = false } = {}) {
       const { consumerId } = entry
       if (entry.kind === 'video') closeVideoConsumer(producerId)
       else closeScreenAudioConsumer(producerId)
-      notify('CloseConsumer', { ids: [consumerId] })
+      void closeServerConsumers([consumerId])
     })
     // A consume that failed left nothing behind to close.
     .catch(() => {})
@@ -653,9 +670,19 @@ function closeScreenAudioConsumer(producerId) {
 // reconnect), onDisconnect (intentional/unrecoverable teardown), onReconnecting
 // (an unexpected drop; clear remote tiles but stay "joined"), onReconnectRejoin
 // (async; re-assert channel membership before a reconnect's ticket fetch),
-// onNewProducer, onVideoStream, onTransportsDisconnected, onClientSpeaking,
-// onConsumerClosed.
+// onNewProducer, onVideoStream, onClientSpeaking, onConsumerClosed.
 export async function connect(callbacks = {}) {
+  // A rapid leave→join can arrive before the prior browser close event. Finish
+  // that session synchronously while its intentional flag and callbacks still
+  // belong to it; otherwise the new connect would reclassify the old onclose and
+  // inherit stale transports/callbacks.
+  if (ws) {
+    const previousSocket = ws
+    previousSocket.close()
+    currentSocketCloseHandler?.({ code: 4001, reason: 'Superseded by new voice connection' })
+    if (ws === previousSocket) throw new Error('Previous voice socket could not be closed')
+  }
+  const connectionGeneration = ++voiceConnectionGeneration
   activeCallbacks = { ...callbacks }
   intentionalClose = false
   everAuthenticated = false
@@ -674,7 +701,7 @@ export async function connect(callbacks = {}) {
   // recover. addEventListener dedupes the stable refs, so repeat calls are safe.
   window.addEventListener('offline', handleOffline)
   window.addEventListener('online', handleOnline)
-  await openSocket()
+  await openSocket(connectionGeneration)
 }
 
 // ─── Voice tickets ───────────────────────────────────────────────
@@ -697,6 +724,7 @@ export async function connect(callbacks = {}) {
 // consumed, and used together, and never separately.
 const VOICE_TICKET_PUSH_WAIT_MS = 3000
 const VOICE_TICKET_MAX_AGE_MS = 20_000
+const VOICE_TICKET_REQUEST_TIMEOUT_MS = 15_000
 let pushedTicket = null // { ticket, voiceEndpoint, receivedAt } — unconsumed push
 let ticketWaiter = null // resolver for an acquireTicket() currently waiting
 
@@ -748,7 +776,9 @@ async function acquireTicket() {
   // the server would mint for. Ask for one directly (authFetch refreshes the
   // access token as needed).
   console.warn('[Soup] No pushed voice ticket; requesting one over REST')
-  const res = await authFetch(`${apiBase()}/server/voice`)
+  const res = await authFetch(`${apiBase()}/server/voice`, {
+    signal: AbortSignal.timeout(VOICE_TICKET_REQUEST_TIMEOUT_MS)
+  })
   if (!res.ok) throw new Error(`Voice ticket request failed: ${res.status}`)
   const { ticket, voice_endpoint: voiceEndpoint } = await res.json()
   return ticket ? { ticket, voiceEndpoint } : null
@@ -758,13 +788,16 @@ async function acquireTicket() {
 // handler, then authenticate. Used for the initial connection and every
 // reconnect attempt — each call replaces the shared `ws`. A stale-socket guard
 // on every handler ignores a superseded socket once a newer one takes over.
-async function openSocket() {
+async function openSocket(connectionGeneration = voiceConnectionGeneration) {
+  if (ws) throw new Error('A voice socket is already closing or connected')
   // Step 1 — get ticket, and the endpoint it is good for
   const acquired = await acquireTicket()
   // Acquiring waits on the server's push (and possibly the network), so the
   // user may have left meanwhile — opening now would orphan a socket that
   // nothing is holding.
-  if (intentionalClose) return
+  if (intentionalClose || connectionGeneration !== voiceConnectionGeneration) {
+    throw mediaResetError()
+  }
   // No ticket while we still want to be connected is a *failure*, not a
   // no-op: returning cleanly here would let attemptReconnect() treat it as a
   // success and schedule nothing, stranding the user "reconnecting" forever.
@@ -781,6 +814,34 @@ async function openSocket() {
   const socket = new WebSocket(url)
   ws = socket
   console.log('[Soup] WebSocket created, readyState:', socket.readyState)
+
+  // Keep the reconnect single-flight lock until the socket actually
+  // authenticates. Constructing WebSocket is not a successful attempt: an
+  // OPEN black hole or a server that never replies otherwise strands recovery.
+  let authenticationSettled = false
+  let resolveAuthentication
+  let rejectAuthentication
+  let authenticationTimer = null
+  const authentication = new Promise((resolve, reject) => {
+    resolveAuthentication = resolve
+    rejectAuthentication = reject
+  })
+  const settleAuthentication = (error = null) => {
+    if (authenticationSettled) return
+    authenticationSettled = true
+    clearTimeout(authenticationTimer)
+    if (error) rejectAuthentication(error)
+    else resolveAuthentication()
+  }
+  authenticationTimer = setTimeout(() => {
+    if (ws !== socket || authenticationSettled) return
+    console.warn('[Soup] Voice authentication timed out; rebuilding socket')
+    settleAuthentication(new Error('Voice authentication timed out'))
+    socket.close()
+    armSocketCloseDeadline(socket)
+    // The close handler normally tears media down. The deadline is its bounded
+    // fallback when the platform never emits close.
+  }, VOICE_AUTH_TIMEOUT_MS)
 
   // ─── Assign ALL handlers before anything can fire ───────────────
   socket.onmessage = (event) => {
@@ -801,6 +862,7 @@ async function openSocket() {
 
     // Authenticated confirmation
     if (message.type === 'Authenticated') {
+      if (authenticationSettled) return
       console.log('[Soup] Authenticated')
       iceServers = message.ice_servers ?? []
       everAuthenticated = true
@@ -808,6 +870,15 @@ async function openSocket() {
       emitMediaState('authenticated')
       armMediaWatchdog(mediaStateGeneration)
       activeCallbacks.onConnect?.()
+      settleAuthentication()
+      return
+    }
+
+    if (message.type === 'Unauthorized' && !authenticationSettled) {
+      const error = new Error('Voice authentication was rejected')
+      settleAuthentication(error)
+      socket.close()
+      armSocketCloseDeadline(socket)
       return
     }
 
@@ -875,7 +946,7 @@ async function openSocket() {
       return
     }
 
-    if (message.type === 'ConsumerClosed') {
+    if (isConsumerClosedEvent(message)) {
       removeViewer(message.data.id)
       return
     }
@@ -916,14 +987,15 @@ async function openSocket() {
       return
     }
 
-    // Server is moving us to a different channel — transports must be torn down
-    // and re-established, but the websocket stays open. TransportsDisconnected is
-    // the self-initiated switch signal; MediaStateReset is the same thing when a
-    // moderator moves us (PATCH /client). Both re-establish via the callback.
+    // The server has already torn down both transports and removed this socket's
+    // router peer. It cannot create replacement transports on the same socket;
+    // close and authenticate a fresh SFU session so producer replay and both
+    // directions of media are rebuilt together.
     if (message.type === 'TransportsDisconnected' || message.type === 'MediaStateReset') {
-      console.log(`[Soup] ${message.type}, resetting media state`)
-      resetMediaState()
-      activeCallbacks.onTransportsDisconnected?.()
+      console.warn(`[Soup] ${message.type}, rebuilding voice session`)
+      emitMediaState('reconnecting', { reason: message.type })
+      activeCallbacks.onReconnecting?.()
+      forceVoiceReconnect(message.type)
       return
     }
 
@@ -938,9 +1010,19 @@ async function openSocket() {
     console.log('[Soup] Unhandled message:', message)
   }
 
-  socket.onclose = (event) => {
+  const handleSocketClose = (event) => {
     if (ws !== socket) return // a newer socket has already taken over
+    clearTimeout(socketCloseDeadlineTimer)
+    socketCloseDeadlineTimer = null
+    currentSocketCloseHandler = null
+    // Release the global socket before callbacks or reconnect scheduling. A
+    // recovery attempt may now begin, but only after this handler has torn down
+    // all transports belonging to the old SFU peer.
+    ws = null
     console.log('[Soup] WebSocket disconnected — code:', event.code, 'reason:', event.reason)
+    settleAuthentication(
+      new Error(`Voice socket closed before authentication (${event.code || 'no code'})`)
+    )
     // Reject every waiter before reconnecting. Silently dropping these handlers
     // left callers (including screen-share teardown) pending forever.
     rejectPendingRequests(new Error(`Voice socket closed (${event.code || 'no code'})`))
@@ -949,7 +1031,6 @@ async function openSocket() {
     if (intentionalClose || !everAuthenticated) {
       // Deliberate teardown, or a connection that never authenticated (treat a
       // failed initial join as a normal disconnect, not something to retry).
-      ws = null
       activeCallbacks.onDisconnect?.()
     } else {
       // Unexpected drop after a healthy session — keep the user "joined" and
@@ -959,6 +1040,8 @@ async function openSocket() {
       scheduleVoiceReconnect()
     }
   }
+  currentSocketCloseHandler = handleSocketClose
+  socket.onclose = handleSocketClose
 
   socket.onerror = (err) => {
     console.error('[Soup] WebSocket error:', err)
@@ -970,6 +1053,22 @@ async function openSocket() {
     console.log('[Soup] WebSocket connected, authenticating...')
     socket.send(JSON.stringify({ ticket }))
   }
+
+  await authentication
+}
+
+// WebSocket.close() can itself stall behind a dead network path. Once close has
+// been requested, give the browser a short grace period, then run the exact same
+// idempotent teardown as onclose. A late native close sees a stale socket and is
+// ignored; no stale transports survive into the replacement session.
+function armSocketCloseDeadline(socket) {
+  if (socketCloseDeadlineTimer != null) return
+  socketCloseDeadlineTimer = setTimeout(() => {
+    socketCloseDeadlineTimer = null
+    if (ws !== socket) return
+    console.warn('[Soup] Voice socket close timed out; forcing local teardown')
+    currentSocketCloseHandler?.({ code: 4000, reason: 'Local close timeout' })
+  }, 3000)
 }
 
 // Schedule a reconnect with capped exponential backoff + jitter.
@@ -994,10 +1093,12 @@ function scheduleVoiceReconnect() {
 // audio/video re-consume automatically; onConnect re-publishes our mic.
 async function attemptReconnect() {
   if (intentionalClose || reconnectInFlight) return
+  const connectionGeneration = voiceConnectionGeneration
   reconnectInFlight = true
   try {
     await activeCallbacks.onReconnectRejoin?.()
-    await openSocket()
+    if (intentionalClose || connectionGeneration !== voiceConnectionGeneration) return
+    await openSocket(connectionGeneration)
   } catch (err) {
     console.error('[Soup] Voice reconnect failed:', err)
     scheduleVoiceReconnect()
@@ -1013,11 +1114,20 @@ async function attemptReconnect() {
 // intentional session.
 function forceVoiceReconnect(reason) {
   if (!everAuthenticated || intentionalClose) return
+  const action = voiceSocketRecoveryAction(ws?.readyState)
   // A socket that still thinks it's open/connecting is the half-open case:
   // close it so onclose runs the normal teardown + reconnect path.
-  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+  if (action === 'close') {
     console.warn(`[Soup] ${reason} — closing half-open voice socket to recover`)
     ws.close()
+    armSocketCloseDeadline(ws)
+    return
+  }
+  // CLOSING/CLOSED still owns the teardown callback. Starting a replacement
+  // now would overwrite `ws`, make the old onclose stale, and preserve its dead
+  // transports — the two-way-silence race this recovery path must prevent.
+  if (action === 'wait-for-close') {
+    armSocketCloseDeadline(ws)
     return
   }
   // Already closed and waiting out a backoff — jump straight to a fresh attempt.
@@ -1045,6 +1155,7 @@ function handleOnline() {
 
 // ─── Disconnect ──────────────────────────────────────────────────
 export function disconnect() {
+  voiceConnectionGeneration++
   intentionalClose = true
   if (reconnectTimer) {
     clearTimeout(reconnectTimer)
@@ -1058,7 +1169,11 @@ export function disconnect() {
   window.removeEventListener('online', handleOnline)
   // Let the (guarded) onclose handler run resetMediaState + onDisconnect and
   // null out `ws`; closing synchronously here would race that cleanup.
-  ws?.close()
+  if (ws) {
+    const socket = ws
+    socket.close()
+    armSocketCloseDeadline(socket)
+  }
 }
 
 // ─── Load mediasoup Device ───────────────────────────────────────
@@ -1250,6 +1365,54 @@ function hasLiveAudioProducer() {
   )
 }
 
+function watchTransportConnectivity(transport, label, isCurrentTransport) {
+  let wasConnected = false
+  let degradedTimer = null
+  const clearDegradedTimer = () => {
+    if (degradedTimer != null) clearTimeout(degradedTimer)
+    degradedTimer = null
+  }
+
+  transport.on('connectionstatechange', (state) => {
+    console.log(`[Soup] ${label} transport connection state:`, state)
+    if (!isCurrentTransport()) {
+      clearDegradedTimer()
+      return
+    }
+    if (state === 'connected') {
+      wasConnected = true
+      clearDegradedTimer()
+      scheduleMediaReadyCheck()
+      return
+    }
+    if (state === 'closed') {
+      clearDegradedTimer()
+      return
+    }
+    if (state === 'failed') {
+      clearDegradedTimer()
+      forceVoiceReconnect(`${label} transport failed`)
+      return
+    }
+    // ICE can briefly report disconnected/connecting while changing network
+    // paths. Once a transport was healthy, bound that state; this SFU has no
+    // RestartIce request, so a persistent degradation requires a full session.
+    if (wasConnected && (state === 'disconnected' || state === 'connecting')) {
+      clearDegradedTimer()
+      degradedTimer = setTimeout(() => {
+        degradedTimer = null
+        if (
+          isCurrentTransport() &&
+          transport.connectionState !== 'connected' &&
+          transport.connectionState !== 'closed'
+        ) {
+          forceVoiceReconnect(`${label} transport remained ${transport.connectionState}`)
+        }
+      }, TRANSPORT_DISCONNECTED_GRACE_MS)
+    }
+  })
+}
+
 // Create the send transport, or hand back the one this session already owns.
 // Never recreates: a duplicate CreateProducerTransport is a server-side error,
 // so a retried publish has to build on the existing transport.
@@ -1268,14 +1431,7 @@ async function ensureProducerTransport(generation) {
   const isCurrentTransport = () =>
     generation === mediaStateGeneration && producerTransport === transport && !transport.closed
 
-  transport.on('connectionstatechange', (state) => {
-    console.log('[Soup] Producer transport connection state:', state)
-    // ICE gave up (network died without the socket noticing) — recover. Our own
-    // teardown closes transports as 'closed', not 'failed', so this won't loop.
-    if (state === 'failed' && isCurrentTransport()) {
-      forceVoiceReconnect('Producer transport failed')
-    }
-  })
+  watchTransportConnectivity(transport, 'Producer', isCurrentTransport)
 
   transport.on('connect', ({ dtlsParameters }, callback, errback) => {
     if (!isCurrentTransport()) {
@@ -1537,7 +1693,14 @@ function restoreCommittedMicCapture(options) {
 // if they disagree.
 export function republish(micSettings, onStream, { graphOnly = false } = {}) {
   const generation = mediaStateGeneration
-  return enqueueRepublish(() => doRepublish(micSettings, onStream, generation, { graphOnly }))
+  return enqueueRepublish(async () => {
+    // Initial/reconnect publish and settings republish mutate the same capture,
+    // processing graph and producer list. A setting change while publish is
+    // awaiting getUserMedia must wait rather than stop its candidate underneath
+    // it or create a second producer.
+    if (publishInFlight?.generation === generation) await publishInFlight.promise
+    return doRepublish(micSettings, onStream, generation, { graphOnly })
+  })
 }
 
 async function doRepublish(micSettings, onStream, expectedGeneration, { graphOnly = false } = {}) {
@@ -1588,7 +1751,7 @@ async function doRepublish(micSettings, onStream, expectedGeneration, { graphOnl
   } catch (err) {
     console.error('[Soup] republish getUserMedia failed:', err.name, err.message)
     if (!isCurrent()) throw mediaResetError()
-    await restoreCommittedMicCapture({
+    const restored = await restoreCommittedMicCapture({
       audioProducers,
       micSettings: previousMicSettings,
       previousStop: previousProcessorStop,
@@ -1598,6 +1761,9 @@ async function doRepublish(micSettings, onStream, expectedGeneration, { graphOnl
       onStream,
       isCurrent
     })
+    if (!restored && isCurrent()) {
+      requestVoiceMediaRecovery('Microphone rollback failed')
+    }
     const wrapped = new Error(`Failed to get audio device: ${err.message}`, { cause: err })
     wrapped.name = err?.name ?? 'Error'
     throw wrapped
@@ -1702,7 +1868,8 @@ async function doRepublish(micSettings, onStream, expectedGeneration, { graphOnl
   }
 
   if (newTracks.length !== audioProducers.length) {
-    await restoreCommitted()
+    const restored = await restoreCommitted()
+    if (!restored && isCurrent()) requestVoiceMediaRecovery('Microphone rollback failed')
     throw new Error('Microphone track count changed during republish')
   }
 
@@ -1736,7 +1903,11 @@ async function doRepublish(micSettings, onStream, expectedGeneration, { graphOnl
       }
       // Restoring the committed capture and tearing down the rejected
       // replacement producers touch disjoint resources, so run them together.
-      await Promise.all([restoreCommitted(), disposeMicProducers(replacementProducers)])
+      const [restored] = await Promise.all([
+        restoreCommitted(),
+        disposeMicProducers(replacementProducers)
+      ])
+      if (!restored && isCurrent()) requestVoiceMediaRecovery('Microphone rollback failed')
       throw err
     }
 
@@ -1802,7 +1973,8 @@ async function doRepublish(micSettings, onStream, expectedGeneration, { graphOnl
       throw mediaResetError()
     }
 
-    await restoreCommitted()
+    const restored = await restoreCommitted()
+    if (!restored && isCurrent()) requestVoiceMediaRecovery('Microphone rollback failed')
     throw err
   }
 
@@ -1945,12 +2117,7 @@ async function subscribe() {
     const isCurrentTransport = () =>
       generation === mediaStateGeneration && consumerTransport === transport && !transport.closed
 
-    transport.on('connectionstatechange', (state) => {
-      console.log('[Soup] Consumer transport connection state:', state)
-      if (state === 'failed' && isCurrentTransport()) {
-        forceVoiceReconnect('Consumer transport failed')
-      }
-    })
+    watchTransportConnectivity(transport, 'Consumer', isCurrentTransport)
 
     transport.on('connect', ({ dtlsParameters }, callback, errback) => {
       if (!isCurrentTransport()) {
@@ -2179,9 +2346,7 @@ async function healAudioConsumer(producerId, reason) {
     // Remove + tear down locally FIRST: a racing ProducerClosed then finds no
     // entry and stays a no-op, and the fresh consume starts from a clean slate.
     removeRemoteConsumer(producerId)
-    // Fire-and-forget: the server may not implement CloseConsumer yet and may not
-    // reply, so this MUST go through notify(), never send() (see notify comment).
-    notify('CloseConsumer', { ids: [entry.consumerId] })
+    await closeServerConsumers([entry.consumerId])
     // Recreates the consumer, <audio> element, graph, detector, and re-applies
     // gain exactly like a fresh arrival.
     await consumeProducer(
@@ -2197,6 +2362,10 @@ async function healAudioConsumer(producerId, reason) {
     console.error(`[Soup] Audio heal failed [${producerId}]:`, err)
   } finally {
     audioHealsInFlight.delete(producerId)
+    // NewProducer is edge-triggered. If the replacement failed transiently but
+    // the producer still belongs to this generation, put it back on the bounded
+    // consume retry path instead of leaving that peer permanently silent.
+    ensureAudioConsumer(producerId)
   }
 }
 
@@ -2443,7 +2612,7 @@ async function doConsumeProducer(producerId, kind, onStream, clientId, producedT
   if (superseded) {
     console.warn(`[Soup] Replacing an existing consumer for producer ${producerId}`)
     removeRemoteConsumer(producerId)
-    notify('CloseConsumer', { ids: [superseded.consumerId] })
+    await closeServerConsumers([superseded.consumerId])
   }
 
   remoteConsumers.set(producerId, entry)

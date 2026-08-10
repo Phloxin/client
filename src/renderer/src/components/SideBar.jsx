@@ -32,6 +32,11 @@ import { RoleIcon } from '../lib/roleIcon'
 const MIN_WIDTH = 180
 const MAX_WIDTH = 550
 const DEFAULT_WIDTH = 240
+// Voice cleanup and the authoritative ClientModified(null) travel over separate
+// sockets, so the roster update can win by a task or two. Give soup's onclose a
+// bounded chance to classify the loss before converting it to an intentional
+// leave (which would cancel recovery).
+const VOICE_NULL_RECONCILE_GRACE_MS = 3000
 
 function Sidebar({
   channels,
@@ -374,9 +379,14 @@ function Sidebar({
       // never lands and the recovery times out, the bump re-runs this effect,
       // and we now take the leave path instead of showing a phantom joined state.
       if (isReconnectRecovering?.()) return
-      // Moved out of every channel — leave voice locally.
-      channelRefs.current[joinedChannelId]?.leave()
-      return
+      const timer = setTimeout(() => {
+        // Re-check the live recovery ref: the voice socket's close notification
+        // may have arrived after this effect observed the roster null.
+        if (!isReconnectRecovering?.()) {
+          channelRefs.current[joinedChannelId]?.leave()
+        }
+      }, VOICE_NULL_RECONCILE_GRACE_MS)
+      return () => clearTimeout(timer)
     }
     channelRefs.current[joinedChannelId]?.deactivate()
     channelRefs.current[selfServerChannelId]?.adopt()
@@ -646,12 +656,24 @@ function Sidebar({
             onSharingChange={(channelId, isSharing) => {
               if (channelId === joinedChannelId || isSharing) setSharing(isSharing)
             }}
-            onRequestJoin={(doJoin, doSwitch) => {
+            onRequestJoin={async (doJoin, doSwitch) => {
               if (joinedChannelId && joinedChannelId !== ch.id) {
-                channelRefs.current[joinedChannelId]?.deactivate()
-                doSwitch()
+                const previousChannel = channelRefs.current[joinedChannelId]
+                try {
+                  await doSwitch()
+                  previousChannel?.deactivate()
+                } catch {
+                  // switchTo rebinds soup before declaring the move so it cannot
+                  // miss an immediate transport reset. Restore the old owner if
+                  // the declaration never left this client.
+                  try {
+                    await previousChannel?.restoreAfterFailedSwitch()
+                  } catch (error) {
+                    onError?.(`Failed to restore the previous voice channel: ${error.message}`)
+                  }
+                }
               } else {
-                doJoin()
+                await doJoin()
               }
             }}
           />
