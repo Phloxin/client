@@ -1,4 +1,5 @@
 import { createRoot } from 'react-dom/client'
+import './lib/diagnostics'
 import { HashRouter } from 'react-router-dom'
 import { AuthProvider } from './context/AuthContext'
 import { SettingsProvider } from './context/SettingsContext'
@@ -27,7 +28,9 @@ const applySaved = (key, apply) => {
   try {
     const saved = localStorage.getItem(key)
     if (saved) apply(JSON.parse(saved))
-  } catch {}
+  } catch (error) {
+    console.warn(`[settings] Failed to apply saved ${key}:`, error)
+  }
 }
 applySaved('appearanceSettings', applyAppearanceSettings)
 applySaved('animationSettings', applyAnimationSettings)

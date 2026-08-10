@@ -65,7 +65,7 @@ const sections = [
   {
     id: 'advanced',
     title: 'Advanced',
-    description: 'Hardware acceleration and diagnostic overlays.',
+    description: 'Hardware acceleration and diagnostic tools.',
     icon: IconAdjustments
   }
 ]

@@ -249,6 +249,24 @@
   line-height: 1.45;
 }
 
+.settings-diagnostic-export-status {
+  min-height: 1.3em;
+  font-size: var(--font-size-sm);
+  line-height: 1.3;
+}
+
+.settings-diagnostic-export-status:empty {
+  display: none;
+}
+
+.settings-diagnostic-export-status.success {
+  color: var(--color-success);
+}
+
+.settings-diagnostic-export-status.error {
+  color: var(--color-danger);
+}
+
 /* Pending-restart banner for startup-only settings (e.g. hardware accel). */
 .settings-restart-notice {
   flex-direction: row;

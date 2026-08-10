@@ -41,6 +41,7 @@ const BITS = {
 }
 
 export const permBit = (flag) => 1n << BigInt(BITS[flag])
+const VIEW_CHANNEL_BIT = permBit('VIEW_CHANNEL')
 
 // The server's built-in default role (EVERYONE_ROLE_ID). Every client holds it
 // implicitly, so it never appears in a client's role_ids — but it is a real
@@ -69,22 +70,36 @@ export const toBits = (decimal) => {
 // implicit @everyone role isn't in /server/roles), and guessing wrong there
 // would hide channels the server actually grants. The server stays authoritative.
 export function viewChannelOverride(overwrites = [], { roleIds = [], userId } = {}) {
-  const bit = permBit('VIEW_CHANNEL')
-  const says = (o, field) => (toBits(o[field]) & bit) !== 0n
+  const says = (overwrite, field) => (toBits(overwrite[field]) & VIEW_CHANNEL_BIT) !== 0n
   // deny first, then allow, so an overwrite setting both resolves to allow.
-  const apply = (o, state) => (says(o, 'deny') ? false : says(o, 'allow') ? true : state)
+  const apply = (overwrite, state) =>
+    says(overwrite, 'deny') ? false : says(overwrite, 'allow') ? true : state
 
   let state = null
-  const roleOf = (id) => overwrites.find((o) => o.type === 'role' && String(o.id) === String(id))
+  const roles = new Map()
+  let user = null
+  for (const overwrite of overwrites) {
+    const id = String(overwrite.id)
+    if (overwrite.type === 'role' && !roles.has(id)) roles.set(id, overwrite)
+    if (overwrite.type === 'user' && id === String(userId) && user == null) user = overwrite
+  }
 
-  const everyone = roleOf(EVERYONE_ROLE_ID)
+  const everyone = roles.get(EVERYONE_ROLE_ID)
   if (everyone) state = apply(everyone, state)
 
-  const mine = roleIds.map(roleOf).filter((o) => o && String(o.id) !== EVERYONE_ROLE_ID)
-  if (mine.some((o) => says(o, 'deny'))) state = false
-  if (mine.some((o) => says(o, 'allow'))) state = true
+  let roleDenied = false
+  let roleAllowed = false
+  for (const roleId of roleIds) {
+    if (String(roleId) === EVERYONE_ROLE_ID) continue
+    const overwrite = roles.get(String(roleId))
+    if (!overwrite) continue
+    roleDenied ||= says(overwrite, 'deny')
+    roleAllowed ||= says(overwrite, 'allow')
+    if (roleDenied && roleAllowed) break
+  }
+  if (roleDenied) state = false
+  if (roleAllowed) state = true
 
-  const user = overwrites.find((o) => o.type === 'user' && String(o.id) === String(userId))
   if (user) state = apply(user, state)
 
   return state

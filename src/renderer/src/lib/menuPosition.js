@@ -3,6 +3,12 @@ import { useLayoutEffect, useState } from 'react'
 // Gap kept between a menu and the window edge.
 const MARGIN = 8
 
+export function fitMenuAxis(start, size, cursor, limit) {
+  if (start + size <= limit - MARGIN) return start
+  const flipped = cursor - size
+  return flipped >= MARGIN ? flipped : Math.max(MARGIN, limit - size - MARGIN)
+}
+
 // Right-click menus are position:fixed and anchored at the cursor, so one opened
 // near the right/bottom edge runs off the window. Measure the menu after layout
 // and pull it back in: flip to the other side of the cursor when the menu fits
@@ -21,15 +27,9 @@ export function useMenuPosition(ref, pos) {
       return
     }
     const { offsetWidth: w, offsetHeight: h } = el
-    const fit = (start, size, cursor, limit) => {
-      // Flipped position is only usable if it doesn't then overflow the near edge.
-      if (start + size <= limit - MARGIN) return start
-      const flipped = cursor - size
-      return flipped >= MARGIN ? flipped : Math.max(MARGIN, limit - size - MARGIN)
-    }
     setPlaced({
-      left: fit(pos.x, w, pos.x, window.innerWidth),
-      top: fit(pos.y, h, pos.y, window.innerHeight)
+      left: fitMenuAxis(pos.x, w, pos.x, window.innerWidth),
+      top: fitMenuAxis(pos.y, h, pos.y, window.innerHeight)
     })
   }, [pos, ref])
 

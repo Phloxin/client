@@ -13,19 +13,26 @@ export function fileToAvatarDataUrl(file, onDone) {
     return
   }
   const img = new Image()
+  const objectUrl = URL.createObjectURL(file)
+  const releaseObjectUrl = () => URL.revokeObjectURL(objectUrl)
   img.onload = () => {
-    const size = 256
-    const canvas = document.createElement('canvas')
-    canvas.width = size
-    canvas.height = size
-    const ctx = canvas.getContext('2d')
-    // Cover-crop: scale so the shorter side fills, center the overflow.
-    const scale = Math.max(size / img.width, size / img.height)
-    const w = img.width * scale
-    const h = img.height * scale
-    ctx.drawImage(img, (size - w) / 2, (size - h) / 2, w, h)
-    onDone(canvas.toDataURL('image/webp', 0.85))
-    URL.revokeObjectURL(img.src)
+    try {
+      const size = 256
+      const canvas = document.createElement('canvas')
+      canvas.width = size
+      canvas.height = size
+      const ctx = canvas.getContext('2d')
+      if (!ctx) return
+      // Cover-crop: scale so the shorter side fills, center the overflow.
+      const scale = Math.max(size / img.width, size / img.height)
+      const w = img.width * scale
+      const h = img.height * scale
+      ctx.drawImage(img, (size - w) / 2, (size - h) / 2, w, h)
+      onDone(canvas.toDataURL('image/webp', 0.85))
+    } finally {
+      releaseObjectUrl()
+    }
   }
-  img.src = URL.createObjectURL(file)
+  img.onerror = releaseObjectUrl
+  img.src = objectUrl
 }

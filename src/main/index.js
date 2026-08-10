@@ -23,6 +23,15 @@ import { setupGlobalKeybinds, stopGlobalKeybinds } from './keybinds'
 import { setupAudioCapture, stopAudioCaptureHost } from './audioCapture'
 import { setupUpdater } from './updater'
 import { setupTray, setTrayVoiceState, destroyTray } from './tray'
+import {
+  attachWindowDiagnostics,
+  installProductionDiagnostics,
+  registerDiagnosticsIpc
+} from './diagnostics'
+
+// Install before startup settings are read so early persistence/configuration
+// failures are retained in packaged builds.
+installProductionDiagnostics()
 
 const APP_ID = 'app.pylon.client'
 
@@ -72,7 +81,10 @@ function readAppSettings() {
       ...DEFAULT_APP_SETTINGS,
       ...JSON.parse(readFileSync(appSettingsFilePath(), 'utf-8'))
     }
-  } catch {
+  } catch (err) {
+    if (err?.code !== 'ENOENT') {
+      console.warn('[settings] Failed to read app settings; using defaults:', err)
+    }
     return { ...DEFAULT_APP_SETTINGS }
   }
 }
@@ -225,7 +237,10 @@ function readAuthFile() {
       token: data.plainToken ?? null,
       client: data.plainClient ?? null
     }
-  } catch {
+  } catch (err) {
+    if (err?.code !== 'ENOENT') {
+      console.warn('[auth] Failed to restore saved authentication:', err)
+    }
     return { token: null, client: null }
   }
 }
@@ -264,7 +279,11 @@ function readServersFile() {
       return JSON.parse(safeStorage.decryptString(Buffer.from(data, 'base64')))
     }
     if (plain) return JSON.parse(plain)
-  } catch {}
+  } catch (err) {
+    if (err?.code !== 'ENOENT') {
+      console.warn('[servers] Failed to restore saved server list:', err)
+    }
+  }
   return []
 }
 
@@ -408,6 +427,11 @@ function createWindow() {
     }
   })
 
+  attachWindowDiagnostics(mainWindow)
+  mainWindow.webContents.on('did-create-window', (childWindow) => {
+    attachWindowDiagnostics(childWindow)
+  })
+
   // Maximize before the window is shown so it doesn't visibly snap open.
   if (restored?.maximized) mainWindow.maximize()
 
@@ -461,7 +485,9 @@ function createWindow() {
         }
       }
     }
-    shell.openExternal(details.url)
+    shell
+      .openExternal(details.url)
+      .catch((err) => console.error('[Main] Failed to open external URL:', err))
     return { action: 'deny' }
   })
 
@@ -480,6 +506,9 @@ function createWindow() {
 app.whenReady().then(() => {
   // Set app user model id for windows
   electronApp.setAppUserModelId(APP_ID)
+
+  // Renderer error forwarding + native diagnostics export dialog.
+  registerDiagnosticsIpc()
 
   // Auto-update wiring (GitHub Releases). IPC + events for the General tab.
   setupUpdater()
@@ -505,19 +534,27 @@ app.whenReady().then(() => {
   // Return the list of capturable screens/windows (with thumbnails) so the
   // renderer can show its own source picker.
   ipcMain.handle('get-screen-sources', async () => {
-    const sources = await desktopCapturer.getSources({
-      types: ['screen', 'window'],
-      thumbnailSize: { width: 320, height: 180 },
-      fetchWindowIcons: true
-    })
-    cachedScreenSources = sources
-    return sources.map((source) => ({
-      id: source.id,
-      name: source.name,
-      isScreen: source.id.startsWith('screen:'),
-      thumbnail: source.thumbnail.toDataURL(),
-      appIcon: source.appIcon && !source.appIcon.isEmpty() ? source.appIcon.toDataURL() : null
-    }))
+    try {
+      const sources = await desktopCapturer.getSources({
+        types: ['screen', 'window'],
+        thumbnailSize: { width: 320, height: 180 },
+        fetchWindowIcons: true
+      })
+      cachedScreenSources = sources
+      if (sources.length === 0) {
+        console.warn('[Main] Screen-source enumeration returned no capturable sources')
+      }
+      return sources.map((source) => ({
+        id: source.id,
+        name: source.name,
+        isScreen: source.id.startsWith('screen:'),
+        thumbnail: source.thumbnail.toDataURL(),
+        appIcon: source.appIcon && !source.appIcon.isEmpty() ? source.appIcon.toDataURL() : null
+      }))
+    } catch (err) {
+      console.error('[Main] Failed to enumerate screen-share sources:', err)
+      throw err
+    }
   })
 
   // Atomically prepare the source + audio mode and acknowledge it before the
@@ -562,6 +599,17 @@ app.whenReady().then(() => {
       .getSources({ types: ['screen', 'window'] })
       .then((sources) => {
         const chosen = sources.find((s) => s.id === selectedScreenSourceId) || sources[0]
+        if (!chosen) {
+          console.warn('[Main] Display-media request had no available source', {
+            selectedSourcePresent: selectedScreenSourceId != null,
+            wayland: isWayland
+          })
+          callback({})
+          return
+        }
+        if (selectedScreenSourceId && chosen.id !== selectedScreenSourceId) {
+          console.warn('[Main] Selected screen-share source disappeared; using first available')
+        }
         callback({ video: chosen, audio })
       })
       .catch((err) => {
@@ -690,24 +738,38 @@ app.whenReady().then(() => {
     authClient = null
     try {
       unlinkSync(authFilePath())
-    } catch {}
+    } catch (err) {
+      if (err?.code !== 'ENOENT') console.warn('[auth] Failed to remove saved authentication:', err)
+    }
   })
 
   // Download a remote file (e.g. a chat image attachment) to a user-chosen
   // location. Shows a native save dialog, then fetches the URL and writes it.
   ipcMain.handle('download-file', async (event, { url, filename }) => {
     const win = BrowserWindow.fromWebContents(event.sender)
-    const { canceled, filePath } = await dialog.showSaveDialog(win, {
-      defaultPath: filename || basename(new URL(url).pathname) || 'download'
-    })
-    if (canceled || !filePath) return { ok: false, canceled: true }
+    let target
     try {
+      target = new URL(url)
+    } catch (err) {
+      console.warn('[download] Rejected invalid download URL:', err)
+      return { ok: false, error: 'Invalid download URL' }
+    }
+    try {
+      const { canceled, filePath } = await dialog.showSaveDialog(win, {
+        defaultPath: filename || basename(target.pathname) || 'download'
+      })
+      if (canceled || !filePath) return { ok: false, canceled: true }
       const res = await fetch(url)
       if (!res.ok) throw new Error(`Server responded ${res.status}`)
       const buffer = Buffer.from(await res.arrayBuffer())
       writeFileSync(filePath, buffer)
       return { ok: true, filePath }
     } catch (err) {
+      console.error('[download] File download failed:', {
+        host: target.host,
+        filename: filename || basename(target.pathname) || 'download',
+        error: err
+      })
       return { ok: false, error: err.message }
     }
   })
@@ -723,7 +785,8 @@ app.whenReady().then(() => {
         let target
         try {
           target = new URL(url)
-        } catch {
+        } catch (err) {
+          console.warn('[messages] Rejected invalid channel-history URL:', err)
           resolve({ ok: false, error: 'Invalid URL' })
           return
         }
@@ -755,16 +818,31 @@ app.whenReady().then(() => {
               if (res.statusCode >= 200 && res.statusCode < 300) {
                 try {
                   resolve({ ok: true, messages: JSON.parse(data) })
-                } catch {
+                } catch (err) {
+                  console.error('[messages] Channel history returned invalid JSON:', {
+                    host: target.host,
+                    status: res.statusCode,
+                    error: err
+                  })
                   resolve({ ok: false, error: 'Invalid response JSON' })
                 }
               } else {
+                console.warn('[messages] Channel history request failed:', {
+                  host: target.host,
+                  status: res.statusCode
+                })
                 resolve({ ok: false, status: res.statusCode, error: data })
               }
             })
           }
         )
-        req.on('error', (err) => resolve({ ok: false, error: err.message }))
+        req.on('error', (err) => {
+          console.error('[messages] Channel history network request failed:', {
+            host: target.host,
+            error: err
+          })
+          resolve({ ok: false, error: err.message })
+        })
         req.write(body)
         req.end()
       })

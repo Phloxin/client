@@ -11,6 +11,7 @@ let host = null
 let capabilitiesPromise = null
 // webContents of the renderer that started the active capture, for error events
 let activeSender = null
+let stoppingHost = false
 // Single-flight resolvers for host replies, keyed by reply type
 const pending = new Map()
 
@@ -47,6 +48,7 @@ function ensureHost() {
         pending.delete('capabilities')
         break
       case 'apps':
+        if (msg.error) console.warn('[audioCapture] Native app enumeration failed:', msg.error)
         pending.get('apps')?.resolve(msg.apps)
         pending.delete('apps')
         break
@@ -55,6 +57,7 @@ function ensureHost() {
         pending.delete('started')
         break
       case 'error':
+        console.error('[audioCapture] Native capture host reported an error:', msg.message)
         // A pending start gets the error as its rejection; errors outside a
         // start (capture died mid-share) go to the renderer as an event.
         if (pending.has('started')) {
@@ -71,7 +74,11 @@ function ensureHost() {
     host = null
     capabilitiesPromise = null
     rejectPending(`audio-capture host exited (code ${code})`)
-    notifyCaptureError(`audio capture process exited unexpectedly (code ${code})`)
+    if (!stoppingHost) {
+      console.error('[audioCapture] Host process exited unexpectedly:', { code })
+      notifyCaptureError(`audio capture process exited unexpectedly (code ${code})`)
+    }
+    stoppingHost = false
   })
 
   capabilitiesPromise = hostRequest('init', 'capabilities').catch((err) => {
@@ -100,6 +107,7 @@ export function setupAudioCapture() {
       }
       return { ...caps, wayland: isWayland, platform: process.platform }
     } catch (err) {
+      console.error('[audioCapture] Failed to query native capture capabilities:', err)
       return {
         backend: 'none',
         perApp: false,
@@ -113,9 +121,14 @@ export function setupAudioCapture() {
   })
 
   ipcMain.handle('audiocapture:list-apps', async () => {
-    await ensureHost()
-    if (!host) return []
-    return hostRequest('list-apps', 'apps')
+    try {
+      await ensureHost()
+      if (!host) return []
+      return await hostRequest('list-apps', 'apps')
+    } catch (err) {
+      console.error('[audioCapture] Failed to enumerate playback applications:', err)
+      throw err
+    }
   })
 
   // Start capture: hands the host one end of a fresh MessageChannel and the
@@ -135,6 +148,7 @@ export function setupAudioCapture() {
       return { backend }
     } catch (err) {
       activeSender = null
+      console.error('[audioCapture] Failed to start native screen audio:', err)
       throw err
     }
   })
@@ -147,6 +161,7 @@ export function setupAudioCapture() {
 
 export function stopAudioCaptureHost() {
   if (host) {
+    stoppingHost = true
     host.postMessage({ type: 'stop' })
     host.kill()
     host = null

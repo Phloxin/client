@@ -17,7 +17,7 @@ export function useWheelSlider(onChange, step = 5) {
   const detach = useRef(null)
   useEffect(() => {
     latest.current = onChange
-  })
+  }, [onChange])
 
   return useCallback(
     (el) => {

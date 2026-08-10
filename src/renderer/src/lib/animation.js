@@ -39,6 +39,12 @@ export function useAnimatedPresence(items, getKey, { enabled = true, enterDurati
     items.map((item) => ({ key: getKey(item), item, status: 'present' }))
   )
   const renderedRef = useRef(rendered)
+  // Callers commonly pass an inline key selector. Read its latest committed
+  // implementation without making that function identity rerun the list effect.
+  const getKeyRef = useRef(getKey)
+  useLayoutEffect(() => {
+    getKeyRef.current = getKey
+  }, [getKey])
   // key -> demotion timer id, for keys currently mid-enter. While a key's timer
   // is pending it stays 'entering' across effect re-runs.
   const enterTimersRef = useRef(new Map())
@@ -48,7 +54,7 @@ export function useAnimatedPresence(items, getKey, { enabled = true, enterDurati
     const prevKeys = new Set(renderedRef.current.map((r) => r.key))
 
     const next = items.map((item) => {
-      const key = getKey(item)
+      const key = getKeyRef.current(item)
       // Begin the enter phase for a brand-new key: tag it 'entering' and start
       // the timer that will demote it once the animation has played.
       if (enabled && !prevKeys.has(key) && !timers.has(key)) {
@@ -77,7 +83,7 @@ export function useAnimatedPresence(items, getKey, { enabled = true, enterDurati
     if (sameEntries(next, renderedRef.current)) return
     renderedRef.current = next
     setRendered(next)
-  }, [items, enabled])
+  }, [items, enabled, enterDuration])
 
   // Clear any pending timers on unmount.
   useLayoutEffect(
@@ -141,10 +147,10 @@ export function useBlockShift(
     const k0 = displaced[0].getAttribute('data-flip-key')
     const dy = prev.get(k0) - tops.get(k0)
     for (const node of displaced) {
-      node.animate(
-        [{ transform: `translateY(${dy}px)` }, { transform: 'translateY(0)' }],
-        { duration, easing: 'cubic-bezier(0.2, 0.7, 0.2, 1)' }
-      )
+      node.animate([{ transform: `translateY(${dy}px)` }, { transform: 'translateY(0)' }], {
+        duration,
+        easing: 'cubic-bezier(0.2, 0.7, 0.2, 1)'
+      })
     }
   }) // no dep array: measure every commit, animate only on a signal change
 }

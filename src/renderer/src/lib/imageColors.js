@@ -1,10 +1,10 @@
-import { useState, useEffect } from 'react'
+import { useEffect, useState } from 'react'
 
 // Pull dominant colors out of an image (pywal-style, but tiny): downscale to a
 // 16×16 canvas and read the pixels. Returns { average, vibrant } CSS rgb()
 // strings, or null if the image can't be read (load failure, or a cross-origin
 // icon served without CORS headers tainting the canvas).
-export function extractImageColors(src) {
+function extractImageColors(src) {
   return new Promise((resolve) => {
     const img = new Image()
     img.crossOrigin = 'anonymous'
@@ -68,19 +68,18 @@ export function bannerGradient(colors) {
 // Hook: colors sampled from an image src, or null while loading / no src /
 // unreadable image.
 export function useImageColors(src) {
-  const [colors, setColors] = useState(null)
+  const [result, setResult] = useState({ src: null, colors: null })
   useEffect(() => {
-    if (!src) {
-      setColors(null)
-      return
-    }
+    if (!src) return
     let alive = true
-    extractImageColors(src).then((c) => {
-      if (alive) setColors(c)
+    extractImageColors(src).then((colors) => {
+      if (alive) setResult({ src, colors })
     })
     return () => {
       alive = false
     }
   }, [src])
-  return colors
+  // A source change is a loading state immediately, without an effect-driven
+  // synchronous setState (and without briefly showing the previous image's colors).
+  return result.src === src ? result.colors : null
 }

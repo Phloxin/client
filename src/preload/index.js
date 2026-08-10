@@ -41,6 +41,11 @@ const api = {
       ipcRenderer.on('audiocapture:error', handler)
       return () => ipcRenderer.removeListener('audiocapture:error', handler)
     }
+  },
+  diagnostics: {
+    isAvailable: () => ipcRenderer.invoke('diagnostics:is-available'),
+    exportLogs: () => ipcRenderer.invoke('diagnostics:export'),
+    log: (level, message) => ipcRenderer.send('diagnostics:log', level, message)
   }
 }
 
@@ -53,6 +58,7 @@ if (process.contextIsolated) {
     contextBridge.exposeInMainWorld('api', api)
   } catch (error) {
     console.error(error)
+    ipcRenderer.send('diagnostics:log', 'error', `[preload] Context bridge setup failed: ${error}`)
   }
 } else {
   window.electron = electronAPI

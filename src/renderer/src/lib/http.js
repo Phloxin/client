@@ -5,6 +5,7 @@
 const SENSITIVE_KEY =
   /(authorization|cookie|password|passphrase|refresh[_-]?token|access[_-]?token|id[_-]?token|secret|api[_-]?key)/i
 const MAX_BODY_LOG_LENGTH = 4000
+const HTTP_LOGGING_ENABLED = import.meta.env?.DEV === true
 
 function redact(value) {
   if (Array.isArray(value)) return value.map(redact)
@@ -30,12 +31,11 @@ function safeBody(body) {
 }
 
 function safeHeaders(headers) {
-  return Object.fromEntries(
-    Object.entries(Object.fromEntries(new Headers(headers))).map(([key, value]) => [
-      key,
-      SENSITIVE_KEY.test(key) ? '[REDACTED]' : value
-    ])
-  )
+  const safe = {}
+  for (const [key, value] of new Headers(headers)) {
+    safe[key] = SENSITIVE_KEY.test(key) ? '[REDACTED]' : value
+  }
+  return safe
 }
 
 async function logResponse(response, method, url, startedAt) {
@@ -64,19 +64,53 @@ async function logResponse(response, method, url, startedAt) {
   })
 }
 
-// Drop-in fetch wrapper. Response logging is done from a clone so callers can
-// still consume the original response body normally.
-export async function httpFetch(input, options = {}) {
-  const url = typeof input === 'string' ? input : input.url
-  const method = options.method || (typeof input === 'object' ? input.method : 'GET') || 'GET'
+// Drop-in fetch wrapper. Packaged builds skip body cloning entirely and retain
+// only compact method/status/URL metadata when a request actually fails.
+export function httpFetch(input, options = {}) {
+  if (!HTTP_LOGGING_ENABLED) return productionHttpFetch(input, options)
+  return loggedHttpFetch(input, options)
+}
+
+function productionSafeUrl(input) {
+  try {
+    const raw =
+      typeof Request !== 'undefined' && input instanceof Request
+        ? input.url
+        : (input?.url ?? String(input))
+    const url = new URL(raw)
+    return `${url.origin}${url.pathname}`
+  } catch {
+    return '[invalid URL]'
+  }
+}
+
+async function productionHttpFetch(input, options) {
+  const request = typeof Request !== 'undefined' && input instanceof Request ? input : null
+  const method = String(options?.method || request?.method || 'GET').toUpperCase()
+  const url = productionSafeUrl(input)
+  try {
+    const response = await fetch(input, options)
+    if (response.status >= 500 || [401, 403, 429].includes(response.status)) {
+      console.warn('[HTTP] Request failed:', { method, url, status: response.status })
+    }
+    return response
+  } catch (error) {
+    console.error('[HTTP] Network request failed:', { method, url, error })
+    throw error
+  }
+}
+
+async function loggedHttpFetch(input, options) {
+  const request = typeof Request !== 'undefined' && input instanceof Request ? input : null
+  const url = request?.url ?? input?.url ?? String(input)
+  const method = options.method || request?.method || 'GET'
+  const upperMethod = method.toUpperCase()
   const startedAt = Date.now()
 
   console.debug('[HTTP] request', {
-    method: method.toUpperCase(),
+    method: upperMethod,
     url,
-    headers: safeHeaders(
-      options.headers || (typeof input === 'object' ? input.headers : undefined)
-    ),
+    headers: safeHeaders(options.headers ?? request?.headers),
     ...(options.body === undefined ? {} : { body: safeBody(options.body) })
   })
 
@@ -84,13 +118,13 @@ export async function httpFetch(input, options = {}) {
     const response = await fetch(input, options)
     // Keep logging independent of response consumption and avoid delaying the
     // request caller while the diagnostic clone is read.
-    logResponse(response, method.toUpperCase(), url, startedAt).catch((error) =>
+    logResponse(response, upperMethod, url, startedAt).catch((error) =>
       console.debug('[HTTP] response logging failed', error)
     )
     return response
   } catch (error) {
     console.debug('[HTTP] network error', {
-      method: method.toUpperCase(),
+      method: upperMethod,
       url,
       duration_ms: Date.now() - startedAt,
       error: error instanceof Error ? error.message : String(error)

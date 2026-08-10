@@ -3,6 +3,7 @@
 // seed from Ready, patch on PresenceUpdate, and can resync via GET /server/presences.
 
 export const STATUSES = ['online', 'away', 'do_not_disturb', 'offline']
+const STATUS_SET = new Set(STATUSES)
 
 export const STATUS_LABELS = {
   online: 'Online',
@@ -17,13 +18,13 @@ export const STATUS_LABELS = {
 // astral characters — emoji — count as one the way the server counts them.
 export const STATUS_MESSAGE_MAX = 128
 
-export const messageLength = (s) => [...s].length
+const messageLength = (s) => [...s].length
 
 // A client with no presence entry has never announced one: treat as offline.
 // Anything we don't recognise degrades to offline rather than rendering blank.
 export function statusOf(presence) {
   const s = presence?.status
-  return STATUSES.includes(s) ? s : 'offline'
+  return STATUS_SET.has(s) ? s : 'offline'
 }
 
 // Trim and validate a status message the way the server does, so an invalid one
