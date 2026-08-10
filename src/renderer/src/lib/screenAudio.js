@@ -8,6 +8,7 @@
 // data: URL in production; the app's CSP correctly blocks data: scripts, and
 // Chromium then reports only "Unable to load a worklet's module."
 import pcmSourceWorkletUrl from '../worklets/pcm-source-processor.js?url&no-inline'
+import { createSerialQueue } from './serialQueue'
 
 // One long-lived context for screenshare audio; the worklet module is added
 // once and reused across shares (unlike the per-publish mic contexts).
@@ -78,16 +79,11 @@ function waitForPcmPort(timeoutMs = 5000) {
 }
 
 let active = null
-let lifecycleQueue = Promise.resolve()
 
 // Native capture is process-global, so starts/stops must not overlap. Returning
 // an owner-bound stop handle lets a stale screen-share continuation clean up its
 // own session without a later call accidentally stopping the newer active one.
-function enqueueLifecycle(operation) {
-  const result = lifecycleQueue.then(operation, operation)
-  lifecycleQueue = result.catch(() => {})
-  return result
-}
+const enqueueLifecycle = createSerialQueue()
 
 async function cleanupSession(session) {
   if (!session || session.stopped) return
@@ -199,7 +195,7 @@ export function startScreenAudio(options) {
   })
 }
 
-export function stopScreenAudio() {
+function stopScreenAudio() {
   return enqueueLifecycle(async () => {
     if (active) await cleanupSession(active)
   })

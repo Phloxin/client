@@ -35,7 +35,12 @@ for (const [path, url] of Object.entries(packAssets)) {
 // Friendly names for the Settings picker; unknown packs fall back to their id.
 const PACK_LABELS = { default: 'Default', tts: 'TeamSpeak TTS' }
 export const SOUNDPACK_OPTIONS = Object.keys(SOUNDPACKS)
-  .sort((a, b) => (a === 'default' ? -1 : b === 'default' ? 1 : a.localeCompare(b)))
+  .sort((a, b) => {
+    if (a === b) return 0
+    if (a === 'default') return -1
+    if (b === 'default') return 1
+    return a.localeCompare(b)
+  })
   .map((id) => ({ id, label: PACK_LABELS[id] || id }))
 
 // Which pack playUiSound resolves files from. Mirrored in from SettingsContext
@@ -64,7 +69,10 @@ export const SOUND_SECTIONS = [
       { id: 'connected', label: 'You connected to a server' },
       { id: 'disconnected', label: 'You disconnected from a server' },
       { id: 'connection_lost', label: 'You lost connection to a server' },
-      { id: 'neutral_connection_connectionlost_currentchannel', label: 'Someone lost connection in your channel' }
+      {
+        id: 'neutral_connection_connectionlost_currentchannel',
+        label: 'Someone lost connection in your channel'
+      }
     ]
   },
   {
@@ -83,7 +91,10 @@ export const SOUND_SECTIONS = [
       { id: 'neutral_switched_tocurrentchannel', label: 'Someone joined your channel' },
       { id: 'neutral_switched_awayfromcurrentchannel', label: 'Someone has left your channel' },
       { id: 'neutral_moved_tocurrentchannel', label: 'Someone was moved to your channel' },
-      { id: 'neutral_moved_awayfromcurrentchannel', label: 'Someone was moved out of your channel' },
+      {
+        id: 'neutral_moved_awayfromcurrentchannel',
+        label: 'Someone was moved out of your channel'
+      },
       { id: 'you_were_moved', label: 'You were moved to another channel' }
     ]
   },
@@ -107,7 +118,10 @@ export const SOUND_SECTIONS = [
     sounds: [
       { id: 'you_kicked_channel', label: 'You were kicked from a channel' },
       { id: 'you_kicked_server', label: 'You were kicked from the server', toast: true },
-      { id: 'neutral_kicked_channel_awayfromcurrentchannel', label: 'Someone was kicked from your channel' },
+      {
+        id: 'neutral_kicked_channel_awayfromcurrentchannel',
+        label: 'Someone was kicked from your channel'
+      },
       { id: 'neutral_kicked_server_currentchannel', label: 'Someone was kicked from the server' },
       { id: 'you_were_banned', label: 'You were banned', toast: true },
       { id: 'neutral_banned_server_currentchannel', label: 'Someone was banned from the server' },
@@ -170,7 +184,7 @@ for (const section of SOUND_SECTIONS) {
 let toastState = {}
 
 export function setToastStateMap(map) {
-  toastState = { ...toastState, ...map }
+  toastState = { ...map }
 }
 
 // Whether the toast tied to `soundId` should be shown. Ids with no toast wired
@@ -230,22 +244,27 @@ export function setSoundsDeafened(value) {
 let soundState = {}
 
 export function setSoundStateMap(map) {
-  soundState = { ...soundState, ...map }
+  soundState = { ...map }
 }
 
 // Playback volume (0..1) for all soundpack sounds, its own control separate from
 // the voice master volume. Mirrored in from SettingsContext (setSoundVolume).
 let notifVolume = 0.5
 
+function clampVolume(value, fallback) {
+  const number = Number(value)
+  return Number.isFinite(number) ? Math.min(1, Math.max(0, number)) : fallback
+}
+
 export function setSoundVolume(value) {
-  notifVolume = Math.min(1, Math.max(0, value))
+  notifVolume = clampVolume(value, 0.5)
 }
 
 // One reusable Audio element per pack+sound so rapid toggles restart the clip
 // from the top instead of layering overlapping playbacks (and so the file is
 // only fetched/decoded once). Keyed by pack so switching packs doesn't replay a
 // stale element pointing at the old pack's file.
-const cache = {}
+const cache = new Map()
 
 // Current output-device sink id for these sounds. Mirrored in from SettingsContext
 // the same way soup.js's playback context gets it, so UI/notification sounds follow
@@ -271,7 +290,7 @@ function applySink(el) {
 // just for sounds played for the first time afterward.
 export function setSoundOutputDevice(deviceId) {
   outputSinkId = deviceId || 'default'
-  for (const el of Object.values(cache)) applySink(el)
+  for (const el of cache.values()) applySink(el)
 }
 
 // Play a sound. `name` is either a wired event name (translated via EVENT_SOUND)
@@ -290,12 +309,12 @@ export function playUiSound(name, volume, force = false) {
   // Non-pinned sounds go silent while deafened; pinned sounds always play.
   if (!force && deafened && state !== 'pin') return
   const key = `${activePack}:${soundId}`
-  let el = cache[key]
+  let el = cache.get(key)
   if (!el) {
     el = new Audio(entry.url)
-    cache[key] = el
+    cache.set(key, el)
   }
-  el.volume = volume ?? notifVolume
+  el.volume = volume == null ? notifVolume : clampVolume(volume, notifVolume)
   el.currentTime = 0
   // Route to the chosen output device before playing. setSinkId is async, so
   // start playback once routing is applied — otherwise the very first play of a

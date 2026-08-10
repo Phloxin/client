@@ -82,7 +82,9 @@ function StreamPlaceholder({ avatar, initial }) {
       className="stream-stopped"
       style={
         colors
-          ? { background: `color-mix(in srgb, ${colors.vibrant} 45%, var(--color-background-mute))` }
+          ? {
+              background: `color-mix(in srgb, ${colors.vibrant} 45%, var(--color-background-mute))`
+            }
           : undefined
       }
     >
@@ -406,8 +408,6 @@ function VideoGrid({
     return () => ro.disconnect()
   }, [gridShown, gridTileCount, theatre])
 
-  const toggleMute = () => onMutedChange(!muted)
-
   const handleVolumeChange = (e) => {
     const next = Number(e.target.value)
     onVolumeChange(next)
@@ -415,13 +415,9 @@ function VideoGrid({
     if (next === 0 && !muted) onMutedChange(true)
   }
 
-  const resetVolume = () => {
-    onVolumeChange(100)
-    if (muted) onMutedChange(false)
-  }
-
-  // Hook, so it stays above the early return below — the last stream ending
-  // drops us into that branch and skipping a hook is a React #300 crash.
+  // Keep this hook above the empty-state return. A remote stream ending changes
+  // `streams` from non-empty to empty, and skipping this hook on that render
+  // would change VideoGrid's hook order.
   const volumeWheelRef = useWheelSlider(handleVolumeChange)
 
   if (!streams.length)
@@ -433,6 +429,13 @@ function VideoGrid({
         </div>
       </div>
     )
+
+  const toggleMute = () => onMutedChange(!muted)
+
+  const resetVolume = () => {
+    onVolumeChange(100)
+    if (muted) onMutedChange(false)
+  }
 
   const VolumeIcon =
     muted || volume === 0
@@ -684,6 +687,25 @@ function VideoGrid({
                     type="button"
                     className={`picker-segment-btn${shareOptions.height === height ? ' active' : ''}`}
                     onClick={() => applyShareOptions({ width, height })}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="stream-settings-row">
+              <span>Optimize</span>
+              <div className="picker-segment">
+                {[
+                  { value: 'detail', label: 'Detail' },
+                  { value: 'motion', label: 'Motion' }
+                ].map(({ value, label }) => (
+                  <button
+                    key={value}
+                    type="button"
+                    className={`picker-segment-btn${shareOptions.optimizeFor === value ? ' active' : ''}`}
+                    onClick={() => applyShareOptions({ optimizeFor: value })}
+                    title={value === 'motion' ? 'Best for games and video' : 'Best for text and UI'}
                   >
                     {label}
                   </button>

@@ -1,4 +1,3 @@
-import { useMemo } from 'react'
 import SimpleMarkdown from 'simple-markdown'
 import hljs from 'highlight.js/lib/core'
 import javascript from 'highlight.js/lib/languages/javascript'
@@ -109,35 +108,15 @@ const rules = {
 
 const parser = SimpleMarkdown.parserFor(rules)
 
-// A fenced code block, syntax-highlighted when its language is known. Falls back
-// to plain (React-escaped) text otherwise. Memoized so highlighting only runs
-// when the code/lang change.
-function CodeBlock({ code, lang }) {
-  const highlighted = useMemo(() => {
-    if (lang && hljs.getLanguage(lang)) {
-      try {
-        return hljs.highlight(code, { language: lang, ignoreIllegals: true }).value
-      } catch {
-        return null
-      }
-    }
+// Highlighting runs inside MessageText's memoized render, so a separate React
+// component and hook would add work without avoiding any repeated parsing.
+function highlightCode(code, lang) {
+  if (!lang || !hljs.getLanguage(lang)) return null
+  try {
+    return hljs.highlight(code, { language: lang, ignoreIllegals: true }).value
+  } catch {
     return null
-  }, [code, lang])
-
-  return (
-    <pre>
-      {highlighted != null ? (
-        // Safe: hljs.highlight HTML-escapes `code`; only its own <span> wrappers
-        // are added.
-        <code
-          className={`hljs language-${lang}`}
-          dangerouslySetInnerHTML={{ __html: highlighted }}
-        />
-      ) : (
-        <code className="hljs">{code}</code>
-      )}
-    </pre>
-  )
+  }
 }
 
 function renderNodes(nodes) {
@@ -201,8 +180,23 @@ function renderNode(node, key) {
           {renderNodes(node.content)}
         </a>
       )
-    case 'codeBlock':
-      return <CodeBlock key={key} code={node.content} lang={node.lang} />
+    case 'codeBlock': {
+      const highlighted = highlightCode(node.content, node.lang)
+      return (
+        <pre key={key}>
+          {highlighted != null ? (
+            // Safe: hljs.highlight HTML-escapes the code; only its own <span>
+            // wrappers are added.
+            <code
+              className={`hljs language-${node.lang}`}
+              dangerouslySetInnerHTML={{ __html: highlighted }}
+            />
+          ) : (
+            <code className="hljs">{node.content}</code>
+          )}
+        </pre>
+      )
+    }
     case 'blockQuote':
       return <blockquote key={key}>{renderNodes(node.content)}</blockquote>
     case 'table':

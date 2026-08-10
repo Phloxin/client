@@ -38,6 +38,8 @@ export const UI_FONTS = [
   { id: 'system', label: 'System Default', stack: 'system-ui, sans-serif' }
 ]
 
+const UI_FONTS_BY_ID = new Map(UI_FONTS.map((font) => [font.id, font]))
+
 export function applyAppearanceSettings({
   transparencyEnabled,
   transparencyBlur = 20,
@@ -50,7 +52,7 @@ export function applyAppearanceSettings({
 
   // Drive the global --font-family-primary token off the saved choice; every
   // surface already consumes that token, so the whole UI switches at once.
-  const font = UI_FONTS.find((f) => f.id === fontFamily) || UI_FONTS[0]
+  const font = UI_FONTS_BY_ID.get(fontFamily) ?? UI_FONTS[0]
   html.style.setProperty('--font-family-primary', font.stack)
   if (transparencyEnabled) {
     html.setAttribute('data-transparency', 'true')

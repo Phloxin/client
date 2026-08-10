@@ -9,13 +9,15 @@
 //
 // This lives outside React on purpose: rotation must not re-render (or worse,
 // tear down the events websocket, whose effect keys on the login token).
-import { apiBase } from './serverConfig'
-import { httpFetch } from './http'
+import { apiBase } from './serverConfig.js'
+import { httpFetch } from './http.js'
 
 const REFRESH_EARLY_MS = 90_000 // refresh this long before access expiry
 const REFRESH_RETRY_MS = 30_000 // retry delay after a network-level refresh failure
+const REFRESH_REQUEST_TIMEOUT_MS = 15_000
 
 let tokens = null // { access_token, access_expires_at, refresh_token, refresh_expires_at }
+let tokenGeneration = 0
 let refreshPromise = null
 let refreshTimer = null
 let sessionExpired = () => {}
@@ -26,12 +28,13 @@ export function setOnSessionExpired(cb) {
   sessionExpired = cb || (() => {})
 }
 
-export function getAccessToken() {
+function getAccessToken() {
   return tokens?.access_token ?? null
 }
 
 // Atomically replace the whole pair (login, register, or refresh response).
 export function setAuthTokens(data) {
+  tokenGeneration++
   tokens = {
     access_token: data.access_token,
     access_expires_at: data.access_expires_at,
@@ -42,6 +45,7 @@ export function setAuthTokens(data) {
 }
 
 export function clearAuthTokens() {
+  tokenGeneration++
   tokens = null
   clearTimeout(refreshTimer)
   refreshTimer = null
@@ -53,21 +57,18 @@ function msUntilRefresh() {
 
 function scheduleProactiveRefresh(delay) {
   clearTimeout(refreshTimer)
-  refreshTimer = setTimeout(
-    () => {
-      refresh().catch((err) => {
-        // Network blip: try again shortly. A server-side rejection has already
-        // cleared the session (and fired sessionExpired) inside refresh().
-        if (err.transient && tokens) scheduleProactiveRefresh(REFRESH_RETRY_MS)
-      })
-    },
-    delay ?? msUntilRefresh()
-  )
+  refreshTimer = setTimeout(() => {
+    refresh().catch((err) => {
+      // Network blip: try again shortly. A server-side rejection has already
+      // cleared the session (and fired sessionExpired) inside refresh().
+      if (err.transient && tokens) scheduleProactiveRefresh(REFRESH_RETRY_MS)
+    })
+  }, delay ?? msUntilRefresh())
 }
 
 // Serialized rotation: concurrent callers share the in-flight refresh so the
 // single-use refresh token is never sent twice.
-export function refresh() {
+function refresh() {
   if (refreshPromise) return refreshPromise
   refreshPromise = doRefresh().finally(() => {
     refreshPromise = null
@@ -77,25 +78,50 @@ export function refresh() {
 
 async function doRefresh() {
   if (!tokens) throw new Error('Not authenticated')
+  const generation = tokenGeneration
+  const refreshToken = tokens.refresh_token
   let res
   try {
     res = await httpFetch(`${apiBase()}/auth/refresh`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refresh_token: tokens.refresh_token })
+      body: JSON.stringify({ refresh_token: refreshToken }),
+      signal: AbortSignal.timeout(REFRESH_REQUEST_TIMEOUT_MS)
     })
   } catch {
+    // Logout or a fresh login superseded this request while it was in flight.
+    // Never let the stale request reschedule or overwrite the newer session.
+    if (generation !== tokenGeneration) {
+      if (tokens) return tokens
+      throw new Error('Not authenticated')
+    }
     throw Object.assign(new Error('Could not reach server to refresh session'), {
       transient: true
     })
   }
   const data = await res.json().catch(() => ({}))
-  if (!res.ok || !data.access_token) {
-    // The server rejected the refresh token — the device session is gone
-    // (expired, revoked, or the token was already used). Fresh login required.
+  if (generation !== tokenGeneration) {
+    if (tokens) return tokens
+    throw new Error('Not authenticated')
+  }
+  if (res.status === 401 || res.status === 403) {
+    // Only an explicit authentication rejection proves the device session is
+    // gone (expired, revoked, reused, or banned). A proxy/server failure must
+    // not turn a temporary outage into a local logout.
     clearAuthTokens()
     sessionExpired()
     throw new Error(data.error || `Refresh failed (${res.status})`)
+  }
+  if (
+    !res.ok ||
+    typeof data.access_token !== 'string' ||
+    typeof data.refresh_token !== 'string' ||
+    !Number.isFinite(data.access_expires_at) ||
+    !Number.isFinite(data.refresh_expires_at)
+  ) {
+    throw Object.assign(new Error(data.error || `Refresh failed (${res.status})`), {
+      transient: true
+    })
   }
   setAuthTokens(data)
   return data
@@ -107,7 +133,9 @@ async function doRefresh() {
 export async function getFreshToken() {
   if (!tokens) throw new Error('Not authenticated')
   if (msUntilRefresh() === 0) await refresh()
-  return tokens.access_token
+  const token = getAccessToken()
+  if (!token) throw new Error('Not authenticated')
+  return token
 }
 
 // fetch() with a live Bearer token. On a 401 { code: "token_expired" },
@@ -118,10 +146,13 @@ export async function authFetch(url, options = {}) {
   const token = await getFreshToken()
   const res = await doFetch(token)
   if (res.status !== 401) return res
-  const body = await res.clone().json().catch(() => null)
+  const body = await res
+    .clone()
+    .json()
+    .catch(() => null)
   if (body?.code !== 'token_expired') return res
   // A concurrent caller may have already rotated the pair; only refresh if
   // we're still holding the token that just expired.
   if (getAccessToken() === token) await refresh()
-  return doFetch(getAccessToken())
+  return doFetch(await getFreshToken())
 }

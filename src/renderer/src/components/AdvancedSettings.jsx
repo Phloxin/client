@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { IconAlertTriangle } from '@tabler/icons-react'
+import { IconAlertTriangle, IconCircleCheck, IconDownload } from '@tabler/icons-react'
 import { useSettings } from '../context/SettingsContext'
 import { resetCameraCodecPreference, resetScreenCodecPreference } from '../lib/soup'
 
@@ -30,6 +30,9 @@ function AdvancedSettings() {
   const [preventSleep, setPreventSleep] = useState(
     cachedSettings ? cachedSettings.preventSleep === true : null
   )
+  const [diagnosticsAvailable, setDiagnosticsAvailable] = useState(false)
+  const [exportStatus, setExportStatus] = useState('idle')
+  const [exportError, setExportError] = useState('')
 
   useEffect(() => {
     let cancelled = false
@@ -43,11 +46,27 @@ function AdvancedSettings() {
         setAppliedHwAccel(enabled)
         setPreventSleep(settings?.preventSleep === true)
       })
-      .catch(() => {
+      .catch((error) => {
+        console.error('[AdvancedSettings] Failed to load app settings:', error)
         if (cancelled) return
         setHwAccel(true)
         setAppliedHwAccel(true)
         setPreventSleep(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    window.api?.diagnostics
+      ?.isAvailable()
+      .then((available) => {
+        if (!cancelled) setDiagnosticsAvailable(available === true)
+      })
+      .catch((error) => {
+        console.error('[AdvancedSettings] Failed to check diagnostic log availability:', error)
       })
     return () => {
       cancelled = true
@@ -74,6 +93,26 @@ function AdvancedSettings() {
 
   const relaunch = () => window.electron?.ipcRenderer?.send('relaunch-app')
 
+  const exportLogs = async () => {
+    setExportStatus('exporting')
+    setExportError('')
+    try {
+      const result = await window.api.diagnostics.exportLogs()
+      if (result?.ok) {
+        setExportStatus('saved')
+      } else if (result?.canceled) {
+        setExportStatus('idle')
+      } else {
+        setExportStatus('error')
+        setExportError(result?.error || 'The diagnostic log could not be exported.')
+      }
+    } catch (error) {
+      console.error('[AdvancedSettings] Diagnostic log export failed:', error)
+      setExportStatus('error')
+      setExportError(error?.message || 'The diagnostic log could not be exported.')
+    }
+  }
+
   const needsRestart = hwAccel != null && appliedHwAccel != null && hwAccel !== appliedHwAccel
 
   return (
@@ -81,7 +120,7 @@ function AdvancedSettings() {
       <div className="settings-panel-header">
         <div>
           <h2>Advanced</h2>
-          <p>Hardware acceleration, power behavior, and diagnostic overlays.</p>
+          <p>Hardware acceleration, power behavior, and diagnostic tools.</p>
         </div>
       </div>
 
@@ -156,6 +195,41 @@ function AdvancedSettings() {
               />
               <span className="toggle-slider" />
             </label>
+          </div>
+        )}
+
+        {diagnosticsAvailable && (
+          <div className="settings-section settings-toggle-row">
+            <div className="settings-toggle-copy">
+              <label>Diagnostic Logs</label>
+              <p className="settings-section-desc">
+                Export recent production warnings, errors, and crash details for troubleshooting.
+                Routine health and media-stat messages are not included.
+              </p>
+              <p
+                className={`settings-diagnostic-export-status ${
+                  exportStatus === 'error' ? 'error' : 'success'
+                }`}
+                role="status"
+                aria-live="polite"
+              >
+                {exportStatus === 'saved' && 'Diagnostic logs exported.'}
+                {exportStatus === 'error' && exportError}
+              </p>
+            </div>
+            <button
+              type="button"
+              className="settings-restart-btn"
+              onClick={exportLogs}
+              disabled={exportStatus === 'exporting'}
+            >
+              {exportStatus === 'saved' ? (
+                <IconCircleCheck size={16} stroke={2} />
+              ) : (
+                <IconDownload size={16} stroke={2} />
+              )}
+              {exportStatus === 'exporting' ? 'Exporting…' : 'Export Logs'}
+            </button>
           </div>
         )}
       </div>

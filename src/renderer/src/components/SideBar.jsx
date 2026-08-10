@@ -32,6 +32,11 @@ import { RoleIcon } from '../lib/roleIcon'
 const MIN_WIDTH = 180
 const MAX_WIDTH = 550
 const DEFAULT_WIDTH = 240
+// Voice cleanup and the authoritative ClientModified(null) travel over separate
+// sockets, so the roster update can win by a task or two. Give soup's onclose a
+// bounded chance to classify the loss before converting it to an intentional
+// leave (which would cancel recovery).
+const VOICE_NULL_RECONCILE_GRACE_MS = 3000
 
 function Sidebar({
   channels,
@@ -39,6 +44,7 @@ function Sidebar({
   self,
   onStreamsUpdate,
   isReconnectRecovering,
+  recoveryEpoch,
   onOpenSettings,
   onStatusChange,
   onSelfChannelChange,
@@ -88,6 +94,7 @@ function Sidebar({
   onToggleMic,
   onToggleDeafen,
   onSpeakingClientsChange,
+  onVoiceMediaState,
   // Filled with the sharing channel's imperative handle (or null when we aren't
   // sharing) so the stream view can stop/restart our share without owning the
   // voice-channel refs.
@@ -367,14 +374,23 @@ function Sidebar({
       // reconnecting and re-asserting membership, and leaving would tear that
       // down and yank us out for good. It restores selfServerChannelId when it
       // lands, re-running this effect to a consistent state.
+      //
+      // recoveryEpoch is what makes the *other* outcome work: when the rejoin
+      // never lands and the recovery times out, the bump re-runs this effect,
+      // and we now take the leave path instead of showing a phantom joined state.
       if (isReconnectRecovering?.()) return
-      // Moved out of every channel — leave voice locally.
-      channelRefs.current[joinedChannelId]?.leave()
-      return
+      const timer = setTimeout(() => {
+        // Re-check the live recovery ref: the voice socket's close notification
+        // may have arrived after this effect observed the roster null.
+        if (!isReconnectRecovering?.()) {
+          channelRefs.current[joinedChannelId]?.leave()
+        }
+      }, VOICE_NULL_RECONCILE_GRACE_MS)
+      return () => clearTimeout(timer)
     }
     channelRefs.current[joinedChannelId]?.deactivate()
     channelRefs.current[selfServerChannelId]?.adopt()
-  }, [selfServerChannelId, joinedChannelId, isReconnectRecovering])
+  }, [selfServerChannelId, joinedChannelId, isReconnectRecovering, recoveryEpoch])
 
   const isDragging = useRef(false)
   const sidebarRef = useRef(null)
@@ -600,6 +616,7 @@ function Sidebar({
             deafened={deafened}
             onSelfSpeaking={setSelfSpeaking}
             onSpeakingClientsChange={onSpeakingClientsChange}
+            onVoiceMediaState={onVoiceMediaState}
             onSelfChannelChange={onSelfChannelChange}
             onDeleteChannel={onDeleteChannel}
             onRequestCreateChannel={openCreateChannel}
@@ -639,12 +656,24 @@ function Sidebar({
             onSharingChange={(channelId, isSharing) => {
               if (channelId === joinedChannelId || isSharing) setSharing(isSharing)
             }}
-            onRequestJoin={(doJoin, doSwitch) => {
+            onRequestJoin={async (doJoin, doSwitch) => {
               if (joinedChannelId && joinedChannelId !== ch.id) {
-                channelRefs.current[joinedChannelId]?.deactivate()
-                doSwitch()
+                const previousChannel = channelRefs.current[joinedChannelId]
+                try {
+                  await doSwitch()
+                  previousChannel?.deactivate()
+                } catch {
+                  // switchTo rebinds soup before declaring the move so it cannot
+                  // miss an immediate transport reset. Restore the old owner if
+                  // the declaration never left this client.
+                  try {
+                    await previousChannel?.restoreAfterFailedSwitch()
+                  } catch (error) {
+                    onError?.(`Failed to restore the previous voice channel: ${error.message}`)
+                  }
+                }
               } else {
-                doJoin()
+                await doJoin()
               }
             }}
           />
