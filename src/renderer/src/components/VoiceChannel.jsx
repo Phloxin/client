@@ -8,6 +8,8 @@ import {
   shareCamera,
   stopScreenShare,
   rebindCallbacks,
+  cancelExpectedVoiceSessionRebuild,
+  expectVoiceSessionRebuild,
   requestVoiceMediaRecovery,
   setLocalClientId,
   setVolumeGateThreshold
@@ -452,6 +454,10 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     setConnecting(true)
     setError(null)
 
+    // Mark this rebuild as expected before switching, so the UI treats the
+    // resulting reset as normal instead of a lost connection.
+    expectVoiceSessionRebuild('channel-switch')
+
     // Rebind callbacks BEFORE the PATCH â€” TransportsDisconnected can arrive
     // as soon as the server processes the PATCH, so this channel's handler
     // must already be active to catch it. This also repoints the reconnect
@@ -471,6 +477,9 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     try {
       await patchChannel(channel.id)
     } catch (err) {
+      // The switch request failed, so no reset is coming. Undo the expected
+      // rebuild flag so a real drop isn't mistaken for this one.
+      cancelExpectedVoiceSessionRebuild()
       setError(err.message)
       setConnecting(false)
       throw err
@@ -485,6 +494,9 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   // here can't collide with a reset-driven republish. onClientSpeaking is rebound
   // to us, so soup's self speaking detector now reports to this channel.
   const adopt = async ({ reassert = false } = {}) => {
+    // The server already moved us, so mark the resulting reset as expected
+    // too, even if it already arrived before this runs.
+    expectVoiceSessionRebuild('channel-adopted')
     rebindCallbacks({
       onConnect: handleConnectEstablished,
       onDisconnect: handleDisconnected,
@@ -500,7 +512,12 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     // pointed at the target. Reasserting here restores both to the still-live
     // previous owner; ordinary moderator adoption must not send this declaration.
     if (reassert) await patchChannel(channel.id)
-    else onVoiceMediaState?.(channel.id, { state: 'reconnecting', reason: 'channel-adopted' })
+    else
+      onVoiceMediaState?.(channel.id, {
+        state: 'reconnecting',
+        reason: 'channel-adopted',
+        expected: true
+      })
     setError(null)
     setConnecting(false)
     joinedRef.current = true
@@ -585,6 +602,20 @@ const VoiceChannel = forwardRef(function VoiceChannel(
           )
         )
       }
+      // Screen shares can recover from a lost capture track behind the
+      // scenes, so we let the share tell us when it's actually over instead
+      // of watching the raw track directly.
+      const onShareEnded = (reason) => {
+        if (activeShareRef.current !== screen) return
+        activeShareRef.current = null
+        setSharing(false)
+        clearSelfStream(screen?.id ?? null)
+        onError?.(
+          reason === 'frames-stalled'
+            ? 'Stream ended because the shared window stopped sending frames'
+            : 'Stream ended because the shared window closed'
+        )
+      }
       if (options.isCamera) {
         // Webcams capture directly via getUserMedia - no main-process source
         // hand-off, and no audio/fps/resolution settings.
@@ -597,28 +628,37 @@ const VoiceChannel = forwardRef(function VoiceChannel(
           sourceId: sourceId ?? null,
           audioMode: options.audioMode ?? 'none'
         })
-        screen = await shareScreen({ ...options, onEncoderStats, onProducerReplaced })
+        screen = await shareScreen({
+          ...options,
+          sourceId: sourceId ?? null,
+          onEncoderStats,
+          onProducerReplaced,
+          onShareEnded
+        })
       }
       if (screen?.stream) {
         activeShareRef.current = screen
-        screen.stream.getVideoTracks()[0].addEventListener(
-          'ended',
-          () => {
-            if (activeShareRef.current !== screen) return
+        // Cameras can't recover, so a webcam track ending stops the share.
+        if (options.isCamera) {
+          screen.stream.getVideoTracks()[0].addEventListener(
+            'ended',
+            () => {
+              if (activeShareRef.current !== screen) return
+              activeShareRef.current = null
+              void screen.stop?.()
+              setSharing(false)
+              clearSelfStream(screen.id)
+            },
+            { once: true }
+          )
+
+          if (screen.stream.getVideoTracks()[0].readyState === 'ended') {
             activeShareRef.current = null
-            void screen.stop?.()
+            await screen.stop?.()
             setSharing(false)
             clearSelfStream(screen.id)
-          },
-          { once: true }
-        )
-
-        if (screen.stream.getVideoTracks()[0].readyState === 'ended') {
-          activeShareRef.current = null
-          await screen.stop?.()
-          setSharing(false)
-          clearSelfStream(screen.id)
-          return
+            return
+          }
         }
 
         setVideoStreams((prev) => [

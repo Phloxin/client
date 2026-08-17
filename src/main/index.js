@@ -20,6 +20,7 @@ import iconIco from '../../build/icon.ico?asset'
 // Windows taskbar/window uses the .ico; other platforms keep the png.
 const icon = process.platform === 'win32' ? iconIco : iconPng
 import { setupGlobalKeybinds, stopGlobalKeybinds } from './keybinds'
+import { matchScreenSource } from './screenSourceMatch'
 import { setupAudioCapture, stopAudioCaptureHost } from './audioCapture'
 import { setupUpdater } from './updater'
 import { setupTray, setTrayVoiceState, destroyTray } from './tray'
@@ -564,6 +565,43 @@ app.whenReady().then(() => {
     selectedScreenSourceId = typeof options.sourceId === 'string' ? options.sourceId : null
     selectedAudioMode = typeof options.audioMode === 'string' ? options.audioMode : 'none'
     return true
+  })
+
+  // Finds the source a dying screen share was using so the renderer can
+  // re-request it and swap the fresh track into the existing producer.
+  ipcMain.handle('resolve-screen-source', async (_, options = {}) => {
+    const previousSourceId =
+      typeof options.previousSourceId === 'string' ? options.previousSourceId : null
+    // Wayland has no id based selection, so retrying would pop a picker
+    // dialog with no user action behind it. Skip recovery there.
+    if (!previousSourceId || isWayland) return { recoverable: false }
+
+    try {
+      const previousName =
+        cachedScreenSources.find((source) => source.id === previousSourceId)?.name ??
+        (typeof options.previousSourceName === 'string' ? options.previousSourceName : null)
+      const sources = await desktopCapturer.getSources({
+        types: [previousSourceId.startsWith('screen:') ? 'screen' : 'window']
+      })
+      const match = matchScreenSource(sources, { id: previousSourceId, name: previousName })
+      if (!match) {
+        console.warn('[Main] Could not re-resolve the shared source; ending the share', {
+          previousSourceId,
+          named: previousName != null
+        })
+        return { recoverable: false }
+      }
+
+      cachedScreenSources = sources
+      selectedScreenSourceId = match.id
+      // Only video is re-acquired here. The audio producer is left alone so
+      // it doesn't get duplicated.
+      selectedAudioMode = 'none'
+      return { recoverable: true, sourceId: match.id, name: match.name }
+    } catch (err) {
+      console.error('[Main] Failed to re-resolve the shared screen source:', err)
+      return { recoverable: false }
+    }
   })
 
   // Packaged builds load the renderer from file://, which has a null origin, so

@@ -3,6 +3,13 @@ import { detachRtpSender } from '../mediaRecovery'
 import { MUSIC_AUDIO_BITRATE } from '../micAudioProfile'
 import { screenCodecOptionsFor, screenEncodingFor } from '../screenVideoProfile'
 import { createSerialQueue } from '../serialQueue'
+import {
+  SCREEN_MUTE_STALL_MS,
+  SCREEN_RECOVERY_STABILITY_MS,
+  nextRecoveryDelay,
+  screenRecoveryDecision,
+  shouldRecoverOnMuteStall
+} from './screenShareRecovery'
 import { codecLabel, computeOutboundVideoSample } from '../streamStats'
 
 let getDevice = () => null
@@ -685,6 +692,11 @@ async function stopShareContext(ctx, { notifyServer = true } = {}) {
   ctx.stopped = true
   if (screenShareCtx === ctx) screenShareCtx = null
 
+  // Remove the watchdogs first so stopping the tracks below doesn't look
+  // like a capture failure and trigger recovery.
+  clearScreenRecoveryTimers(ctx)
+  detachScreenTrackWatch(ctx)
+
   ctx.statsStop?.()
   ctx.statsStop = null
 
@@ -880,6 +892,216 @@ async function setDegradationPreference(producer, preference, options) {
   return setSenderDegradationPreference(producer.rtpSender, preference, options)
 }
 
+// ─── Screen capture track recovery ───────────────────────────────
+// On Windows, the shared window can get rebuilt (this happens around
+// fullscreen transitions) which ends the capture even though the window is
+// still there. Rather than treating that as the user stopping the share, this
+// section re-acquires the capture and swaps the new track into the existing
+// producer with replaceTrack(), so the share keeps running. The retry policy
+// lives in screenShareRecovery.js so it can be tested on its own.
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function unrecoverableSourceError() {
+  const error = new Error('The shared source could not be re-resolved')
+  error.code = 'SCREEN_SOURCE_UNRECOVERABLE'
+  return error
+}
+
+function recoveryState(ctx) {
+  return {
+    active: isActiveShare(ctx),
+    type: ctx.type,
+    sourceId: ctx.sourceId,
+    recovering: ctx.recovering,
+    attempts: ctx.recoveryAttempts ?? 0
+  }
+}
+
+function clearScreenRecoveryTimers(ctx) {
+  if (ctx.muteTimer) clearTimeout(ctx.muteTimer)
+  if (ctx.stabilityTimer) clearTimeout(ctx.stabilityTimer)
+  ctx.muteTimer = null
+  ctx.stabilityTimer = null
+}
+
+function detachScreenTrackWatch(ctx) {
+  const watch = ctx.trackWatch
+  ctx.trackWatch = null
+  if (!watch) return
+  for (const [event, handler] of Object.entries(watch.handlers)) {
+    watch.track.removeEventListener(event, handler)
+  }
+}
+
+// Installs the capture watchdogs on a track, at the start of a share and
+// again after each recovery.
+function watchScreenTrack(ctx, track) {
+  detachScreenTrackWatch(ctx)
+
+  const handlers = {
+    // The capture itself ended, for example the window closed or permission
+    // was revoked. Try to recover it.
+    ended: () => {
+      if (ctx.track !== track) return
+      void recoverScreenShare(ctx, 'track-ended')
+    },
+    // Frames stopped arriving even though the track is still alive, which is
+    // one symptom of the Windows fullscreen bug. A generous timeout avoids
+    // false positives on genuinely static content.
+    mute: () => {
+      if (ctx.track !== track) return
+      if (ctx.muteTimer) clearTimeout(ctx.muteTimer)
+      ctx.muteTimer = setTimeout(() => {
+        ctx.muteTimer = null
+        if (ctx.track !== track) return
+        if (!shouldRecoverOnMuteStall({ muted: track.muted, ...recoveryState(ctx) })) return
+        console.warn(`[Soup] Screen capture delivered no frames for ${SCREEN_MUTE_STALL_MS}ms`)
+        void recoverScreenShare(ctx, 'frames-stalled')
+      }, SCREEN_MUTE_STALL_MS)
+    },
+    unmute: () => {
+      if (ctx.muteTimer) clearTimeout(ctx.muteTimer)
+      ctx.muteTimer = null
+    }
+  }
+
+  for (const [event, handler] of Object.entries(handlers)) {
+    track.addEventListener(event, handler)
+  }
+  ctx.trackWatch = { track, handlers }
+}
+
+// Resets the recovery attempt count once a share has run stably for a while,
+// so repeated fullscreen toggles over a long stream don't exhaust it.
+function scheduleRecoveryStabilityReset(ctx) {
+  if (ctx.stabilityTimer) clearTimeout(ctx.stabilityTimer)
+  ctx.stabilityTimer = setTimeout(() => {
+    ctx.stabilityTimer = null
+    if (!isActiveShare(ctx)) return
+    ctx.recoveryAttempts = 0
+  }, SCREEN_RECOVERY_STABILITY_MS)
+}
+
+// Tears the share down as if the user stopped it, and tells the caller why so
+// it can clear the self tile and show a message.
+async function finalStopShare(ctx, reason) {
+  const notify = isActiveShare(ctx)
+  await stopShareContext(ctx)
+  if (notify) ctx.onShareEnded?.(reason)
+}
+
+// A single re-acquire attempt. Returns true when the recovery loop should
+// stop, either because the track was swapped in or because this share is no
+// longer active. Throws when the attempt failed but can be retried.
+async function attemptScreenRecovery(ctx, reason) {
+  const resolved = await window.electron?.ipcRenderer?.invoke('resolve-screen-source', {
+    previousSourceId: ctx.sourceId
+  })
+  if (!isActiveShare(ctx)) return true
+  // No match was found, or this platform can't retry without popping a
+  // picker dialog. Either way, let the caller stop the share.
+  if (!resolved?.recoverable) throw unrecoverableSourceError()
+
+  const { width, height, fps } = ctx.requestedVideo
+  // Only video is requested here. The audio producer keeps running
+  // separately, so asking for loopback again would create a duplicate.
+  const stream = await navigator.mediaDevices.getDisplayMedia({
+    video: {
+      frameRate: { ideal: fps, max: fps },
+      width: { ideal: width, max: width },
+      height: { ideal: height, max: height }
+    },
+    audio: false
+  })
+  const track = stream.getVideoTracks()[0]
+  // The share may have been stopped or replaced while we were waiting on
+  // the picker. Just release the tracks this attempt created.
+  if (!isActiveShare(ctx) || !ctx.producer) {
+    stream.getTracks().forEach((ownedTrack) => ownedTrack.stop())
+    return true
+  }
+  if (!track) {
+    stream.getTracks().forEach((ownedTrack) => ownedTrack.stop())
+    throw new Error('The re-resolved source did not provide a video track')
+  }
+
+  track.contentHint = ctx.optimizeFor === 'motion' ? 'motion' : 'detail'
+  // replaceTrack only re-points the sender, so the producer and its stats
+  // keep running. The encoder sends a fresh keyframe on its own, so viewers
+  // just see the picture resume.
+  await ctx.producer.replaceTrack({ track })
+  if (!isActiveShare(ctx)) {
+    track.stop()
+    return true
+  }
+
+  const previousTrack = ctx.track
+  // Detach the watchdogs first, or the old track's 'ended' event would
+  // trigger recovery for a track we're intentionally discarding.
+  detachScreenTrackWatch(ctx)
+  ctx.track = track
+  ctx.sourceId = resolved.sourceId ?? ctx.sourceId
+  // Swap the track inside the existing streams, so nothing downstream (the
+  // video element, React state) needs to change.
+  if (previousTrack) {
+    ctx.stream?.removeTrack(previousTrack)
+    ctx.previewStream?.removeTrack(previousTrack)
+  }
+  ctx.stream?.addTrack(track)
+  ctx.previewStream?.addTrack(track)
+  previousTrack?.stop()
+
+  watchScreenTrack(ctx, track)
+  scheduleRecoveryStabilityReset(ctx)
+  console.log(`[Soup] Screen capture recovered after ${reason}`)
+  return true
+}
+
+async function recoverScreenShare(ctx, reason) {
+  const decision = screenRecoveryDecision(recoveryState(ctx))
+  if (decision === 'ignore') return
+  if (decision === 'final-stop') return finalStopShare(ctx, reason)
+
+  ctx.recovering = true
+  clearScreenRecoveryTimers(ctx)
+  console.warn(`[Soup] Screen capture ${reason}; re-acquiring the shared source`)
+
+  let recovered = false
+  try {
+    for (
+      let delayMs = nextRecoveryDelay(ctx.recoveryAttempts);
+      delayMs != null;
+      delayMs = nextRecoveryDelay(ctx.recoveryAttempts)
+    ) {
+      ctx.recoveryAttempts += 1
+      if (delayMs > 0) await wait(delayMs)
+      if (!isActiveShare(ctx)) return
+
+      try {
+        if (await attemptScreenRecovery(ctx, reason)) {
+          recovered = true
+          return
+        }
+      } catch (error) {
+        if (!isActiveShare(ctx)) return
+        if (error?.code === 'SCREEN_SOURCE_UNRECOVERABLE') {
+          console.warn('[Soup] Shared source is gone; ending the share:', error)
+          break
+        }
+        console.warn('[Soup] Screen capture recovery attempt failed:', error)
+      }
+    }
+  } finally {
+    ctx.recovering = false
+    // A successful recovery already returned above, so reaching here means
+    // every attempt failed.
+    if (!recovered && isActiveShare(ctx)) void finalStopShare(ctx, reason)
+  }
+}
+
 // ─── Share screen ────────────────────────────────────────────────
 // audioMode selects where screenshare audio comes from:
 //   'app'                 native capture of the shared app only (audioTargets)
@@ -905,7 +1127,13 @@ export async function shareScreen({
   onEncoderStats = undefined,
   // A fallback publishes a successor producer. The caller owns the self tile,
   // so it must replace its producer id for viewer bookkeeping to follow it.
-  onProducerReplaced = undefined
+  onProducerReplaced = undefined,
+  // The source id this share was started with (null on Wayland, where the OS
+  // picks it). Recovery uses it to re-resolve the same source later.
+  sourceId = null,
+  // Fires once with a reason when the share ends on its own, meaning the
+  // capture failed and could not be recovered.
+  onShareEnded = undefined
 } = {}) {
   const transport = getProducerTransport()
   if (!transport) throw new Error('Not connected to voice')
@@ -918,6 +1146,7 @@ export async function shareScreen({
     type: 'screen',
     transport,
     stream: null,
+    previewStream: null,
     track: null,
     audioTrack: null,
     nativeAudio: null,
@@ -929,6 +1158,18 @@ export async function shareScreen({
     width,
     height,
     fps,
+    // The original requested video settings, kept separate from width/height/fps
+    // below (which get overwritten by the actual capture), so recovery asks
+    // for the same constraints again rather than whatever one window gave.
+    requestedVideo: { width, height, fps },
+    sourceId,
+    onShareEnded,
+    // Recovery bookkeeping, see the recovery section above.
+    recovering: false,
+    recoveryAttempts: 0,
+    trackWatch: null,
+    muteTimer: null,
+    stabilityTimer: null,
     optimizeFor,
     onEncoderStats,
     cpuStrikes: 0,
@@ -961,9 +1202,13 @@ export async function shareScreen({
     const track = stream.getVideoTracks()[0]
     if (!track) throw new Error('The selected source did not provide a video track')
     ctx.track = track
-    track.onended = () => {
-      void stopShareContext(ctx)
-    }
+    // Local preview is video-only, since playing back captured audio locally
+    // would echo it. Stored on the context so recovery can swap the track in
+    // place, leaving the caller's video element and React state untouched.
+    ctx.previewStream = new MediaStream([track])
+    // A capture that ends or stalls may be recoverable, so watch it instead
+    // of tearing the share down directly. See the recovery section above.
+    watchScreenTrack(ctx, track)
     track.contentHint = optimizeFor === 'motion' ? 'motion' : 'detail'
 
     const settings = track.getSettings()
@@ -1099,11 +1344,9 @@ export async function shareScreen({
 
     if (!isActiveShare(ctx) || !ctx.producer) throw shareSupersededError()
 
-    // Local preview is video-only; playing captured audio locally would echo it.
-    const previewStream = new MediaStream([track])
     return {
       id: ctx.producer.id,
-      stream: previewStream,
+      stream: ctx.previewStream,
       codec: codecLabel(ctx.producer.rtpParameters),
       stop: () => stopShareContext(ctx)
     }

@@ -35,7 +35,11 @@ import { setServerHost, apiBase, wsBase, cdnUrl, throwIfError } from '../lib/ser
 import { validateMessage, statusOf } from '../lib/presence'
 import { authFetch, getFreshToken, setOnSessionExpired } from '../lib/auth'
 import { httpFetch } from '../lib/http'
-import { isVoiceRecoveryReady } from '../lib/voiceRecoveryState'
+import {
+  isVoiceRecoveryReady,
+  nextVoiceRebuildKind,
+  selfChannelChime
+} from '../lib/voiceRecoveryState'
 import { EVERYONE_ROLE_ID, viewChannelOverride } from '../lib/permissions'
 import SegmentedTabs from '../components/SegmentedTabs'
 import {
@@ -413,6 +417,11 @@ function Main() {
   // awaiting). While set: the overlay stays up, self channel chimes are
   // suppressed, and the sidebar won't leave voice on the transient drop-to-null.
   const awaitingRejoinRef = useRef(null)
+  // What kind of voice rebuild is happening: 'outage' when the connection
+  // actually dropped, or 'intentional' when we asked for it, such as a
+  // channel switch or a moderator moving us. Only an outage shows the
+  // connection-lost overlay and plays the "back online" cue. Null when idle.
+  const voiceRebuildKindRef = useRef(null)
   const rejoinTimeoutRef = useRef(null)
   const requiredVoiceMediaUpdateRef = useRef(null)
   const voiceMediaUpdateIdRef = useRef(0)
@@ -438,12 +447,16 @@ function Main() {
   // and drop the overlay. Safe to call more than once (the ref guard no-ops).
   const completeRecovery = useCallback(() => {
     if (awaitingRejoinRef.current == null || eventsRecoveringRef.current) return
+    const wasOutage = voiceRebuildKindRef.current !== 'intentional'
     awaitingRejoinRef.current = null
+    voiceRebuildKindRef.current = null
     requiredVoiceMediaUpdateRef.current = null
     preDropChannelRef.current = null
     clearTimeout(rejoinTimeoutRef.current)
     setConnectionStatus('connected')
-    playUiSound('connected')
+    // Skip the "connection restored" cue for an intentional move, since
+    // nothing actually went wrong and the move already played its own cue.
+    if (wasOutage) playUiSound('connected')
     setRecoveryEpoch((epoch) => epoch + 1)
   }, [])
   const failRecovery = useCallback(
@@ -452,6 +465,7 @@ function Main() {
     ) => {
       if (awaitingRejoinRef.current == null) return
       awaitingRejoinRef.current = null
+      voiceRebuildKindRef.current = null
       requiredVoiceMediaUpdateRef.current = null
       clearTimeout(rejoinTimeoutRef.current)
       // The events connection is healthy; remove its network overlay without a
@@ -479,12 +493,24 @@ function Main() {
           requiredVoiceMediaUpdateRef.current ?? -1,
           updateId
         )
-        setConnectionStatus('reconnecting')
+        // An intentional rebuild runs over a healthy connection, so it should
+        // not show the connection-lost overlay, even if it was flagged after
+        // the overlay already appeared.
+        const kind = nextVoiceRebuildKind(voiceRebuildKindRef.current, {
+          expected: state?.expected === true,
+          // A recovery already in progress always counts as an outage.
+          outageRecovery: eventsRecoveringRef.current || preDropChannelRef.current != null
+        })
+        voiceRebuildKindRef.current = kind
+        if (kind === 'outage') setConnectionStatus('reconnecting')
+        else if (!eventsRecoveringRef.current) setConnectionStatus('connected')
         clearTimeout(rejoinTimeoutRef.current)
         rejoinTimeoutRef.current = setTimeout(() => {
           if (awaitingRejoinRef.current != null && !eventsRecoveringRef.current) {
             failRecovery(
-              'Server connection recovered, but voice audio did not. Leave and rejoin the channel to retry.'
+              voiceRebuildKindRef.current === 'intentional'
+                ? 'Voice audio could not be restored in the new channel. Leave and rejoin the channel to retry.'
+                : 'Server connection recovered, but voice audio did not. Leave and rejoin the channel to retry.'
             )
           }
         }, VOICE_REJOIN_TIMEOUT_MS)
@@ -495,6 +521,7 @@ function Main() {
         awaitingRejoinRef.current = channelId
       } else if (stateName === 'idle' && awaitingRejoinRef.current === channelId) {
         awaitingRejoinRef.current = null
+        voiceRebuildKindRef.current = null
         requiredVoiceMediaUpdateRef.current = null
         clearTimeout(rejoinTimeoutRef.current)
         if (!eventsRecoveringRef.current) setConnectionStatus('connected')
@@ -1729,6 +1756,7 @@ function Main() {
       popoutWindowRef.current = null
       setPoppedOut(false)
       awaitingRejoinRef.current = null
+      voiceRebuildKindRef.current = null
       preDropChannelRef.current = null
       requiredVoiceMediaUpdateRef.current = null
       eventsRecoveringRef.current = false
@@ -1855,6 +1883,9 @@ function Main() {
       if (!dropAnnounced) {
         dropAnnounced = true
         playUiSound('connection_lost')
+        // The connection is actually down now, so this counts as an outage
+        // no matter what we thought it was before.
+        voiceRebuildKindRef.current = 'outage'
         // Remember the voice channel we were in, so recovery can wait until we're
         // actually back in it before declaring "connected".
         preDropChannelRef.current =
@@ -2184,6 +2215,23 @@ function Main() {
           voiceStateRef.current = { ...voiceStateRef.current, channel_id: data.channel_id }
         }
 
+        // A moderator move between two channels explains any voice rebuild
+        // that's currently in flight, even though the voice reset can arrive
+        // before this event does. Mark it here instead of waiting for the
+        // channel component to notice, since that happens after a re-render.
+        if (
+          data.id === selfIdRef.current &&
+          oldChannelId != null &&
+          data.channel_id != null &&
+          oldChannelId !== data.channel_id &&
+          awaitingRejoinRef.current != null &&
+          !eventsRecoveringRef.current &&
+          preDropChannelRef.current == null
+        ) {
+          voiceRebuildKindRef.current = 'intentional'
+          setConnectionStatus('connected')
+        }
+
         // Join/leave chimes. For ourselves: a move into a channel is a "join",
         // dropping out (channel_id null) is a "leave" — but only when the channel
         // actually changed. ClientModified now also fires for same-channel updates
@@ -2195,20 +2243,17 @@ function Main() {
         if (!('channel_id' in data)) {
           // no channel move to chime for
         } else if (data.id === selfIdRef.current) {
-          // While awaiting a reconnect rejoin, our channel changes (the drop to
-          // null, then landing back in) are recovery, not a live action — stay
-          // silent; completeRecovery plays the connected cue instead.
-          if (awaitingRejoinRef.current == null && oldChannelId !== data.channel_id) {
-            if (data.channel_id != null) {
-              // Moving into a channel — "you moved to another channel".
-              playUiSound('channel_switched')
-            } else if (selfDeclaredChannel != null) {
-              // Dropped to no channel without us asking for it → kicked from the
-              // channel. A voluntary leave declares channel_id null first, so
-              // selfDeclaredChannel would be null there and this stays silent.
-              playUiSound('you_kicked_channel')
-            }
-          }
+          // A voice rebuild can briefly report us out of voice and back in,
+          // which is not a real join or kick. Let the helper decide what
+          // cue, if any, this change actually deserves.
+          const cue = selfChannelChime({
+            oldChannelId,
+            newChannelId: data.channel_id,
+            awaitingRejoin: awaitingRejoinRef.current,
+            rebuildKind: voiceRebuildKindRef.current,
+            selfDeclaredChannel
+          })
+          if (cue) playUiSound(cue)
         } else if (myChannel != null) {
           if (data.channel_id === myChannel && oldChannelId !== myChannel) {
             playUiSound('channel-join')

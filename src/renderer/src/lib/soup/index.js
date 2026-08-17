@@ -211,8 +211,45 @@ function clearMediaReadyTimer() {
   mediaReadyTimer = null
 }
 
+// Tracks a voice rebuild the client asked for, such as a channel switch,
+// so it isn't confused with a real connection drop. Stays set until media
+// comes back or a timeout gives up on it.
+const EXPECTED_REBUILD_MAX_MS = 20000
+let expectedRebuild = false
+let expectedRebuildTimer = null
+
+function clearExpectedRebuild() {
+  if (expectedRebuildTimer != null) clearTimeout(expectedRebuildTimer)
+  expectedRebuildTimer = null
+  expectedRebuild = false
+}
+
+// Call before requesting a channel move so the reset it triggers is already
+// marked expected, no matter how quickly the server responds.
+export function expectVoiceSessionRebuild(reason = 'channel-switch') {
+  clearExpectedRebuild()
+  console.log(`[Soup] Expecting a voice session rebuild (${reason})`)
+  expectedRebuild = true
+  expectedRebuildTimer = setTimeout(clearExpectedRebuild, EXPECTED_REBUILD_MAX_MS)
+}
+
+// Call when the move that was expected to trigger a rebuild never went
+// through, so a later real drop isn't mistaken for it.
+export function cancelExpectedVoiceSessionRebuild() {
+  if (!expectedRebuild) return
+  console.log('[Soup] Voice session rebuild no longer expected')
+  clearExpectedRebuild()
+}
+
 function emitMediaState(state, details = {}) {
-  activeCallbacks.onMediaState?.({ state, generation: mediaStateGeneration, ...details })
+  activeCallbacks.onMediaState?.({
+    state,
+    generation: mediaStateGeneration,
+    expected: expectedRebuild,
+    ...details
+  })
+  // The rebuild is done once media is live again, or once it's given up.
+  if (state === 'ready' || state === 'failed') clearExpectedRebuild()
 }
 
 function remoteAudioIsReady() {
@@ -1071,20 +1108,28 @@ function armSocketCloseDeadline(socket) {
   }, 3000)
 }
 
-// Schedule a reconnect with capped exponential backoff + jitter.
+// Schedule a reconnect with capped exponential backoff and jitter. An
+// expected rebuild's first attempt skips the delay, since nothing actually
+// failed and waiting would only make the outage look longer than it is.
 function scheduleVoiceReconnect() {
   if (intentionalClose || reconnectTimer) return
-  const delay = Math.min(
-    VOICE_RECONNECT_MAX_DELAY_MS,
-    VOICE_RECONNECT_BASE_DELAY_MS * 2 ** reconnectAttempts
-  )
+  const rebuildNow = expectedRebuild && reconnectAttempts === 0
+  const delay = rebuildNow
+    ? 0
+    : Math.round(
+        Math.min(
+          VOICE_RECONNECT_MAX_DELAY_MS,
+          VOICE_RECONNECT_BASE_DELAY_MS * 2 ** reconnectAttempts
+        ) *
+          (0.5 + Math.random() * 0.5)
+      )
   reconnectAttempts++
-  const jittered = Math.round(delay * (0.5 + Math.random() * 0.5))
-  console.warn(`[Soup] Reconnecting voice in ${jittered}ms (attempt ${reconnectAttempts})`)
+  if (rebuildNow) console.log('[Soup] Rebuilding voice now (expected rebuild)')
+  else console.warn(`[Soup] Reconnecting voice in ${delay}ms (attempt ${reconnectAttempts})`)
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null
     attemptReconnect()
-  }, jittered)
+  }, delay)
 }
 
 // One reconnect attempt: re-assert channel membership (the server drops us from
@@ -1157,6 +1202,8 @@ function handleOnline() {
 export function disconnect() {
   voiceConnectionGeneration++
   intentionalClose = true
+  // Clear any expected rebuild so a future session doesn't inherit it.
+  clearExpectedRebuild()
   if (reconnectTimer) {
     clearTimeout(reconnectTimer)
     reconnectTimer = null

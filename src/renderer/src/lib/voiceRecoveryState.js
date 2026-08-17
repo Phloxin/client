@@ -64,6 +64,52 @@ export function voiceSocketRecoveryAction(readyState) {
   return 'wait-for-close'
 }
 
+// Decides whether a 'reconnecting' report is from a rebuild we asked for
+// (switching channels, or a moderator moving us) or a real outage. Rebuilds we
+// asked for happen over a healthy connection and should never show as a
+// dropped connection.
+//
+// The kind stays the same for the whole rebuild, since one rebuild reports
+// itself more than once as the socket closes and reopens. If an outage
+// recovery is already in progress, that always wins, since the connection is
+// genuinely down in that case.
+export function nextVoiceRebuildKind(
+  currentKind,
+  { expected = false, outageRecovery = false } = {}
+) {
+  if (outageRecovery) return 'outage'
+  if (expected || currentKind === 'intentional') return 'intentional'
+  return 'outage'
+}
+
+// Decides what cue, if any, our own channel_id change deserves:
+// 'channel_switched', 'you_kicked_channel', or null for no sound.
+//
+// While a rebuild is happening, our channel briefly reports as empty and then
+// gets set back, which is not a real kick or switch and should stay silent.
+// Only an actual channel switch the user asked for should play its cue. An
+// outage rebuild stays silent here since its own "back online" cue is played
+// elsewhere.
+export function selfChannelChime({
+  oldChannelId,
+  newChannelId,
+  awaitingRejoin,
+  rebuildKind,
+  selfDeclaredChannel
+}) {
+  if (oldChannelId === newChannelId) return null
+  if (awaitingRejoin == null) {
+    if (newChannelId != null) return 'channel_switched'
+    // A voluntary leave declares channel_id null first, so selfDeclaredChannel
+    // is already null there and this stays silent.
+    return selfDeclaredChannel != null ? 'you_kicked_channel' : null
+  }
+  if (rebuildKind === 'intentional' && oldChannelId != null && newChannelId != null) {
+    return 'channel_switched'
+  }
+  return null
+}
+
 export function isVoiceRecoveryReady({
   awaitingChannelId,
   channelId,
