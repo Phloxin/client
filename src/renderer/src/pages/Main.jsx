@@ -23,6 +23,7 @@ import IdleAnimation from '../components/IdleAnimation'
 import Settings from './Settings'
 import {
   disconnect as disconnectVoice,
+  notifyEventsSessionRestored,
   receiveVoiceTicket,
   setFocusedScreenAudio,
   setVideoStreamRoles,
@@ -1927,6 +1928,12 @@ function Main() {
       // signal resets mid-outage to shorten the backoff.
       const wasReconnecting = dropAnnounced
       if (reply.kind === 'Authenticated' || reply.kind === 'Resumed') {
+        if (wasReconnecting) {
+          // Warn level deliberately: the renderer log bridge drops anything
+          // below it, so without this an export shows only the failures and
+          // never says whether the link came back.
+          console.warn(`[Events] Reconnected after ${reconnectAttempts} attempt(s) (${reply.kind})`)
+        }
         reconnectAttempts = 0
         dropAnnounced = false
         eventsRecoveringRef.current = false
@@ -2007,6 +2014,15 @@ function Main() {
         closedByUs = true
         ws.close()
         handleDisconnect()
+      }
+
+      // Last, so the recovery refs above are settled before soup can declare a
+      // rejoin against them. Voice recovery is hard-blocked on this socket
+      // (its rejoin declaration can't be sent while the events link is down),
+      // so a voice reconnect sitting in backoff is waiting on something
+      // that's already fixed, and that backoff outlasts the rejoin timeout.
+      if (reply.kind === 'Authenticated' || reply.kind === 'Resumed') {
+        notifyEventsSessionRestored()
       }
     }
 

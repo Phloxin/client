@@ -15,9 +15,11 @@ import {
   isConsumerClosedEvent,
   isPermanentMicError,
   nextAudioConsumeRetryDelay,
+  shouldKickVoiceReconnect,
   voiceRequestError,
   voiceSocketRecoveryAction
 } from '../voiceRecoveryState'
+import { configureMediaDevices, shortDeviceId, subscribeDeviceChange } from '../mediaDevices'
 import { createSerialQueue } from '../serialQueue'
 import { codecLabel, jitterBufferAvgMs } from '../streamStats'
 import {
@@ -32,6 +34,7 @@ import {
   buildAudioGraph,
   configurePlayback,
   getPlaybackContext,
+  playbackDiagnostics,
   resetFocusedScreenAudio,
   teardownAudioGraph
 } from './playback'
@@ -140,6 +143,9 @@ configurePlayback({
   onClientSpeaking: (clientId, isSpeaking) =>
     activeCallbacks.onClientSpeaking?.(clientId, isSpeaking)
 })
+configureMediaDevices({
+  getSelectedInputId: () => lastCommittedMicSettings?.deviceId ?? null
+})
 configureScreenShare({
   getDevice: () => device,
   getProducerTransport: () => producerTransport,
@@ -192,12 +198,22 @@ let everAuthenticated = false // only auto-reconnect drops that follow a real au
 // new join. Without this, the old single-use ticket can install a stale socket
 // after the new session has already cleared intentionalClose.
 let voiceConnectionGeneration = 0
+// Why the current recovery started, and which step it's on. Both exist for
+// the log export, so a reconnect failure isn't just one undifferentiated
+// "Voice reconnect failed" that can't tell a dead events socket from a ticket
+// or auth failure.
+let lastVoiceReconnectReason = null
+let voiceConnectStep = null
 let currentSocketCloseHandler = null
 let socketCloseDeadlineTimer = null
 let mediaWatchdogTimer = null
 let mediaReadyTimer = null
 let mediaWatchdogRecoveryUsed = false
 const MEDIA_WATCHDOG_DELAY_MS = 15000
+// Re-arm interval once a check has already found media degraded. Longer than
+// the first pass, so a session that stays broken reports periodically instead
+// of filling the export.
+const MEDIA_WATCHDOG_DEGRADED_DELAY_MS = 30000
 const MEDIA_READY_SETTLE_MS = 300
 const TRANSPORT_DISCONNECTED_GRACE_MS = 8000
 
@@ -293,7 +309,14 @@ function scheduleMediaReadyCheck(generation = mediaStateGeneration) {
     clearMediaWatchdog()
     mediaWatchdogRecoveryUsed = false
     audioConsumeRecoveryUsed = false
-    emitMediaState('ready')
+    // The producer counts travel with the state so the channel component can
+    // compare them against its own roster. A lost producer replay looks
+    // exactly like a healthy empty room from in here.
+    emitMediaState('ready', {
+      knownAudioProducers: knownAudioProducers.size,
+      activeAudioConsumers: [...remoteConsumers.keys()].filter((id) => knownAudioProducers.has(id))
+        .length
+    })
   }, MEDIA_READY_SETTLE_MS)
 }
 
@@ -312,7 +335,7 @@ export function requestVoiceMediaRecovery(reason = 'Voice media recovery failed'
   return true
 }
 
-function armMediaWatchdog(generation) {
+function armMediaWatchdog(generation, delay = MEDIA_WATCHDOG_DELAY_MS) {
   clearMediaWatchdog()
   mediaWatchdogTimer = setTimeout(() => {
     mediaWatchdogTimer = null
@@ -322,19 +345,58 @@ function armMediaWatchdog(generation) {
       knownAudioProducers.has(id)
     ).length
     const localReady = localAudioIsReady()
+    const resolved = localReady && remoteAudioIsReady()
     console.warn(
-      `[Soup] media watchdog generation=${generation} local=${localReady} remote=${activeRemote}/${expectedRemote}`
+      `[Soup] media watchdog generation=${generation} local=${localReady} ` +
+        `remote=${activeRemote}/${expectedRemote} ${playbackDiagnostics()}`
     )
+    // Media came back between the arm and the fire, so the ready check now
+    // owns it and there's nothing left to watch here.
+    if (resolved) {
+      scheduleMediaReadyCheck(generation)
+      return
+    }
     if (!localReady) {
-      requestVoiceMediaRecovery('Local microphone was not ready after reconnect')
+      // A publish already working is the repair, so tearing the socket down
+      // under it would only restart the same work from further back. The
+      // recovery budget is one-shot. Once it's spent, this is the only thing
+      // that keeps checking, so it has to re-arm itself, otherwise a failure
+      // on a socket that stays healthy never gets looked at again.
+      if (
+        publishInFlight != null ||
+        !requestVoiceMediaRecovery('Local microphone was not ready after reconnect')
+      ) {
+        armMediaWatchdog(generation, MEDIA_WATCHDOG_DEGRADED_DELAY_MS)
+      }
       return
     }
     // A missing remote is retried by ensureAudioConsumer; invoke it again here
     // in case an earlier timer was canceled while the transport was resetting.
     for (const producerId of knownAudioProducers.keys()) ensureAudioConsumer(producerId)
     scheduleMediaReadyCheck(generation)
-  }, MEDIA_WATCHDOG_DELAY_MS)
+    armMediaWatchdog(generation, MEDIA_WATCHDOG_DEGRADED_DELAY_MS)
+  }, delay)
 }
+
+// A device re-enumerating is the only event that can fix a capture that
+// failed because it was missing, and 15s of extra silence waiting for the
+// next routine check is most of the outage. This only brings an already-armed
+// check forward, and only over a healthy idle session. A reconnect or a
+// publish in flight is already the repair and must not be raced.
+const MEDIA_WATCHDOG_DEVICE_DELAY_MS = 3000
+subscribeDeviceChange(() => {
+  if (
+    intentionalClose ||
+    mediaWatchdogTimer == null ||
+    reconnectInFlight ||
+    reconnectTimer != null ||
+    publishInFlight != null ||
+    ws?.readyState !== WebSocket.OPEN ||
+    localAudioIsReady()
+  )
+    return
+  armMediaWatchdog(mediaStateGeneration, MEDIA_WATCHDOG_DEVICE_DELAY_MS)
+})
 
 // ─── Pending response handlers ───────────────────────────────────
 const pendingHandlers = []
@@ -724,6 +786,7 @@ export async function connect(callbacks = {}) {
   intentionalClose = false
   everAuthenticated = false
   reconnectAttempts = 0
+  lastVoiceReconnectReason = null
   audioConsumeRecoveryUsed = false
   mediaWatchdogRecoveryUsed = false
   // Cancel any pending reconnect from a prior session so it can't fire alongside
@@ -828,6 +891,7 @@ async function acquireTicket() {
 async function openSocket(connectionGeneration = voiceConnectionGeneration) {
   if (ws) throw new Error('A voice socket is already closing or connected')
   // Step 1 — get ticket, and the endpoint it is good for
+  voiceConnectStep = 'ticket'
   const acquired = await acquireTicket()
   // Acquiring waits on the server's push (and possibly the network), so the
   // user may have left meanwhile — opening now would orphan a socket that
@@ -846,6 +910,7 @@ async function openSocket(connectionGeneration = voiceConnectionGeneration) {
 
   // Step 2 — connect to voice WebSocket, on the voice host when the server
   // named one and on the API host otherwise.
+  voiceConnectStep = 'auth'
   const url = voiceSocketUrl(voiceEndpoint)
   console.log('[Soup] Voice endpoint:', url)
   const socket = new WebSocket(url)
@@ -902,6 +967,15 @@ async function openSocket(connectionGeneration = voiceConnectionGeneration) {
       if (authenticationSettled) return
       console.log('[Soup] Authenticated')
       iceServers = message.ice_servers ?? []
+      // Recovery outcomes have to reach pylon.log, and only warn/error do
+      // (src/main/diagnostics.js drops the rest). Without this an export shows
+      // every failed attempt and never says whether the session came back.
+      if (everAuthenticated) {
+        console.warn(
+          `[Soup] Voice reconnected (attempt ${reconnectAttempts || 1} after ${lastVoiceReconnectReason ?? 'socket close'})`
+        )
+      }
+      lastVoiceReconnectReason = null
       everAuthenticated = true
       reconnectAttempts = 0
       emitMediaState('authenticated')
@@ -1073,6 +1147,7 @@ async function openSocket(connectionGeneration = voiceConnectionGeneration) {
       // Unexpected drop after a healthy session — keep the user "joined" and
       // recover in the background. Remote tiles are cleared now and re-arrive
       // via replayed NewProducer once we're back; mic is re-published on auth.
+      lastVoiceReconnectReason ??= `socket close ${event.code || 'no code'}`
       activeCallbacks.onReconnecting?.()
       scheduleVoiceReconnect()
     }
@@ -1140,12 +1215,13 @@ async function attemptReconnect() {
   if (intentionalClose || reconnectInFlight) return
   const connectionGeneration = voiceConnectionGeneration
   reconnectInFlight = true
+  voiceConnectStep = 'rejoin'
   try {
     await activeCallbacks.onReconnectRejoin?.()
     if (intentionalClose || connectionGeneration !== voiceConnectionGeneration) return
     await openSocket(connectionGeneration)
   } catch (err) {
-    console.error('[Soup] Voice reconnect failed:', err)
+    console.error(`[Soup] Voice reconnect failed at ${voiceConnectStep ?? 'unknown'} step:`, err)
     scheduleVoiceReconnect()
   } finally {
     reconnectInFlight = false
@@ -1159,6 +1235,7 @@ async function attemptReconnect() {
 // intentional session.
 function forceVoiceReconnect(reason) {
   if (!everAuthenticated || intentionalClose) return
+  lastVoiceReconnectReason = reason
   const action = voiceSocketRecoveryAction(ws?.readyState)
   // A socket that still thinks it's open/connecting is the half-open case:
   // close it so onclose runs the normal teardown + reconnect path.
@@ -1182,6 +1259,33 @@ function forceVoiceReconnect(reason) {
     clearTimeout(reconnectTimer)
     reconnectTimer = null
   }
+  reconnectAttempts = 0
+  attemptReconnect()
+}
+
+// The events socket finished a handshake. Voice recovery is hard-blocked on
+// it: the rejoin declaration that makes the server mint a ticket throws while
+// it's down, so every attempt during an events outage fails for a reason the
+// voice backoff can't see. That backoff caps at 30s, which outlives the UI's
+// rejoin timeout, so without this kick an events restore can sit out a delay
+// longer than the window recovery is still allowed to succeed in.
+export function notifyEventsSessionRestored() {
+  if (
+    !shouldKickVoiceReconnect({
+      everAuthenticated,
+      intentionalClose,
+      reconnectPending: reconnectTimer != null,
+      reconnectInFlight,
+      reconnectAttempts
+    })
+  )
+    return
+  // A socket that still exists owns its own teardown. Starting a replacement
+  // now would preserve its dead transports (same rule as forceVoiceReconnect).
+  if (voiceSocketRecoveryAction(ws?.readyState) !== 'retry') return
+  console.warn('[Soup] Events session restored, retrying voice connection now')
+  clearTimeout(reconnectTimer)
+  reconnectTimer = null
   reconnectAttempts = 0
   attemptReconnect()
 }
@@ -1290,15 +1394,21 @@ function setRawMicStream(stream) {
         return
       rawMicEndedRepairGeneration = mediaStateGeneration
       const settings = lastCommittedMicSettings
-      console.warn('[Soup] Raw microphone track ended; attempting one repair')
+      console.warn('[Soup] Raw microphone track ended, attempting one repair')
       if (!settings || !producerTransport || producerTransport.closed) {
         requestVoiceMediaRecovery('Microphone capture ended')
         return
       }
       republish(settings).catch((err) => {
         if (isPermanentMicError(err)) {
-          console.error('[Soup] Microphone capture needs user action:', err.name, err.message)
+          console.error('[Soup] Microphone capture needs user action:', micFailureDetail(err))
           emitMediaState('failed', { reason: err.name })
+          return
+        }
+        if (err?.micCaptureFailure) {
+          // The device is absent, not the session. doRepublish already armed
+          // the watchdog for this. A reconnect would only cost an outage.
+          console.warn('[Soup] Microphone repair failed:', micFailureDetail(err))
           return
         }
         requestVoiceMediaRecovery('Microphone republish failed')
@@ -1376,6 +1486,16 @@ function mapTransportParams(params) {
     iceCandidates: params.ice_candidates,
     dtlsParameters: params.dtls_parameters
   }
+}
+
+// OverconstrainedError's message is empty in Chromium, and the offending
+// constraint is only on err.constraint. Without this, a capture failure is
+// indistinguishable in a log export from any other device error.
+function micFailureDetail(err, micSettings) {
+  const constraint = err?.constraint ? ` constraint=${err.constraint}` : ''
+  const deviceId =
+    micSettings === undefined ? lastCommittedMicSettings?.deviceId : micSettings?.deviceId
+  return `${err?.name ?? 'Error'}: ${err?.message || '(no message)'}${constraint} requested=${shortDeviceId(deviceId)}`
 }
 
 // ─── Publish: send local audio ───────────────────────────────────
@@ -1541,9 +1661,16 @@ async function doPublish(micSettings, onStream, generation) {
   try {
     stream = await acquireMicCapture(micSettings, rawMicStream)
   } catch (err) {
-    console.error('[Soup] getUserMedia failed:', err.name, err.message)
+    console.error('[Soup] getUserMedia failed:', micFailureDetail(err, micSettings))
     // Preserve the browser error name so callers can distinguish a temporary
-    // device handoff from permission/constraint failures that need user action.
+    // device handoff from permission/constraint failures that need user action,
+    // and mark it as capture acquisition: a voice-socket reconnect is not a
+    // repair for a device that is not plugged in.
+    try {
+      if (err != null && typeof err === 'object') err.micCaptureFailure = true
+    } catch {
+      // A non-extensible platform error only costs the caller this hint.
+    }
     throw err
   }
 
@@ -1714,7 +1841,9 @@ const micRepublishRecoveryEnv = {
     if (audioProcessorStop === previousStop) audioProcessorStop = null
   },
   onCommit: commitRepublishedMicProcessing,
-  onError: (phase, err) => console.error(`[Soup] Failed ${phase}:`, err)
+  // The committed profile is what a restore reopens, so its deviceId is the one
+  // that failed here.
+  onError: (phase, err) => console.error(`[Soup] Failed ${phase}:`, micFailureDetail(err), err)
 }
 
 function restoreCommittedMicCapture(options) {
@@ -1796,7 +1925,7 @@ async function doRepublish(micSettings, onStream, expectedGeneration, { graphOnl
   try {
     stream = await acquireMicCapture(micSettings, previousRawStream)
   } catch (err) {
-    console.error('[Soup] republish getUserMedia failed:', err.name, err.message)
+    console.error('[Soup] republish getUserMedia failed:', micFailureDetail(err, micSettings))
     if (!isCurrent()) throw mediaResetError()
     const restored = await restoreCommittedMicCapture({
       audioProducers,
@@ -1809,10 +1938,21 @@ async function doRepublish(micSettings, onStream, expectedGeneration, { graphOnl
       isCurrent
     })
     if (!restored && isCurrent()) {
-      requestVoiceMediaRecovery('Microphone rollback failed')
+      // Deliberately not requestVoiceMediaRecovery. A voice-socket reconnect
+      // can't conjure a device that isn't plugged in, and spending the
+      // one-shot budget here disarmed the watchdog for the rest of the
+      // session in the field. The publish ladder owns device loss, the
+      // watchdog stays as the backstop for whatever it can't fix.
+      console.warn(
+        '[Soup] Microphone rollback failed after a capture failure, watching local media'
+      )
+      armMediaWatchdog(mediaStateGeneration)
     }
     const wrapped = new Error(`Failed to get audio device: ${err.message}`, { cause: err })
     wrapped.name = err?.name ?? 'Error'
+    // Callers must be able to tell "the device is gone" from a transport or
+    // produce failure, which a reconnect really can repair.
+    wrapped.micCaptureFailure = true
     throw wrapped
   }
 

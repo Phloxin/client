@@ -1,13 +1,17 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  MIC_PUBLISH_RETRY_DELAYS_MS,
   allKnownAudioConsumersReady,
   isConsumerClosedEvent,
   isPermanentMicError,
   isVoiceRecoveryReady,
   nextAudioConsumeRetryDelay,
+  nextMicPublishRetryDelay,
   nextVoiceRebuildKind,
   selfChannelChime,
+  shouldFallBackToDefaultInput,
+  shouldKickVoiceReconnect,
   voiceRequestError,
   voiceSocketRecoveryAction
 } from './voiceRecoveryState.js'
@@ -16,13 +20,65 @@ test('audio consume retries are bounded', () => {
   assert.deepEqual([0, 1, 2, 3].map(nextAudioConsumeRetryDelay), [250, 750, 2000, null])
 })
 
-test('only device/permission mic failures are permanent', () => {
+test('only mic failures needing user action are permanent', () => {
   assert.equal(isPermanentMicError({ name: 'NotAllowedError' }), true)
   assert.equal(isPermanentMicError({ name: 'SecurityError' }), true)
-  assert.equal(isPermanentMicError({ name: 'OverconstrainedError' }), true)
-  assert.equal(isPermanentMicError({ name: 'NotFoundError' }), true)
+  // A device that is merely absent comes back on its own. Classifying it as
+  // permanent is what left the logged incident silent for the whole session.
+  assert.equal(isPermanentMicError({ name: 'OverconstrainedError' }), false)
+  assert.equal(isPermanentMicError({ name: 'NotFoundError' }), false)
   assert.equal(isPermanentMicError({ name: 'AbortError' }), false)
   assert.equal(isPermanentMicError(new Error('network')), false)
+})
+
+test('the mic publish ladder grows and then holds', () => {
+  assert.deepEqual([0, 1, 2, 3, 4].map(nextMicPublishRetryDelay), MIC_PUBLISH_RETRY_DELAYS_MS)
+  // Held, not exhausted: only leaving the channel stops the ladder, because a
+  // re-plugged device is invisible until getUserMedia is tried again.
+  const held = MIC_PUBLISH_RETRY_DELAYS_MS[MIC_PUBLISH_RETRY_DELAYS_MS.length - 1]
+  assert.equal(nextMicPublishRetryDelay(5), held)
+  assert.equal(nextMicPublishRetryDelay(50), held)
+  assert.equal(nextMicPublishRetryDelay(-1), MIC_PUBLISH_RETRY_DELAYS_MS[0])
+})
+
+test('the default input is only used once the selected one is really gone', () => {
+  const gone = {
+    errorName: 'OverconstrainedError',
+    selectedDeviceId: 'headset',
+    availableInputIds: ['builtin']
+  }
+  assert.equal(shouldFallBackToDefaultInput(gone), true)
+  assert.equal(shouldFallBackToDefaultInput({ ...gone, errorName: 'NotFoundError' }), true)
+  // Still enumerated: the failure is something else, and falling back would
+  // move the user off the device they chose for no reason.
+  assert.equal(
+    shouldFallBackToDefaultInput({ ...gone, availableInputIds: ['builtin', 'headset'] }),
+    false
+  )
+  assert.equal(shouldFallBackToDefaultInput({ ...gone, errorName: 'NotReadableError' }), false)
+  assert.equal(shouldFallBackToDefaultInput({ ...gone, selectedDeviceId: 'default' }), false)
+  // enumerateDevices() itself failed, so absence is unproven.
+  assert.equal(shouldFallBackToDefaultInput({ ...gone, availableInputIds: null }), false)
+})
+
+test('an events restore only kicks a voice reconnect that is actually stalled', () => {
+  const live = { everAuthenticated: true, intentionalClose: false }
+  assert.equal(shouldKickVoiceReconnect({ ...live, reconnectPending: true }), true)
+  assert.equal(shouldKickVoiceReconnect({ ...live, reconnectAttempts: 3 }), true)
+  // Healthy session: nothing is waiting on the events socket.
+  assert.equal(shouldKickVoiceReconnect({ ...live, reconnectAttempts: 0 }), false)
+  assert.equal(
+    shouldKickVoiceReconnect({ ...live, reconnectPending: true, reconnectInFlight: true }),
+    false
+  )
+  assert.equal(
+    shouldKickVoiceReconnect({ ...live, intentionalClose: true, reconnectPending: true }),
+    false
+  )
+  assert.equal(
+    shouldKickVoiceReconnect({ everAuthenticated: false, reconnectPending: true }),
+    false
+  )
 })
 
 test('media readiness requires a consumer for every known remote microphone', () => {
