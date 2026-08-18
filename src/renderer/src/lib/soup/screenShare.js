@@ -696,6 +696,7 @@ async function stopShareContext(ctx, { notifyServer = true } = {}) {
   // like a capture failure and trigger recovery.
   clearScreenRecoveryTimers(ctx)
   detachScreenTrackWatch(ctx)
+  detachWindowFollow(ctx)
 
   ctx.statsStop?.()
   ctx.statsStop = null
@@ -974,6 +975,31 @@ function watchScreenTrack(ctx, track) {
   ctx.trackWatch = { track, handlers }
 }
 
+// ─── Window following ────────────────────────────────────────────
+// The main process watches the shared window and moves the share onto the
+// window that replaces it - a game opening out of its client, and that client
+// coming back when the game exits (see main/windowFollow.js). Moving the
+// share means re-acquiring the source and swapping the track in, which is
+// exactly what recovery already does, so this just runs the same path.
+
+function watchWindowFollow(ctx) {
+  const ipc = window.electron?.ipcRenderer
+  if (!ipc) return
+  ctx.followWatch = ipc.on('screen-follow', (_, { name } = {}) => {
+    if (!isActiveShare(ctx)) return
+    console.log(`[Soup] Shared window moved to "${name}"`)
+    void recoverScreenShare(ctx, 'window-follow')
+  })
+}
+
+function detachWindowFollow(ctx) {
+  ctx.followWatch?.()
+  ctx.followWatch = null
+  // Main polls for as long as a share is running, and only the renderer knows
+  // that this one has ended.
+  if (ctx.type === 'screen') window.electron?.ipcRenderer?.send('end-screen-share')
+}
+
 // Resets the recovery attempt count once a share has run stably for a while,
 // so repeated fullscreen toggles over a long stream don't exhaust it.
 function scheduleRecoveryStabilityReset(ctx) {
@@ -1170,6 +1196,8 @@ export async function shareScreen({
     trackWatch: null,
     muteTimer: null,
     stabilityTimer: null,
+    // Unsubscribe for the 'screen-follow' listener, see window following above.
+    followWatch: null,
     optimizeFor,
     onEncoderStats,
     cpuStrikes: 0,
@@ -1209,6 +1237,7 @@ export async function shareScreen({
     // A capture that ends or stalls may be recoverable, so watch it instead
     // of tearing the share down directly. See the recovery section above.
     watchScreenTrack(ctx, track)
+    watchWindowFollow(ctx)
     track.contentHint = optimizeFor === 'motion' ? 'motion' : 'detail'
 
     const settings = track.getSettings()

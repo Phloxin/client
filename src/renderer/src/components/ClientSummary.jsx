@@ -5,6 +5,7 @@ import { RoleIcon } from '../lib/roleIcon'
 import { useClientActions } from '../context/ClientActionsContext'
 import { statusOf, STATUS_LABELS } from '../lib/presence'
 import { useMenuPosition } from '../lib/menuPosition'
+import { renderInlineMarkdown } from '../lib/markdown'
 import { useImageColors, bannerGradient } from '../lib/imageColors'
 import { fileToAvatarDataUrl } from '../lib/avatarFile'
 import ImageViewer from './ImageViewer'
@@ -147,7 +148,9 @@ function ClientSummary({ client, roles = [], vanity = [], isSelf = false, onSetA
         )}
         <span className="client-summary-name">{client?.name ?? 'Unknown user'}</span>
         {presence?.status_message && (
-          <span className="client-summary-status-box">{presence.status_message}</span>
+          <span className="client-summary-status-box">
+            {renderInlineMarkdown(presence.status_message)}
+          </span>
         )}
       </div>
 

@@ -244,6 +244,47 @@ pub fn list_apps() -> Result<Vec<AudioApp>, String> {
   Ok(Vec::new())
 }
 
+// ─── Window ownership (screen-share window following) ────────────
+// desktopCapturer hands out window ids but no process information, so the
+// main process can't tell that a game window belongs to the launcher it was
+// started from. These two expose just enough to work that out in JS.
+
+/// Owning process id for each desktopCapturer source id, 0 when the window is
+/// gone or the id isn't a window (a "screen:" id, for instance).
+pub fn window_pids(ids: &[String]) -> Vec<u32> {
+  ids.iter().map(|id| resolve_target_pid(id).unwrap_or(0)).collect()
+}
+
+/// pid/parent/executable for every running process, for walking a window's
+/// process back to the application that launched it.
+pub fn list_processes() -> Result<Vec<crate::ProcessEntry>, String> {
+  unsafe {
+    let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+      .map_err(|e| format!("process snapshot: {e}"))?;
+    let mut entry = PROCESSENTRY32W {
+      dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+      ..Default::default()
+    };
+    let mut processes = Vec::new();
+    if Process32FirstW(snapshot, &mut entry).is_ok() {
+      loop {
+        // szExeFile is a fixed-size, null-terminated UTF-16 buffer.
+        let len = entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(entry.szExeFile.len());
+        processes.push(crate::ProcessEntry {
+          pid: entry.th32ProcessID,
+          ppid: entry.th32ParentProcessID,
+          exe: String::from_utf16_lossy(&entry.szExeFile[..len]),
+        });
+        if Process32NextW(snapshot, &mut entry).is_err() {
+          break;
+        }
+      }
+    }
+    let _ = CloseHandle(snapshot);
+    Ok(processes)
+  }
+}
+
 // ─── Capture session ─────────────────────────────────────────────
 
 pub fn spawn(

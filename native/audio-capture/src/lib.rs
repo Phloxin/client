@@ -93,6 +93,43 @@ pub fn list_apps() -> Result<Vec<AudioApp>> {
   }
 }
 
+/// One running process, for relating a window back to the application that
+/// launched it (see windowFollow.js in the main process).
+#[napi(object)]
+pub struct ProcessEntry {
+  pub pid: u32,
+  pub ppid: u32,
+  pub exe: String,
+}
+
+/// Owning process id for each desktopCapturer source id, in the same order.
+/// 0 means the window is gone or the id isn't a capturable window. Empty on
+/// platforms with no window-following support.
+#[napi]
+pub fn window_pids(ids: Vec<String>) -> Vec<u32> {
+  #[cfg(target_os = "windows")]
+  {
+    windows::window_pids(&ids)
+  }
+  #[cfg(not(target_os = "windows"))]
+  {
+    vec![0; ids.len()]
+  }
+}
+
+/// Every running process as { pid, ppid, exe }. Empty where unsupported.
+#[napi]
+pub fn list_processes() -> Result<Vec<ProcessEntry>> {
+  #[cfg(target_os = "windows")]
+  {
+    windows::list_processes().map_err(|e| Error::new(Status::GenericFailure, e))
+  }
+  #[cfg(not(target_os = "windows"))]
+  {
+    Ok(Vec::new())
+  }
+}
+
 /// A running capture. Frames arrive on `on_frame` as Buffers of FRAME_BYTES
 /// (10ms interleaved f32le stereo @ 48kHz), called from a capture thread via
 /// a threadsafe function. Fatal capture errors arrive on `on_error`, after

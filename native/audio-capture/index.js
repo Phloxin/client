@@ -590,4 +590,6 @@ module.exports = nativeBinding
 module.exports.CaptureSession = nativeBinding.CaptureSession
 module.exports.capabilities = nativeBinding.capabilities
 module.exports.listApps = nativeBinding.listApps
+module.exports.listProcesses = nativeBinding.listProcesses
 module.exports.startCapture = nativeBinding.startCapture
+module.exports.windowPids = nativeBinding.windowPids

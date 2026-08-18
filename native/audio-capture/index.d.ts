@@ -43,4 +43,24 @@ export interface CaptureOptions {
 
 export declare function listApps(): Array<AudioApp>
 
+/** Every running process as { pid, ppid, exe }. Empty where unsupported. */
+export declare function listProcesses(): Array<ProcessEntry>
+
+/**
+ * One running process, for relating a window back to the application that
+ * launched it (see windowFollow.js in the main process).
+ */
+export interface ProcessEntry {
+  pid: number
+  ppid: number
+  exe: string
+}
+
 export declare function startCapture(options: CaptureOptions, onFrame: ((err: Error | null, arg: Buffer) => any), onError: ((err: Error | null, arg: string) => any)): CaptureSession
+
+/**
+ * Owning process id for each desktopCapturer source id, in the same order.
+ * 0 means the window is gone or the id isn't a capturable window. Empty on
+ * platforms with no window-following support.
+ */
+export declare function windowPids(ids: Array<string>): Array<number>

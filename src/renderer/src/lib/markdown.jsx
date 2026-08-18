@@ -309,3 +309,13 @@ export function renderMarkdown(source, resolveMention) {
   const tree = parser(`${normalizeBlocks(source)}\n\n`, { inline: false, resolveMention })
   return renderNodes(tree)
 }
+
+// Same rules, inline only: links (bare or `[text](url)`), emphasis and code,
+// but no headings, code blocks, quotes or tables. For the one-line slots that
+// show user text outside the message list — channel descriptions and status
+// messages — where a link should still be clickable but a heading would blow
+// the layout apart.
+export function renderInlineMarkdown(source, resolveMention) {
+  if (!source) return null
+  return renderNodes(parser(source, { inline: true, resolveMention }))
+}
