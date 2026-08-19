@@ -7,6 +7,7 @@ import { cdnUrl } from '../lib/serverConfig'
 import { fileToAvatarDataUrl } from '../lib/avatarFile'
 import { useImageColors, bannerGradient } from '../lib/imageColors'
 import { useMenuPosition } from '../lib/menuPosition'
+import { renderInlineMarkdown } from '../lib/markdown'
 
 // Inline editor for the channel description. Mirrors ChatPanel's MessageEditor:
 // auto-grows, Enter saves, Shift+Enter newlines, Escape cancels. Empty is allowed
@@ -201,7 +202,7 @@ function ChannelSummary({
             onCancel={() => setEditing(false)}
           />
         ) : description ? (
-          <p className="client-summary-value">{description}</p>
+          <p className="client-summary-value">{renderInlineMarkdown(description)}</p>
         ) : (
           <p className="client-summary-placeholder">No description set.</p>
         )}

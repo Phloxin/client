@@ -11,6 +11,7 @@ import {
   powerSaveBlocker
 } from 'electron'
 import { basename, join } from 'path'
+import { createRequire } from 'node:module'
 import { readFileSync, writeFileSync, unlinkSync } from 'fs'
 import http from 'http'
 import https from 'https'
@@ -20,6 +21,8 @@ import iconIco from '../../build/icon.ico?asset'
 // Windows taskbar/window uses the .ico; other platforms keep the png.
 const icon = process.platform === 'win32' ? iconIco : iconPng
 import { setupGlobalKeybinds, stopGlobalKeybinds } from './keybinds'
+import { matchScreenSource } from './screenSourceMatch'
+import { appRoot, pickFollowTarget } from './windowFollow'
 import { setupAudioCapture, stopAudioCaptureHost } from './audioCapture'
 import { setupUpdater } from './updater'
 import { setupTray, setTrayVoiceState, destroyTray } from './tray'
@@ -563,7 +566,201 @@ app.whenReady().then(() => {
   ipcMain.handle('prepare-screen-share', (_, options = {}) => {
     selectedScreenSourceId = typeof options.sourceId === 'string' ? options.sourceId : null
     selectedAudioMode = typeof options.audioMode === 'string' ? options.audioMode : 'none'
+    startWindowFollow(selectedScreenSourceId)
     return true
+  })
+
+  // The renderer stops shares on its own, so it has to say so - otherwise the
+  // follow poll below would keep enumerating windows for a share that ended.
+  ipcMain.on('end-screen-share', () => stopWindowFollow())
+
+  // ─── Window following ──────────────────────────────────────────
+  // A game launched from its client draws into a brand new window and hides
+  // the one being shared, so a share pinned to a single window handle just
+  // freezes on the hidden client. Watch the capturable windows while a window
+  // share runs and move the share onto the window that replaced it, then back
+  // again when that window closes. The decision itself is in windowFollow.js.
+
+  // How often the capturable windows are re-enumerated while a window share is
+  // running. Only matters for the case where the shared window is hidden
+  // rather than closed, since a closed window ends the track and asks us
+  // directly through 'resolve-screen-source'.
+  const WINDOW_FOLLOW_POLL_MS = 2000
+
+  // { sourceId, root, knownIds, previous, timer } while a window share runs.
+  let follow = null
+
+  // The addon is built locally, so a checkout with no Rust toolchain has no
+  // .node binary. Load it lazily and just leave following switched off, the
+  // same way the audio host degrades.
+  let followNative
+  function loadFollowNative() {
+    if (followNative !== undefined) return followNative
+    try {
+      followNative = createRequire(import.meta.url)('audio-capture')
+    } catch (err) {
+      console.warn(
+        '[Main] Window following unavailable (audio-capture addon not built):',
+        err?.message ?? err
+      )
+      followNative = null
+    }
+    return followNative
+  }
+
+  function stopWindowFollow() {
+    if (follow?.timer) clearInterval(follow.timer)
+    follow = null
+  }
+
+  function startWindowFollow(sourceId) {
+    stopWindowFollow()
+    // Screens don't get replaced by other screens, and Wayland shares have no
+    // stable id to follow in the first place.
+    if (!sourceId?.startsWith('window:') || isWayland) return
+    const native = loadFollowNative()
+    if (!native) return
+
+    let root = null
+    try {
+      // Recorded now, while the launcher is still alive: some clients exit as
+      // soon as their game starts, and the process tree goes with them.
+      root = appRoot(native.windowPids([sourceId])[0], native.listProcesses())
+    } catch (err) {
+      console.warn('[Main] Could not resolve the shared window process:', err?.message ?? err)
+      return
+    }
+    if (root == null) return
+
+    follow = {
+      sourceId,
+      name: cachedScreenSources.find((source) => source.id === sourceId)?.name ?? null,
+      root,
+      knownIds: cachedScreenSources.map((source) => source.id),
+      previous: [],
+      timer: setInterval(() => {
+        void runWindowFollow()
+      }, WINDOW_FOLLOW_POLL_MS)
+    }
+  }
+
+  // Runs the follow decision against a fresh enumeration and commits the move.
+  // Returns the source the share should switch to, or null to stay put.
+  async function resolveFollowTarget() {
+    if (!follow) return null
+    const native = loadFollowNative()
+    if (!native) return null
+
+    // No thumbnails: this runs on a timer and only the ids and names matter.
+    const sources = await desktopCapturer.getSources({
+      types: ['window'],
+      thumbnailSize: { width: 0, height: 0 }
+    })
+    // The share may have ended while the enumeration was in flight.
+    if (!follow) return null
+
+    const ids = sources.map((source) => source.id)
+    const pids = native.windowPids(ids)
+    const target = pickFollowTarget({
+      shared: { id: follow.sourceId, root: follow.root },
+      candidates: sources.map((source, index) => ({
+        id: source.id,
+        name: source.name,
+        pid: pids[index] ?? 0
+      })),
+      processes: native.listProcesses(),
+      knownIds: follow.knownIds,
+      previous: follow.previous
+    })
+    if (!target) return null
+
+    // Going back drops the trail down to the window we returned to; going
+    // forward remembers the window we left, so it can be returned to later.
+    follow.previous =
+      target.via === 'previous'
+        ? follow.previous.slice(0, follow.previous.indexOf(target.id))
+        : [...follow.previous, follow.sourceId]
+    follow.sourceId = target.id
+    follow.name = target.name
+    follow.knownIds = ids
+    cachedScreenSources = sources
+    selectedScreenSourceId = target.id
+    console.log(`[Main] Screen share following window "${target.name}" (${target.via})`)
+    return target
+  }
+
+  async function runWindowFollow() {
+    try {
+      const target = await resolveFollowTarget()
+      // The renderer re-acquires through the same path it uses when a capture
+      // dies, which swaps the new track into the running producer.
+      if (target && mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('screen-follow', { sourceId: target.id, name: target.name })
+      }
+    } catch (err) {
+      console.warn('[Main] Window follow poll failed:', err?.message ?? err)
+    }
+  }
+
+  // Finds the source a dying screen share was using so the renderer can
+  // re-request it and swap the fresh track into the existing producer.
+  ipcMain.handle('resolve-screen-source', async (_, options = {}) => {
+    const previousSourceId =
+      typeof options.previousSourceId === 'string' ? options.previousSourceId : null
+    // Wayland has no id based selection, so retrying would pop a picker
+    // dialog with no user action behind it. Skip recovery there.
+    if (!previousSourceId || isWayland) return { recoverable: false }
+
+    try {
+      // A poll may already have moved this share, in which case the renderer is
+      // asking about the window it was on before that landed. Hand back where
+      // the share actually is now rather than re-resolving a window we left on
+      // purpose - name matching would find nothing and end the share.
+      if (follow && follow.sourceId !== previousSourceId) {
+        selectedAudioMode = 'none'
+        return { recoverable: true, sourceId: follow.sourceId, name: follow.name }
+      }
+
+      // The shared window may have been replaced by another window of the same
+      // application rather than simply lost - a game opening out of its client,
+      // or that client coming back when the game exits. Asked here as well as
+      // on the poll, so a window that closes outright is handled immediately
+      // instead of waiting for the next tick.
+      const followed = await resolveFollowTarget()
+      if (followed) {
+        // Only video is re-acquired, as below: the audio producer keeps running.
+        selectedAudioMode = 'none'
+        return { recoverable: true, sourceId: followed.id, name: followed.name }
+      }
+
+      const previousName =
+        cachedScreenSources.find((source) => source.id === previousSourceId)?.name ??
+        (typeof options.previousSourceName === 'string' ? options.previousSourceName : null)
+      const sources = await desktopCapturer.getSources({
+        types: [previousSourceId.startsWith('screen:') ? 'screen' : 'window']
+      })
+      const match = matchScreenSource(sources, { id: previousSourceId, name: previousName })
+      if (!match) {
+        console.warn('[Main] Could not re-resolve the shared source; ending the share', {
+          previousSourceId,
+          named: previousName != null
+        })
+        return { recoverable: false }
+      }
+
+      cachedScreenSources = sources
+      selectedScreenSourceId = match.id
+      // Keep following the window under its new id, or the next follow check
+      // would compare against an id that no longer exists.
+      if (follow) follow.sourceId = match.id
+      // Only video is re-acquired here. The audio producer is left alone so
+      // it doesn't get duplicated.
+      selectedAudioMode = 'none'
+      return { recoverable: true, sourceId: match.id, name: match.name }
+    } catch (err) {
+      console.error('[Main] Failed to re-resolve the shared screen source:', err)
+      return { recoverable: false }
+    }
   })
 
   // Packaged builds load the renderer from file://, which has a null origin, so

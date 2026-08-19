@@ -1,4 +1,5 @@
 import { getServerHost } from '../serverConfig'
+import { configureMediaDevices, shortDeviceId } from '../mediaDevices'
 import { createSpeakingDetector } from './localAudio'
 
 let getRemoteConsumers = () => new Map()
@@ -103,6 +104,7 @@ export function getPlaybackContext() {
     playbackContext = new (window.AudioContext || window.webkitAudioContext)({
       sampleRate: 48000
     })
+    watchPlaybackContext(playbackContext)
     applyOutputDeviceToContext()
   }
   if (playbackContext.state === 'suspended') {
@@ -111,16 +113,81 @@ export function getPlaybackContext() {
   return playbackContext
 }
 
+// Every audible remote stream renders through this one context, created once
+// per app launch. If it stops running, the user hears nobody for the rest of
+// the session with nothing in the log to say so. The error event is the
+// spec's signal for "the selected sink device was removed".
+function watchPlaybackContext(context) {
+  context.addEventListener?.('statechange', () => {
+    if (context !== playbackContext) return
+    reportPlaybackDown(`state=${context.state}`)
+  })
+  context.addEventListener?.('error', (event) => {
+    if (context !== playbackContext) return
+    console.warn('[Soup] playback context error:', event?.type ?? 'error')
+    reportPlaybackDown('error event')
+  })
+}
+
+function hasLiveRemoteAudio() {
+  for (const entry of getRemoteConsumers().values()) {
+    if (entry.kind === 'audio') return true
+  }
+  return false
+}
+
+// Detection only: a suspended context with live consumers, or an error event,
+// means playback is down. Resuming is the one repair that's safe today.
+// Recreating the context is deliberately not attempted until a field export
+// says which of the two failure modes actually happens.
+function reportPlaybackDown(reason) {
+  const context = playbackContext
+  if (!context) return
+  if (context.state === 'running') {
+    console.warn(`[Soup] playback context ${reason} (${describePlayback(context)})`)
+    return
+  }
+  if (context.state === 'suspended' && !hasLiveRemoteAudio()) return
+  console.warn(`[Soup] playback context down: ${reason} (${describePlayback(context)})`)
+  context
+    .resume()
+    .then(() => {
+      if (context !== playbackContext) return
+      console.warn(`[Soup] playback context resumed (${describePlayback(context)})`)
+    })
+    .catch((err) => console.warn('[Soup] playback context resume failed:', err))
+}
+
+function describePlayback(context) {
+  return `state=${context.state} sink=${shortDeviceId(context.sinkId ?? '')} baseLatency=${context.baseLatency ?? '?'}`
+}
+
+// A snapshot for the media watchdog's warning line. This is the single best
+// field signal we get, and playback is the half the watchdog can't see.
+export function playbackDiagnostics() {
+  if (!playbackContext) return 'playback=none'
+  return `playback=${describePlayback(playbackContext)}`
+}
+
 // Route the whole playback context to the chosen output device. AudioContext
 // uses '' for the system default (unlike HTMLMediaElement which takes 'default').
 function applyOutputDeviceToContext() {
   if (playbackContext && typeof playbackContext.setSinkId === 'function') {
     const sinkId = outputDeviceId === 'default' ? '' : outputDeviceId
-    playbackContext
+    const context = playbackContext
+    context
       .setSinkId(sinkId)
-      .catch((err) => console.error('[Soup] context setSinkId failed:', err))
+      // The success case is logged too: a sink binding that silently succeeded
+      // against a device that later vanished looks identical in an export to
+      // one that was never applied.
+      .then(() => console.warn(`[Soup] context setSinkId ${shortDeviceId(outputDeviceId)} applied`))
+      .catch((err) =>
+        console.error(`[Soup] context setSinkId ${shortDeviceId(outputDeviceId)} failed:`, err)
+      )
   }
 }
+
+configureMediaDevices({ getSelectedOutputId: () => outputDeviceId })
 
 // Routes playback to the chosen output device. Pass 'default' (or empty) for
 // the system default.

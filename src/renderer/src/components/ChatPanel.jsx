@@ -28,7 +28,7 @@ import { useClientActions } from '../context/ClientActionsContext'
 import { useAnimationCategory, useSettings } from '../context/SettingsContext'
 import { useAnimatedPresence } from '../lib/animation'
 import { menuPop, overlayPop, scrimFade } from '../lib/motionPresets'
-import { useMenuPosition } from '../lib/menuPosition'
+import { fitMenuAxis, useMenuPosition } from '../lib/menuPosition'
 import './ChatPanel.css'
 
 // The message box grows with its content up to this many lines, then scrolls.
@@ -1566,13 +1566,13 @@ function ChatPanel({
             className="chat-react-pop"
             ref={reactPickerRef}
             style={{
-              // Keep the 320x360 picker on screen, flipping above the button
-              // when there's no room below.
+              // Keep the 320x360 picker on screen. The picker hangs to the left
+              // of the button it opens from; vertically it flips above when
+              // there's no room below, and clamps to the edge when it fits
+              // neither way - a reaction on one of the first messages in the
+              // channel would otherwise run off the top of the window.
               left: Math.max(8, Math.min(reactPicker.x - 320, window.innerWidth - 328)),
-              top:
-                reactPicker.y + 360 > window.innerHeight - 8
-                  ? reactPicker.y - 360 - 40
-                  : reactPicker.y
+              top: fitMenuAxis(reactPicker.y, 360, reactPicker.y, window.innerHeight)
             }}
             {...menuPop(overlayAnim)}
           >

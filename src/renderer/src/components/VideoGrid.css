@@ -21,6 +21,13 @@
   gap: var(--spacing-md);
 }
 
+.empty-share-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  font-size: var(--font-size-base);
+}
+
 /* ── Main viewer wrapper ─────────────────────────────────────────────────── */
 
 .video-viewer {

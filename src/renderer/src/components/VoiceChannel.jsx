@@ -8,12 +8,19 @@ import {
   shareCamera,
   stopScreenShare,
   rebindCallbacks,
+  cancelExpectedVoiceSessionRebuild,
+  expectVoiceSessionRebuild,
   requestVoiceMediaRecovery,
   setLocalClientId,
   setVolumeGateThreshold
 } from '../lib/soup'
 import { REPUBLISH_SCOPE, classifyMicSettingsChange } from '../lib/micRepublishScope'
-import { isPermanentMicError } from '../lib/voiceRecoveryState'
+import {
+  isPermanentMicError,
+  nextMicPublishRetryDelay,
+  shouldFallBackToDefaultInput
+} from '../lib/voiceRecoveryState'
+import { audioDeviceIds, subscribeDeviceChange } from '../lib/mediaDevices'
 import { motion, AnimatePresence } from 'motion/react'
 import { useSettings, useAnimationCategory } from '../context/SettingsContext'
 import { useAnimatedPresence } from '../lib/animation'
@@ -35,10 +42,27 @@ import {
 } from '@tabler/icons-react'
 
 const STACK_MAX = 3
-// A publish that loses the race with the previous capture's release fails fast;
-// long enough for the OS mic handle to actually close, short enough that the
-// user reads it as part of reconnecting rather than as a stall.
-const PUBLISH_RETRY_DELAY_MS = 750
+
+// Chromium's OverconstrainedError has an empty message, so err.message alone
+// would render a blank banner. Each error name gets its own remedy text.
+function micErrorMessage(err) {
+  switch (err?.name) {
+    case 'OverconstrainedError':
+    case 'NotFoundError':
+      return 'Your selected microphone is unavailable. Choose another in Settings → Audio.'
+    case 'NotAllowedError':
+      return 'Microphone access is blocked. Allow it in your system privacy settings.'
+    case 'SecurityError':
+      return 'Microphone access is blocked by a security policy.'
+    case 'NotReadableError':
+      return 'Your microphone is in use by another application.'
+    default:
+      return err?.message || err?.name || 'The microphone could not be started.'
+  }
+}
+
+const MIC_FALLBACK_MESSAGE =
+  'Your selected microphone is unavailable. Using the default input device until it returns.'
 
 const VoiceChannel = forwardRef(function VoiceChannel(
   {
@@ -136,6 +160,20 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   // republish classifier diffs against. Null means "unknown" — the next change
   // takes the full path, which is always safe.
   const lastAppliedMicSettingsRef = useRef(null)
+  // Bumped by every publish sequence, so a ladder waking from its retry delay
+  // doesn't resume against a session a newer publish already owns.
+  const publishEpochRef = useRef(0)
+  const publishActiveRef = useRef(false)
+  // Device id we fell back from while transmitting on the default input. Not
+  // written to settings, so this is also what we watch for to return to it.
+  const inputFallbackRef = useRef(null)
+  // Resolver for a ladder currently sleeping, so a devicechange can cut the
+  // remaining delay short.
+  const retryWakeRef = useRef(null)
+  // Roster snapshot for the soup callbacks, which close over the render that
+  // joined and never see a later one unless they are rebound.
+  const clientsRef = useRef(clients)
+  const selfIdRef = useRef(self?.id)
 
   // Keep joinedRef in sync with joined state
   useEffect(() => {
@@ -144,6 +182,10 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   useEffect(() => {
     micSettingsRef.current = micSettings
   }, [micSettings])
+  useEffect(() => {
+    clientsRef.current = clients
+    selfIdRef.current = self?.id
+  }, [clients, self?.id])
   // Tell soup our client id so its self speaking detector can report our own
   // speaking through onClientSpeaking (which rebinds to the channel we're in).
   useEffect(() => {
@@ -221,49 +263,160 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     if (clientId === self?.id) onSelfSpeaking?.(isSpeaking)
   }
 
+  // Cut a sleeping ladder's remaining delay short (a device re-enumerated).
+  const wakePublishRetry = () => {
+    const wake = retryWakeRef.current
+    retryWakeRef.current = null
+    wake?.()
+  }
+
+  const sleepBeforeRetry = (delay) =>
+    new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        retryWakeRef.current = null
+        resolve()
+      }, delay)
+      retryWakeRef.current = () => {
+        clearTimeout(timer)
+        resolve()
+      }
+    })
+
   // Publish (or, on a reconnect, re-publish) the local mic with current settings.
   // publish() is single-flight in soup, so an adopt() racing the reset-driven
   // republish can't allocate a duplicate producer transport. The self speaking
   // detector is started inside soup off the published stream.
   //
-  // One silent retry: at reconnect time the OS mic is routinely still held by
-  // the capture we just tore down, and that failure is transient. publish() is
-  // re-runnable (it reuses the existing producer transport), so the retry costs
-  // nothing but the delay. Only a second failure is worth a banner.
+  // The ladder exists because in the field this usually fails from a device
+  // that's gone for seconds to minutes (headset power state, sleep/resume,
+  // Bluetooth switch). Keep retrying on a growing then holding delay until the
+  // user leaves. A devicechange event can short-circuit the wait.
   const publishMic = async () => {
-    for (let attempt = 0; ; attempt++) {
-      // A failed publish may be waiting out its retry delay while the user
-      // leaves or switches channels. Do not reopen the mic for a session this
-      // channel no longer owns.
-      if (!joinedRef.current) return
-      try {
+    const epoch = ++publishEpochRef.current
+    publishActiveRef.current = true
+    try {
+      for (let attempt = 0; ; attempt++) {
+        // A failed publish may be waiting out its retry delay while the user
+        // leaves or switches channels. Do not reopen the mic for a session this
+        // channel no longer owns.
+        if (!joinedRef.current || publishEpochRef.current !== epoch) return
         const settings = micSettingsRef.current
-        await publish(settings)
-        lastAppliedMicSettingsRef.current = settings
-        setError(null)
-        return
-      } catch (err) {
-        if (!joinedRef.current) return
-        const permanent = isPermanentMicError(err)
-        if (!permanent && attempt === 0 && joinedRef.current) {
-          console.warn('[VoiceChannel] Publish failed, retrying:', err)
-          await new Promise((resolve) => setTimeout(resolve, PUBLISH_RETRY_DELAY_MS))
-          continue
+        const attemptSettings = inputFallbackRef.current
+          ? { ...settings, deviceId: 'default' }
+          : settings
+        try {
+          await publish(attemptSettings)
+          if (publishEpochRef.current !== epoch) return
+          lastAppliedMicSettingsRef.current = attemptSettings
+          setError(inputFallbackRef.current ? MIC_FALLBACK_MESSAGE : null)
+          return
+        } catch (err) {
+          if (!joinedRef.current || publishEpochRef.current !== epoch) return
+          // err.message can be empty, so the error name is logged too.
+          console.error('[VoiceChannel] Publish failed:', err?.name, err)
+          if (isPermanentMicError(err)) {
+            setError(micErrorMessage(err))
+            onVoiceMediaState?.(channel.id, { state: 'failed', reason: err.name })
+            return
+          }
+
+          // The selected device isn't in the device list, so exact match can
+          // only keep failing. Fall back to the default input instead of
+          // nothing, but leave the selection untouched so we can return to it.
+          if (!inputFallbackRef.current && settings.deviceId && settings.deviceId !== 'default') {
+            const ids = await audioDeviceIds()
+            if (!joinedRef.current || publishEpochRef.current !== epoch) return
+            if (
+              shouldFallBackToDefaultInput({
+                errorName: err?.name,
+                selectedDeviceId: settings.deviceId,
+                availableInputIds: ids?.inputIds
+              })
+            ) {
+              console.warn('[VoiceChannel] Selected microphone is gone, using the default input')
+              inputFallbackRef.current = settings.deviceId
+              continue
+            }
+          }
+
+          // At reconnect time the OS mic is often still held by the capture we
+          // just tore down. That first failure is transient, so don't banner
+          // it or every reconnect would flash an error at the user.
+          if (attempt > 0) setError(micErrorMessage(err))
+          // A produce/transport failure is a session problem a voice reconnect
+          // can fix, but a missing capture device isn't. Spending the one-shot
+          // recovery budget on it would disarm the watchdog for the rest of
+          // the session.
+          if (!err?.micCaptureFailure && attempt === 1) {
+            if (!requestVoiceMediaRecovery('Microphone publish failed')) {
+              onVoiceMediaState?.(channel.id, { state: 'failed', reason: 'publish-failed' })
+            }
+          }
+          const delay = nextMicPublishRetryDelay(attempt)
+          console.warn(
+            `[VoiceChannel] Publish attempt ${attempt + 1} failed (${err?.name}), retrying in ${delay}ms`
+          )
+          await sleepBeforeRetry(delay)
         }
-        console.error('[VoiceChannel] Publish failed:', err)
-        setError(err.message)
-        if (permanent) {
-          onVoiceMediaState?.(channel.id, { state: 'failed', reason: err.name })
-        } else if (!requestVoiceMediaRecovery('Microphone publish failed')) {
-          onVoiceMediaState?.(channel.id, { state: 'failed', reason: 'publish-failed' })
-        }
-        return
       }
+    } finally {
+      if (publishEpochRef.current === epoch) publishActiveRef.current = false
     }
   }
 
+  // A device re-enumerating is the recovery signal for a vanished mic. Without
+  // this, waiting out the backoff turns a 3s headset reconnect into 20s of
+  // silence, and a fallback capture never returns to the user's own device.
+  useEffect(
+    () =>
+      subscribeDeviceChange((ids) => {
+        if (!joinedRef.current) return
+        const fallenBackFrom = inputFallbackRef.current
+        const selectedIsBack = !!fallenBackFrom && ids?.inputIds?.has(fallenBackFrom) === true
+        if (selectedIsBack) inputFallbackRef.current = null
+        if (publishActiveRef.current) {
+          wakePublishRetry()
+          return
+        }
+        if (!selectedIsBack) return
+        // The user's device is back. Reopen the capture they actually chose.
+        lastAppliedMicSettingsRef.current = null
+        republish(micSettingsRef.current)
+          .then(() => {
+            if (!joinedRef.current) return
+            lastAppliedMicSettingsRef.current = micSettingsRef.current
+            setError(null)
+          })
+          .catch((err) => {
+            console.warn('[VoiceChannel] Returning to the selected microphone failed:', err?.name)
+            inputFallbackRef.current = fallenBackFrom
+          })
+      }),
+    []
+  )
+
+  // Abandon any ladder still waiting: the session it was publishing for is gone.
+  const cancelPublishRetries = () => {
+    publishEpochRef.current++
+    publishActiveRef.current = false
+    inputFallbackRef.current = null
+    wakePublishRetry()
+  }
+
   const handleMediaState = (state) => {
-    if (state?.state === 'ready') setError(null)
+    if (state?.state === 'ready') {
+      if (!inputFallbackRef.current) setError(null)
+      // Zero known producers looks the same as a healthy empty room in soup,
+      // so the roster is the only way to tell a missed producer replay from
+      // an actually empty channel. Read via ref because this callback is
+      // captured at join time and would otherwise see a stale roster.
+      const peers = clientsRef.current.filter((client) => client.id !== selfIdRef.current).length
+      console.warn(
+        `[VoiceChannel] Voice media ready: peers=${peers} ` +
+          `knownAudioProducers=${state.knownAudioProducers ?? '?'} ` +
+          `activeAudioConsumers=${state.activeAudioConsumers ?? '?'}`
+      )
+    }
     onVoiceMediaState?.(channel.id, state)
   }
 
@@ -283,6 +436,21 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     return sent
   }
 
+  // The rejoin a voice reconnect declares before asking for its ticket.
+  //
+  // Re-asserting the same channel is a silent no-op while the server still
+  // holds our dead voice session (up to 60s after the socket's FIN is lost),
+  // since a ticket is only minted on a real none-to-channel transition. So the
+  // reconnect would dead-end waiting for a push that never comes. Declaring
+  // the leave first forces the server to release that session (peers get
+  // ProducerClosed instead of a silent member) and makes the join a real
+  // transition. This mirrors the known-good manual leave/rejoin recovery.
+  // Null-to-null costs nothing when the server already dropped us.
+  const declareRejoin = async () => {
+    await patchChannel(null)
+    await patchChannel(channel.id)
+  }
+
   // Fired after every successful (re)auth: mark joined and (re)publish the mic.
   // joinedRef is set here rather than waiting for its sync effect so publishMic's
   // retry can tell "still in the channel" from "left while we were failing".
@@ -299,6 +467,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   // component's state and leave the channel we're actually in showing as joined.
   const handleDisconnected = () => {
     joinedRef.current = false
+    cancelPublishRetries()
     setJoined(false)
     setConnecting(false)
     setSharing(false)
@@ -334,20 +503,24 @@ const VoiceChannel = forwardRef(function VoiceChannel(
       return
     }
 
+    // A live fallback capture outranks the persisted selection until the
+    // device comes back. Otherwise any unrelated settings change would reopen
+    // the capture on the device that's still missing.
+    const applied = inputFallbackRef.current ? { ...micSettings, deviceId: 'default' } : micSettings
     // Optimistic: republish is serialized in soup, so a burst of changes still
     // commits in order and the last one wins.
-    lastAppliedMicSettingsRef.current = micSettings
-    republish(micSettings, undefined, { graphOnly: scope === REPUBLISH_SCOPE.GRAPH }).catch(
-      (err) => {
-        console.error('[VoiceChannel] Republish failed:', err)
-        // A failed republish restores the *previously committed* capture, so the
-        // baseline no longer describes anything live. Forget it and let the next
-        // change take the full path rather than diff against settings that never
-        // landed.
-        lastAppliedMicSettingsRef.current = null
-        setError(err.message)
-      }
-    )
+    lastAppliedMicSettingsRef.current = applied
+    republish(applied, undefined, { graphOnly: scope === REPUBLISH_SCOPE.GRAPH }).catch((err) => {
+      console.error('[VoiceChannel] Republish failed:', err)
+      // A failed republish restores the *previously committed* capture, so the
+      // baseline no longer describes anything live. Forget it and let the next
+      // change take the full path rather than diff against settings that never
+      // landed.
+      lastAppliedMicSettingsRef.current = null
+      // Same empty-message trap as the publish path: a device error here would
+      // otherwise render a blank banner.
+      setError(micErrorMessage(err))
+    })
   }, [micSettings])
 
   // Unmount cleanup. If this channel is being deleted out from under us *while
@@ -362,6 +535,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
       if (joinedRef.current) {
         activeShareRef.current = null
         joinedRef.current = false
+        cancelPublishRetries()
         disconnect()
         onJoinedChange?.(channel.id, false)
       }
@@ -431,9 +605,9 @@ const VoiceChannel = forwardRef(function VoiceChannel(
         onDisconnect: handleDisconnected,
         onReconnecting: handleReconnecting,
         onMediaState: handleMediaState,
-        // Server drops us from the channel when the socket dies â€” re-assert
-        // membership before each reconnect's ticket fetch.
-        onReconnectRejoin: () => patchChannel(channel.id),
+        // Declared leave→join before each reconnect's ticket fetch (see
+        // declareRejoin); the initial join above stays a plain declaration.
+        onReconnectRejoin: declareRejoin,
         onVideoStream: handleVideoStream,
         onClientSpeaking: handleClientSpeaking,
         onStreamEnded: handleStreamEnded,
@@ -452,6 +626,10 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     setConnecting(true)
     setError(null)
 
+    // Mark this rebuild as expected before switching, so the UI treats the
+    // resulting reset as normal instead of a lost connection.
+    expectVoiceSessionRebuild('channel-switch')
+
     // Rebind callbacks BEFORE the PATCH â€” TransportsDisconnected can arrive
     // as soon as the server processes the PATCH, so this channel's handler
     // must already be active to catch it. This also repoints the reconnect
@@ -461,7 +639,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
       onDisconnect: handleDisconnected,
       onReconnecting: handleReconnecting,
       onMediaState: handleMediaState,
-      onReconnectRejoin: () => patchChannel(channel.id),
+      onReconnectRejoin: declareRejoin,
       onVideoStream: handleVideoStream,
       onClientSpeaking: handleClientSpeaking,
       onStreamEnded: handleStreamEnded,
@@ -471,6 +649,9 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     try {
       await patchChannel(channel.id)
     } catch (err) {
+      // The switch request failed, so no reset is coming. Undo the expected
+      // rebuild flag so a real drop isn't mistaken for this one.
+      cancelExpectedVoiceSessionRebuild()
       setError(err.message)
       setConnecting(false)
       throw err
@@ -485,12 +666,15 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   // here can't collide with a reset-driven republish. onClientSpeaking is rebound
   // to us, so soup's self speaking detector now reports to this channel.
   const adopt = async ({ reassert = false } = {}) => {
+    // The server already moved us, so mark the resulting reset as expected
+    // too, even if it already arrived before this runs.
+    expectVoiceSessionRebuild('channel-adopted')
     rebindCallbacks({
       onConnect: handleConnectEstablished,
       onDisconnect: handleDisconnected,
       onReconnecting: handleReconnecting,
       onMediaState: handleMediaState,
-      onReconnectRejoin: () => patchChannel(channel.id),
+      onReconnectRejoin: declareRejoin,
       onVideoStream: handleVideoStream,
       onClientSpeaking: handleClientSpeaking,
       onStreamEnded: handleStreamEnded,
@@ -500,7 +684,12 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     // pointed at the target. Reasserting here restores both to the still-live
     // previous owner; ordinary moderator adoption must not send this declaration.
     if (reassert) await patchChannel(channel.id)
-    else onVoiceMediaState?.(channel.id, { state: 'reconnecting', reason: 'channel-adopted' })
+    else
+      onVoiceMediaState?.(channel.id, {
+        state: 'reconnecting',
+        reason: 'channel-adopted',
+        expected: true
+      })
     setError(null)
     setConnecting(false)
     joinedRef.current = true
@@ -513,6 +702,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   const deactivate = () => {
     activeShareRef.current = null
     joinedRef.current = false
+    cancelPublishRetries()
     setJoined(false)
     setSharing(false)
     setVideoStreams([])
@@ -522,6 +712,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   const handleLeave = () => {
     activeShareRef.current = null
     joinedRef.current = false
+    cancelPublishRetries()
     disconnect()
     setJoined(false)
     setSharing(false)
@@ -585,6 +776,20 @@ const VoiceChannel = forwardRef(function VoiceChannel(
           )
         )
       }
+      // Screen shares can recover from a lost capture track behind the
+      // scenes, so we let the share tell us when it's actually over instead
+      // of watching the raw track directly.
+      const onShareEnded = (reason) => {
+        if (activeShareRef.current !== screen) return
+        activeShareRef.current = null
+        setSharing(false)
+        clearSelfStream(screen?.id ?? null)
+        onError?.(
+          reason === 'frames-stalled'
+            ? 'Stream ended because the shared window stopped sending frames'
+            : 'Stream ended because the shared window closed'
+        )
+      }
       if (options.isCamera) {
         // Webcams capture directly via getUserMedia - no main-process source
         // hand-off, and no audio/fps/resolution settings.
@@ -597,28 +802,37 @@ const VoiceChannel = forwardRef(function VoiceChannel(
           sourceId: sourceId ?? null,
           audioMode: options.audioMode ?? 'none'
         })
-        screen = await shareScreen({ ...options, onEncoderStats, onProducerReplaced })
+        screen = await shareScreen({
+          ...options,
+          sourceId: sourceId ?? null,
+          onEncoderStats,
+          onProducerReplaced,
+          onShareEnded
+        })
       }
       if (screen?.stream) {
         activeShareRef.current = screen
-        screen.stream.getVideoTracks()[0].addEventListener(
-          'ended',
-          () => {
-            if (activeShareRef.current !== screen) return
+        // Cameras can't recover, so a webcam track ending stops the share.
+        if (options.isCamera) {
+          screen.stream.getVideoTracks()[0].addEventListener(
+            'ended',
+            () => {
+              if (activeShareRef.current !== screen) return
+              activeShareRef.current = null
+              void screen.stop?.()
+              setSharing(false)
+              clearSelfStream(screen.id)
+            },
+            { once: true }
+          )
+
+          if (screen.stream.getVideoTracks()[0].readyState === 'ended') {
             activeShareRef.current = null
-            void screen.stop?.()
+            await screen.stop?.()
             setSharing(false)
             clearSelfStream(screen.id)
-          },
-          { once: true }
-        )
-
-        if (screen.stream.getVideoTracks()[0].readyState === 'ended') {
-          activeShareRef.current = null
-          await screen.stop?.()
-          setSharing(false)
-          clearSelfStream(screen.id)
-          return
+            return
+          }
         }
 
         setVideoStreams((prev) => [

@@ -1,0 +1,80 @@
+/* ============================================================================
+   IMAGE CROPPER — framing dialog shown after picking an avatar/icon file.
+   Buttons reuse .picker-btn from ScreenSourcePicker.css (bundled globally).
+   ============================================================================ */
+
+.cropper-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgb(var(--shadow-tint) / 0.55);
+  backdrop-filter: blur(3px);
+}
+
+.cropper-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 20px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-xl);
+  background: var(--gradient-surface);
+  box-shadow: var(--shadow-3);
+}
+
+.cropper-title {
+  margin: 0;
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text);
+}
+
+.cropper-frame {
+  position: relative;
+  width: 256px;
+  height: 256px;
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+  background: var(--color-background-mute);
+  cursor: grab;
+  touch-action: none;
+}
+
+.cropper-frame:active {
+  cursor: grabbing;
+}
+
+.cropper-frame img {
+  position: absolute;
+  max-width: none;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.cropper-circle {
+  position: absolute;
+  inset: 0;
+  border: 2px dashed rgb(255 255 255 / 0.55);
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+.cropper-zoom {
+  width: 256px;
+}
+
+.cropper-hint {
+  margin: 0;
+  max-width: 256px;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.cropper-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}

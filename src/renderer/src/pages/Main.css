@@ -89,6 +89,7 @@ html[data-transparency='true'] .chat-area {
   min-width: 0;
 }
 
+/* Shortcut into the channel's summary page. */
 .chat-title-icon {
   display: flex;
   align-items: center;
@@ -96,9 +97,22 @@ html[data-transparency='true'] .chat-area {
   width: 30px;
   height: 30px;
   flex-shrink: 0;
+  padding: 0;
+  border: none;
+  cursor: pointer;
   border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--color-primary) 14%, transparent);
   color: var(--color-primary);
+}
+
+.chat-title-icon {
+  transition: box-shadow 0.15s ease;
+}
+
+.chat-title-icon:hover {
+  box-shadow:
+    0 0 0 2px var(--color-primary),
+    0 0 10px color-mix(in srgb, var(--color-primary) 55%, transparent);
 }
 
 /* An image icon fills the box on its own — drop the tinted placeholder backing. */
@@ -111,14 +125,6 @@ html[data-transparency='true'] .chat-area {
   height: 100%;
   object-fit: cover;
   border-radius: inherit;
-}
-
-.preview-title-icon-img {
-  width: 30px;
-  height: 30px;
-  flex-shrink: 0;
-  object-fit: cover;
-  border-radius: var(--radius-sm);
 }
 
 .chat-title-text {
@@ -153,11 +159,17 @@ html[data-transparency='true'] .chat-area {
   align-items: center;
   gap: 8px;
   min-width: 0;
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text);
+}
+
+/* Ellipsis lives on the name, not the row — clipping the row would cut off the
+   icon button's hover ring. */
+.view-preview-name {
+  min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  font-weight: var(--font-weight-semibold);
-  color: var(--color-text);
 }
 
 .loading {

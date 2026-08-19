@@ -426,6 +426,16 @@ function VideoGrid({
         <div className="empty-message">
           <IconVideoMinus size={100} />
           No Active Streams
+          {shareControl && (
+            <button
+              type="button"
+              className="btn btn-primary empty-share-btn"
+              onClick={() => shareControl.pickSource()}
+            >
+              <IconScreenShare size={18} />
+              Start streaming
+            </button>
+          )}
         </div>
       </div>
     )

@@ -11,8 +11,16 @@ function AudioSettings({ micSettings, updateMicSettings }) {
     const getDevices = async () => {
       try {
         const devices = await navigator.mediaDevices.enumerateDevices()
-        setAudioDevices(devices.filter((device) => device.kind === 'audioinput'))
-        setOutputDevices(devices.filter((device) => device.kind === 'audiooutput'))
+        // On Windows, Chromium adds two audio pseudo-devices that alias a real
+        // device already in the list: 'default' (labelled "Default - <name>")
+        // and 'communications'. The "Default Device" option below is already
+        // the 'default' entry, so listing these puts the same speakers in the
+        // dropdown three times under three names.
+        const real = devices.filter(
+          (device) => device.deviceId !== 'default' && device.deviceId !== 'communications'
+        )
+        setAudioDevices(real.filter((device) => device.kind === 'audioinput'))
+        setOutputDevices(real.filter((device) => device.kind === 'audiooutput'))
       } catch (err) {
         console.error('[AudioSettings] Failed to enumerate devices:', err)
       }

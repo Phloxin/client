@@ -1,10 +1,15 @@
+import { openImageCropper } from './openImageCropper'
+
 // Convert a picked image file into an avatar-sized data URL. Animated GIFs
 // can't survive a canvas re-encode (it captures a single frame), so they're
-// sent as-is to keep the animation. Other formats (JPG/PNG/WebP) get
-// cover-cropped to a small square — avatars render tiny and the data URL is
-// broadcast to everyone, so full-res photos would bloat every payload. We
-// re-encode to WebP, which keeps PNG transparency (JPEG would flatten it) and
+// sent as-is to keep the animation — which also means no crop step for them.
+// Other formats (JPG/PNG/WebP) go through the cropper, where the user frames
+// the square that gets drawn; avatars render tiny and the data URL is broadcast
+// to everyone, so full-res photos would bloat every payload. The cropper
+// re-encodes to WebP, which keeps PNG transparency (JPEG would flatten it) and
 // compresses well; the backend accepts JPG/PNG/GIF/WebP.
+//
+// `onDone` is not called if the user cancels the cropper.
 export function fileToAvatarDataUrl(file, onDone) {
   if (file.type === 'image/gif') {
     const reader = new FileReader()
@@ -12,27 +17,9 @@ export function fileToAvatarDataUrl(file, onDone) {
     reader.readAsDataURL(file)
     return
   }
-  const img = new Image()
   const objectUrl = URL.createObjectURL(file)
-  const releaseObjectUrl = () => URL.revokeObjectURL(objectUrl)
-  img.onload = () => {
-    try {
-      const size = 256
-      const canvas = document.createElement('canvas')
-      canvas.width = size
-      canvas.height = size
-      const ctx = canvas.getContext('2d')
-      if (!ctx) return
-      // Cover-crop: scale so the shorter side fills, center the overflow.
-      const scale = Math.max(size / img.width, size / img.height)
-      const w = img.width * scale
-      const h = img.height * scale
-      ctx.drawImage(img, (size - w) / 2, (size - h) / 2, w, h)
-      onDone(canvas.toDataURL('image/webp', 0.85))
-    } finally {
-      releaseObjectUrl()
-    }
-  }
-  img.onerror = releaseObjectUrl
-  img.src = objectUrl
+  openImageCropper(objectUrl).then((dataUrl) => {
+    URL.revokeObjectURL(objectUrl)
+    if (dataUrl) onDone(dataUrl)
+  })
 }
