@@ -3147,24 +3147,36 @@ function Main() {
                     // Peeking into another channel's chat: no view tabs (no streams),
                     // just the channel name.
                     <span className="view-preview-title">
-                      {previewChannel?.channel_icon ? (
-                        <img
-                          className="preview-title-icon-img"
-                          src={cdnUrl(previewChannel.channel_icon)}
-                          alt=""
-                        />
-                      ) : previewChannel?.type === 'dm' ? (
-                        <IconUser size={18} stroke={2} />
-                      ) : (
-                        <IconMessage size={18} stroke={2} />
-                      )}
-                      {previewChannelName}
+                      <button
+                        type="button"
+                        className="chat-title-icon"
+                        onClick={() => handleShowChannelSummary(previewChannelId)}
+                        title="Channel details"
+                      >
+                        {previewChannel?.channel_icon ? (
+                          <img
+                            className="chat-title-icon-img"
+                            src={cdnUrl(previewChannel.channel_icon)}
+                            alt=""
+                          />
+                        ) : previewChannel?.type === 'dm' ? (
+                          <IconUser size={18} stroke={2} />
+                        ) : (
+                          <IconMessage size={18} stroke={2} />
+                        )}
+                      </button>
+                      <span className="view-preview-name">{previewChannelName}</span>
                     </span>
                   ) : connected && joinedChannel ? (
                     // In a voice channel: channel name + member count + Chat/Streams tabs.
                     <>
                       <div className="chat-title">
-                        <span className="chat-title-icon">
+                        <button
+                          type="button"
+                          className="chat-title-icon"
+                          onClick={() => handleShowChannelSummary(joinedChannel.id)}
+                          title="Channel details"
+                        >
                           {joinedChannel.channel_icon ? (
                             <img
                               className="chat-title-icon-img"
@@ -3174,7 +3186,7 @@ function Main() {
                           ) : (
                             <IconVolume size={17} stroke={2} />
                           )}
-                        </span>
+                        </button>
                         <span className="chat-title-text">
                           <span className="chat-title-name">{joinedChannel.name}</span>
                           <span className="chat-title-sub">{joinedChannelUserCount} in voice</span>
