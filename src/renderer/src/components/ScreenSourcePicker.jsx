@@ -10,7 +10,9 @@ import {
   IconAppWindow,
   IconLoader2,
   IconCamera,
-  IconScreenShare
+  IconScreenShare,
+  IconChevronDown,
+  IconChevronRight
 } from '@tabler/icons-react'
 import { getScreenAudioCapabilities, listScreenAudioApps } from '../lib/screenAudio'
 import { RESOLUTIONS, audioOptionsFor } from '../lib/captureOptions'
@@ -55,6 +57,10 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
   // Bias the encoder toward sharp frames ('detail', for text/UI) or smooth
   // motion ('motion', for video-heavy shares). Threaded to soup as optimizeFor.
   const [optimizeFor, setOptimizeFor] = useState(prefs.optimizeFor ?? 'motion')
+  // 'auto' keeps soup's AV1-first selection with its adaptive H.264 fallback;
+  // an explicit codec pins it for the share.
+  const [codecPref, setCodecPref] = useState(prefs.codecPref ?? 'auto')
+  const [showAdvanced, setShowAdvanced] = useState(false)
   const [caps, setCaps] = useState(null)
   // Remembered as On/Off; 'off' -> silent, 'on' lets the effective mode below
   // derive the best capture mode from caps. null falls through to the tab default.
@@ -238,7 +244,13 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
     const res = RESOLUTIONS.find((r) => r.label === resolution)
     localStorage.setItem(
       PREFS_KEY,
-      JSON.stringify({ fps, resolution, optimizeFor, audioOff: effectiveAudioMode === 'none' })
+      JSON.stringify({
+        fps,
+        resolution,
+        optimizeFor,
+        codecPref,
+        audioOff: effectiveAudioMode === 'none'
+      })
     )
     let audioTargets = null
     if (effectiveAudioMode === 'app') {
@@ -250,7 +262,8 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
       height: res.height,
       audioMode: effectiveAudioMode,
       audioTargets,
-      optimizeFor
+      optimizeFor,
+      codecPref
     })
   }
 
@@ -464,24 +477,58 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
                 </div>
               </div>
 
-              <div className="picker-quality-group">
-                <span className="picker-quality-label">Optimize</span>
-                <div className="picker-segment">
-                  {[
-                    { value: 'detail', label: 'Detail' },
-                    { value: 'motion', label: 'Motion (games)' }
-                  ].map(({ value, label }) => (
-                    <button
-                      key={value}
-                      type="button"
-                      className={`picker-segment-btn${optimizeFor === value ? ' active' : ''}`}
-                      onClick={() => setOptimizeFor(value)}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-              </div>
+              <button
+                type="button"
+                className="picker-advanced-toggle"
+                aria-expanded={showAdvanced}
+                onClick={() => setShowAdvanced((open) => !open)}
+              >
+                {showAdvanced ? <IconChevronDown size={14} /> : <IconChevronRight size={14} />}
+                Advanced
+              </button>
+
+              {showAdvanced && (
+                <>
+                  <div className="picker-quality-group">
+                    <span className="picker-quality-label">Optimize</span>
+                    <div className="picker-segment">
+                      {[
+                        { value: 'detail', label: 'Detail' },
+                        { value: 'motion', label: 'Motion (games)' }
+                      ].map(({ value, label }) => (
+                        <button
+                          key={value}
+                          type="button"
+                          className={`picker-segment-btn${optimizeFor === value ? ' active' : ''}`}
+                          onClick={() => setOptimizeFor(value)}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="picker-quality-group">
+                    <span className="picker-quality-label">Codec</span>
+                    <div className="picker-segment">
+                      {[
+                        { value: 'auto', label: 'Automatic' },
+                        { value: 'h264', label: 'H.264' },
+                        { value: 'av1', label: 'AV1' }
+                      ].map(({ value, label }) => (
+                        <button
+                          key={value}
+                          type="button"
+                          className={`picker-segment-btn${codecPref === value ? ' active' : ''}`}
+                          onClick={() => setCodecPref(value)}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
           )}
 
