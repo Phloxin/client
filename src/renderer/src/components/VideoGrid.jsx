@@ -14,6 +14,7 @@ import {
   IconVolume4,
   IconVolumeOff,
   IconExternalLink,
+  IconPlayerPauseFilled,
   IconPlayerPlayFilled,
   IconPlayerStopFilled,
   IconScreenShare,
@@ -31,6 +32,7 @@ import { RESOLUTIONS } from '../lib/captureOptions'
 import { setFocusedScreenAudio, setVideoStreamRoles, subscribeStreamViewers } from '../lib/soup'
 import { useImageColors } from '../lib/imageColors'
 import { useWheelSlider } from '../lib/useWheelSlider'
+import { shouldPauseSelfPreview, syncSelfPreviewPlayback } from '../lib/selfPreviewPlayback'
 import { useSettings } from '../context/SettingsContext'
 
 // Stable empty default so the role effect doesn't churn when no watched set is
@@ -95,6 +97,71 @@ function StreamPlaceholder({ avatar, initial }) {
   )
 }
 
+function readSelfPreviewPaused() {
+  if (typeof window === 'undefined' || typeof document === 'undefined') return false
+  const documentVisible =
+    document.visibilityState == null
+      ? document.hidden !== true
+      : document.visibilityState === 'visible'
+  const windowFocused = typeof document.hasFocus === 'function' ? document.hasFocus() : true
+  return shouldPauseSelfPreview({ windowFocused, documentVisible })
+}
+
+function useSelfPreviewPaused() {
+  const [selfPreviewPaused, setSelfPreviewPaused] = useState(readSelfPreviewPaused)
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof document === 'undefined') return undefined
+    const update = () => setSelfPreviewPaused(readSelfPreviewPaused())
+    window.addEventListener('focus', update)
+    window.addEventListener('blur', update)
+    document.addEventListener('visibilitychange', update)
+    update()
+    return () => {
+      window.removeEventListener('focus', update)
+      window.removeEventListener('blur', update)
+      document.removeEventListener('visibilitychange', update)
+    }
+  }, [])
+
+  return selfPreviewPaused
+}
+
+// eslint-disable-next-line react/prop-types -- The renderer does not use runtime PropTypes.
+function StreamVideo({ stream, isSelf = false, selfPreviewPaused = false, style }) {
+  const videoRef = useRef(null)
+
+  useEffect(() => {
+    const video = videoRef.current
+    if (!video) return
+    if (video.srcObject !== stream) video.srcObject = stream ?? null
+    if (isSelf && stream) syncSelfPreviewPlayback(video, selfPreviewPaused)
+  }, [stream, isSelf, selfPreviewPaused])
+
+  return (
+    <video
+      autoPlay={!isSelf || !selfPreviewPaused}
+      playsInline
+      muted
+      style={style}
+      ref={videoRef}
+    />
+  )
+}
+
+// eslint-disable-next-line react/prop-types -- The renderer does not use runtime PropTypes.
+function SelfPreviewPausedOverlay({ compact = false }) {
+  return (
+    <div className={`self-preview-paused${compact ? ' compact' : ''}`} aria-hidden="true">
+      <IconPlayerPauseFilled size={compact ? 16 : 22} />
+      <div>
+        <strong>Preview paused</strong>
+        {!compact && <span>Your stream is still live</span>}
+      </div>
+    </div>
+  )
+}
+
 function VideoGrid({
   streams,
   clients,
@@ -131,6 +198,7 @@ function VideoGrid({
 }) {
   const { appearanceSettings } = useSettings()
   const showCodecBadge = appearanceSettings.showCodecBadge !== false
+  const selfPreviewPaused = useSelfPreviewPaused()
   const viewerRef = useRef(null)
   const gridRef = useRef(null)
   const focusRef = useRef(null)
@@ -526,14 +594,14 @@ function VideoGrid({
             initial={client?.name?.charAt(0).toUpperCase() ?? '?'}
           />
         ) : (
-          <video
-            autoPlay
-            playsInline
-            muted
-            ref={(el) => {
-              if (el && el.srcObject !== s.stream) el.srcObject = s.stream
-            }}
+          <StreamVideo
+            stream={s.stream}
+            isSelf={s.isSelf}
+            selfPreviewPaused={s.isSelf && selfPreviewPaused}
           />
+        )}
+        {s.isSelf && selfPreviewPaused && (
+          <SelfPreviewPausedOverlay compact={variant === 'thumbnail'} />
         )}
         {/* Top-right: start watching, or close the stream once we are. */}
         {isStopped(s) ? (
@@ -921,10 +989,10 @@ function VideoGrid({
             onMouseUp={handlePanEnd}
             onMouseLeave={handlePanEnd}
           >
-            <video
-              autoPlay
-              playsInline
-              muted
+            <StreamVideo
+              stream={selectedStream.stream}
+              isSelf={selectedStream.isSelf}
+              selfPreviewPaused={selectedStream.isSelf && selfPreviewPaused}
               style={
                 view.z > 1
                   ? {
@@ -933,11 +1001,8 @@ function VideoGrid({
                     }
                   : undefined
               }
-              ref={(el) => {
-                if (el && el.srcObject !== (selectedStream.stream ?? null))
-                  el.srcObject = selectedStream.stream ?? null
-              }}
             />
+            {selectedStream.isSelf && selfPreviewPaused && <SelfPreviewPausedOverlay />}
             {/* Zoom minimap: the full frame with the visible region outlined.
                 Shown only while zoomed and hovering (same hover gate as the
                 other controls, via CSS). */}
@@ -947,14 +1012,10 @@ function VideoGrid({
                 onClick={(e) => e.stopPropagation()}
                 onMouseDown={handleMapPanStart}
               >
-                <video
-                  autoPlay
-                  playsInline
-                  muted
-                  ref={(el) => {
-                    if (el && el.srcObject !== selectedStream.stream)
-                      el.srcObject = selectedStream.stream
-                  }}
+                <StreamVideo
+                  stream={selectedStream.stream}
+                  isSelf={selectedStream.isSelf}
+                  selfPreviewPaused={selectedStream.isSelf && selfPreviewPaused}
                 />
                 <div
                   className="zoom-minimap-rect"

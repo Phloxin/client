@@ -636,10 +636,62 @@
   margin-left: auto;
 }
 
-/* Shown only while the client is streaming; inherits the row's text color. */
+.client-streaming-glyph {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  isolation: isolate;
+  --streaming-halo-inner: color-mix(in srgb, var(--color-primary) 50%, transparent);
+  --streaming-halo-outer: color-mix(in srgb, var(--color-primary) 20%, transparent);
+}
+
+.client-streaming-glyph::before {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  z-index: -1;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    var(--streaming-halo-inner) 0%,
+    var(--streaming-halo-outer) 45%,
+    transparent 72%
+  );
+  pointer-events: none;
+  animation: client-streaming-glow 2.6s ease-in-out infinite;
+}
+
+@keyframes client-streaming-glow {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.8);
+  }
+
+  50% {
+    opacity: 1;
+    transform: scale(1.12);
+  }
+}
+
 .client-streaming-icon {
   flex-shrink: 0;
   color: var(--color-primary);
+  filter: drop-shadow(0 0 2px color-mix(in srgb, var(--color-primary) 45%, transparent));
+}
+
+.client-streaming-btn:hover .client-streaming-glyph {
+  --streaming-halo-inner: color-mix(in srgb, var(--color-primary) 72%, transparent);
+  --streaming-halo-outer: color-mix(in srgb, var(--color-primary) 32%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .client-streaming-glyph::before {
+    animation: none;
+    opacity: 0.7;
+  }
 }
 
 /* Clickable wrapper around the streaming icon — jumps to watching this client's
