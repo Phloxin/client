@@ -2,7 +2,6 @@ import { useState, useRef, useEffect, useLayoutEffect, useMemo, memo } from 'rea
 import {
   IconPaperclip,
   IconMoodSmile,
-  IconSendFilled,
   IconX,
   IconFileText,
   IconPhotoVideo,
@@ -33,6 +32,12 @@ import './ChatPanel.css'
 
 // The message box grows with its content up to this many lines, then scrolls.
 const MAX_INPUT_LINES = 10
+
+// Distance from the bottom, in px, under which the view counts as "at the
+// newest message" and keeps following it. The jump-to-bottom pill uses a looser
+// threshold so it doesn't flash on and off around the boundary.
+const FOLLOW_SLACK_PX = 80
+const PILL_SLACK_PX = 160
 
 // Consecutive messages from the same author within this window are grouped under
 // one header (avatar + name + time), like Discord.
@@ -479,6 +484,20 @@ function ChatPanel({
   const metricsRef = useRef({ scrollTop: 0, scrollHeight: 0, clientHeight: 0 })
   const channelKeyRef = useRef(channelKey)
   const prependingRef = useRef(false)
+  // Whether the view is following the newest message. A chat opens following it
+  // and stops only when the user scrolls up themselves — it is deliberately NOT
+  // re-derived from the scroll position at arbitrary moments, because that
+  // position is meaningless while content is still loading in.
+  const followRef = useRef(true)
+  // Where our own last pin left the scroll, so the scroll event it fires can be
+  // told apart from the user moving the list. See handleScroll.
+  const pinnedTopRef = useRef(0)
+
+  // Jump to the newest message and record where that landed.
+  const pinBottom = (el) => {
+    el.scrollTop = el.scrollHeight
+    pinnedTopRef.current = el.scrollTop
+  }
 
   // After every rendered feed change, decide where to leave the scroll position.
   // `feedPresence` intentionally trails `feed` by one layout commit, so using
@@ -486,7 +505,7 @@ function ChatPanel({
   // has mounted (leaving the initial chat view stuck at scrollTop 0).
   //  - switched channels        → snap to the bottom (newest)
   //  - just prepended older msgs → keep the same messages under the viewport
-  //  - was already near bottom   → follow new messages down
+  //  - following the newest      → stay on it as history and new messages land
   //  - scrolled up reading       → leave it alone
   useLayoutEffect(() => {
     const el = listRef.current
@@ -496,14 +515,16 @@ function ChatPanel({
     if (channelKeyRef.current !== channelKey) {
       channelKeyRef.current = channelKey
       prependingRef.current = false
-      el.scrollTop = el.scrollHeight
+      followRef.current = true
+      pinBottom(el)
       setScrolledUp(false)
       setNewBelow(false)
     } else if (prependingRef.current) {
       prependingRef.current = false
       el.scrollTop = el.scrollHeight - prev.scrollHeight + prev.scrollTop
-    } else if (prev.scrollHeight - prev.scrollTop - prev.clientHeight < 80) {
-      el.scrollTop = el.scrollHeight
+      pinnedTopRef.current = -1
+    } else if (followRef.current) {
+      pinBottom(el)
     } else if (lastId != null && lastId !== lastMsgIdRef.current) {
       // A new bottom message landed while we're scrolled up reading history.
       setNewBelow(true)
@@ -519,16 +540,13 @@ function ChatPanel({
   // Images, videos, embeds, and late font layout can make an already-rendered
   // row taller after the feed layout effect above has scrolled to the bottom.
   // The scrollport itself can also shrink as the composer/outer flex layout
-  // settles. Keep the bottom pinned across both kinds of resize only if the
-  // last measured viewport was already there; handleScroll updates the metrics
-  // immediately when the user moves up, so their reading position is left alone.
+  // settles. Either way the bottom moved out from under us, so follow it down.
   useLayoutEffect(() => {
     const el = listRef.current
     if (!el || typeof ResizeObserver === 'undefined') return
     const observer = new ResizeObserver(() => {
-      const prev = metricsRef.current
-      if (prev.scrollHeight - prev.scrollTop - prev.clientHeight >= 80) return
-      el.scrollTop = el.scrollHeight
+      if (!followRef.current) return
+      pinBottom(el)
       metricsRef.current = {
         scrollTop: el.scrollTop,
         scrollHeight: el.scrollHeight,
@@ -545,14 +563,26 @@ function ChatPanel({
   const handleScroll = () => {
     const el = listRef.current
     if (!el) return
+    // A scroll event reports the position as of the frame it's dispatched in,
+    // which is a frame or more after the scroll that queued it — and scroll
+    // events are dispatched before that frame's resize callbacks. So the event
+    // for our own pin can arrive after images finished loading and grew the
+    // feed, describing a viewport that sits miles above a bottom nothing moved
+    // away from. Reading that as "the user scrolled up" is what stops the view
+    // following and strands a freshly opened chat mid-conversation. The pinned
+    // position tells the two apart: a real scroll always changes scrollTop.
+    const echo = followRef.current && el.scrollTop === pinnedTopRef.current
+    if (echo) pinBottom(el)
     metricsRef.current = {
       scrollTop: el.scrollTop,
       scrollHeight: el.scrollHeight,
       clientHeight: el.clientHeight
     }
-    const away = el.scrollHeight - el.scrollTop - el.clientHeight > 160
-    setScrolledUp(away)
-    if (!away) setNewBelow(false)
+    if (echo) return
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight
+    followRef.current = distance < FOLLOW_SLACK_PX
+    setScrolledUp(distance > PILL_SLACK_PX)
+    if (followRef.current) setNewBelow(false)
     if (el.scrollTop < 80 && hasMoreOlder && !prependingRef.current && onLoadOlder) {
       prependingRef.current = true
       Promise.resolve(onLoadOlder()).then((added) => {
@@ -571,8 +601,7 @@ function ChatPanel({
     const el = inputRef.current
     if (!el) return
     const list = listRef.current
-    const keepLatestVisible =
-      list && list.scrollHeight - list.scrollTop - list.clientHeight < 80
+    const keepLatestVisible = list && followRef.current
     el.style.height = 'auto' // shrink first so scrollHeight reflects the content
     const cs = getComputedStyle(el)
     const lineHeight = parseFloat(cs.lineHeight) || 20
@@ -586,7 +615,7 @@ function ChatPanel({
     if (keepLatestVisible) {
       // Reading scrollHeight forces the flex layout to include the textarea's
       // new height before the scroll is applied.
-      list.scrollTop = list.scrollHeight
+      pinBottom(list)
       metricsRef.current = {
         scrollTop: list.scrollTop,
         scrollHeight: list.scrollHeight,
@@ -1469,15 +1498,6 @@ function ChatPanel({
             )}
           </AnimatePresence>
         </div>
-        <button
-          type="button"
-          className="chat-send-btn"
-          title="Send"
-          disabled={disabled || (!text.trim() && !attachments.length)}
-          onClick={handleSend}
-        >
-          <IconSendFilled size={20} />
-        </button>
       </div>
 
       {msgMenu && (
