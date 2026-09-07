@@ -220,24 +220,30 @@ export function resetScreenCodecPreference() {
 // in preload). When set, it overrides both the AV1-first default and the adaptive
 // H.264 downgrade — the user explicitly asked for this codec, so we keep it even
 // if it comes up software. undefined when unset/invalid.
-const FORCED_SCREEN_CODEC_MIME = {
+const SCREEN_CODEC_MIME = {
   H264: 'video/h264',
   AV1: 'video/av1',
   VP9: 'video/vp9'
-}[(typeof window !== 'undefined' && window.api?.preferScreenshareCodec) || '']
+}
+const FORCED_SCREEN_CODEC_MIME =
+  SCREEN_CODEC_MIME[(typeof window !== 'undefined' && window.api?.preferScreenshareCodec) || '']
 
-function forcedScreenCodec() {
-  return FORCED_SCREEN_CODEC_MIME ? findVideoCodec(FORCED_SCREEN_CODEC_MIME) : undefined
+// The picker's per-share codec choice ('auto' | 'h264' | 'av1') gets the same
+// forced-codec contract as the env var: no AV1-first default, no adaptive H.264
+// downgrade. It takes precedence over the env var when it isn't 'auto'.
+function forcedScreenCodec(ctx) {
+  const mime = SCREEN_CODEC_MIME[ctx?.codecPref?.toUpperCase?.()] ?? FORCED_SCREEN_CODEC_MIME
+  return mime ? findVideoCodec(mime) : undefined
 }
 
 // Screen share prefers AV1 for efficiency, then VP9. Chromium AV1/VP9 starts on
 // a temporal-SVC rung and falls through L1T3 → L1T2 → plain when needed; H.264
 // always stays plain. Sender stats remain the final HW/SW verdict because a
 // positive MediaCapabilities answer is not reliable on Windows/RDNA3.
-function pickVideoCodec() {
-  // An explicit PREFER_SCREENSHARE_CODEC wins outright when the router advertises
-  // it; fall through to the normal selection if it's unavailable.
-  const forced = forcedScreenCodec()
+function pickVideoCodec(ctx) {
+  // An explicit picker choice or PREFER_SCREENSHARE_CODEC wins outright when the
+  // router advertises it; fall through to the normal selection if unavailable.
+  const forced = forcedScreenCodec(ctx)
   if (forced) return forced
   if (hasScreenCodecPreference()) {
     return findVideoCodec('video/h264') ?? findVideoCodec('video/vp9')
@@ -446,7 +452,7 @@ function screenEncodingCapabilityError(codec) {
 // be unreliable on Windows/RDNA3, so every accepted rung still goes through the
 // sender-stats verdict. A forced codec intentionally bypasses this optimization.
 async function hasNegativeScreenEncodingCapabilityHint(ctx, codec, encoding) {
-  if (!supportsScreenTemporalSvc(codec) || forcedScreenCodec()) return false
+  if (!supportsScreenTemporalSvc(codec) || forcedScreenCodec(ctx)) return false
   const mediaCapabilities = globalThis.navigator?.mediaCapabilities
   if (typeof mediaCapabilities?.encodingInfo !== 'function') return false
 
@@ -598,7 +604,7 @@ async function produceWithCodecFallback(codecs, attemptFn, { label, noCodecMessa
 // Chromium process. Exhaust that codec's rung ladder first, then try the next
 // compatible codec. An explicit PREFER_SCREENSHARE_CODEC never leaves its codec.
 function produceInitialScreenWithFallback(ctx, initialCodec) {
-  const forced = forcedScreenCodec()
+  const forced = forcedScreenCodec(ctx)
   const codecs = uniqueCodecsByMime(
     forced ? [forced] : [initialCodec, findVideoCodec('video/vp9'), findVideoCodec('video/h264')]
   )
@@ -802,7 +808,7 @@ async function maybeDowngradeScreenCodec(ctx, stats) {
   }
   if (ctx.cpuStrikes < CPU_STRIKES_TO_DOWNGRADE) return
 
-  const forced = forcedScreenCodec()
+  const forced = forcedScreenCodec(ctx)
   const nextRung = nextScreenSvcRung(ctx)
   // Preserve the existing forced-codec contract for CPU pressure: only a
   // measured software encoder walks the SVC ladder, and forced shares never
@@ -1146,6 +1152,9 @@ export async function shareScreen({
   // 'detail' (default) keeps text sharp, 'motion' favors smoothness — drives
   // the track contentHint and degradationPreference below.
   optimizeFor = 'detail',
+  // Picker codec preference: 'auto' (AV1-first with adaptive fallback), 'h264'
+  // or 'av1' to pin that codec for this share.
+  codecPref = 'auto',
   // Legacy boolean from the old picker API - maps to system-legacy loopback.
   audio = undefined,
   // Fires with { implementation, hardware } from encoder stats, ~3s after the
@@ -1199,6 +1208,7 @@ export async function shareScreen({
     // Unsubscribe for the 'screen-follow' listener, see window following above.
     followWatch: null,
     optimizeFor,
+    codecPref,
     onEncoderStats,
     cpuStrikes: 0,
     screenCodec: null,
@@ -1244,7 +1254,7 @@ export async function shareScreen({
     ctx.width = settings.width > 0 ? settings.width : width
     ctx.height = settings.height > 0 ? settings.height : height
     ctx.fps = settings.frameRate > 0 ? Math.min(settings.frameRate, fps) : fps
-    const screenCodec = pickVideoCodec()
+    const screenCodec = pickVideoCodec(ctx)
     const screenEncoding = screenEncodingFor({
       width: ctx.width,
       height: ctx.height,

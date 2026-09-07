@@ -225,6 +225,28 @@
   box-shadow: var(--shadow-1);
 }
 
+.picker-advanced-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  font-family: var(--font-family-primary);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: color 0.12s ease;
+}
+
+.picker-advanced-toggle:hover {
+  color: var(--color-text);
+}
+
 .picker-footer-actions {
   display: flex;
   justify-content: flex-end;

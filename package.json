@@ -1,7 +1,7 @@
 {
   "name": "pylon",
   "desktopName": "app.pylon.client.desktop",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "A desktop client for voice, video/screen-share, and text chat.",
   "main": "./out/main/index.js",
   "author": "Phloxin",

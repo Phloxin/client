@@ -413,10 +413,14 @@ function ClientIndicator({
             }}
             onDoubleClick={(e) => e.stopPropagation()}
           >
-            <IconVideoFilled size={15} className="client-streaming-icon" aria-label="Streaming" />
+            <span className="client-streaming-glyph">
+              <IconVideoFilled size={15} className="client-streaming-icon" aria-label="Streaming" />
+            </span>
           </button>
         ) : (
-          <IconVideoFilled size={15} className="client-streaming-icon" aria-label="Streaming" />
+          <span className="client-streaming-glyph">
+            <IconVideoFilled size={15} className="client-streaming-icon" aria-label="Streaming" />
+          </span>
         ))}
       {rosterMode && !isSelf && onOpenDm && (
         <button
