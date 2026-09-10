@@ -9,6 +9,7 @@ import {
 } from '../lib/sounds'
 import { applyAppearanceSettings, applyAnimationSettings, UI_FONTS } from '../lib/uiSettings'
 import { prefersReducedMotion } from '../lib/animation'
+import { normalizeAutoIdleSettings } from '../lib/autoIdle'
 
 const SettingsContext = createContext(null)
 
@@ -50,6 +51,7 @@ const DEFAULT_APPEARANCE = {
   gradientsEnabled: true,
   shadowsEnabled: true,
   fontFamily: 'inter',
+  clientPanelPosition: 'left',
   // 'cozy' = avatar + name + time + message (default); 'compact' = name + time + message, no avatar.
   messageDisplay: 'cozy',
   // Server-group decorations on client rows (tag pills / icon badges).
@@ -109,6 +111,26 @@ function migrateMicSettings(saved) {
 }
 
 export function SettingsProvider({ children }) {
+  const [autoIdleSettings, setAutoIdleSettings] = useState(() => {
+    try {
+      return normalizeAutoIdleSettings(JSON.parse(localStorage.getItem('autoIdleSettings')))
+    } catch {
+      return normalizeAutoIdleSettings()
+    }
+  })
+
+  const updateAutoIdleSettings = (changes) => {
+    setAutoIdleSettings((prev) => normalizeAutoIdleSettings({ ...prev, ...changes }))
+  }
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('autoIdleSettings', JSON.stringify(autoIdleSettings))
+    } catch (err) {
+      console.warn('Could not save auto idle settings:', err)
+    }
+  }, [autoIdleSettings])
+
   const [appearanceSettings, setAppearanceSettings] = useState(() => {
     try {
       const saved = localStorage.getItem('appearanceSettings')
@@ -304,6 +326,8 @@ export function SettingsProvider({ children }) {
   return (
     <SettingsContext.Provider
       value={{
+        autoIdleSettings,
+        updateAutoIdleSettings,
         micSettings,
         updateMicSettings,
         soundState,

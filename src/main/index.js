@@ -8,6 +8,7 @@ import {
   safeStorage,
   dialog,
   screen,
+  powerMonitor,
   powerSaveBlocker
 } from 'electron'
 import { basename, join } from 'path'
@@ -863,6 +864,10 @@ app.whenReady().then(() => {
   // Advanced settings UI, and persist changes. Changes apply on next launch.
   ipcMain.handle('get-app-settings', () => readAppSettings())
   ipcMain.on('set-app-settings', (_, changes) => writeAppSettings(changes))
+
+  // OS-wide input inactivity (seconds), including activity outside Pylon.
+  // Electron provides the native implementation on Windows, Linux and macOS.
+  ipcMain.handle('get-system-idle-time', () => powerMonitor.getSystemIdleTime())
 
   // ─── Launch on startup (Windows only) ───────────────────────────────
   // Read back from the OS login-item registry rather than app-settings.json, so

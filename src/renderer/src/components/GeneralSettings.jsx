@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react'
 import { IconRefresh, IconDownload, IconCircleCheck, IconAlertTriangle } from '@tabler/icons-react'
+import { useSettings } from '../context/SettingsContext'
+import { MAX_IDLE_MINUTES, validIdleMinutes } from '../lib/autoIdle'
 
 // Startup behaviour and window-geometry persistence are Windows-only: the
 // login-item registry has no Linux equivalent through Electron, and Linux/macOS
@@ -10,6 +12,20 @@ const isWindows = window.api?.platform === 'win32'
 // 'updater:event' messages; this component just reflects the latest one and
 // exposes the three actions (check / download / install).
 function GeneralSettings() {
+  const { autoIdleSettings, updateAutoIdleSettings } = useSettings()
+  const [idleMinutes, setIdleMinutes] = useState(String(autoIdleSettings.minutes))
+  const [idleMinutesError, setIdleMinutesError] = useState('')
+
+  const saveIdleMinutes = () => {
+    const minutes = Number(idleMinutes)
+    if (!validIdleMinutes(minutes)) {
+      setIdleMinutesError(`Enter a whole number from 1 to ${MAX_IDLE_MINUTES}.`)
+      return
+    }
+    setIdleMinutesError('')
+    updateAutoIdleSettings({ minutes })
+  }
+
   const [version, setVersion] = useState('')
   // 'idle' | 'checking' | 'available' | 'not-available' | 'downloading'
   //   | 'downloaded' | 'error' | 'disabled'
@@ -61,7 +77,10 @@ function GeneralSettings() {
   }
 
   useEffect(() => {
-    window.electron?.ipcRenderer?.invoke('get-app-version').then(setVersion).catch(() => {})
+    window.electron?.ipcRenderer
+      ?.invoke('get-app-version')
+      .then(setVersion)
+      .catch(() => {})
 
     const off = window.electron?.ipcRenderer?.on('updater:event', (_e, msg) => {
       switch (msg.type) {
@@ -109,8 +128,8 @@ function GeneralSettings() {
           <h2>General</h2>
           <p>
             {isWindows
-              ? 'Version, updates, and startup behavior.'
-              : 'Application version and updates.'}
+              ? 'Version, updates, auto idle, and startup behavior.'
+              : 'Application version, updates, and auto idle.'}
           </p>
         </div>
       </div>
@@ -187,6 +206,55 @@ function GeneralSettings() {
             <span>{error}</span>
           </div>
         )}
+
+        <div className="settings-section settings-toggle-row">
+          <div className="settings-toggle-copy">
+            <label htmlFor="auto-idle-toggle">Auto Idle Status</label>
+            <p className="settings-section-desc">
+              Set your status to Away when you aren&apos;t using your computer. Return to Online
+              when you become active again. Manually selected statuses are preserved.
+            </p>
+          </div>
+          <label className="toggle-switch">
+            <input
+              type="checkbox"
+              id="auto-idle-toggle"
+              checked={autoIdleSettings.enabled}
+              onChange={(e) => updateAutoIdleSettings({ enabled: e.target.checked })}
+            />
+            <span className="toggle-slider" />
+          </label>
+        </div>
+
+        <div className="settings-section">
+          <label htmlFor="auto-idle-minutes">Idle after (minutes)</label>
+          <p className="settings-section-desc" id="auto-idle-description">
+            System inactivity before switching from Online to Away. Default: 15 minutes.
+          </p>
+          <input
+            className="settings-idle-minutes"
+            type="number"
+            id="auto-idle-minutes"
+            min={1}
+            max={MAX_IDLE_MINUTES}
+            step={1}
+            value={idleMinutes}
+            disabled={!autoIdleSettings.enabled}
+            aria-describedby="auto-idle-description auto-idle-error"
+            aria-invalid={!!idleMinutesError}
+            onChange={(e) => {
+              setIdleMinutes(e.target.value)
+              setIdleMinutesError('')
+            }}
+            onBlur={saveIdleMinutes}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') e.currentTarget.blur()
+            }}
+          />
+          <p className="settings-section-desc" id="auto-idle-error" role="alert">
+            {idleMinutesError}
+          </p>
+        </div>
 
         {isWindows && (
           <>

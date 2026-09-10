@@ -34,6 +34,7 @@ import {
 import { playUiSound, isToastEnabled } from '../lib/sounds'
 import { setServerHost, apiBase, wsBase, cdnUrl, throwIfError } from '../lib/serverConfig'
 import { validateMessage, statusOf } from '../lib/presence'
+import { useAutoIdle } from '../lib/useAutoIdle'
 import { authFetch, getFreshToken, setOnSessionExpired } from '../lib/auth'
 import { httpFetch } from '../lib/http'
 import {
@@ -1771,6 +1772,7 @@ function Main() {
       clearAuth()
       setChannels([])
       setClients([])
+      setPresences({})
       setFeed([])
       setAllVideoStreams([])
       setSelectedStreamClientId(null)
@@ -2860,9 +2862,23 @@ function Main() {
   const sendStatus = (selfMute, selfDeaf) =>
     sendVoiceState({ self_mute: selfMute, self_deaf: selfDeaf })
 
-  // Change our own presence (op 5). Unlike voice state this is a genuine patch:
-  // an omitted field is preserved server-side, so send only what changed —
-  // `status_message: null` is meaningful (clears it) and must survive the trip.
+  // Automatic updates wait for the gateway handshake and retry silently if
+  // disconnected. The hook tracks which Away transitions belong to auto idle.
+  const sendAutoPresence = useCallback((patch) => {
+    if (!sessionIdRef.current || eventsWsRef.current?.readyState !== WebSocket.OPEN) return false
+    eventsWsRef.current.send(JSON.stringify({ op: 5, data: patch }))
+    return true
+  }, [])
+
+  const manualStatusSelected = useAutoIdle({
+    scope: token ? JSON.stringify([connectedServer?.host, client?.id]) : null,
+    connected: !!token && connectionStatus === 'connected',
+    status: statusOf(presences[client?.id]),
+    send: sendAutoPresence
+  })
+
+  // Manual presence (op 5) is a patch: omitted fields are preserved server-side.
+  // `status_message: null` clears the message and must survive the trip.
   const sendPresence = useCallback(
     (patch) => {
       if (patch.status == null && !('status_message' in patch)) return
@@ -2879,11 +2895,12 @@ function Main() {
         return
       }
       eventsWsRef.current.send(JSON.stringify({ op: 5, data: patch }))
+      if (patch.status != null) manualStatusSelected()
       // No optimistic update: the server echoes PresenceUpdate to us too, and it
       // arbitrates between our devices (last write wins). Guessing here would
       // flicker whenever another device wins the race.
     },
-    [showError]
+    [showError, manualStatusSelected]
   )
 
   // Full resync. The gateway is the live path; this is for recovering after a
