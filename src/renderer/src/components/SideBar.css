@@ -14,6 +14,10 @@
   padding: 0 2px 0 6px;
 }
 
+html[data-client-panel-position='right'] .sidebar {
+  padding: 0 6px 0 2px;
+}
+
 /* Server header row — hosts the ServerMenu trigger. */
 .server-header {
   flex-shrink: 0;
@@ -383,6 +387,11 @@ html[data-transparency='true'] .control-dock {
   height: 100%;
   cursor: col-resize;
   z-index: 10;
+}
+
+html[data-client-panel-position='right'] .sidebar-resize-handle {
+  right: auto;
+  left: calc(-1 * (10px + 6px) / 2);
 }
 
 .sidebar-resize-handle::after {

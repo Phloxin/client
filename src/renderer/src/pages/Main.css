@@ -28,6 +28,11 @@
   background: transparent;
 }
 
+html[data-client-panel-position='right'] .layout {
+  flex-direction: row-reverse;
+  padding: 0 4px 10px 10px;
+}
+
 html[data-transparency='true'] .layout {
   background: color-mix(
     in srgb,

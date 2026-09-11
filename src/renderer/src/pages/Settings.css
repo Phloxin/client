@@ -600,6 +600,27 @@
   min-width: 0;
 }
 
+.settings-idle-minutes {
+  width: 80px;
+  height: 30px;
+  padding: 4px 8px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  font-size: var(--font-size-sm);
+}
+
+.settings-idle-minutes:disabled {
+  opacity: 0.5;
+}
+
+.settings-idle-minutes:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
 .settings-apply-btn {
   padding: 8px 14px;
   border: none;

@@ -100,7 +100,7 @@ function Sidebar({
   // voice-channel refs.
   shareControlRef
 }) {
-  const { keybindSettings } = useSettings()
+  const { keybindSettings, appearanceSettings } = useSettings()
   const [width, setWidth] = useState(() => {
     const saved = localStorage.getItem('sidebar-width')
     return saved ? parseInt(saved) : DEFAULT_WIDTH
@@ -415,7 +415,11 @@ function Sidebar({
     const onMouseMove = (e) => {
       if (!isDragging.current || !sidebarRef.current) return
       const rect = sidebarRef.current.getBoundingClientRect()
-      const newWidth = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, e.clientX - rect.left))
+      const draggedWidth =
+        appearanceSettings.clientPanelPosition === 'right'
+          ? rect.right - e.clientX
+          : e.clientX - rect.left
+      const newWidth = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, draggedWidth))
       sidebarRef.current.style.width = `${newWidth}px`
     }
 
@@ -438,7 +442,7 @@ function Sidebar({
       document.removeEventListener('mousemove', onMouseMove)
       document.removeEventListener('mouseup', onMouseUp)
     }
-  }, [])
+  }, [appearanceSettings.clientPanelPosition])
 
   // Roster filter. Ids are prefixed ('r<id>' role, 'g<id>' group) so one Set covers
   // both lists. Empty = no filter; otherwise a client shows if it matches ANY pick.

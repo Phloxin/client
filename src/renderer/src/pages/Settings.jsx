@@ -136,6 +136,24 @@ function Settings() {
               </div>
 
               <div className="settings-panel-group">
+                <div className="settings-section">
+                  <label htmlFor="client-panel-position">Client Panel Position</label>
+                  <p className="settings-section-desc">
+                    Place the channels, clients, and voice controls on the left or right side of the
+                    interface.
+                  </p>
+                  <select
+                    id="client-panel-position"
+                    value={appearanceSettings.clientPanelPosition === 'right' ? 'right' : 'left'}
+                    onChange={(e) =>
+                      updateAppearanceSettings({ clientPanelPosition: e.target.value })
+                    }
+                  >
+                    <option value="left">Left</option>
+                    <option value="right">Right</option>
+                  </select>
+                </div>
+
                 <div className="settings-section settings-toggle-row">
                   <div className="settings-toggle-copy">
                     <label htmlFor="transparency-toggle">Background Transparency</label>
