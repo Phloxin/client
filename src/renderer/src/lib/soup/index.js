@@ -167,7 +167,13 @@ configureStreamDiagnostics({
 // automatically: a local Web Audio graph rebuild when the bloat is in the
 // playout path, or a full re-consume when it's in the receiver's jitter buffer.
 const AUDIO_HEALTH_INTERVAL_MS = 5000
-const AUDIO_HEALTH_BAD_DELAY_SEC = 0.4 // windowed avg delay considered pathological
+// Windowed avg delay considered pathological. Voice no longer pins a jitter
+// buffer target (see setAudioJitterBufferTarget), so NetEq is free to hold
+// several hundred ms on a genuinely jittery peer — that is it working, not
+// failing. Healing at 0.4s would re-consume the consumer and reset the buffer
+// mid-adaptation, fighting the very mechanism that fixes the audio. Only
+// multi-second delay is now unambiguously broken.
+const AUDIO_HEALTH_BAD_DELAY_SEC = 1.0
 const AUDIO_HEALTH_STRIKES = 2 // consecutive bad windows before acting
 const AUDIO_HEAL_BASE_COOLDOWN_MS = 30_000
 const AUDIO_HEAL_MAX_COOLDOWN_MS = 300_000
@@ -2561,7 +2567,14 @@ function setAudioJitterBufferTarget(consumer, kind, producedType) {
   // present on the remote Consumer. Keep this strictly audio-only: video
   // receivers must not inherit an audio latency target.
   if (kind !== 'audio') return
-  const targetMs = producedType === 'Audio' ? 60 : producedType === 'ScreenShareAudio' ? 120 : null
+  // Voice deliberately sets NO target: NetEq sizes its own buffer from measured
+  // jitter, which is the one thing it is genuinely good at. The old fixed 60ms
+  // sat *below* the jitter actually observed from a lagging peer (~54ms), so
+  // there was no margin — every talk spurt underran and recovered by concealing
+  // and time-stretching, heard as delayed, sped-up, jittery speech.
+  // Screen-share audio keeps its target: it is music-like, continuity matters
+  // more than latency there, and it was never implicated.
+  const targetMs = producedType === 'ScreenShareAudio' ? 120 : null
   if (targetMs == null) return
 
   const receiver = consumer?.rtpReceiver

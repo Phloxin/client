@@ -64,6 +64,11 @@ function micErrorMessage(err) {
 const MIC_FALLBACK_MESSAGE =
   'Your selected microphone is unavailable. Using the default input device until it returns.'
 
+// Channel error banners are informational, not actionable state - the condition
+// they describe is already reflected in the mic/share controls. Leaving one
+// pinned forever just shrinks the user list for the rest of the session.
+const ERROR_DISMISS_MS = 10_000
+
 const VoiceChannel = forwardRef(function VoiceChannel(
   {
     channel,
@@ -119,6 +124,13 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   const [joined, setJoined] = useState(false)
   const [connecting, setConnecting] = useState(false)
   const [error, setError] = useState(null)
+  // Auto-dismiss. A later failure with a different message restarts the timer;
+  // an identical one is a React no-op, so the original countdown stands.
+  useEffect(() => {
+    if (!error) return undefined
+    const timer = setTimeout(() => setError(null), ERROR_DISMISS_MS)
+    return () => clearTimeout(timer)
+  }, [error])
   const [sharing, setSharing] = useState(false)
   const [showSourcePicker, setShowSourcePicker] = useState(false)
   const [videoStreams, setVideoStreams] = useState([])

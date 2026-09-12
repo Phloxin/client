@@ -392,6 +392,25 @@ function trackWindowBounds(win) {
   })
 }
 
+// Shared wiring for every frameless window that renders the custom title bar
+// (main window + the video popout).
+function wireFramelessChrome(win) {
+  // Let the title bar swap its maximize/restore icon when the window's
+  // maximized state changes by any means (button, double-click, OS snap).
+  const sendMaxState = () => win.webContents.send('window-maximized-change', win.isMaximized())
+  win.on('maximize', sendMaxState)
+  win.on('unmaximize', sendMaxState)
+
+  // On a frameless window Windows raises its native system menu when the drag
+  // region is right-clicked, but it renders detached/unresponsive ("frozen").
+  // We already expose min/max/close in the title bar, so just suppress it. The
+  // event fires on the BrowserWindow (per Electron's docs); bind webContents too
+  // to cover both dispatch paths.
+  const suppressSystemMenu = (e) => e.preventDefault()
+  win.on('system-context-menu', suppressSystemMenu)
+  win.webContents.on('system-context-menu', suppressSystemMenu)
+}
+
 function createWindow() {
   // A hidden BrowserWindow normally gets revealed after Chromium's first paint.
   // With GPU acceleration disabled on Linux (notably native Wayland), that first
@@ -434,6 +453,8 @@ function createWindow() {
   attachWindowDiagnostics(mainWindow)
   mainWindow.webContents.on('did-create-window', (childWindow) => {
     attachWindowDiagnostics(childWindow)
+    // Child windows are frameless too and render the same custom title bar.
+    wireFramelessChrome(childWindow)
   })
 
   // Maximize before the window is shown so it doesn't visibly snap open.
@@ -447,21 +468,7 @@ function createWindow() {
     })
   }
 
-  // Let the custom title bar swap its maximize/restore icon when the window's
-  // maximized state changes by any means (button, double-click, OS snap).
-  const sendMaxState = () =>
-    mainWindow.webContents.send('window-maximized-change', mainWindow.isMaximized())
-  mainWindow.on('maximize', sendMaxState)
-  mainWindow.on('unmaximize', sendMaxState)
-
-  // On a frameless window Windows raises its native system menu when the drag
-  // region is right-clicked, but it renders detached/unresponsive ("frozen").
-  // We already expose min/max/close in the title bar, so just suppress it. The
-  // event fires on the BrowserWindow (per Electron's docs); bind webContents too
-  // to cover both dispatch paths.
-  const suppressSystemMenu = (e) => e.preventDefault()
-  mainWindow.on('system-context-menu', suppressSystemMenu)
-  mainWindow.webContents.on('system-context-menu', suppressSystemMenu)
+  wireFramelessChrome(mainWindow)
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
     // The video-grid popout is opened with window.open(url, 'video-popout', ...)
@@ -478,6 +485,9 @@ function createWindow() {
           minHeight: 240,
           title: 'Video Streams',
           autoHideMenuBar: true,
+          // Frameless like the main window: Popout.jsx draws a controls-only
+          // custom title bar (see TitleBar's controlsOnly prop).
+          frame: false,
           backgroundColor: '#1e1e1e',
           webPreferences: {
             preload: join(__dirname, '../preload/index.js'),

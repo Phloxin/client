@@ -18,7 +18,7 @@ const CHART_FALLBACK_W = 320 // used only if the canvas reports zero width at mo
 // Heuristic "should not be this high" limits: each draws a dashed guide line on
 // its chart and turns into a red badge while the latest sample exceeds it.
 // They're rules of thumb for spotting trouble, not hard protocol limits. The
-// audio jitter-buffer limit matches soup.js AUDIO_HEALTH_BAD_DELAY_SEC (0.4s),
+// audio jitter-buffer limit matches soup.js AUDIO_HEALTH_BAD_DELAY_SEC (1.0s),
 // the point where the inbound self-heal machinery calls audio degraded.
 const LIMITS = {
   rttMs: 150,
@@ -26,8 +26,10 @@ const LIMITS = {
   fractionLost: 0.02, // 2% — video artifacts / audio dropouts get likely above this
   encodeMsPerFrame: 33, // one 30fps frame interval: encoder can't keep realtime
   videoJitterBufferMs: 250,
-  audioJitterBufferMs: 400,
-  concealedPerTick: 2400 // 50ms of 48kHz audio concealed per 1s tick — audible PLC
+  audioJitterBufferMs: 1000,
+  audioPlayoutMs: 400, // same bar, applied after the jitter buffer instead of inside it
+  concealedPerTick: 2400, // 50ms of 48kHz audio concealed per 1s tick — audible PLC
+  acceleratedPerTick: 2400 // 50ms/s deleted by NetEq Accelerate — audible as sped-up speech
 }
 
 const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi)
@@ -109,8 +111,14 @@ function activeWarnings(meta) {
     const bufLimit = meta.kind === 'audio' ? LIMITS.audioJitterBufferMs : LIMITS.videoJitterBufferMs
     if (over(m.jitterBufferMs, bufLimit)) out.push(`jitbuf ${Math.round(m.jitterBufferMs)}ms`)
     if (over(m.jitterMs, LIMITS.jitterMs)) out.push(`jitter ${Math.round(m.jitterMs)}ms`)
+    if (meta.kind === 'audio' && over(m.playoutMs, LIMITS.audioPlayoutMs))
+      out.push(`playout ${Math.round(m.playoutMs)}ms`)
     if (meta.kind === 'audio' && over(m.concealedSamplesDelta, LIMITS.concealedPerTick))
       out.push(`plc ${Math.round(m.concealedSamplesDelta)}`)
+    if (meta.kind === 'audio' && over(m.acceleratedSamplesDelta, LIMITS.acceleratedPerTick))
+      out.push(`accel ${Math.round(m.acceleratedSamplesDelta)}`)
+    if (meta.kind === 'audio' && over(m.packetsDiscardedDelta, 0))
+      out.push(`discard ${Math.round(m.packetsDiscardedDelta)}`)
   }
   return out
 }
@@ -461,13 +469,19 @@ function RecvCard({ buf, theme, clients }) {
             series={[{ label: 'recv', color: theme.primary }]}
             data={buildData(buf, [(x) => num(x.recvKbps)])}
           />
+          {/* Two delays on one chart on purpose: 'buf' is latency inside NetEq,
+              'playout' is latency after it (Web Audio FIFO + device buffer).
+              Which line climbs during a lag spike says which one to fix. */}
           <UplotChart
-            title="Jitter buffer"
+            title="Delay"
             unit="ms"
             theme={theme}
             threshold={{ value: LIMITS.audioJitterBufferMs }}
-            series={[{ label: 'buf', color: theme.blue }]}
-            data={buildData(buf, [(x) => num(x.jitterBufferMs)])}
+            series={[
+              { label: 'buf', color: theme.blue },
+              { label: 'playout', color: theme.primary }
+            ]}
+            data={buildData(buf, [(x) => num(x.jitterBufferMs), (x) => num(x.playoutMs)])}
           />
           <UplotChart
             title="Concealed"
@@ -477,10 +491,27 @@ function RecvCard({ buf, theme, clients }) {
             series={[{ label: 'concealed', color: theme.amber }]}
             data={buildData(buf, [(x) => num(x.concealedSamplesDelta)])}
           />
+          {/* NetEq time-scaling. 'accel' spiking is the sped-up catch-up
+              playback; 'decel' is the stretch that precedes it. */}
+          <UplotChart
+            title="Time stretch"
+            unit="samples"
+            theme={theme}
+            threshold={{ value: LIMITS.acceleratedPerTick }}
+            series={[
+              { label: 'accel', color: theme.amber },
+              { label: 'decel', color: theme.blue }
+            ]}
+            data={buildData(buf, [
+              (x) => num(x.acceleratedSamplesDelta),
+              (x) => num(x.deceleratedSamplesDelta)
+            ])}
+          />
           <StatRow
             items={[
               { label: 'recv', value: fmtInt(m.packetsReceived) },
               { label: 'lost', value: fmtInt(m.packetsLost) },
+              { label: 'discard', value: fmtInt(m.packetsDiscardedDelta) },
               { label: 'jitter', value: fmtFixed(num(m.jitterMs)) },
               { label: 'conceal ev', value: fmtInt(m.concealmentEvents) },
               { label: 'level', value: fmtFixed(num(m.audioLevel), 2) }

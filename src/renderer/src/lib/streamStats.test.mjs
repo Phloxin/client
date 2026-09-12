@@ -158,6 +158,54 @@ test('audio metrics calculate rates and preserve cumulative snapshots', () => {
   assert.equal(snapshot.concealedSamples, 25)
 })
 
+test('audio metrics separate NetEq time-stretch from playout-path delay', () => {
+  const previous = {
+    bytes: 1_000,
+    timestamp: 1_000,
+    jitterBufferDelay: 1,
+    jitterBufferEmittedCount: 100,
+    removedSamplesForAcceleration: 480,
+    insertedSamplesForDeceleration: 960,
+    totalPlayoutDelay: 2,
+    totalSamplesCount: 100
+  }
+  const inbound = {
+    id: 'audio',
+    type: 'inbound-rtp',
+    kind: 'audio',
+    bytesReceived: 3_000,
+    timestamp: 2_000,
+    jitterBufferDelay: 1.5,
+    jitterBufferEmittedCount: 200,
+    removedSamplesForAcceleration: 3_360,
+    insertedSamplesForDeceleration: 960
+  }
+  const playout = {
+    id: 'playout',
+    type: 'media-playout',
+    totalPlayoutDelay: 8,
+    totalSamplesCount: 200
+  }
+  const { metrics, snapshot } = extractRecvAudioMetrics(report(inbound, playout), previous)
+
+  // Buffer draining faster than realtime while the render path holds 60ms.
+  assert.equal(metrics.acceleratedSamplesDelta, 2_880)
+  assert.equal(metrics.deceleratedSamplesDelta, 0)
+  assert.equal(metrics.playoutMs, 60)
+  assert.equal(snapshot.totalPlayoutDelay, 8)
+
+  // A counter that went backwards (receiver reset) reads as unknown, not zero.
+  const reset = extractRecvAudioMetrics(
+    report({ ...inbound, removedSamplesForAcceleration: 0 }, playout),
+    previous
+  )
+  assert.equal(reset.metrics.acceleratedSamplesDelta, null)
+
+  // No media-playout stat (or no previous sample) leaves playout unknown.
+  assert.equal(extractRecvAudioMetrics(report(inbound), previous).metrics.playoutMs, null)
+  assert.equal(extractRecvAudioMetrics(report(inbound, playout), null).metrics.playoutMs, null)
+})
+
 test('send-audio and receive-video metrics keep rows stable across missing reports', () => {
   const send = extractSendAudioMetrics(
     report(

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import './Popout.css'
 import VideoGrid from '../components/VideoGrid'
+import TitleBar from '../components/TitleBar'
 
 // The popped-out video window. It renders the same VideoGrid as the main app,
 // but its data comes from the opener window's bridge (window.opener.__videoPopout)
@@ -36,6 +37,8 @@ function Popout() {
 
   return (
     <div className="popout-root">
+      {/* Frameless window: bare min/max/close, no title or icon. */}
+      <TitleBar controlsOnly />
       <VideoGrid
         streams={data.streams}
         clients={data.clients}

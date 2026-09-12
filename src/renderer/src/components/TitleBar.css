@@ -18,7 +18,7 @@
   user-select: none;
 }
 
-html[data-transparency='true'] .title-bar {
+html[data-transparency='true'] .title-bar:not(.title-bar-bare) {
   background: color-mix(
     in srgb,
     var(--color-background) var(--transparency-opacity, 85%),
@@ -74,6 +74,19 @@ html[data-transparency='true'] .title-bar {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Controls-only variant (stream popout): shorter, and black to match the
+   video backdrop it sits on instead of the app chrome. */
+.title-bar-bare {
+  --title-bar-height: 30px;
+  background: #000;
+}
+
+/* Hover colors are inherited from .title-bar-btn / .title-bar-close. */
+.title-bar-bare .title-bar-btn {
+  width: 36px;
+  height: 24px;
 }
 
 .title-bar-controls {
