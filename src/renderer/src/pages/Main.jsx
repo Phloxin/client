@@ -2996,18 +2996,19 @@ function Main() {
     .filter((t) => t.channelId === activeChatChannelId && t.clientId !== client?.id)
     .map((t) => t.name)
 
-  // Title for the peeked-into chat header: for a DM, the other recipient's name;
-  // otherwise the channel name. The name may be unresolvable if the other user is
-  // offline (not in `clients`), so fall back to the channel's own name.
   const previewChannel = channels.find((c) => c.id === previewChannelId)
   let previewChannelName
+  let previewDmAvatar
   if (previewChannel?.type === 'dm') {
     const o = dmOther(previewChannel, client?.id)
-    previewChannelName =
-      o.name || clients.find((c) => c.id === o.id)?.name || previewChannel.name || 'Direct Message'
+    const recipient = clients.find((c) => c.id === o.id)
+    previewChannelName = o.name || recipient?.name || previewChannel.name || 'Direct Message'
+    previewDmAvatar = recipient?.avatar
   } else {
     previewChannelName = previewChannel?.name ?? 'Channel'
   }
+  const previewChannelIcon =
+    previewChannel?.type === 'dm' ? previewDmAvatar : cdnUrl(previewChannel?.channel_icon)
 
   // The client whose summary is open (single-click), or null.
   const summaryClient =
@@ -3166,16 +3167,12 @@ function Main() {
                     <span className="view-preview-title">
                       <button
                         type="button"
-                        className="chat-title-icon"
+                        className={`chat-title-icon${previewChannel?.type === 'dm' ? ' chat-title-icon-avatar' : ''}`}
                         onClick={() => handleShowChannelSummary(previewChannelId)}
                         title="Channel details"
                       >
-                        {previewChannel?.channel_icon ? (
-                          <img
-                            className="chat-title-icon-img"
-                            src={cdnUrl(previewChannel.channel_icon)}
-                            alt=""
-                          />
+                        {previewChannelIcon ? (
+                          <img className="chat-title-icon-img" src={previewChannelIcon} alt="" />
                         ) : previewChannel?.type === 'dm' ? (
                           <IconUser size={18} stroke={2} />
                         ) : (

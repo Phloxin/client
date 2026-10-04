@@ -14,7 +14,7 @@ import { setClientAudioState, getClientAudioState } from '../lib/soup'
 import { useClientMenu } from './ClientContextMenu'
 import { useSettings } from '../context/SettingsContext'
 import { useClientActions } from '../context/ClientActionsContext'
-import { statusOf, STATUS_LABELS } from '../lib/presence'
+import { statusOf, statusLabel } from '../lib/presence'
 
 // rosterMode renders a presence-only entry (the sidebar's Users tab): no mic/
 // status indicator and no right-click volume control, since those entries aren't
@@ -256,9 +256,8 @@ function ClientIndicator({
   // it's appended independently of the status itself.
   const presence = presences?.[client.id]
   const status = statusOf(presence)
-  const presenceTitle = presence?.status_message
-    ? `${STATUS_LABELS[status]} — ${presence.status_message}`
-    : STATUS_LABELS[status]
+  const label = statusLabel(status, isSelf)
+  const presenceTitle = presence?.status_message ? `${label} — ${presence.status_message}` : label
   // In a voice channel everyone listed is by definition present, so a dot on
   // every row is noise — only the two statuses that mean "here but unavailable"
   // earn one. The Users roster still shows all four, since that's the view whose

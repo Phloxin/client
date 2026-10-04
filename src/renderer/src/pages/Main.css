@@ -132,6 +132,10 @@ html[data-transparency='true'] .chat-area {
   border-radius: inherit;
 }
 
+.chat-title-icon-avatar {
+  border-radius: 50%;
+}
+
 .chat-title-text {
   display: flex;
   flex-direction: column;

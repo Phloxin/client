@@ -9,9 +9,11 @@ export const STATUS_LABELS = {
   online: 'Online',
   away: 'Away',
   do_not_disturb: 'Do Not Disturb',
-  // What we send to appear offline while still connected; also what we show for
-  // users who simply aren't here. The two are deliberately indistinguishable.
-  offline: 'Invisible'
+  offline: 'Offline'
+}
+
+export function statusLabel(status, isSelf = false) {
+  return status === 'offline' && isSelf ? 'Invisible' : STATUS_LABELS[status]
 }
 
 // Max length the server accepts, in Unicode code points (not UTF-16 units), so

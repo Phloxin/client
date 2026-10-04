@@ -22,7 +22,7 @@ import {
   IconX,
   IconActivity
 } from '@tabler/icons-react'
-import { STATUSES, STATUS_LABELS, STATUS_MESSAGE_MAX, statusOf } from '../lib/presence'
+import { STATUSES, STATUS_MESSAGE_MAX, statusOf, statusLabel } from '../lib/presence'
 import { fileToAvatarDataUrl } from '../lib/avatarFile'
 import { RoleIcon } from '../lib/roleIcon'
 import { useMenuPosition } from '../lib/menuPosition'
@@ -316,7 +316,7 @@ function ClientContextMenu({ client, pos, onClose, opts, caps }) {
                   }}
                 >
                   <span className={`presence-dot presence-${s}`} />
-                  {STATUS_LABELS[s]}
+                  {statusLabel(s, true)}
                   {myStatus === s && (
                     <IconCheck size={16} className="client-context-menu-trailing" />
                   )}
