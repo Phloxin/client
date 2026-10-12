@@ -1030,11 +1030,11 @@ function describeCodecs(codecs) {
 }
 
 function addRemoteSources(sources) {
-  for (const { node, owner: clientId, kind: type, group, paused } of sources) {
+  for (const { node, owner: clientId, kind: type, streamKey, paused } of sources) {
     const id = sourceId(node)
     console.log(
       `[Soup] Source ${id} added (${type} from ${clientId}` +
-        (group != null ? `, stream ${group}` : '') +
+        (streamKey != null ? `, stream ${streamKey}` : '') +
         (paused ? ', paused' : '') +
         ')'
     )
@@ -1128,7 +1128,7 @@ function replaceRemoteSource({ removed, added }) {
 }
 
 function removeRemoteSources(sources, { replaced = false } = {}) {
-  for (const { node, owner, group } of sources) {
+  for (const { node, owner, streamKey } of sources) {
     const id = sourceId(node)
     console.log(`[Soup] Source ${id} removed`)
     const knownVideo = knownVideoProducers.get(id)
@@ -1153,8 +1153,8 @@ function removeRemoteSources(sources, { replaced = false } = {}) {
     }
     // A stream ends when its last source closes, and its watch with it. No op
     // 9 for that (StreamEnded may not have caught up yet, but the watch is dead).
-    if (group != null && channelState.streamSources(group).length === 0) {
-      grantedWatches.delete(group)
+    if (streamKey != null && channelState.streamSources(streamKey).length === 0) {
+      grantedWatches.delete(streamKey)
     }
   }
   if (sources.length > 0) {
@@ -2940,19 +2940,19 @@ function sourceGoneError(id) {
 // CreateSink for a source, with the stream watch a stream source needs first.
 // A Denied means the watch we counted on is gone (revoked, or never granted on
 // the node), so forget it and ask for it once more.
-async function requestSink(id, node, group, isCurrent) {
+async function requestSink(id, node, streamKey, isCurrent) {
   for (let attempt = 0; ; attempt++) {
-    if (group != null) {
-      await ensureStreamWatch(group)
+    if (streamKey != null) {
+      await ensureStreamWatch(streamKey)
       if (!isCurrent()) throw mediaResetError()
       if (channelState.source(node) == null) throw sourceGoneError(id)
     }
     try {
       return await request(Request.createSink(node))
     } catch (err) {
-      if (!err?.denied || group == null || attempt > 0) throw err
-      console.warn(`[Soup] Sink for source ${id} denied; asking to watch stream ${group} again`)
-      grantedWatches.delete(group)
+      if (!err?.denied || streamKey == null || attempt > 0) throw err
+      console.warn(`[Soup] Sink for source ${id} denied; asking to watch stream ${streamKey} again`)
+      grantedWatches.delete(streamKey)
     }
   }
 }
@@ -2975,7 +2975,7 @@ async function createSinkFor(id) {
   const isCurrent = () =>
     generation === mediaStateGeneration && consumerTransport === transport && !transport.closed
 
-  const sink = await requestSink(id, node, source.group, isCurrent)
+  const sink = await requestSink(id, node, source.streamKey, isCurrent)
   if (!isCurrent()) throw mediaResetError()
   sinkSources.set(sink.node, id)
   // Closed for this sink, or SourcesRemoved for its source, while we were

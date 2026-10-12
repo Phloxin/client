@@ -185,12 +185,22 @@ test('events never touch the queue', async () => {
     {
       SourceReplaced: {
         old: 3,
-        new: { node: 8, owner: '2', kind: 'Stream', codec: 'Vp9', group: 'k', paused: false }
+        new: {
+          node: 8,
+          owner: '2',
+          kind: { type: 'Stream', attr: { codec: 'Vp9', stream_key: 'k' } },
+          paused: false
+        }
       }
     },
     {
       SourceUpdated: {
-        source: { node: 8, owner: '2', kind: 'Stream', codec: 'Vp9', group: 'k', paused: true }
+        source: {
+          node: 8,
+          owner: '2',
+          kind: { type: 'Stream', attr: { codec: 'Vp9', stream_key: 'k' } },
+          paused: true
+        }
       }
     },
     { Codecs: { codecs: CODECS } },
@@ -414,8 +424,8 @@ test('a snapshot replaces channel state and reports the source diff', () => {
     codecs: CODECS,
     members: ['1', '2'],
     sources: [
-      { node: 3, owner: '1', kind: 'Microphone', codec: null },
-      { node: 4, owner: '2', kind: 'Microphone', codec: null }
+      { node: 3, owner: '1', kind: { type: 'Microphone' }, paused: false },
+      { node: 4, owner: '2', kind: { type: 'Microphone' }, paused: false }
     ],
     speakers: ['1']
   })
@@ -435,14 +445,14 @@ test('a snapshot replaces channel state and reports the source diff', () => {
     codecs: { allowed: ['Vp9', 'H264'], preferred: 'Vp9' },
     members: ['2', '5'],
     sources: [
-      { node: 4, owner: '2', kind: 'Microphone', codec: null },
-      { node: 9, owner: '5', kind: 'Webcam', codec: 'Vp9' }
+      { node: 4, owner: '2', kind: { type: 'Microphone' }, paused: false },
+      { node: 9, owner: '5', kind: { type: 'Webcam', attr: { codec: 'Vp9' } }, paused: false }
     ],
     speakers: ['5']
   })
   assert.deepEqual(state.codecs, { allowed: ['Vp9', 'H264'], preferred: 'Vp9' })
   assert.deepEqual(diff.added, [
-    { node: 9, owner: '5', kind: 'Webcam', codec: 'Vp9', group: null, paused: false }
+    { node: 9, owner: '5', kind: 'Webcam', codec: 'Vp9', streamKey: null, paused: false }
   ])
   assert.deepEqual(
     diff.removed.map((s) => s.node),
@@ -453,46 +463,75 @@ test('a snapshot replaces channel state and reports the source diff', () => {
   assert.deepEqual([...state.members], ['2', '5'])
 })
 
-test('sources carry their stream (group) and owner pause', () => {
+test('a source kind flattens into its type, codec and stream', () => {
   const state = new VoiceChannelState()
   state.applySnapshot({
     channel_id: '1',
     codecs: CODECS,
     members: ['7'],
     sources: [
-      { node: 3, owner: '7', kind: 'Microphone', codec: null, group: null, paused: false },
-      { node: 4, owner: '7', kind: 'Stream', codec: 'Av1', group: '1:7:abc', paused: true },
-      { node: 5, owner: '7', kind: 'StreamAudio', codec: null, group: '1:7:abc', paused: false }
+      { node: 3, owner: '7', kind: { type: 'Microphone' }, paused: false },
+      { node: 4, owner: '7', kind: { type: 'Webcam', attr: { codec: 'Vp9' } }, paused: false },
+      {
+        node: 5,
+        owner: '7',
+        kind: { type: 'Stream', attr: { codec: 'Av1', stream_key: '1:7:abc' } },
+        paused: true
+      },
+      {
+        node: 6,
+        owner: '7',
+        kind: { type: 'StreamAudio', attr: { stream_key: '1:7:abc' } },
+        paused: false
+      }
     ],
     speakers: []
   })
-  assert.deepEqual(state.source(4), {
-    node: 4,
+  const flat = (node, kind, codec, streamKey, paused = false) => ({
+    node,
     owner: '7',
-    kind: 'Stream',
-    codec: 'Av1',
-    group: '1:7:abc',
-    paused: true
+    kind,
+    codec,
+    streamKey,
+    paused
   })
-  assert.equal(state.source(3).group, null)
+  assert.deepEqual(state.source(3), flat(3, 'Microphone', null, null))
+  assert.deepEqual(state.source(4), flat(4, 'Webcam', 'Vp9', null))
+  assert.deepEqual(state.source(5), flat(5, 'Stream', 'Av1', '1:7:abc', true))
+  assert.deepEqual(state.source(6), flat(6, 'StreamAudio', null, '1:7:abc'))
   assert.deepEqual(
     state.streamSources('1:7:abc').map((s) => s.node),
-    [4, 5]
+    [5, 6]
   )
   assert.deepEqual(state.streamSources('other'), [])
   assert.deepEqual(state.streamSources(null), [])
-  // A frame without the fields (older shape) reads as ungrouped and unpaused.
-  state.addSources([{ node: 9, owner: '7', kind: 'Webcam', codec: 'Vp9' }])
-  assert.equal(state.source(9).group, null)
-  assert.equal(state.source(9).paused, false)
 })
+
+// One Stream source on the wire, and how the channel state holds it.
+const WIRE_STREAM = {
+  node: 4,
+  owner: '7',
+  kind: { type: 'Stream', attr: { codec: 'Vp9', stream_key: 'k' } },
+  paused: false
+}
+const FLAT_STREAM = {
+  node: 4,
+  owner: '7',
+  kind: 'Stream',
+  codec: 'Vp9',
+  streamKey: 'k',
+  paused: false
+}
 
 test('SourceUpdated changes a known source and reports only real changes', () => {
   const state = new VoiceChannelState()
-  const stream = { node: 4, owner: '7', kind: 'Stream', codec: 'Vp9', group: 'k', paused: false }
+  const stream = WIRE_STREAM
   state.applySnapshot({ channel_id: '1', codecs: CODECS, members: ['7'], sources: [stream] })
 
-  assert.deepEqual(state.updateSource({ ...stream, paused: true }), { ...stream, paused: true })
+  assert.deepEqual(state.updateSource({ ...stream, paused: true }), {
+    ...FLAT_STREAM,
+    paused: true
+  })
   assert.equal(state.source(4).paused, true)
   // Repeating it changes nothing.
   assert.equal(state.updateSource({ ...stream, paused: true }), null)
@@ -504,7 +543,7 @@ test('SourceUpdated changes a known source and reports only real changes', () =>
 
 test('a resync snapshot reports sources whose pause changed', () => {
   const state = new VoiceChannelState()
-  const stream = { node: 4, owner: '7', kind: 'Stream', codec: 'Vp9', group: 'k', paused: false }
+  const stream = WIRE_STREAM
   state.applySnapshot({ channel_id: '1', codecs: CODECS, members: ['7'], sources: [stream] })
   const diff = state.applySnapshot({
     channel_id: '1',
@@ -514,7 +553,7 @@ test('a resync snapshot reports sources whose pause changed', () => {
   })
   assert.deepEqual(diff.added, [])
   assert.deepEqual(diff.removed, [])
-  assert.deepEqual(diff.updated, [{ ...stream, paused: true }])
+  assert.deepEqual(diff.updated, [{ ...FLAT_STREAM, paused: true }])
 })
 
 test('deltas are idempotent and report only real changes', () => {
@@ -523,11 +562,12 @@ test('deltas are idempotent and report only real changes', () => {
 
   assert.deepEqual(state.addClients(['7', '7']), ['7'])
   assert.deepEqual(state.addClients(['7']), [])
-  const added = state.addSources([{ node: 11, owner: '7', kind: 'Microphone', codec: null }])
+  const mic = { node: 11, owner: '7', kind: { type: 'Microphone' }, paused: false }
+  const added = state.addSources([mic])
   assert.deepEqual(added, [
-    { node: 11, owner: '7', kind: 'Microphone', codec: null, group: null, paused: false }
+    { node: 11, owner: '7', kind: 'Microphone', codec: null, streamKey: null, paused: false }
   ])
-  assert.deepEqual(state.addSources([{ node: 11, owner: '7', kind: 'Microphone' }]), [])
+  assert.deepEqual(state.addSources([mic]), [])
   assert.equal(state.source(11).owner, '7')
 
   assert.deepEqual(
@@ -544,25 +584,31 @@ test('a replaced source swaps nodes and reports both halves', () => {
     channel_id: '1',
     codecs: CODECS,
     members: ['7'],
-    sources: [{ node: 3, owner: '7', kind: 'Stream', codec: 'Av1', group: 'k', paused: true }],
+    sources: [
+      {
+        node: 3,
+        owner: '7',
+        kind: { type: 'Stream', attr: { codec: 'Av1', stream_key: 'k' } },
+        paused: true
+      }
+    ],
     speakers: []
   })
 
   // The replacement keeps its predecessor's stream and pause.
-  const { removed, added } = state.replaceSource(3, {
+  const replacement = {
     node: 8,
     owner: '7',
-    kind: 'Stream',
-    codec: 'H264',
-    group: 'k',
+    kind: { type: 'Stream', attr: { codec: 'H264', stream_key: 'k' } },
     paused: true
-  })
+  }
+  const { removed, added } = state.replaceSource(3, replacement)
   assert.deepEqual(removed, {
     node: 3,
     owner: '7',
     kind: 'Stream',
     codec: 'Av1',
-    group: 'k',
+    streamKey: 'k',
     paused: true
   })
   assert.deepEqual(added, {
@@ -570,7 +616,7 @@ test('a replaced source swaps nodes and reports both halves', () => {
     owner: '7',
     kind: 'Stream',
     codec: 'H264',
-    group: 'k',
+    streamKey: 'k',
     paused: true
   })
   assert.equal(state.source(3), null)
@@ -581,7 +627,7 @@ test('a replaced source swaps nodes and reports both halves', () => {
   )
 
   // Replaying it changes nothing.
-  assert.deepEqual(state.replaceSource(3, { node: 8, owner: '7', kind: 'Stream' }), {
+  assert.deepEqual(state.replaceSource(3, replacement), {
     removed: null,
     added: null
   })
@@ -620,7 +666,7 @@ test('snowflakes are normalized to strings', () => {
     channel_id: 5,
     codecs: CODECS,
     members: [6],
-    sources: [{ node: 1, owner: 6, kind: 'Microphone' }],
+    sources: [{ node: 1, owner: 6, kind: { type: 'Microphone' }, paused: false }],
     speakers: [6]
   })
   assert.equal(state.channelId, '5')
