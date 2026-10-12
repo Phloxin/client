@@ -19,6 +19,9 @@
 //     string ids, so the soup layer stringifies at that boundary only.
 //   - Snowflakes (channel ids, client ids) are JSON strings.
 //   - A stream key is an opaque string. Only ever echo one the server sent.
+//   - A source's `kind` (ChannelSource, the Source reply) is adjacently tagged:
+//     { type: SourceType, attr?: { codec?, stream_key? } }. `attr` is absent for
+//     a Microphone. CreateSource still sends a bare SourceType plus stream_key.
 
 export const PROTOCOL_VERSION = 1
 
@@ -391,7 +394,7 @@ export class VoiceChannelState {
     // member can decode, best first. The server refuses video in any other.
     this.codecs = null
     this.members = new Set()
-    this.sources = new Map() // NodeId -> { node, owner, kind, codec, group, paused }
+    this.sources = new Map() // NodeId -> { node, owner, kind, codec, streamKey, paused }
     this.speakers = new Set()
     this.hasSnapshot = false
   }
@@ -478,10 +481,10 @@ export class VoiceChannelState {
     return source
   }
 
-  // The sources of one stream, matched by their group (the stream key).
+  // The sources of one stream.
   streamSources(streamKey) {
     if (streamKey == null) return []
-    return [...this.sources.values()].filter((source) => source.group === streamKey)
+    return [...this.sources.values()].filter((source) => source.streamKey === streamKey)
   }
 
   setCodecs(codecs) {
@@ -514,16 +517,19 @@ export class VoiceChannelState {
   }
 }
 
-// `codec` is the VideoCodec a video source is sent in, null for audio.
-// `group` is the stream key of a Stream / StreamAudio source, null for a
-// Microphone or Webcam. `paused` is its owner's pause (SetSourcePaused).
-function normalizeSource({ node, owner, kind, codec = null, group = null, paused = false }) {
+// Flattens a ChannelSource. `kind` becomes its SourceType. `codec` is the
+// VideoCodec a Webcam / Stream is sent in, null for audio. `streamKey` is the
+// stream of a Stream / StreamAudio, null for a Microphone or Webcam. All three
+// are fixed for the source's life: a codec change replaces the source.
+// `paused` is its owner's pause (SetSourcePaused).
+function normalizeSource({ node, owner, kind, paused = false }) {
+  const { codec = null, stream_key: streamKey = null } = kind?.attr ?? {}
   return {
     node,
     owner: owner == null ? null : String(owner),
-    kind,
+    kind: kind?.type ?? null,
     codec,
-    group: group == null ? null : String(group),
+    streamKey: streamKey == null ? null : String(streamKey),
     paused: paused === true
   }
 }
@@ -533,7 +539,7 @@ function sameSource(a, b) {
     a.owner === b.owner &&
     a.kind === b.kind &&
     a.codec === b.codec &&
-    a.group === b.group &&
+    a.streamKey === b.streamKey &&
     a.paused === b.paused
   )
 }
@@ -680,7 +686,7 @@ function sameLayers(a, b) {
 //   Publish: op 7 asks for a key (answered by op 11), then CreateSource for the
 //            Stream and/or StreamAudio with that key within 30s.
 //   Watch:   op 8 (answered by op 12), then CreateSink on the stream's sources,
-//            the ones whose ChannelSource.group is the key.
+//            the ones whose ChannelSource kind carries the key.
 //   Stop:    op 9 stops watching, op 10 ends our own stream. Neither is answered.
 // Requests use the event socket's { op, data } envelope. Op 11 and 12 come back
 // flat ({ op, stream_key }) and unsequenced, so like op 6 a resume never
