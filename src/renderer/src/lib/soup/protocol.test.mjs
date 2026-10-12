@@ -1000,3 +1000,35 @@ test('stream events apply idempotently on top of Ready', () => {
   assert.deepEqual(directory.viewers('a'), [])
   assert.equal(directory.get('a'), null)
 })
+
+test('the stream directory groups owners by channel', () => {
+  const directory = new StreamDirectory()
+  assert.deepEqual(directory.ownersByChannel(), new Map())
+  directory.applyReady([
+    { stream_key: 'a', owner: '7', channel_id: '10', viewers: [] },
+    { stream_key: 'b', owner: 2, channel_id: 10, viewers: [] },
+    { stream_key: 'c', owner: '5', channel_id: '11', viewers: ['7'] },
+    // An owner listed twice (a stream that is ending next to its successor)
+    // shows once.
+    { stream_key: 'd', owner: '5', channel_id: '11', viewers: [] },
+    { stream_key: 'e', channel_id: '12', viewers: [] }
+  ])
+  assert.deepEqual(
+    directory.ownersByChannel(),
+    new Map([
+      ['10', ['2', '7']],
+      ['11', ['5']]
+    ])
+  )
+
+  directory.ended({ stream_key: 'c' })
+  directory.ended({ stream_key: 'd' })
+  directory.started({ stream_key: 'f', owner: '9', channel_id: '12' })
+  assert.deepEqual(
+    directory.ownersByChannel(),
+    new Map([
+      ['10', ['2', '7']],
+      ['12', ['9']]
+    ])
+  )
+})

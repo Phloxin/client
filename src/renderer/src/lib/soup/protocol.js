@@ -926,6 +926,20 @@ export class StreamDirectory {
     return [...(this.streams.get(streamKey)?.viewers ?? [])]
   }
 
+  // Who is streaming where: channel id -> sorted owner ids. Covers every channel
+  // we can see, whether or not we're in voice.
+  ownersByChannel() {
+    const owners = new Map()
+    for (const { owner, channelId } of this.streams.values()) {
+      if (owner == null || channelId == null) continue
+      let ids = owners.get(channelId)
+      if (!ids) owners.set(channelId, (ids = []))
+      if (!ids.includes(owner)) ids.push(owner)
+    }
+    for (const ids of owners.values()) ids.sort()
+    return owners
+  }
+
   clear() {
     this.streams.clear()
   }

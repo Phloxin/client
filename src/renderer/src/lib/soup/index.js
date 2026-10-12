@@ -492,6 +492,7 @@ export function applyReadyStreams(streams) {
   for (const key of started) streamAnnounced(key)
   for (const key of ended) streamGone(key)
   publishStreamViewers()
+  publishLiveStreams()
 }
 
 // StreamStarted, StreamViewersUpdated and StreamEnded dispatch events. Returns
@@ -515,6 +516,7 @@ export function applyStreamEvent(ev, data) {
       return false
   }
   publishStreamViewers()
+  publishLiveStreams()
   return true
 }
 
@@ -702,7 +704,7 @@ function publishStreamViewers() {
     const id = streamVideoSourceId(streamKey)
     if (id != null) next.set(id, [...viewers].sort())
   }
-  if (sameViewerMap(next, streamViewers)) return
+  if (sameIdListMap(next, streamViewers)) return
   streamViewers = next
   for (const cb of streamViewerListeners) {
     try {
@@ -724,14 +726,42 @@ function streamVideoSourceId(key) {
   return video ? sourceId(video.node) : null
 }
 
-function sameViewerMap(a, b) {
+// Two maps of sorted id lists hold the same thing.
+function sameIdListMap(a, b) {
   if (a.size !== b.size) return false
-  for (const [id, viewers] of a) {
-    const other = b.get(id)
-    if (!other || other.length !== viewers.length) return false
-    if (viewers.some((viewer, index) => other[index] !== viewer)) return false
+  for (const [key, ids] of a) {
+    const other = b.get(key)
+    if (!other || other.length !== ids.length) return false
+    if (ids.some((id, index) => other[index] !== id)) return false
   }
   return true
+}
+
+// ─── Live streams ───────────────────────────────────────────────
+// Who is streaming in each channel we can see, from the same Ready.streams and
+// stream events as the viewer map. The backend sends these whether or not we're
+// in voice, so the sidebar can show streamers in every channel. Webcams aren't
+// streams and don't appear here.
+const liveStreamListeners = new Set()
+let liveStreams = new Map() // channel id -> owner client ids
+
+export function subscribeLiveStreams(cb) {
+  liveStreamListeners.add(cb)
+  cb(liveStreams)
+  return () => liveStreamListeners.delete(cb)
+}
+
+function publishLiveStreams() {
+  const next = streamDirectory.ownersByChannel()
+  if (sameIdListMap(next, liveStreams)) return
+  liveStreams = next
+  for (const cb of liveStreamListeners) {
+    try {
+      cb(next)
+    } catch (err) {
+      console.error('[Soup] Live stream listener failed:', err)
+    }
+  }
 }
 
 // ─── Remote sources ──────────────────────────────────────────────
