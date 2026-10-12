@@ -41,31 +41,41 @@ export function wsBase() {
   return `${insecure() ? 'ws' : 'wss'}://${currentHost}`
 }
 
-// Full URL for the voice signaling socket.
+// Signaling protocol version spoken on the voice socket. The voice node closes
+// any other (or a missing) `v` with 4000.
+export const VOICE_PROTOCOL_VERSION = 1
+
+// Full URL for the voice signaling socket, or null when voice is unavailable.
 //
-// A server may serve /voice from a different host than the API — it can run the
-// SFU as a separate process — in which case every voice ticket it hands out
-// arrives with the origin that ticket is good for. The value travels with the
-// ticket rather than with the server, so pass whichever one came with the
-// ticket about to be presented rather than remembering an earlier one.
+// /voice lives only on the voice node, never on the API host. Every voice
+// ticket arrives with the origin it is good for (op 6 `voice_endpoint`), so pass
+// the one that came with the ticket about to be presented rather than
+// remembering an earlier one. A server without VOICE_PUBLIC_ENDPOINT sends no
+// endpoint at all, which means it has no reachable voice plane.
 //
-// Absent means /voice is on the API host: both the default deployment and what
-// every server did before the field existed.
+// Dev builds can force an origin with PYLON_VOICE_ENDPOINT (see
+// src/preload/index.js), e.g. to reach a local node the backend doesn't
+// advertise. It wins over the server's value; packaged builds never have it.
 export function voiceSocketUrl(voiceEndpoint) {
-  return `${voiceOrigin(voiceEndpoint)}/voice`
+  const origin = voiceOrigin(devVoiceEndpointOverride()) ?? voiceOrigin(voiceEndpoint)
+  return origin ? `${origin}/voice?v=${VOICE_PROTOCOL_VERSION}` : null
+}
+
+function devVoiceEndpointOverride() {
+  return globalThis.window?.api?.voiceEndpointOverride ?? null
 }
 
 // An origin is scheme, host, and optional port — nothing else, because we
 // append the path ourselves. Anything else is a server asking us to dial
-// somewhere we cannot build a URL for, so fall back to the API host and say so:
-// a bad endpoint otherwise surfaces only as voice that never connects.
+// somewhere we cannot build a URL for, so treat it as missing and say so: a bad
+// endpoint otherwise surfaces only as voice that never connects.
 function voiceOrigin(voiceEndpoint) {
-  if (typeof voiceEndpoint !== 'string') return wsBase()
+  if (typeof voiceEndpoint !== 'string') return null
   const origin = voiceEndpoint.trim().replace(/\/+$/, '')
-  if (origin === '') return wsBase()
+  if (origin === '') return null
   if (!/^wss?:\/\/[^/?#]+$/.test(origin)) {
     console.warn('[ServerConfig] Ignoring an unusable voice_endpoint:', voiceEndpoint)
-    return wsBase()
+    return null
   }
   return origin
 }

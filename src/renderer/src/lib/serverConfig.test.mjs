@@ -1,35 +1,34 @@
-// Where the voice signaling socket gets dialed. A server that runs its SFU as a
-// separate process hands out a voice_endpoint alongside every ticket; one that
-// does not (the default, and every older server) sends nothing and we stay on
-// the API host. Getting this wrong is a voice connection that silently never
-// opens, so the fallbacks are worth pinning down.
+// Where the voice signaling socket gets dialed. /voice only exists on the voice
+// node, whose origin arrives with every ticket as voice_endpoint. A server that
+// sends none has no reachable voice plane, so there is deliberately no API-host
+// fallback any more. Getting this wrong is a voice connection that silently
+// never opens, so the edges are worth pinning down.
 //   node --test src/renderer/src/lib/serverConfig.test.mjs
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { setServerHost, voiceSocketUrl, wsBase } from './serverConfig.js'
+import { setServerHost, voiceSocketUrl } from './serverConfig.js'
 
 setServerHost('1.2.3.4:3000')
 
-test('no endpoint means the API host, which is the default deployment', () => {
-  assert.equal(voiceSocketUrl(undefined), `${wsBase()}/voice`)
-  assert.equal(voiceSocketUrl(null), `${wsBase()}/voice`)
-  // An older server simply omits the field; a newer one may send it empty.
-  assert.equal(voiceSocketUrl(''), `${wsBase()}/voice`)
-  assert.equal(voiceSocketUrl('   '), `${wsBase()}/voice`)
+test('no endpoint means voice is unavailable', () => {
+  assert.equal(voiceSocketUrl(undefined), null)
+  assert.equal(voiceSocketUrl(null), null)
+  assert.equal(voiceSocketUrl(''), null)
+  assert.equal(voiceSocketUrl('   '), null)
 })
 
-test('an endpoint sends us to the voice host instead', () => {
-  assert.equal(voiceSocketUrl('wss://media.example.com'), 'wss://media.example.com/voice')
-  assert.equal(voiceSocketUrl('ws://127.0.0.1:3100'), 'ws://127.0.0.1:3100/voice')
+test('an endpoint is dialed with the protocol version', () => {
+  assert.equal(voiceSocketUrl('wss://media.example.com'), 'wss://media.example.com/voice?v=1')
+  assert.equal(voiceSocketUrl('ws://127.0.0.1:3100'), 'ws://127.0.0.1:3100/voice?v=1')
 })
 
 test('surrounding space and a trailing slash do not produce a broken URL', () => {
-  assert.equal(voiceSocketUrl('  wss://media.example.com/  '), 'wss://media.example.com/voice')
-  assert.equal(voiceSocketUrl('wss://media.example.com//'), 'wss://media.example.com/voice')
+  assert.equal(voiceSocketUrl('  wss://media.example.com/  '), 'wss://media.example.com/voice?v=1')
+  assert.equal(voiceSocketUrl('wss://media.example.com//'), 'wss://media.example.com/voice?v=1')
 })
 
-test('anything that is not a bare WebSocket origin falls back to the API host', () => {
+test('anything that is not a bare WebSocket origin is unusable', () => {
   for (const bad of [
     'https://media.example.com', // not a WebSocket scheme
     'media.example.com', // no scheme at all
@@ -40,6 +39,16 @@ test('anything that is not a bare WebSocket origin falls back to the API host', 
     'wss://', // no host
     42 // not a string
   ]) {
-    assert.equal(voiceSocketUrl(bad), `${wsBase()}/voice`, `expected ${bad} to be ignored`)
+    assert.equal(voiceSocketUrl(bad), null, `expected ${bad} to be ignored`)
+  }
+})
+
+test('a dev override wins over the server endpoint', () => {
+  globalThis.window = { api: { voiceEndpointOverride: 'ws://localhost:4100' } }
+  try {
+    assert.equal(voiceSocketUrl('wss://media.example.com'), 'ws://localhost:4100/voice?v=1')
+    assert.equal(voiceSocketUrl(undefined), 'ws://localhost:4100/voice?v=1')
+  } finally {
+    delete globalThis.window
   }
 })

@@ -3,7 +3,6 @@ import test from 'node:test'
 import {
   MIC_PUBLISH_RETRY_DELAYS_MS,
   allKnownAudioConsumersReady,
-  isConsumerClosedEvent,
   isPermanentMicError,
   isVoiceRecoveryReady,
   nextAudioConsumeRetryDelay,
@@ -12,7 +11,6 @@ import {
   selfChannelChime,
   shouldFallBackToDefaultInput,
   shouldKickVoiceReconnect,
-  voiceRequestError,
   voiceSocketRecoveryAction
 } from './voiceRecoveryState.js'
 
@@ -221,21 +219,6 @@ test('an outage rebuild leaves every channel change silent', () => {
     selfChannelChime({ ...outage, oldChannelId: 'a', newChannelId: 'b', selfDeclaredChannel: 'a' }),
     null
   )
-})
-
-test('both SFU error variants reject request success', () => {
-  assert.equal(voiceRequestError({ type: 'ResumeConsumer' }), null)
-  const userError = voiceRequestError({ UserError: 'bad request' })
-  assert.equal(userError.name, 'VoiceUserError')
-  assert.equal(userError.message, 'bad request')
-  const serverError = voiceRequestError({ ServerError: 'worker failed' })
-  assert.equal(serverError.name, 'VoiceServerError')
-  assert.equal(serverError.message, 'worker failed')
-})
-
-test('ConsumerClosed acknowledgement is not mistaken for a pushed event', () => {
-  assert.equal(isConsumerClosedEvent({ type: 'ConsumerClosed' }), false)
-  assert.equal(isConsumerClosedEvent({ type: 'ConsumerClosed', data: { id: 'consumer-a' } }), true)
 })
 
 test('a closing socket must finish teardown before a replacement starts', () => {

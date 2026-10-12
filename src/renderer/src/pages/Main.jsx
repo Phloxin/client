@@ -22,9 +22,15 @@ import RolesGroupsMenu from '../components/RolesGroupsMenu'
 import IdleAnimation from '../components/IdleAnimation'
 import Settings from './Settings'
 import {
+  applyReadyStreams,
+  applyStreamEvent,
   disconnect as disconnectVoice,
+  eventSocketClosed,
   notifyEventsSessionRestored,
+  receiveEventSocketError,
+  receiveStreamReply,
   receiveVoiceTicket,
+  setEventSocketSender,
   setFocusedScreenAudio,
   setVideoStreamRoles,
   setWatchedProducers,
@@ -380,6 +386,7 @@ function Main() {
   const shareControl = useRef({
     stop: () => shareControlRef.current?.stopShare(),
     restart: (patch) => shareControlRef.current?.restartShare(patch),
+    setPaused: (paused) => shareControlRef.current?.pauseShare(paused),
     pickSource: () => shareControlRef.current?.openSourcePicker(),
     getOptions: () => shareControlRef.current?.getShareOptions() ?? null
   }).current
@@ -2075,8 +2082,15 @@ function Main() {
         setReadStates(reads)
         // Surface DMs that went unread while we were away in the inbox.
         seedUnreadDms(data.channels || [], reads, data.clients || [])
+        // Live screen streams and their viewers. Soup keeps these: it needs
+        // them to watch a stream and to say who is watching ours.
+        applyReadyStreams(data.streams || [])
         return
       }
+
+      // StreamStarted / StreamViewersUpdated / StreamEnded, applied on top of
+      // Ready.streams (soup tolerates repeats of what Ready already had).
+      if (applyStreamEvent(ev, data)) return
 
       // Public presence broadcast. The object is authoritative for that user —
       // replace it wholesale rather than merging, so a cleared status_message
@@ -2568,10 +2582,16 @@ function Main() {
           return
         }
 
+        // Stream replies (op 11 StreamCreated, op 12 StreamWatching): the answers
+        // to soup's CreateStream and WatchStream. Flat and unsequenced, like op 6.
+        if (receiveStreamReply(msg)) return
+
         // Rejected command (e.g. an invalid presence update). This is a reply to
         // one message, not a connection fault — surface it and keep the socket.
+        // It may answer one of soup's stream requests; a failed share start is
+        // reported by the share itself, so it isn't shown twice.
         if (typeof msg.err === 'string') {
-          showError(msg.err)
+          if (!receiveEventSocketError(msg.err)) showError(msg.err)
           return
         }
 
@@ -2586,7 +2606,11 @@ function Main() {
       ws.onclose = (event) => {
         console.log('WebSocket disconnected', event.code, event.reason)
         clearHeartbeat()
-        if (eventsWsRef.current === ws) eventsWsRef.current = null
+        if (eventsWsRef.current === ws) {
+          eventsWsRef.current = null
+          // Stream replies still owed on this socket will never arrive.
+          eventSocketClosed()
+        }
         // Forced removal by an admin: the server closes with an application code
         // and a reason. Stop retrying (a reconnect would just be rejected) and
         // tell the user instead of silently dropping to the disconnected screen.
@@ -2861,6 +2885,17 @@ function Main() {
   // Broadcast our mic-mute / deafen status, keeping our current channel.
   const sendStatus = (selfMute, selfDeaf) =>
     sendVoiceState({ self_mute: selfMute, self_deaf: selfDeaf })
+
+  // Soup asks for, watches and ends screen streams (ops 7-10) on this socket.
+  // Registered once: the ref always names the live socket.
+  useEffect(() => {
+    setEventSocketSender((frame) => {
+      if (eventsWsRef.current?.readyState !== WebSocket.OPEN) return false
+      eventsWsRef.current.send(JSON.stringify(frame))
+      return true
+    })
+    return () => setEventSocketSender(null)
+  }, [])
 
   // Automatic updates wait for the gateway handshake and retry silently if
   // disconnected. The hook tracks which Away transitions belong to auto idle.

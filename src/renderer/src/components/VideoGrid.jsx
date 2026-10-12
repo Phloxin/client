@@ -162,6 +162,23 @@ function SelfPreviewPausedOverlay({ compact = false }) {
   )
 }
 
+// The sharer paused the stream itself (as opposed to our local preview pausing
+// above). Viewers get no frames meanwhile, so this stands in for the last one.
+// eslint-disable-next-line react/prop-types -- The renderer does not use runtime PropTypes.
+function StreamPausedOverlay({ compact = false, isSelf = false }) {
+  return (
+    <div className={`self-preview-paused${compact ? ' compact' : ''}`} aria-hidden="true">
+      <IconPlayerPauseFilled size={compact ? 16 : 22} />
+      <div>
+        <strong>Stream paused</strong>
+        {!compact && (
+          <span>{isSelf ? 'Viewers see your stream as paused' : 'The sharer paused it'}</span>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function VideoGrid({
   streams,
   clients,
@@ -560,6 +577,16 @@ function VideoGrid({
     if (settled) setShareOptions(settled)
   }
 
+  // Pause or resume our live share in place (no restart). Optimistic, then
+  // resynced to what the sidebar's handle reports.
+  const toggleSharePaused = async () => {
+    const paused = !shareOptions?.paused
+    setShareOptions((prev) => (prev ? { ...prev, paused } : prev))
+    await shareControl?.setPaused(paused)
+    const settled = shareControl?.getOptions()
+    if (settled) setShareOptions(settled)
+  }
+
   // Clicking a tile body focuses it (resuming it first if it was closed).
   const focusStream = (s) => {
     if (isStopped(s)) onSetStreamWatched?.(s.clientId, true)
@@ -600,8 +627,11 @@ function VideoGrid({
             selfPreviewPaused={s.isSelf && selfPreviewPaused}
           />
         )}
-        {s.isSelf && selfPreviewPaused && (
-          <SelfPreviewPausedOverlay compact={variant === 'thumbnail'} />
+        {s.paused ? (
+          <StreamPausedOverlay compact={variant === 'thumbnail'} isSelf={s.isSelf} />
+        ) : (
+          s.isSelf &&
+          selfPreviewPaused && <SelfPreviewPausedOverlay compact={variant === 'thumbnail'} />
         )}
         {/* Top-right: start watching, or close the stream once we are. */}
         {isStopped(s) ? (
@@ -810,6 +840,16 @@ function VideoGrid({
             </div>
           </>
         )}
+        {/* Pausing restarts nothing: viewers keep the stream and see it paused
+            until it resumes. */}
+        <button type="button" className="stream-settings-action" onClick={toggleSharePaused}>
+          {shareOptions.paused ? (
+            <IconPlayerPlayFilled size={16} />
+          ) : (
+            <IconPlayerPauseFilled size={16} />
+          )}
+          {shareOptions.paused ? 'Resume Stream' : 'Pause Stream'}
+        </button>
         <button
           type="button"
           className="stream-settings-action"
@@ -821,7 +861,7 @@ function VideoGrid({
           <IconDeviceDesktop size={16} />
           Change Source
         </button>
-        <div className="stream-settings-note">Changes restart your stream.</div>
+        <div className="stream-settings-note">Other changes restart your stream.</div>
       </div>
     ) : null
 
@@ -1002,7 +1042,11 @@ function VideoGrid({
                   : undefined
               }
             />
-            {selectedStream.isSelf && selfPreviewPaused && <SelfPreviewPausedOverlay />}
+            {selectedStream.paused ? (
+              <StreamPausedOverlay isSelf={selectedStream.isSelf} />
+            ) : (
+              selectedStream.isSelf && selfPreviewPaused && <SelfPreviewPausedOverlay />
+            )}
             {/* Zoom minimap: the full frame with the visible region outlined.
                 Shown only while zoomed and hovering (same hover gate as the
                 other controls, via CSS). */}

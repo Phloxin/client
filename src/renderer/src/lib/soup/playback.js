@@ -55,8 +55,10 @@ export function buildAudioGraph(entry) {
 
   // Screen/tab audio isn't the client's voice - don't feed it into the speaking
   // indicator; clientId == null means we can't attribute speaking to anyone.
+  // Without an onClientSpeaking hook speaking comes from elsewhere (the voice
+  // server's Speakers event), so don't spend an analyser on it.
   let stopDetector = null
-  if (entry.clientId != null && entry.producedType !== 'ScreenShareAudio') {
+  if (onClientSpeaking && entry.clientId != null && entry.producedType !== 'ScreenShareAudio') {
     stopDetector = createSpeakingDetector(
       entry.stream,
       (isSpeaking) => {

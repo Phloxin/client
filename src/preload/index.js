@@ -26,11 +26,20 @@ function preferredScreenshareCodec() {
 // renderer/src/lib/serverConfig.js.
 const insecureConnections = import.meta.env.DEV && process.env.PYLON_INSECURE === '1'
 
+// Dev-only: launch with PYLON_VOICE_ENDPOINT=ws://host:port to dial that voice
+// node instead of the voice_endpoint the server sends with each ticket (for a
+// local pylon-voice the backend doesn't advertise). Stripped from packaged
+// builds like PYLON_INSECURE. Consumed by voiceSocketUrl in serverConfig.js.
+const voiceEndpointOverride = import.meta.env.DEV
+  ? process.env.PYLON_VOICE_ENDPOINT?.trim() || null
+  : null
+
 // Custom APIs for renderer
 const api = {
   platform: process.platform,
   preferScreenshareCodec: preferredScreenshareCodec(),
   insecureConnections,
+  voiceEndpointOverride,
   screenAudio: {
     getCapabilities: () => ipcRenderer.invoke('audiocapture:get-capabilities'),
     listApps: () => ipcRenderer.invoke('audiocapture:list-apps'),
