@@ -4,7 +4,7 @@ import { overlayPop, scrimFade } from '../lib/motionPresets'
 import VoiceChannel from './VoiceChannel'
 import ClientIndicator from './ClientIndicator'
 import ServerMenu from './ServerMenu'
-import { setMicMuted, setSoundMuted } from '../lib/soup'
+import { setMicMuted, setSoundMuted, subscribeLiveStreams } from '../lib/soup'
 import { setSoundsDeafened } from '../lib/sounds'
 import { useAnimationCategory, useSettings } from '../context/SettingsContext'
 import { useAnimatedPresence, useBlockShift } from '../lib/animation'
@@ -120,6 +120,10 @@ function Sidebar({
   }, [joinedChannelId])
   // Our own speaking state, reported up from the active VoiceChannel — drives the system tray icons
   const [selfSpeaking, setSelfSpeaking] = useState(false)
+  // Who is screen streaming in each channel (channel id -> owner ids). The
+  // backend announces streams in every channel we can see, in voice or not.
+  const [liveStreams, setLiveStreams] = useState(() => new Map())
+  useEffect(() => subscribeLiveStreams(setLiveStreams), [])
   const channelRefs = useRef({})
 
   // The joined channel's handle, sharing or not — the stream view starts shares
@@ -616,6 +620,7 @@ function Sidebar({
               .filter((c) => c.channel_id === ch.id)
               .sort((a, b) => (a.name || '').localeCompare(b.name || ''))}
             self={self}
+            liveStreamers={liveStreams.get(ch.id)}
             micMuted={micMuted}
             deafened={deafened}
             onSelfSpeaking={setSelfSpeaking}

@@ -26,6 +26,7 @@ function ClientIndicator({
   deafened,
   isSelf,
   streaming,
+  streamWatchable,
   animStatus,
   rosterMode,
   draggableToChannel,
@@ -397,10 +398,11 @@ function ClientIndicator({
         </span>
       )}
       {streaming &&
-        (onWatchStream ? (
+        (streamWatchable && onWatchStream ? (
           // Click to jump to this client's stream in the Streams view. stopPropagation
           // + clearing the row's deferred single-click keeps it off the summary/DM
-          // handlers on the enclosing row.
+          // handlers on the enclosing row. Only streams with a tile in our joined
+          // channel are clickable; ones elsewhere just show the glyph.
           <button
             type="button"
             className="client-streaming-btn"
@@ -417,7 +419,7 @@ function ClientIndicator({
             </span>
           </button>
         ) : (
-          <span className="client-streaming-glyph">
+          <span className="client-streaming-glyph" title={`${client.name} is streaming`}>
             <IconVideoFilled size={15} className="client-streaming-icon" aria-label="Streaming" />
           </span>
         ))}

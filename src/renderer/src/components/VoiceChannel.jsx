@@ -92,6 +92,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     dropEdge,
     clients,
     self,
+    liveStreamers,
     micMuted,
     deafened,
     onStreamsUpdate,
@@ -973,10 +974,14 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     deactivate
   }))
 
-  // Clients with an active video stream (their tile is present in videoStreams).
-  const streamingClientIds = new Set(
+  // Clients with a video tile here (only while joined; webcams included). Their
+  // streaming icon can be clicked through to the tile.
+  const tileClientIds = new Set(
     videoStreams.filter((s) => s.kind === 'video').map((s) => s.clientId)
   )
+  // Plus the screen streams the backend announces in this channel, joined or
+  // not. Those can only be watched from inside the channel.
+  const streamingClientIds = new Set([...tileClientIds, ...(liveStreamers ?? [])])
 
   return (
     <div
@@ -1074,6 +1079,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
                 deafened={c.id === self?.id ? deafened : !!c.self_deaf}
                 isSelf={c.id === self?.id}
                 streaming={streamingClientIds.has(c.id)}
+                streamWatchable={tileClientIds.has(c.id)}
                 draggableToChannel={!!onMoveClient}
                 onOpenDm={onOpenDm}
                 onPoke={onPoke}

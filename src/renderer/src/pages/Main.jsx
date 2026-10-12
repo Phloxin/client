@@ -639,11 +639,12 @@ function Main() {
 
   // Jump to watching a client's stream — the click target on the streaming
   // (camera) icon next to a channel member. Mirrors VideoGrid's focusStream:
-  // start consuming the stream and focus it. The camera icon only appears for
-  // streamers in the channel we've joined, so the Streams view always has their
-  // tile to land on. When popped out, the tab is disabled and the streams live
-  // in the popout window — the watch/select still propagate there over the
-  // bridge, so just surface that window instead of switching the in-app view.
+  // start consuming the stream and focus it. The icon shows for streamers in
+  // every channel, but is only clickable for those with a tile in the channel
+  // we've joined, so the Streams view always has a tile to land on. When popped
+  // out, the tab is disabled and the streams live in the popout window — the
+  // watch/select still propagate there over the bridge, so just surface that
+  // window instead of switching the in-app view.
   const handleWatchStream = (clientId) => {
     handleSetStreamWatched(clientId, true)
     setSelectedStreamClientId(clientId)
