@@ -44,9 +44,11 @@ export function setupUpdater() {
   })
 
   ipcMain.handle('updater:check', async () => {
-    // Dev builds have no app-update.yml; checkForUpdates would reject. Tell the
-    // UI it's an installed-only feature instead of surfacing a confusing error.
-    if (!app.isPackaged) return broadcast('disabled')
+    // Dev builds have no app-update.yml; checkForUpdates would reject. Linux
+    // installs outside AppImage/deb/rpm/pacman (Nix, snap) have no updater and
+    // checkForUpdates would resolve without emitting anything. Tell the UI it's
+    // an installed-only feature instead of surfacing a confusing error.
+    if (!autoUpdater.isUpdaterActive()) return broadcast('disabled')
     try {
       await autoUpdater.checkForUpdates()
     } catch (err) {
@@ -57,7 +59,7 @@ export function setupUpdater() {
 
   // Silent check fired once on launch. No-op in dev (no app-update.yml).
   ipcMain.handle('updater:check-on-launch', async () => {
-    if (!app.isPackaged) return
+    if (!autoUpdater.isUpdaterActive()) return
     launchCheckActive = true
     try {
       await autoUpdater.checkForUpdates()
