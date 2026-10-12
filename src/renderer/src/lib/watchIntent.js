@@ -73,7 +73,7 @@ export function resolveWatchIntent({
     consume.push({ producerId, kind: 'video', clientId, producedType })
   }
   // Screen audio for every watched client whose audio producer we know about.
-  // Producers that arrive later are picked up by the NewProducer handler.
+  // Sources that arrive later are picked up when SourcesAdded announces them.
   for (const [producerId, { clientId }] of screenAudioProducers) {
     if (!watchedClientIds.has(clientId) || isConsuming(producerId)) continue
     consume.push({ producerId, kind: 'audio', clientId, producedType: 'ScreenShareAudio' })

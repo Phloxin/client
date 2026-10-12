@@ -6,12 +6,10 @@ import {
   disconnect,
   shareScreen,
   shareCamera,
+  setSharePaused,
   stopScreenShare,
   rebindCallbacks,
-  cancelExpectedVoiceSessionRebuild,
-  expectVoiceSessionRebuild,
   requestVoiceMediaRecovery,
-  setLocalClientId,
   setVolumeGateThreshold
 } from '../lib/soup'
 import { REPUBLISH_SCOPE, classifyMicSettingsChange } from '../lib/micRepublishScope'
@@ -63,6 +61,19 @@ function micErrorMessage(err) {
 
 const MIC_FALLBACK_MESSAGE =
   'Your selected microphone is unavailable. Using the default input device until it returns.'
+
+// Why a share ended without the user stopping it (soup's onShareEnded reason).
+function shareEndedMessage(reason) {
+  switch (reason) {
+    case 'frames-stalled':
+      return 'Stream ended because the shared window stopped sending frames'
+    // The backend ended the stream, or the voice server lost its link to it.
+    case 'server-closed':
+      return 'Stream ended by the server'
+    default:
+      return 'Stream ended because the shared window closed'
+  }
+}
 
 // Channel error banners are informational, not actionable state - the condition
 // they describe is already reflected in the mic/share controls. Leaving one
@@ -186,6 +197,9 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   // joined and never see a later one unless they are rebound.
   const clientsRef = useRef(clients)
   const selfIdRef = useRef(self?.id)
+  // Set while a switch into this channel waits for the server's roster to
+  // place us here (see switchTo).
+  const pendingSwitchRef = useRef(false)
 
   // Keep joinedRef in sync with joined state
   useEffect(() => {
@@ -198,11 +212,6 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     clientsRef.current = clients
     selfIdRef.current = self?.id
   }, [clients, self?.id])
-  // Tell soup our client id so its self speaking detector can report our own
-  // speaking through onClientSpeaking (which rebinds to the channel we're in).
-  useEffect(() => {
-    setLocalClientId(self?.id)
-  }, [self?.id])
 
   // Let the sidebar know when this channel becomes the joined/sharing one
   useEffect(() => {
@@ -450,22 +459,20 @@ const VoiceChannel = forwardRef(function VoiceChannel(
 
   // The rejoin a voice reconnect declares before asking for its ticket.
   //
-  // Re-asserting the same channel is a silent no-op while the server still
-  // holds our dead voice session (up to 60s after the socket's FIN is lost),
-  // since a ticket is only minted on a real none-to-channel transition. So the
-  // reconnect would dead-end waiting for a push that never comes. Declaring
-  // the leave first forces the server to release that session (peers get
-  // ProducerClosed instead of a silent member) and makes the join a real
-  // transition. This mirrors the known-good manual leave/rejoin recovery.
-  // Null-to-null costs nothing when the server already dropped us.
+  // A ticket is only minted on a real none-to-channel transition, so there is
+  // no reconnecting while staying in the channel. Declaring the leave first
+  // ends any session the node still holds (peers see us leave) and makes the
+  // join a real transition. Null-to-null costs nothing when the server already
+  // dropped us.
   const declareRejoin = async () => {
     await patchChannel(null)
     await patchChannel(channel.id)
   }
 
-  // Fired after every successful (re)auth: mark joined and (re)publish the mic.
-  // joinedRef is set here rather than waiting for its sync effect so publishMic's
-  // retry can tell "still in the channel" from "left while we were failing".
+  // Fired whenever a voice session reaches READY (initial join and every
+  // reconnect): mark joined and (re)publish the mic. joinedRef is set here
+  // rather than waiting for its sync effect so publishMic's retry can tell
+  // "still in the channel" from "left while we were failing".
   const handleConnectEstablished = async () => {
     joinedRef.current = true
     setJoined(true)
@@ -473,12 +480,14 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     await publishMic()
   }
 
-  // Fired on an intentional/unrecoverable teardown. Named (rather than inlined at
-  // the initial connect) so switchTo/adopt can rebind it too — left pointing at
-  // the first-joined channel's closure, a later disconnect would clear that dead
+  // Fired on a teardown: our own leave (no argument), or soup giving up on
+  // voice ({ failed, reason }). Named (rather than inlined at the initial
+  // connect) so switchTo/adopt can rebind it too — left pointing at the
+  // first-joined channel's closure, a later disconnect would clear that dead
   // component's state and leave the channel we're actually in showing as joined.
-  const handleDisconnected = () => {
+  const handleDisconnected = (info) => {
     joinedRef.current = false
+    pendingSwitchRef.current = false
     cancelPublishRetries()
     setJoined(false)
     setConnecting(false)
@@ -486,12 +495,19 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     setVideoStreams([])
     setSpeakingClients({})
     onVoiceMediaState?.(channel.id, { state: 'idle' })
+    if (info?.failed) {
+      setError(info.reason)
+      // Voice won't come back on its own, so don't sit in the channel without
+      // media: leave it on the server too.
+      onSelfChannelChange?.(null)
+    }
   }
 
-  // Fired on an unexpected drop: tear down local media UI but stay "joined" â€”
-  // soup auto-reconnects, remote tiles re-arrive via replayed NewProducer, and
-  // the mic re-publishes. Screen share is NOT auto-restored (re-capturing the
-  // screen requires a fresh user gesture).
+  // Fired on an unexpected drop: tear down local media UI but stay "joined" —
+  // soup reconnects (leave + rejoin for a new ticket), remote tiles come back
+  // with the new session's Channel snapshot, and the mic re-publishes. Screen
+  // share is NOT auto-restored (re-capturing the screen requires a fresh user
+  // gesture).
   const handleReconnecting = () => {
     activeShareRef.current = null
     setSharing(false)
@@ -573,7 +589,17 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     )
   }
 
-  const handleVideoStream = ({ stream, kind, consumerId, producerId, clientId, codec }) => {
+  // The sharer paused or resumed their stream. The tile stays and shows it
+  // paused, rather than freezing on the last frame.
+  const handleStreamPaused = ({ producerId, paused }) => {
+    setVideoStreams((prev) =>
+      prev.map((s) =>
+        !s.isSelf && s.producerId === producerId && !!s.paused !== paused ? { ...s, paused } : s
+      )
+    )
+  }
+
+  const handleVideoStream = ({ stream, kind, consumerId, producerId, clientId, codec, paused }) => {
     // Don't bake in the client's name here - the clients list for this
     // channel may not have caught up with this client's channel move yet.
     // The label is resolved at render time from clientId instead.
@@ -589,6 +615,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
         isSelf: false,
         clientId,
         codec,
+        paused: paused === true,
         channelId: channel.id,
         channelName: channel.name,
         fallbackLabel: `${channel.name} ${kind === 'video' ? 'Stream' : 'Feed'}`
@@ -606,102 +633,92 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     }
   }
 
+  // Every soup callback this channel answers while it owns the voice session.
+  // Rebound on switch/adopt so speaking, tiles and recovery follow the channel
+  // we're actually in.
+  const voiceCallbacks = () => ({
+    onConnect: handleConnectEstablished,
+    onDisconnect: handleDisconnected,
+    onReconnecting: handleReconnecting,
+    onMediaState: handleMediaState,
+    // Declared leave→join before each reconnect's ticket (see declareRejoin);
+    // the initial join stays a plain declaration.
+    onReconnectRejoin: declareRejoin,
+    onVideoStream: handleVideoStream,
+    onClientSpeaking: handleClientSpeaking,
+    onStreamEnded: handleStreamEnded,
+    onStreamPaused: handleStreamPaused,
+    onScreenAudioError: handleScreenAudioError
+  })
+
   const handleJoin = async () => {
     setConnecting(true)
     setError(null)
+    let declared = false
     try {
       await patchChannel(channel.id)
-
-      await connect({
-        onConnect: handleConnectEstablished,
-        onDisconnect: handleDisconnected,
-        onReconnecting: handleReconnecting,
-        onMediaState: handleMediaState,
-        // Declared leave→join before each reconnect's ticket fetch (see
-        // declareRejoin); the initial join above stays a plain declaration.
-        onReconnectRejoin: declareRejoin,
-        onVideoStream: handleVideoStream,
-        onClientSpeaking: handleClientSpeaking,
-        onStreamEnded: handleStreamEnded,
-        onScreenAudioError: handleScreenAudioError
-      })
+      declared = true
+      await connect(voiceCallbacks())
     } catch (err) {
-      setError(err.message)
       setConnecting(false)
+      // We left (or another join took over) while this one was connecting.
+      if (err?.name === 'VoiceMediaResetError') return
+      setError(err.message)
+      // The declaration put us in the channel on the server; with no voice
+      // session there's nothing to be in it for.
+      if (declared) onSelfChannelChange?.(null)
     }
   }
 
-  // Move to this channel. The server responds with TransportsDisconnected;
-  // soup then authenticates a fresh SFU session because the old router peer no
-  // longer exists, and onConnect publishes into that replacement session.
+  // Move the live voice session to this channel. v1 keeps the voice socket open
+  // and moves the session server-side: soup gets Closed for the old channel's
+  // sinks (and our webcam/stream), then a Channel snapshot for this one, and
+  // the mic carries over. No new ticket, no rebuild.
   const switchTo = async () => {
     setConnecting(true)
     setError(null)
-
-    // Mark this rebuild as expected before switching, so the UI treats the
-    // resulting reset as normal instead of a lost connection.
-    expectVoiceSessionRebuild('channel-switch')
-
-    // Rebind callbacks BEFORE the PATCH â€” TransportsDisconnected can arrive
-    // as soon as the server processes the PATCH, so this channel's handler
-    // must already be active to catch it. This also repoints the reconnect
-    // callbacks at the new channel, so a drop after the switch recovers here.
-    rebindCallbacks({
-      onConnect: handleConnectEstablished,
-      onDisconnect: handleDisconnected,
-      onReconnecting: handleReconnecting,
-      onMediaState: handleMediaState,
-      onReconnectRejoin: declareRejoin,
-      onVideoStream: handleVideoStream,
-      onClientSpeaking: handleClientSpeaking,
-      onStreamEnded: handleStreamEnded,
-      onScreenAudioError: handleScreenAudioError
-    })
-
+    // Rebind before the declaration: the move's Closed/Channel can arrive as
+    // soon as the server processes it, and must land here. This also repoints
+    // the reconnect callbacks, so a drop after the switch recovers here.
+    rebindCallbacks(voiceCallbacks())
+    // Joined is only claimed once the roster agrees (effect below). Claiming it
+    // now would trip SideBar's moderator-move check (roster channel ≠ joined
+    // channel) and bounce the session back to the old channel.
+    pendingSwitchRef.current = true
     try {
       await patchChannel(channel.id)
     } catch (err) {
-      // The switch request failed, so no reset is coming. Undo the expected
-      // rebuild flag so a real drop isn't mistaken for this one.
-      cancelExpectedVoiceSessionRebuild()
+      pendingSwitchRef.current = false
       setError(err.message)
       setConnecting(false)
       throw err
     }
   }
 
+  // A switch into this channel lands when the server's roster places us here.
+  useEffect(() => {
+    if (!pendingSwitchRef.current || !clients.some((c) => c.id === self?.id)) return
+    pendingSwitchRef.current = false
+    joinedRef.current = true
+    setJoined(true)
+    setConnecting(false)
+    // The mic survives the move, so this is normally a no-op; it covers a mic
+    // that was still failing to publish when we switched.
+    void publishMic()
+  }, [clients, self?.id])
+
   // Take ownership of the live voice session after the server moved us into this
-  // channel (a moderator's PATCH /client). Unlike switchTo we don't PATCH â€” the
-  // server already moved us â€” we only repoint the shared session's callbacks here,
-  // mark ourselves joined, and re-establish media. The server's MediaStateReset
-  // may land before or after we adopt; publish() is single-flight, so calling it
-  // here can't collide with a reset-driven republish. onClientSpeaking is rebound
-  // to us, so soup's self speaking detector now reports to this channel.
+  // channel (a moderator's move). Unlike switchTo we don't declare anything — the
+  // server already moved us, voice session included — we only repoint the
+  // session's callbacks here, mark ourselves joined, and make sure the mic is up
+  // (publish() is a no-op while it's live).
   const adopt = async ({ reassert = false } = {}) => {
-    // The server already moved us, so mark the resulting reset as expected
-    // too, even if it already arrived before this runs.
-    expectVoiceSessionRebuild('channel-adopted')
-    rebindCallbacks({
-      onConnect: handleConnectEstablished,
-      onDisconnect: handleDisconnected,
-      onReconnecting: handleReconnecting,
-      onMediaState: handleMediaState,
-      onReconnectRejoin: declareRejoin,
-      onVideoStream: handleVideoStream,
-      onClientSpeaking: handleClientSpeaking,
-      onStreamEnded: handleStreamEnded,
-      onScreenAudioError: handleScreenAudioError
-    })
+    pendingSwitchRef.current = false
+    rebindCallbacks(voiceCallbacks())
     // A switch declaration can fail after callbacks and desired membership were
     // pointed at the target. Reasserting here restores both to the still-live
     // previous owner; ordinary moderator adoption must not send this declaration.
     if (reassert) await patchChannel(channel.id)
-    else
-      onVoiceMediaState?.(channel.id, {
-        state: 'reconnecting',
-        reason: 'channel-adopted',
-        expected: true
-      })
     setError(null)
     setConnecting(false)
     joinedRef.current = true
@@ -714,6 +731,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   const deactivate = () => {
     activeShareRef.current = null
     joinedRef.current = false
+    pendingSwitchRef.current = false
     cancelPublishRetries()
     setJoined(false)
     setSharing(false)
@@ -724,6 +742,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   const handleLeave = () => {
     activeShareRef.current = null
     joinedRef.current = false
+    pendingSwitchRef.current = false
     cancelPublishRetries()
     disconnect()
     setJoined(false)
@@ -790,22 +809,19 @@ const VoiceChannel = forwardRef(function VoiceChannel(
       }
       // Screen shares can recover from a lost capture track behind the
       // scenes, so we let the share tell us when it's actually over instead
-      // of watching the raw track directly.
+      // of watching the raw track directly. The server can also end a share
+      // (camera too) on its own.
       const onShareEnded = (reason) => {
         if (activeShareRef.current !== screen) return
         activeShareRef.current = null
         setSharing(false)
         clearSelfStream(screen?.id ?? null)
-        onError?.(
-          reason === 'frames-stalled'
-            ? 'Stream ended because the shared window stopped sending frames'
-            : 'Stream ended because the shared window closed'
-        )
+        onError?.(shareEndedMessage(reason))
       }
       if (options.isCamera) {
         // Webcams capture directly via getUserMedia - no main-process source
         // hand-off, and no audio/fps/resolution settings.
-        screen = await shareCamera(sourceId, onEncoderStats, onProducerReplaced)
+        screen = await shareCamera(sourceId, onEncoderStats, onProducerReplaced, onShareEnded)
       } else {
         // Tell the main process which source and audio mode the display-media
         // handler should use. sourceId is null on Wayland, where the OS portal
@@ -926,13 +942,31 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     return { audioMode: mode, audioTargets: mode === 'app' ? [sourceId] : null }
   }
 
+  // Pause or resume the live share in place (the stream view's quick menu).
+  // Viewers keep the stream and see it paused; so does our own tile.
+  const pauseShare = async (paused) => {
+    const share = activeShareRef.current
+    if (!share) return false
+    const applied = await setSharePaused(paused)
+    if (!applied || activeShareRef.current !== share) return false
+    share.paused = paused
+    setVideoStreams((prev) =>
+      prev.map((s) => (s.isSelf && s.producerId === share.id ? { ...s, paused } : s))
+    )
+    return true
+  }
+
   useImperativeHandle(ref, () => ({
     leave: handleLeave,
     toggleShare: handleScreenShare,
     stopShare: stopCurrentShare,
     restartShare,
+    pauseShare,
     openSourcePicker: () => setShowSourcePicker(true),
-    getShareOptions: () => lastShareRef.current?.options ?? null,
+    getShareOptions: () =>
+      lastShareRef.current?.options
+        ? { ...lastShareRef.current.options, paused: activeShareRef.current?.paused === true }
+        : null,
     switchTo,
     adopt,
     restoreAfterFailedSwitch: () => adopt({ reassert: true }),
