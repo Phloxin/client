@@ -7,6 +7,7 @@ import test from 'node:test'
 import {
   CloseCode,
   Direction,
+  EVENT_TYPES,
   ErrorCode,
   Request,
   StreamDirectory,
@@ -65,9 +66,11 @@ function matcherHarness(options = {}) {
 test('requests encode as externally tagged enums with numeric node ids', () => {
   assert.deepEqual(Request.identify('t'), { Identify: { ticket: 't' } })
   assert.equal(JSON.stringify(Request.getRoutingParams()), '"GetRoutingParams"')
-  assert.deepEqual(Request.setCapabilities({ codecs: [] }), {
-    SetCapabilities: { capabilities: { codecs: [] } }
+  assert.deepEqual(Request.setCapabilities({ codecs: [] }, [1]), {
+    SetCapabilities: { capabilities: { codecs: [] }, e2ee_formats: [1] }
   })
+  assert.deepEqual(Request.group({ Ready: { epoch: 3 } }), { Group: { Ready: { epoch: 3 } } })
+  assert.deepEqual(Request.requestKeyFrame(5), { RequestKeyFrame: { node: 5 } })
   assert.deepEqual(Request.connectTransport(Direction.Send, { role: 'client' }), {
     ConnectTransport: {
       transport_parameters: { dtlsParameters: { role: 'client' } },
@@ -162,8 +165,11 @@ test('decodeMessage handles unit, struct and newtype variants', () => {
 test('replies resolve requests in FIFO order with their payload', async () => {
   const { matcher, sent, reply } = matcherHarness()
   const routing = matcher.request(Request.getRoutingParams())
-  const ready = matcher.request(Request.setCapabilities({}))
-  assert.deepEqual(sent, ['GetRoutingParams', { SetCapabilities: { capabilities: {} } }])
+  const ready = matcher.request(Request.setCapabilities({}, [1]))
+  assert.deepEqual(sent, [
+    'GetRoutingParams',
+    { SetCapabilities: { capabilities: {}, e2ee_formats: [1] } }
+  ])
   assert.equal(matcher.size, 2)
 
   assert.equal(reply({ RoutingParams: { router_capabilities: { codecs: [] } } }), true)
@@ -729,6 +735,8 @@ test('close codes classify into recoverable and fatal', () => {
   // Kicked or banned: rejoining on our own would undo a moderator's decision.
   assert.equal(classifyClose(CloseCode.KICKED).recoverable, false)
   assert.equal(classifyClose(CloseCode.KICKED).expected, false)
+  // The node's E2EE delivery service died: a fresh session gets a new group.
+  assert.equal(classifyClose(CloseCode.E2EE_FAILED).recoverable, true)
   assert.equal(classifyClose(1006).recoverable, true)
   assert.equal(classifyClose(undefined).recoverable, true)
 })
@@ -1077,4 +1085,30 @@ test('the stream directory groups owners by channel', () => {
       ['12', ['9']]
     ])
   )
+})
+
+test('group requests get GroupReceived; group events and UpdateRequired', async () => {
+  const { matcher, sent, reply } = matcherHarness()
+  const keyPackage = matcher.request(Request.group({ KeyPackage: { key_package: 'AQID' } }))
+  assert.deepEqual(sent, [{ Group: { KeyPackage: { key_package: 'AQID' } } }])
+  assert.equal(reply('GroupReceived'), true)
+  assert.equal(await keyPackage, null)
+
+  // Group events never touch the queue.
+  assert.equal(EVENT_TYPES.has('Group'), true)
+  assert.equal(reply({ Group: { Execute: { epoch: 2 } } }), false)
+  assert.equal(reply({ Group: 'Rejoin' }), false)
+
+  const capabilities = matcher.request(Request.setCapabilities({}, [1]))
+  reply({ Error: { object: 'Session', code: 'UpdateRequired', message: 'update' } })
+  await assert.rejects(capabilities, (err) => err.updateRequired === true)
+})
+
+test('snapshots keep the group params', () => {
+  const state = new VoiceChannelState()
+  const group = { ciphersuite: 1, external_sender: 'AA==', format: 1 }
+  state.applySnapshot({ channel_id: '1', group })
+  assert.deepEqual(state.group, group)
+  state.reset()
+  assert.equal(state.group, null)
 })

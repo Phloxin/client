@@ -45,6 +45,17 @@ import {
 } from './screenShare'
 import { configureStreamDiagnostics } from './streamDiagnostics'
 import {
+  e2eeFormats,
+  e2eeGroupEvent,
+  e2eeJoin,
+  e2eeLeave,
+  e2eeMediaReady,
+  e2eeSuspend,
+  setE2eeHandlers,
+  wrapRecvTransport,
+  wrapSendTransport
+} from '../e2ee'
+import {
   CloseCode,
   Direction,
   EVENT_TYPES,
@@ -65,6 +76,7 @@ import {
   sinkLayerCapabilities,
   sourceMediaKind,
   sourceTypeForAppData,
+  ViewRole,
   viewRoleFor
 } from './protocol'
 
@@ -414,6 +426,30 @@ function request(message) {
   if (!signal) return Promise.reject(new Error('Voice socket not open'))
   return signal.matcher.request(message)
 }
+
+// ─── E2EE ────────────────────────────────────────────────────────
+// Every frame is end-to-end encrypted (lib/e2ee). Its worker runs the channel's MLS group: it
+// gets the node's Group events from handleEvent and sends its Group requests through here.
+setE2eeHandlers({
+  request: (groupRequest) => request(Request.group(groupRequest)),
+  onFatal: (reason) =>
+    failVoice(
+      reason === 'update-required'
+        ? 'This version of Pylon can no longer join voice on this server; update to continue'
+        : "Couldn't set up encryption for this call"
+    ),
+  // A video sink decrypts again after dropping frames, so its decoder needs a keyframe.
+  onKeyFrame: (sinkNode) => {
+    request(Request.requestKeyFrame(sinkNode)).catch((err) => {
+      if (!err?.sourceGone)
+        console.warn(`[Soup] Keyframe request for sink ${sinkNode} failed:`, err?.message ?? err)
+    })
+  },
+  // Video sinks stay paused until we can decrypt what they'd carry (applyViewRole).
+  onMediaReadyChange: () => {
+    for (const entry of remoteConsumers.values()) applyViewRole(entry)
+  }
+})
 
 // Called (by screenShare and the mic paths) once a local producer is closed.
 // A source the server already closed (a switch, or a replacement) is no
@@ -959,6 +995,9 @@ function handleEvent(type, data) {
     case 'Channel':
       applyChannelSnapshot(data)
       break
+    case 'Group':
+      e2eeGroupEvent(data)
+      break
     case 'ClientsJoined':
       channelState.addClients(data?.clients)
       break
@@ -1000,8 +1039,12 @@ function handleEvent(type, data) {
 // them), so this only has to diff sources and fill in missing sinks.
 function applyChannelSnapshot(data) {
   const previousChannelId = channelState.channelId
+  const firstOfSession = !channelState.hasSnapshot
   const { added, removed, updated, speakers } = channelState.applySnapshot(data)
   const switched = previousChannelId != null && previousChannelId !== channelState.channelId
+  // Each session and each channel is a new membership on the node, which needs its own key
+  // package. A resync of the same session comes with a Group Rejoin instead.
+  if (firstOfSession || switched) e2eeJoin(channelState.group, { move: switched })
   console.log(
     `[Soup] Channel ${channelState.channelId} snapshot: ${channelState.members.size} ` +
       `member(s), ${channelState.sources.size} source(s), ` +
@@ -1586,7 +1629,21 @@ async function establishSession(current) {
   consumerTransport = createRecvTransport(candidate, recvParams, generation)
 
   voiceConnectStep = 'capabilities'
-  await current.matcher.request(Request.setCapabilities(candidate.recvRtpCapabilities))
+  // Throws if this runtime can't encrypt media: E2EE is mandatory.
+  const formats = await e2eeFormats()
+  if (!isCurrent()) throw mediaResetError()
+  try {
+    await current.matcher.request(Request.setCapabilities(candidate.recvRtpCapabilities, formats))
+  } catch (err) {
+    if (err?.updateRequired) {
+      const error = new Error(
+        'This version of Pylon can no longer join voice on this server; update to continue'
+      )
+      error.retryable = false
+      throw error
+    }
+    throw err
+  }
   if (!isCurrent()) throw mediaResetError()
   current.ready = true
   console.log('[Soup] Voice session ready')
@@ -1753,6 +1810,9 @@ function handleOnline() {
 export function disconnect() {
   voiceConnectionGeneration++
   intentionalClose = true
+  // Leaving voice drops the call's group and every key. A reconnect keeps them instead: its
+  // rejoin replaces our leaf in the same group.
+  e2eeLeave()
   if (reconnectTimer) {
     clearTimeout(reconnectTimer)
     reconnectTimer = null
@@ -1779,7 +1839,7 @@ export function disconnect() {
 // producer_transport is our send transport (it creates sources),
 // consumer_transport our receive transport (it creates sinks).
 function createSendTransport(loadedDevice, params, generation) {
-  const transport = loadedDevice.createSendTransport(params)
+  const transport = wrapSendTransport(loadedDevice.createSendTransport(params))
   const isCurrentTransport = () =>
     generation === mediaStateGeneration && producerTransport === transport && !transport.closed
 
@@ -1796,7 +1856,7 @@ function createSendTransport(loadedDevice, params, generation) {
 }
 
 function createRecvTransport(loadedDevice, params, generation) {
-  const transport = loadedDevice.createRecvTransport(params)
+  const transport = wrapRecvTransport(loadedDevice.createRecvTransport(params))
   const isCurrentTransport = () =>
     generation === mediaStateGeneration && consumerTransport === transport && !transport.closed
 
@@ -3000,7 +3060,13 @@ async function createSinkFor(id) {
       id: sourceId(sink.node),
       producerId: id,
       kind,
-      rtpParameters: sink.rtp_parameters
+      rtpParameters: sink.rtp_parameters,
+      // The owner's key decrypts this sink, and only frames sent from this source (lib/e2ee).
+      appData: {
+        owner: clientId,
+        source: { kind: source.kind, streamKey: source.streamKey },
+        sink: sink.node
+      }
     })
   } catch (err) {
     discard(null)
@@ -3143,7 +3209,9 @@ export function setVideoStreamRoles({ focusedConsumerId = null, visibleConsumerI
 
 function applyViewRole(entry) {
   if (entry.kind !== 'video') return
-  const role = viewRoleFor(entry.consumerId, streamRoles)
+  // Until the first Execute that includes us, a resumed sink would only bring frames (and a
+  // keyframe) we can't decrypt yet (plan 5.5).
+  const role = e2eeMediaReady() ? viewRoleFor(entry.consumerId, streamRoles) : ViewRole.Hidden
   const changes = sinkConfigChanges(
     entry.sinkConfig,
     sinkConfigForViewRole(role, entry.layerCapabilities ?? undefined)
@@ -3165,6 +3233,8 @@ function applyViewRole(entry) {
 // session with the socket, so there is nothing to tell it.
 function resetMediaState() {
   mediaStateGeneration++
+  // The session's group requests can't be answered any more; the next session rejoins.
+  e2eeSuspend()
   rawMicEndedRepairGeneration = null
   clearMediaWatchdog()
   clearMediaReadyTimer()

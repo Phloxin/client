@@ -7,3 +7,5 @@ out
 .env
 .env.*
 !.env.example
+# Built by `npm run build:e2ee` from ../pylon-e2ee
+src/renderer/src/lib/e2ee/pkg
