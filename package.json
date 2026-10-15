@@ -17,6 +17,7 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "build:native": "npm --prefix native/audio-capture run build",
+    "build:e2ee": "../pylon-e2ee/build-wasm.sh src/renderer/src/lib/e2ee/pkg",
     "postinstall": "node scripts/postinstall.cjs",
     "build:unpack": "npm run build && electron-builder --dir",
     "build:win": "npm run build && electron-builder --win",

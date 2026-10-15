@@ -33,8 +33,11 @@ export const Request = Object.freeze({
   identify: (ticket) => ({ Identify: { ticket } }),
   // Only before SessionReady (refused afterwards).
   getRoutingParams: () => 'GetRoutingParams',
-  // Only before SessionReady. Its success reply *is* SessionReady.
-  setCapabilities: (capabilities) => ({ SetCapabilities: { capabilities } }),
+  // Only before SessionReady. Its success reply *is* SessionReady. `e2eeFormats` lists the
+  // E2EE frame formats this build speaks; a node pinning another refuses with UpdateRequired.
+  setCapabilities: (capabilities, e2eeFormats = []) => ({
+    SetCapabilities: { capabilities, e2ee_formats: e2eeFormats }
+  }),
   // Any time, once per transport.
   connectTransport: (direction, dtlsParameters) => ({
     ConnectTransport: { transport_parameters: { dtlsParameters }, direction }
@@ -61,7 +64,14 @@ export const Request = Object.freeze({
   setSourcePaused: (node, paused) => ({ SetSourcePaused: { node, paused: paused === true } }),
   // One of our sources or sinks. Always succeeds, even for a node the server
   // has already closed.
-  close: (node) => ({ Close: { node } })
+  close: (node) => ({ Close: { node } }),
+  // A request for the channel's MLS delivery service (E2EE): { KeyPackage }, { GroupCreated },
+  // { Commit } or { Ready }, with bytes as base64. Answered GroupReceived once the session took
+  // it; what the delivery service does with it arrives later as Group events. A KeyPackage the
+  // session refuses gets InvalidArgument.
+  group: (request) => ({ Group: request }),
+  // Asks one of our sinks' source for a keyframe, once its frames decrypt again.
+  requestKeyFrame: (node) => ({ RequestKeyFrame: { node } })
 })
 
 // SinkConfig, which CreateSink and SinkConfigure carry flattened into the
@@ -101,7 +111,9 @@ export const EXPECTED_REPLY = Object.freeze({
   CreateSink: 'Sink',
   SinkConfigure: 'SinkConfigured',
   SetSourcePaused: 'SourcePaused',
-  Close: 'Closed'
+  Close: 'Closed',
+  Group: 'GroupReceived',
+  RequestKeyFrame: 'KeyFrameRequested'
 })
 
 // Closed is in both sets: it's the reply to Close and also the server closing
@@ -122,6 +134,8 @@ export const EVENT_TYPES = new Set([
   'Speakers',
   // The layers one of our video sinks is forwarding now (null: none).
   'SinkLayers',
+  // The channel's MLS delivery service, for this session (lib/e2ee).
+  'Group',
   'Closed'
 ])
 
@@ -185,7 +199,9 @@ export const ErrorCode = Object.freeze({
   NotSupported: 'NotSupported',
   // A stream source or sink without the lease for it (see the stream section).
   Denied: 'Denied',
-  Internal: 'Internal'
+  Internal: 'Internal',
+  // SetCapabilities: this build can't speak the node's E2EE frame format.
+  UpdateRequired: 'UpdateRequired'
 })
 
 // A request the server answered with Error. Not fatal: the socket stays open.
@@ -215,6 +231,11 @@ export class VoiceRequestError extends Error {
   // publish lease, or a sink on one without a watch.
   get denied() {
     return this.code === ErrorCode.Denied
+  }
+
+  // This client is too old (or too new) for the node's E2EE. No rejoin fixes it.
+  get updateRequired() {
+    return this.code === ErrorCode.UpdateRequired
   }
 }
 
@@ -396,13 +417,15 @@ export class VoiceChannelState {
     this.members = new Set()
     this.sources = new Map() // NodeId -> { node, owner, kind, codec, streamKey, paused }
     this.speakers = new Set()
+    // The node's E2EE GroupParams: { ciphersuite, external_sender, format }.
+    this.group = null
     this.hasSnapshot = false
   }
 
   // Replace everything. Returns the source diff against the previous state
   // (`updated`: sources kept whose state changed, e.g. a pause the deltas
   // missed before a resync) plus the speaker diff (see setSpeakers).
-  applySnapshot({ channel_id, codecs, members = [], sources = [], speakers = [] }) {
+  applySnapshot({ channel_id, codecs, members = [], sources = [], speakers = [], group = null }) {
     const previous = this.sources
     const next = new Map()
     for (const source of sources) next.set(source.node, normalizeSource(source))
@@ -417,6 +440,7 @@ export class VoiceChannelState {
     this.setCodecs(codecs)
     this.members = new Set(members.map(String))
     this.sources = next
+    this.group = group
     this.hasSnapshot = true
     return { added, removed, updated, speakers: this.setSpeakers(speakers) }
   }
@@ -963,7 +987,8 @@ export const CloseCode = Object.freeze({
   SESSION_TERMINATED: 4003,
   PARSE: 4004,
   REQUEST_FAILED: 4005,
-  KICKED: 4006
+  KICKED: 4006,
+  E2EE_FAILED: 4007
 })
 
 // What a voice socket close means for the client.
@@ -990,6 +1015,9 @@ export function classifyClose(code) {
     // Kicked or banned by a moderator. Rejoining on our own would undo that.
     case CloseCode.KICKED:
       return { reason: 'removed from voice', recoverable: false, expected: false }
+    // The channel's E2EE delivery service failed on the node. A fresh session builds a new group.
+    case CloseCode.E2EE_FAILED:
+      return { reason: 'voice encryption failed on the server', recoverable: true, expected: false }
     default:
       return { reason: 'voice connection lost', recoverable: true, expected: false }
   }
