@@ -13,6 +13,9 @@ files:
   - '!native/**'
   - '!**/audio-capture/{target,src,npm}/**'
   - '!**/audio-capture/{build.rs,Cargo.toml,Cargo.lock,.gitignore}'
+  # The pylon-e2ee submodule (crate source and its Rust target/); the renderer
+  # bundles only the WASM that build:e2ee builds from it.
+  - '!pylon-e2ee/**'
 asarUnpack:
   - resources/**
   # Native modules must live outside the asar to be dlopen-able.

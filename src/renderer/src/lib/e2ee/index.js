@@ -204,6 +204,20 @@ export function subscribeE2ee(listener) {
   return () => statusListeners.delete(listener)
 }
 
+// The roster resolved against the live client list: who can decrypt the call, and which of them
+// aren't anyone we know (a listener the server added behind the channel's back, plan 5.7).
+export function e2eeListeners(e2ee, clients, selfId) {
+  const names = new Map(clients.map((client) => [String(client.id), client.name]))
+  const self = selfId == null ? null : String(selfId)
+  const listeners = (e2ee.roster ?? []).map((id) => ({
+    id,
+    self: id === self,
+    name: id === self ? 'You' : (names.get(id) ?? null)
+  }))
+  const unknown = listeners.filter((l) => !l.self && l.name == null)
+  return { listeners, unknown }
+}
+
 // ─── Transforms ──────────────────────────────────────────────────
 
 function attach(target, options) {

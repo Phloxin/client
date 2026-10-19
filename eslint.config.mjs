@@ -5,7 +5,9 @@ import eslintPluginReactHooks from 'eslint-plugin-react-hooks'
 import eslintPluginReactRefresh from 'eslint-plugin-react-refresh'
 
 export default [
-  { ignores: ['**/node_modules', '**/dist', '**/out', 'src/renderer/src/lib/e2ee/pkg'] },
+  {
+    ignores: ['**/node_modules', '**/dist', '**/out', 'src/renderer/src/lib/e2ee/pkg', 'pylon-e2ee']
+  },
   eslint,
   eslintPluginReact.configs.flat.recommended,
   eslintPluginReact.configs.flat['jsx-runtime'],

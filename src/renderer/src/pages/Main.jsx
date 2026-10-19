@@ -262,7 +262,13 @@ function Main() {
   // The server's own name (GET /server), distinct from the list entry's local
   // nickname. Shown in the title bar and lurking header once connected.
   const [serverName, setServerName] = useState(null)
+  // Overall health, including voice recovery: 'reconnecting' while either the
+  // events link is down or voice is rebuilding after an outage.
   const [connectionStatus, setConnectionStatus] = useState('connected')
+  // The events socket alone. Only this drives the full-app "Connection Dropped"
+  // overlay: while events are flowing the server is still usable, and a
+  // voice-only outage is surfaced by the voice connection bar instead.
+  const [eventsStatus, setEventsStatus] = useState('connected')
   // Transient toast banner: { message, variant } or null when hidden. 'error'
   // reports partial failures (bad requests, permission denials, failed fetches);
   // 'success' confirms completed actions. Latest toast replaces any showing.
@@ -425,13 +431,13 @@ function Main() {
   // this channel — that's the moment the user is truly reconnected.
   const preDropChannelRef = useRef(null)
   // The channel we're waiting to land back in after a reconnect (null when not
-  // awaiting). While set: the overlay stays up, self channel chimes are
+  // awaiting). While set: connectionStatus stays 'reconnecting', self channel chimes are
   // suppressed, and the sidebar won't leave voice on the transient drop-to-null.
   const awaitingRejoinRef = useRef(null)
   // What kind of voice rebuild is happening: 'outage' when the connection
   // actually dropped, or 'intentional' when we asked for it, such as a
-  // channel switch or a moderator moving us. Only an outage shows the
-  // connection-lost overlay and plays the "back online" cue. Null when idle.
+  // channel switch or a moderator moving us. Only an outage marks the
+  // connection as reconnecting and plays the "back online" cue. Null when idle.
   const voiceRebuildKindRef = useRef(null)
   const rejoinTimeoutRef = useRef(null)
   const requiredVoiceMediaUpdateRef = useRef(null)
@@ -455,7 +461,7 @@ function Main() {
     state: 'idle'
   })
   // Finish a reconnect recovery: we're truly back now, so play the connected cue
-  // and drop the overlay. Safe to call more than once (the ref guard no-ops).
+  // and mark the connection healthy. Safe to call more than once (the ref guard no-ops).
   const completeRecovery = useCallback(() => {
     if (awaitingRejoinRef.current == null || eventsRecoveringRef.current) return
     const wasOutage = voiceRebuildKindRef.current !== 'intentional'
@@ -479,8 +485,8 @@ function Main() {
       voiceRebuildKindRef.current = null
       requiredVoiceMediaUpdateRef.current = null
       clearTimeout(rejoinTimeoutRef.current)
-      // The events connection is healthy; remove its network overlay without a
-      // false success chime, then expose voice as the failed subsystem.
+      // The events connection is healthy; mark it connected without a false
+      // success chime, then expose voice as the failed subsystem.
       if (!eventsRecoveringRef.current) setConnectionStatus('connected')
       setRecoveryEpoch((epoch) => epoch + 1)
       showError(message)
@@ -505,8 +511,8 @@ function Main() {
           updateId
         )
         // An intentional rebuild runs over a healthy connection, so it should
-        // not show the connection-lost overlay, even if it was flagged after
-        // the overlay already appeared.
+        // not count as reconnecting, even if it was flagged after recovery
+        // already began.
         const kind = nextVoiceRebuildKind(voiceRebuildKindRef.current, {
           expected: state?.expected === true,
           // A recovery already in progress always counts as an outage.
@@ -830,8 +836,8 @@ function Main() {
         voiceMediaRecovery.updateId > requiredVoiceMediaUpdateRef.current)
     ) {
       // The events connection is healthy but the browser rejected a mic/device
-      // request. End the network-reconnect overlay and leave the channel's
-      // actionable error visible instead of presenting an endless reconnect.
+      // request. End the reconnect state and leave the channel's actionable
+      // error visible instead of presenting an endless reconnect.
       failRecovery()
     }
   }, [selfChannelId, voiceMediaRecovery, recoveryEpoch, completeRecovery, failRecovery])
@@ -1794,6 +1800,7 @@ function Main() {
       setSummaryClientId(null)
       setReadStates({})
       setConnectionStatus('connected')
+      setEventsStatus('connected')
       // Kick/ban paths play their own specific cue and pass skipSound.
       if (!opts?.skipSound) playUiSound('disconnected')
     },
@@ -1832,6 +1839,7 @@ function Main() {
     sessionIdRef.current = null
     lastEventSeqRef.current = null
     setConnectionStatus('connected')
+    setEventsStatus('connected')
 
     // Resync after losing our session (we can't replay the events we missed).
     // Channels/clients are restored by the server's Ready event on fresh re-auth;
@@ -1907,6 +1915,7 @@ function Main() {
       }
       // Surface the drop to the user (full-app overlay) while we retry.
       setConnectionStatus('reconnecting')
+      setEventsStatus('reconnecting')
       const delay = Math.min(
         RECONNECT_MAX_DELAY_MS,
         RECONNECT_BASE_DELAY_MS * 2 ** reconnectAttempts
@@ -1949,6 +1958,9 @@ function Main() {
         reconnectAttempts = 0
         dropAnnounced = false
         eventsRecoveringRef.current = false
+        // The events link is back, so the overlay comes down even if voice is
+        // still rebuilding below (the voice connection bar shows that).
+        setEventsStatus('connected')
         if (!wasReconnecting) {
           // Initial connect — handleConnect already chimed.
           setConnectionStatus('connected')
@@ -1959,9 +1971,9 @@ function Main() {
           playUiSound('connected')
         } else {
           // The events link is back, but the server dropped us from voice during
-          // the outage. Stay "reconnecting" (overlay up) until soup rejoins our
-          // channel — completeRecovery fires from the selfChannelId effect then.
-          // Keep the overlay up if media is still missing. Soup's bounded media
+          // the outage. Stay "reconnecting" until soup rejoins our channel —
+          // completeRecovery fires from the selfChannelId effect then.
+          // Keep waiting if media is still missing. Soup's bounded media
           // watchdog performs one full voice reconnect; this timer only records
           // why we are still waiting and must never turn a failed recovery into
           // a false "connected" success.
@@ -3105,7 +3117,11 @@ function Main() {
         {/* Non-modal, so intentionally left out of the Escape-key cascade below —
             it should survive Escape while flipping through views mid-debug. */}
         {streamDebugOpen && (
-          <StreamDebugPanel clients={clients} onClose={() => setStreamDebugOpen(false)} />
+          <StreamDebugPanel
+            clients={clients}
+            selfId={client?.id}
+            onClose={() => setStreamDebugOpen(false)}
+          />
         )}
         {rolesGroupsOpen && (
           <RolesGroupsMenu
@@ -3140,6 +3156,9 @@ function Main() {
             onToggleDeafen={toggleDeafen}
             onSpeakingClientsChange={handleSpeakingClientsChange}
             onVoiceMediaState={handleVoiceMediaState}
+            voiceMediaState={voiceMediaRecovery}
+            connectionInfoOpen={streamDebugOpen}
+            onToggleConnectionInfo={() => setStreamDebugOpen((open) => !open)}
             shareControlRef={shareControlRef}
             onStatusChange={sendStatus}
             onSelfChannelChange={(channelId) => {
@@ -3411,7 +3430,7 @@ function Main() {
             )}
           </AnimatePresence>
         </div>
-        {connected && connectionStatus === 'reconnecting' && (
+        {connected && eventsStatus === 'reconnecting' && (
           <ConnectionOverlay onAbort={handleDisconnect} />
         )}
       </div>

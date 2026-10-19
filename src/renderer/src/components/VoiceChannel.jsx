@@ -1,11 +1,4 @@
-﻿import {
-  useState,
-  useEffect,
-  useRef,
-  forwardRef,
-  useImperativeHandle,
-  useSyncExternalStore
-} from 'react'
+﻿import { useState, useEffect, useRef, forwardRef, useImperativeHandle } from 'react'
 import {
   connect,
   publish,
@@ -19,7 +12,7 @@ import {
   requestVoiceMediaRecovery,
   setVolumeGateThreshold
 } from '../lib/soup'
-import { getE2eeStatus, setE2eeSelf, subscribeE2ee } from '../lib/e2ee'
+import { setE2eeSelf } from '../lib/e2ee'
 import { REPUBLISH_SCOPE, classifyMicSettingsChange } from '../lib/micRepublishScope'
 import {
   isPermanentMicError,
@@ -144,8 +137,6 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   const [joined, setJoined] = useState(false)
   const [connecting, setConnecting] = useState(false)
   const [error, setError] = useState(null)
-  // The call's encryption: its call code, and who can decrypt it (lib/e2ee).
-  const e2ee = useSyncExternalStore(subscribeE2ee, getE2eeStatus)
   // Auto-dismiss. A later failure with a different message restarts the timer;
   // an identical one is a React no-op, so the original countdown stands.
   useEffect(() => {
@@ -1078,7 +1069,6 @@ const VoiceChannel = forwardRef(function VoiceChannel(
         )}
       </div>
       {error && <div className="channel-error">{error}</div>}
-      {joined && e2eeLine(e2ee, clients, self?.id)}
       {/* Wrapper exists purely so the user list has a single box to fold; it
           stays mounted through the collapse animation via AnimatePresence. */}
       <AnimatePresence initial={false}>
@@ -1165,33 +1155,3 @@ const VoiceChannel = forwardRef(function VoiceChannel(
 })
 
 export default VoiceChannel
-
-// The call's encryption under a joined channel (PLAN-e2ee.md 5.7). The call code is the same for
-// everyone in the call: comparing it out of band rules out a server in the middle. Everyone who
-// can decrypt the call is in the MLS roster; anyone in it who isn't in this channel is flagged.
-function e2eeLine(e2ee, clients, selfId) {
-  if (e2ee.status === 'idle') return null
-  if (e2ee.status === 'failed') {
-    return <div className="channel-e2ee channel-e2ee-failed">Encryption failed</div>
-  }
-  if (!e2ee.callCode) {
-    return <div className="channel-e2ee">Setting up encryption…</div>
-  }
-
-  const names = new Map(clients.map((client) => [String(client.id), client.name]))
-  const self = selfId == null ? null : String(selfId)
-  const listeners = e2ee.roster.map((id) =>
-    id === self ? 'you' : (names.get(id) ?? `unknown user ${id}`)
-  )
-  const unknown = e2ee.roster.filter((id) => id !== self && !names.has(id))
-  return (
-    <div
-      className={`channel-e2ee${unknown.length > 0 ? ' channel-e2ee-unknown' : ''}`}
-      title={`End-to-end encrypted for: ${listeners.join(', ')}`}
-    >
-      Call code {e2ee.callCode}
-      {unknown.length > 0 &&
-        ` · ${unknown.length} unknown listener${unknown.length > 1 ? 's' : ''}`}
-    </div>
-  )
-}

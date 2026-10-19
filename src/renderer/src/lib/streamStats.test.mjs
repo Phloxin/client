@@ -7,7 +7,9 @@ import {
   extractRecvAudioMetrics,
   extractRecvVideoMetrics,
   extractSendAudioMetrics,
-  jitterBufferAvgMs
+  extractTransportHealth,
+  jitterBufferAvgMs,
+  voiceConnectionQuality
 } from './streamStats.js'
 
 const report = (...stats) => new Map(stats.map((stat) => [stat.id, stat]))
@@ -240,4 +242,64 @@ test('jitterBufferAvgMs rejects windows with no newly emitted samples', () => {
   const previous = { jitterBufferDelay: 1, jitterBufferEmittedCount: 10 }
   assert.equal(jitterBufferAvgMs(2, 10, previous), null)
   assert.equal(jitterBufferAvgMs(2, 20, previous), 100)
+})
+
+test('transport health reads the selected pair RTT and audio loss deltas', () => {
+  const stats = (lost, received) =>
+    report(
+      { id: 't', type: 'transport', selectedCandidatePairId: 'p2' },
+      {
+        id: 'p1',
+        type: 'candidate-pair',
+        nominated: true,
+        state: 'succeeded',
+        currentRoundTripTime: 0.5
+      },
+      { id: 'p2', type: 'candidate-pair', currentRoundTripTime: 0.042 },
+      {
+        id: 'in1',
+        type: 'inbound-rtp',
+        kind: 'audio',
+        packetsLost: lost,
+        packetsReceived: received
+      },
+      { id: 'in2', type: 'inbound-rtp', kind: 'video', packetsLost: 999, packetsReceived: 1 },
+      { id: 'ri', type: 'remote-inbound-rtp', kind: 'audio', fractionLost: 0.01 }
+    )
+
+  const first = extractTransportHealth(stats(10, 1000))
+  assert.equal(first.metrics.rttMs, 42)
+  assert.equal(first.metrics.inboundLoss, null)
+  assert.equal(first.metrics.outboundLoss, 0.01)
+  assert.deepEqual(first.snapshot, { lost: 10, received: 1000 })
+
+  const second = extractTransportHealth(stats(15, 1095), first.snapshot)
+  assert.equal(second.metrics.inboundLoss, 0.05)
+
+  // A departed consumer shrinks the totals: no loss figure, not a negative one.
+  const shrunk = extractTransportHealth(stats(1, 100), second.snapshot)
+  assert.equal(shrunk.metrics.inboundLoss, null)
+})
+
+test('transport health falls back to the nominated pair and tolerates no media', () => {
+  const { metrics, snapshot } = extractTransportHealth(
+    report({
+      id: 'p',
+      type: 'candidate-pair',
+      nominated: true,
+      state: 'succeeded',
+      currentRoundTripTime: 0.1
+    })
+  )
+  assert.deepEqual(metrics, { rttMs: 100, inboundLoss: null, outboundLoss: null })
+  assert.equal(snapshot, null)
+})
+
+test('voice connection quality buckets RTT and loss', () => {
+  assert.equal(voiceConnectionQuality({}), 'unknown')
+  assert.equal(voiceConnectionQuality({ rttMs: 40, lossFraction: 0 }), 'good')
+  assert.equal(voiceConnectionQuality({ rttMs: 200 }), 'fair')
+  assert.equal(voiceConnectionQuality({ rttMs: 40, lossFraction: 0.05 }), 'fair')
+  assert.equal(voiceConnectionQuality({ rttMs: 400 }), 'poor')
+  assert.equal(voiceConnectionQuality({ rttMs: 40, lossFraction: 0.1 }), 'poor')
 })

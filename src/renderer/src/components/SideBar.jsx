@@ -4,6 +4,7 @@ import { overlayPop, scrimFade } from '../lib/motionPresets'
 import VoiceChannel from './VoiceChannel'
 import ClientIndicator from './ClientIndicator'
 import ServerMenu from './ServerMenu'
+import VoiceConnectionBar from './VoiceConnectionBar'
 import { setMicMuted, setSoundMuted, subscribeLiveStreams } from '../lib/soup'
 import { setSoundsDeafened } from '../lib/sounds'
 import { useAnimationCategory, useSettings } from '../context/SettingsContext'
@@ -95,6 +96,11 @@ function Sidebar({
   onToggleDeafen,
   onSpeakingClientsChange,
   onVoiceMediaState,
+  // Main's latest voice media state ({ channelId, state }) for the dock's
+  // connection indicator, plus the Connection Info panel toggle it hosts.
+  voiceMediaState,
+  connectionInfoOpen,
+  onToggleConnectionInfo,
   // Filled with the sharing channel's imperative handle (or null when we aren't
   // sharing) so the stream view can stop/restart our share without owning the
   // voice-channel refs.
@@ -771,6 +777,18 @@ function Sidebar({
       )}
 
       <div className="control-dock">
+        {joinedChannelId != null && (
+          <VoiceConnectionBar
+            channelName={channels.find((c) => c.id === joinedChannelId)?.name ?? 'Voice'}
+            clients={clients}
+            selfId={self?.id}
+            mediaState={
+              voiceMediaState?.channelId === joinedChannelId ? voiceMediaState.state : undefined
+            }
+            connectionInfoOpen={connectionInfoOpen}
+            onToggleConnectionInfo={onToggleConnectionInfo}
+          />
+        )}
         <div className="dock-actions">
           <button
             className={`control-btn${micMuted ? ' active' : ''}`}

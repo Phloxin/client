@@ -215,20 +215,6 @@
   padding: 0 8px 4px 26px;
 }
 
-/* The call code under a joined channel (lib/e2ee). */
-.channel-e2ee {
-  font-size: var(--font-size-xs);
-  font-variant-numeric: tabular-nums;
-  opacity: 0.7;
-  padding: 0 8px 4px 26px;
-}
-
-.channel-e2ee-failed,
-.channel-e2ee-unknown {
-  color: var(--color-danger);
-  opacity: 1;
-}
-
 /* ── Floating context menus (channel + client) ───────────────────────────────
    Shared look: elevated panel on the soft surface with a hairline + deep
    shadow, matching the canvas language. */
