@@ -103,7 +103,7 @@ export {
   shareScreen,
   stopScreenShare
 } from './screenShare'
-export { startStreamDebugStats } from './streamDiagnostics'
+export { startStreamDebugStats, startVoiceConnectionStats } from './streamDiagnostics'
 
 // This module drives mediasoup-client over the pylon-voice v1 signaling
 // protocol. The wire format itself (encoders, reply matching, channel state,
@@ -205,6 +205,7 @@ configureScreenShare({
 })
 configureStreamDiagnostics({
   getProducerTransport: () => producerTransport,
+  getConsumerTransport: () => consumerTransport,
   getProducers: () => producers,
   getScreenShareContext,
   getRemoteConsumers: () => remoteConsumers
