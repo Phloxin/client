@@ -2,21 +2,36 @@
 // authorize screen streams on it.
 //
 // Everything that knows the wire format lives here: request encoders, the
-// reply matcher, channel-state bookkeeping for the server's snapshot/delta
-// events, close-code classification, and the stream requests and stream
-// directory of the backend's event socket. No mediasoup, DOM or UI imports, so
-// it runs under `node --test` (see protocol.test.mjs) and the soup layer stays
-// a pure mediasoup-client driver.
+// matcher that pairs answers and errors with requests, channel-state
+// bookkeeping for the server's snapshot/delta events, close-code
+// classification, and the stream requests and stream directory of the
+// backend's event socket. No mediasoup, DOM or UI imports, so it runs under
+// `node --test` (see protocol.test.mjs) and the soup layer stays a pure
+// mediasoup-client driver.
 //
 // Contract: .plans/HANDOFF-voice-protocol-v1.md. Server source of truth:
-// server/backend crates/pylon-voice/src/signal/proto/v1.rs (voice socket) and
+// server/backend crates/pylon-voice/src/signal/proto/v1.rs (voice socket),
+// crates/pylon-sfu/src/session.rs and session/{message,pending,id_space}.rs
+// (what answers what), crates/pylon-sfu/src/node/ids.rs (ids), and
 // src/events/socket.rs, src/events/socket/{ops,stream}.rs (stream ops).
 //
 // Wire conventions worth remembering:
 //   - Messages are serde externally tagged enums: { "CreateSink": { ... } }, or
-//     the bare string "GetRoutingParams" for a message with no fields.
-//   - NodeId (every source and sink) is a JSON number. mediasoup-client wants
-//     string ids, so the soup layer stringifies at that boundary only.
+//     a bare string for a variant with no fields ({ "Group": "Rejoin" }).
+//   - Our own sources and sinks are LocalIds: JSON numbers (u32) this client
+//     picks. CreateSource, CreateSink and Sync each name a new one, and every
+//     new id must be above every id this socket used before, so one counter
+//     per socket serves all three (the matcher's). An id is never reused, not
+//     even after its create failed.
+//   - Another client's source is a NodeId: the JSON string "<session>:<local>",
+//     <session> being the owner's voice session. Only ever echo one the server
+//     sent (CreateSink.source); a reconnect gives the owner's sources new ones.
+//   - A wrong JSON type for either is a frame the server can't parse: it closes
+//     the socket (4004). The encoders below refuse one instead.
+//   - mediasoup-client wants string ids, so the soup layer hands it
+//     String(localId) for our producers and consumers and the NodeId string
+//     as-is for a remote producer. Only a NodeId has a colon, so the two never
+//     collide in one map.
 //   - Snowflakes (channel ids, client ids) are JSON strings.
 //   - A stream key is an opaque string. Only ever echo one the server sent.
 //   - A source's `kind` (ChannelSource, the Source reply) is adjacently tagged:
@@ -27,54 +42,96 @@ export const PROTOCOL_VERSION = 1
 
 // ─── Requests (client → server) ──────────────────────────────────
 
+// `node`, `newNode` and `callback` are LocalIds (ours); `source` is a NodeId
+// (another client's). Which answer, if any, each request gets is in the
+// matcher's section below.
 export const Request = Object.freeze({
-  // First frame only, exactly once. Never answered: success is silent and
-  // failure closes the socket with 4001.
+  // First frame only, exactly once. The server pushes RoutingParams once it
+  // succeeds; failure closes the socket with 4001.
   identify: (ticket) => ({ Identify: { ticket } }),
-  // Only before SessionReady (refused afterwards).
-  getRoutingParams: () => 'GetRoutingParams',
-  // Only before SessionReady. Its success reply *is* SessionReady. `e2eeFormats` lists the
-  // E2EE frame formats this build speaks; a node pinning another refuses with UpdateRequired.
+  // Answered with Done { callback } once every request sent before it has been
+  // handled, and its answer or Error has arrived.
+  sync: (callback) => ({ Sync: { callback: localId('callback', callback) } }),
+  // Once per socket. No answer on success: the first Channel snapshot follows
+  // it and means the session is ready. `e2eeFormats` lists the E2EE frame
+  // formats this build speaks; a node pinning another refuses with
+  // UpdateRequired.
   setCapabilities: (capabilities, e2eeFormats = []) => ({
     SetCapabilities: { capabilities, e2ee_formats: e2eeFormats }
   }),
-  // Any time, once per transport.
+  // Any time, before SetCapabilities too, once per transport.
   connectTransport: (direction, dtlsParameters) => ({
     ConnectTransport: { transport_parameters: { dtlsParameters }, direction }
   }),
-  // After SessionReady. `replaces` names one of our own sources of the same
-  // kind to swap out atomically: peers get SourceReplaced rather than a remove
-  // and an add, and the server closes the old source, announcing it with a
-  // Closed ahead of this request's Source reply.
+  // Names the new source `newNode`. Refused before SetCapabilities. `replaces`
+  // names one of our own sources of the same kind to swap out atomically: peers
+  // get SourceReplaced rather than a remove and an add, and the server closes
+  // the old source, announcing it with a Closed ahead of this request's Source
+  // answer.
   //
   // `streamKey` names the stream (event-socket op 11) a Stream or StreamAudio
   // source belongs to, and must be null for Microphone and Webcam. A
   // replacement inherits its predecessor's stream, so it may pass null; a
   // different key is refused.
-  createSource: (kind, rtpParameters, replaces = null, streamKey = null) => ({
-    CreateSource: { kind, rtp_parameters: rtpParameters, replaces, stream_key: streamKey }
+  createSource: (newNode, kind, rtpParameters, replaces = null, streamKey = null) => ({
+    CreateSource: {
+      new_node: localId('new_node', newNode),
+      kind,
+      rtp_parameters: rtpParameters,
+      replaces: replaces == null ? null : localId('replaces', replaces),
+      stream_key: streamKey
+    }
   }),
-  // The sink starts paused unless `config` says otherwise (sinkConfigFields).
-  createSink: (source, config) => ({ CreateSink: { source, ...sinkConfigFields(config) } }),
-  // Pause/resume, preferred layers or priority of one of our sinks. An unknown
-  // node still gets SinkConfigured (a no-op), like Close.
-  sinkConfigure: (node, config) => ({ SinkConfigure: { node, ...sinkConfigFields(config) } }),
+  // Names the new sink `newNode`, on another client's source. Refused before
+  // SetCapabilities. The sink starts paused unless `config` says otherwise
+  // (sinkConfigFields). Its Sink answer doesn't name the source again, so the
+  // caller keeps track of which source each sink is for.
+  createSink: (newNode, source, config) => ({
+    CreateSink: {
+      new_node: localId('new_node', newNode),
+      source: nodeId('source', source),
+      ...sinkConfigFields(config)
+    }
+  }),
+  // Pause/resume, preferred layers or priority of one of our sinks.
+  configureSink: (node, config) => ({
+    ConfigureSink: { node: localId('node', node), ...sinkConfigFields(config) }
+  }),
   // The owner's pause of one of our own Webcam, Stream or StreamAudio sources.
   // A Microphone is refused (NotSupported): mute is voice state, op 1.
-  setSourcePaused: (node, paused) => ({ SetSourcePaused: { node, paused: paused === true } }),
-  // One of our sources or sinks. Always succeeds, even for a node the server
-  // has already closed.
-  close: (node) => ({ Close: { node } }),
+  setSourcePaused: (node, paused) => ({
+    SetSourcePaused: { node: localId('node', node), paused: paused === true }
+  }),
+  // One of our sources or sinks. Answered Closed { nodes: [node] } only while
+  // the node is alive; one the server already closed has had its own Closed.
+  close: (node) => ({ Close: { node: localId('node', node) } }),
   // A request for the channel's MLS delivery service (E2EE): { KeyPackage }, { GroupCreated },
-  // { Commit } or { Ready }, with bytes as base64. Answered GroupReceived once the session took
-  // it; what the delivery service does with it arrives later as Group events. A KeyPackage the
-  // session refuses gets InvalidArgument.
+  // { Commit } or { Ready }, with bytes as base64. No answer on success; what the delivery
+  // service does with it arrives later as Group events. A KeyPackage the session refuses gets
+  // Error { "Session", InvalidArgument }.
   group: (request) => ({ Group: request }),
   // Asks one of our sinks' source for a keyframe, once its frames decrypt again.
-  requestKeyFrame: (node) => ({ RequestKeyFrame: { node } })
+  requestKeyFrame: (node) => ({ RequestKeyFrame: { node: localId('node', node) } })
 })
 
-// SinkConfig, which CreateSink and SinkConfigure carry flattened into the
+// The server can't parse a LocalId that isn't a u32 or a NodeId that isn't a
+// string, and closes the socket for it (4004). Refuse one here, where the
+// caller is, rather than lose the session to it.
+function localId(name, value) {
+  if (!Number.isInteger(value) || value < 0 || value > 0xffff_ffff) {
+    throw new TypeError(`${name} must be a LocalId (a u32 this client picked), got ${value}`)
+  }
+  return value
+}
+
+function nodeId(name, value) {
+  if (typeof value !== 'string') {
+    throw new TypeError(`${name} must be a NodeId string, as the server sent it, got ${value}`)
+  }
+  return value
+}
+
+// SinkConfig, which CreateSink and ConfigureSink carry flattened into the
 // message. Every field is optional, and a missing one leaves the server's value
 // alone:
 //   layers:   { spatial, temporal? }, the preferred simulcast/SVC layers (video only)
@@ -102,25 +159,8 @@ function checkedByte(name, value, min) {
   return value
 }
 
-// The success reply each request expects. Identify is absent on purpose.
-export const EXPECTED_REPLY = Object.freeze({
-  GetRoutingParams: 'RoutingParams',
-  SetCapabilities: 'SessionReady',
-  ConnectTransport: 'TransportConnected',
-  CreateSource: 'Source',
-  CreateSink: 'Sink',
-  SinkConfigure: 'SinkConfigured',
-  SetSourcePaused: 'SourcePaused',
-  Close: 'Closed',
-  Group: 'GroupReceived',
-  RequestKeyFrame: 'KeyFrameRequested'
-})
-
-// Closed is in both sets: it's the reply to Close and also the server closing
-// our nodes on its own. See the matcher for how the two are told apart.
-export const REPLY_TYPES = new Set([...Object.values(EXPECTED_REPLY), 'Error'])
-
-// Unsolicited events. Apart from Closed, these never touch the request queue.
+// Events: everything the caller applies. Channel and Closed can also settle a
+// request in the matcher (see there), and are applied either way.
 export const EVENT_TYPES = new Set([
   'Channel',
   'ClientsJoined',
@@ -136,6 +176,9 @@ export const EVENT_TYPES = new Set([
   'SinkLayers',
   // The channel's MLS delivery service, for this session (lib/e2ee).
   'Group',
+  // Our own sources and sinks that closed, for any reason: our Close (its
+  // answer), a channel move, a revoked lease, the source leaving the channel, a
+  // resync, or a source's producer dying on the server.
   'Closed'
 ])
 
@@ -180,9 +223,10 @@ export function messageType(message) {
   return null
 }
 
-// Parse one text frame into { type, data }. A unit variant ("SessionReady")
-// has data null. Throws on anything that isn't a single externally tagged
-// variant, so a malformed frame is never mistaken for a reply.
+// Parse one text frame into { type, data }. A unit variant (a bare string; no
+// top-level message is one today) has data null. Throws on anything that isn't
+// a single externally tagged variant, so a malformed frame is never mistaken
+// for an answer.
 export function decodeMessage(text) {
   const message = JSON.parse(text)
   const type = messageType(message)
@@ -205,7 +249,8 @@ export const ErrorCode = Object.freeze({
 })
 
 // A request the server answered with Error. Not fatal: the socket stays open.
-//   object: "Session" | { Transport: "Send" | "Receive" } | { Source: n } | { Sink: n }
+//   object: "Session" | { Transport: "Send" | "Receive" } | { Source: n } | { Sink: n },
+//           n being one of our LocalIds. A failed create names its new node.
 //   code:   one of ErrorCode
 export class VoiceRequestError extends Error {
   constructor(request, payload = {}) {
@@ -221,10 +266,13 @@ export class VoiceRequestError extends Error {
     this.serverMessage = payload.message ?? ''
   }
 
-  // The server no longer has (or never had) the source this request named.
-  // Expected for a CreateSink racing SourcesRemoved, so callers ignore it.
+  // The source this request needed is gone, or never was in the channel: a
+  // NotFound on the source or sink it was about (a CreateSink names its new
+  // sink). Expected for a CreateSink racing SourcesRemoved, so callers ignore it.
   get sourceGone() {
-    return this.code === ErrorCode.NotFound && this.object?.Source != null
+    return (
+      this.code === ErrorCode.NotFound && (this.object?.Sink != null || this.object?.Source != null)
+    )
   }
 
   // Refused for want of a stream lease: a stream source without (or past) its
@@ -246,9 +294,8 @@ function describeSfuObject(object) {
   return type ? `${type}(${object[type]})` : 'unknown'
 }
 
-// The server sent something the request queue can't account for: a reply with
-// nothing in flight, or a reply of the wrong type for the head request. Both
-// mean client and server disagree about the stream, so the session is unusable.
+// The server sent an answer no request is waiting for. That means client and
+// server disagree about the stream, so the session is unusable.
 export class VoiceProtocolError extends Error {
   constructor(message) {
     super(message)
@@ -256,23 +303,45 @@ export class VoiceProtocolError extends Error {
   }
 }
 
-// ─── Reply matching ──────────────────────────────────────────────
-// v1 has no request ids. The session handles requests strictly in order and
-// sends exactly one reply (success or Error) per request, except Identify. So
-// replies resolve the head of a FIFO. This is the only place that pairs replies
-// with requests: when request ids land, swap the queue for a map here.
+// ─── Answers and errors ──────────────────────────────────────────
+// v1 has no request ids, and no rule that every request gets one reply. The
+// session handles requests strictly in order. A request that fails is answered
+// with Error, which names the object it is about. One that succeeds is
+// answered only when it has something to report:
 //
-// Closed is the exception. It answers Close, but the server also sends it
-// unprompted, and v1 can't tell the two apart. So a Closed settles the head
-// Close only when it names exactly that Close's node (the reply is always
-// Closed { nodes: [node] }), and it is always handed on as an event as well.
-// Applying a close twice is a no-op, and an unprompted Closed that happens to
-// settle a Close only settles it early: that node is closed either way. Its
-// real reply then shows up as one more no-op event.
+//   Identify                        RoutingParams, pushed once identify succeeds
+//                                   (failure closes the socket with 4001)
+//   SetCapabilities                 the first Channel snapshot: the session is ready
+//   Sync { callback }               Done { callback }
+//   ConnectTransport { direction }  TransportConnected { direction }
+//   CreateSource { new_node }       Source { node: new_node }
+//   CreateSink { new_node }         Sink { node: new_node }
+//   Close { node }                  Closed { nodes: [node] }, if the node was still alive
 //
-//   transmit(frame)   writes one already-serialized frame; may throw
-//   onTimeout(type)   the head request went unanswered for timeoutMs
-//   onProtocolError(error) a reply arrived that no request accounts for
+// ConfigureSink, SetSourcePaused, RequestKeyFrame and Group have no success
+// answer. A request on one of our ids that is no longer alive (closed, or its
+// create failed) gets nothing at all, not even an Error.
+//
+// So the matcher pairs by what an answer or Error is about, not by position:
+//   request(message)        waits for the answer above, found by its key (the
+//                           callback, the direction, the new node), or for an
+//                           Error naming the request's object
+//   create(build)           request() for a CreateSource or CreateSink, around a
+//                           new node it names itself
+//   requestSynced(message)  a request without a success answer, with a Sync right
+//                           behind it: Done means it went through, and an Error
+//                           naming its object before that Done means it didn't
+//   notify(message)         sends one and forgets it
+//
+// Close goes out with notify and is never awaited: a source or sink can close
+// on the server before our Close is handled, and that Close then gets no
+// answer. Every Closed is applied as an event instead, and one for a node
+// already gone locally is a no-op. An Error no request claims (a notified
+// request failing) is handed back to the caller to log.
+//
+//   transmit(frame)        writes one already-serialized frame; may throw
+//   onTimeout(type)        the oldest request still waiting went unanswered for timeoutMs
+//   onProtocolError(error) an answer arrived that no request is waiting for
 export function createRequestMatcher({
   transmit,
   timeoutMs = 15_000,
@@ -281,26 +350,59 @@ export function createRequestMatcher({
   setTimer = setTimeout,
   clearTimer = clearTimeout
 }) {
+  // Requests still waiting, oldest first:
+  //   { type, answer, key, objects, resolve, reject, failed }
+  // `failed` marks a synced request its Error already rejected, kept until its
+  // Done so that Done is accounted for.
   const pending = []
+  let lastId = 0
+  let ready = false
   let timer = null
   let closedError = null
 
-  const armHead = () => {
+  const armOldest = () => {
     if (timer != null) clearTimer(timer)
     timer = null
-    const head = pending[0]
-    if (!head || !(timeoutMs > 0)) return
-    // Only the head is actually awaiting the server. Later entries get their
-    // full budget once they reach the front.
+    const oldest = pending[0]
+    if (!oldest || !(timeoutMs > 0)) return
+    // Answers come in request order, so only the oldest request is actually
+    // awaiting the server. Later ones get their full budget once they're oldest.
     timer = setTimer(() => {
       timer = null
-      if (pending[0] !== head) return
-      onTimeout(head.type)
+      if (pending[0] !== oldest) return
+      onTimeout(oldest.type)
     }, timeoutMs)
   }
 
-  // Send a request and resolve with its success payload (null for a unit reply
-  // such as SessionReady), or reject with VoiceRequestError.
+  const remove = (entry) => {
+    const index = pending.indexOf(entry)
+    if (index === -1) return
+    pending.splice(index, 1)
+    if (index === 0) armOldest()
+  }
+
+  // A new LocalId, above every id this socket has used. Only ever taken right
+  // before the frame that uses it goes out (create, requestSynced): the server
+  // refuses a new id that isn't above the last one it saw. A socket never gets
+  // near u32's limit.
+  const newId = () => ++lastId
+
+  // Queue `entry`, then write `messages` in order. A failed write takes the
+  // entry back out.
+  const enqueue = (entry, messages) => {
+    pending.push(entry)
+    if (pending.length === 1) armOldest()
+    try {
+      for (const message of messages) transmit(JSON.stringify(message))
+    } catch (err) {
+      remove(entry)
+      entry.reject(err)
+    }
+  }
+
+  // Send a request with a success answer and resolve with that answer's
+  // payload (the Channel snapshot, for SetCapabilities), or reject with
+  // VoiceRequestError.
   const request = (message) =>
     new Promise((resolve, reject) => {
       const type = messageType(message)
@@ -308,61 +410,119 @@ export function createRequestMatcher({
         reject(closedError)
         return
       }
-      if (!Object.hasOwn(EXPECTED_REPLY, type ?? '')) {
-        reject(new Error(`${type ?? 'Unknown message'} is not a request that gets a reply`))
+      if (!Object.hasOwn(SUCCESS_ANSWER, type ?? '')) {
+        reject(new Error(`${type ?? 'Unknown message'} has no success answer to wait for`))
         return
       }
-      const entry = { type, message, resolve, reject }
-      pending.push(entry)
-      if (pending.length === 1) armHead()
-      try {
-        transmit(JSON.stringify(message))
-      } catch (err) {
-        const index = pending.indexOf(entry)
-        if (index !== -1) pending.splice(index, 1)
-        if (index === 0) armHead()
-        reject(err)
+      const body = message[type] ?? {}
+      const entry = {
+        type,
+        answer: SUCCESS_ANSWER[type],
+        key: requestKey(type, body),
+        objects: errorObjects(type, body),
+        resolve,
+        reject,
+        failed: false
       }
+      enqueue(entry, [message])
     })
 
-  // Write a frame that gets no reply (Identify). Never queued.
+  // CreateSource or CreateSink: `build(node)` makes the request around a new
+  // node, and it goes out at once, so new ids reach the server in order.
+  const create = (build) => {
+    if (closedError) return Promise.reject(closedError)
+    let message
+    try {
+      message = build(newId())
+    } catch (err) {
+      // An id taken and never sent is skipped, which the server allows.
+      return Promise.reject(err)
+    }
+    return request(message)
+  }
+
+  // Send a request without a success answer, then a Sync. Resolves on that
+  // Sync's Done; rejects with VoiceRequestError when an Error naming the
+  // request's object comes first. A request on a node the server has already
+  // closed is dropped there, so it resolves as well.
+  const requestSynced = (message) =>
+    new Promise((resolve, reject) => {
+      const type = messageType(message)
+      if (closedError) {
+        reject(closedError)
+        return
+      }
+      if (type == null || Object.hasOwn(SUCCESS_ANSWER, type)) {
+        reject(new Error(`${type ?? 'Unknown message'} has an answer of its own; use request()`))
+        return
+      }
+      const callback = newId()
+      const entry = {
+        type,
+        answer: 'Done',
+        key: callback,
+        objects: errorObjects(type, message[type] ?? {}),
+        resolve: () => resolve(),
+        reject,
+        failed: false
+      }
+      enqueue(entry, [message, Request.sync(callback)])
+    })
+
+  // Write a request and forget it. One with a success answer has to go
+  // through request(), or its answer would arrive with nothing waiting for it.
   const notify = (message) => {
     if (closedError) throw closedError
+    const type = messageType(message)
+    if (Object.hasOwn(SUCCESS_ANSWER, type ?? '')) {
+      throw new Error(`${type} gets an answer; send it with request()`)
+    }
     transmit(JSON.stringify(message))
   }
 
-  // Route one decoded server frame. Returns true when it was only a reply
-  // (consumed by the queue), false for anything the caller should still apply
-  // as an event: events, unknown types, and every Closed.
+  // An Error goes to the oldest waiting request whose object it names. Errors
+  // come in request order, so that is the request it answers, unless a notified
+  // request on the same object, sent earlier, failed too. False when no request
+  // claims it.
+  const claimError = (data) => {
+    const entry = pending.find(
+      (waiting) =>
+        !waiting.failed && waiting.objects.some((object) => sameObject(object, data.object))
+    )
+    if (!entry) return false
+    if (entry.answer === 'Done') entry.failed = true
+    else remove(entry)
+    entry.reject(new VoiceRequestError(entry.type, data))
+    return true
+  }
+
+  // Route one decoded server frame. Returns true when it was only an answer
+  // (consumed here), false for anything the caller should still apply: events
+  // (Channel and Closed included, whatever they settled here), unknown types,
+  // and an Error no request claims.
   const handle = ({ type, data }) => {
-    if (type === 'Closed') {
-      if (answersClose(pending[0], data)) {
-        const head = pending.shift()
-        armHead()
-        head.resolve(data)
+    if (type === 'Error') return claimError(data ?? {})
+    if (type === 'Channel') {
+      // The first one is the session becoming ready, and SetCapabilities' only
+      // sign of success. Later ones follow a channel move or a resync.
+      ready = true
+      const entry = pending.find((waiting) => waiting.answer === 'Channel')
+      if (entry) {
+        remove(entry)
+        entry.resolve(data)
       }
       return false
     }
-    if (!REPLY_TYPES.has(type)) return false
-    const head = pending.shift()
-    armHead()
-    if (!head) {
-      onProtocolError(new VoiceProtocolError(`Unexpected ${type} with no request in flight`))
+    if (!ANSWER_TYPES.has(type)) return false
+    const key = answerKey(type, data)
+    const entry = pending.find((waiting) => waiting.answer === type && waiting.key === key)
+    if (!entry) {
+      const about = key == null ? '' : ` for ${key}`
+      onProtocolError(new VoiceProtocolError(`Unexpected ${type}${about} with nothing waiting`))
       return true
     }
-    if (type === 'Error') {
-      head.reject(new VoiceRequestError(head.type, data ?? {}))
-      return true
-    }
-    if (EXPECTED_REPLY[head.type] !== type) {
-      const error = new VoiceProtocolError(
-        `Expected ${EXPECTED_REPLY[head.type]} for ${head.type}, got ${type}`
-      )
-      head.reject(error)
-      onProtocolError(error)
-      return true
-    }
-    head.resolve(data)
+    remove(entry)
+    if (!entry.failed) entry.resolve(data)
     return true
   }
 
@@ -371,36 +531,108 @@ export function createRequestMatcher({
     closedError = error
     if (timer != null) clearTimer(timer)
     timer = null
-    for (const entry of pending.splice(0)) entry.reject(error)
+    for (const entry of pending.splice(0)) {
+      if (!entry.failed) entry.reject(error)
+    }
   }
 
   return {
     request,
+    create,
+    requestSynced,
     notify,
     handle,
     close,
     get size() {
       return pending.length
     },
-    get headType() {
-      return pending[0]?.type ?? null
+    // The first Channel snapshot has arrived: the session is READY. Set as the
+    // snapshot is handled, before the caller applies it.
+    get ready() {
+      return ready
     }
   }
 }
 
-function answersClose(entry, data) {
-  const nodes = data?.nodes
-  return (
-    entry?.type === 'Close' &&
-    Array.isArray(nodes) &&
-    nodes.length === 1 &&
-    nodes[0] === entry.message.Close.node
-  )
+// The answer each request waits for on success (see above). Close is left out
+// on purpose: its answer is applied as an event, never waited for.
+const SUCCESS_ANSWER = Object.freeze({
+  Identify: 'RoutingParams',
+  SetCapabilities: 'Channel',
+  Sync: 'Done',
+  ConnectTransport: 'TransportConnected',
+  CreateSource: 'Source',
+  CreateSink: 'Sink'
+})
+
+// Messages that only ever answer a request. Channel is an event too.
+const ANSWER_TYPES = new Set(['RoutingParams', 'Done', 'TransportConnected', 'Source', 'Sink'])
+
+// What finds the request an answer is for. RoutingParams and Channel need no
+// key: a socket sends one Identify and one SetCapabilities.
+function requestKey(type, body) {
+  switch (type) {
+    case 'Sync':
+      return body.callback
+    case 'ConnectTransport':
+      return body.direction
+    case 'CreateSource':
+    case 'CreateSink':
+      return body.new_node
+    default:
+      return null
+  }
+}
+
+function answerKey(type, data) {
+  switch (type) {
+    case 'Done':
+      return data?.callback ?? null
+    case 'TransportConnected':
+      return data?.direction ?? null
+    case 'Source':
+    case 'Sink':
+      return data?.node ?? null
+    default:
+      return null
+  }
+}
+
+// The objects an Error about this request can name (pylon-sfu session.rs
+// `dispatch` and session/pending.rs).
+function errorObjects(type, body) {
+  switch (type) {
+    case 'SetCapabilities':
+    case 'Group':
+      return ['Session']
+    case 'ConnectTransport':
+      return [{ Transport: body.direction }]
+    // Every create failure names the new node: not the source a sink was for,
+    // not the source being replaced, not the send transport.
+    case 'CreateSource':
+      return [{ Source: body.new_node }]
+    case 'CreateSink':
+      return [{ Sink: body.new_node }]
+    // The node is named as what it really is, so a ConfigureSink sent to a
+    // source fails on { Source }, a SetSourcePaused sent to a sink on { Sink }.
+    case 'ConfigureSink':
+    case 'SetSourcePaused':
+    case 'RequestKeyFrame':
+      return [{ Source: body.node }, { Sink: body.node }]
+    default:
+      return []
+  }
+}
+
+function sameObject(a, b) {
+  if (typeof a === 'string' || typeof b === 'string') return a === b
+  const type = messageType(a)
+  return type != null && type === messageType(b) && a[type] === b[type]
 }
 
 // ─── Channel state ───────────────────────────────────────────────
 // The media-side view of the current channel, rebuilt from every Channel
-// snapshot and patched by the deltas (clients, sources, codecs). Members and
+// snapshot and patched by the deltas (clients, sources, codecs). Clients and
 // sources never include this client. Every mutator returns what actually
 // changed, so the caller can drive mediasoup from the diff and stay idempotent
 // across a resync snapshot that repeats sources it already handled.
@@ -414,7 +646,8 @@ export class VoiceChannelState {
     // { allowed: VideoCodec[], preferred: VideoCodec }: the video codecs every
     // member can decode, best first. The server refuses video in any other.
     this.codecs = null
-    this.members = new Set()
+    this.clients = new Set()
+    // Other clients' sources, by NodeId string as the server sent it.
     this.sources = new Map() // NodeId -> { node, owner, kind, codec, streamKey, paused }
     this.speakers = new Set()
     // The node's E2EE GroupParams: { ciphersuite, external_sender, format }.
@@ -425,7 +658,7 @@ export class VoiceChannelState {
   // Replace everything. Returns the source diff against the previous state
   // (`updated`: sources kept whose state changed, e.g. a pause the deltas
   // missed before a resync) plus the speaker diff (see setSpeakers).
-  applySnapshot({ channel_id, codecs, members = [], sources = [], speakers = [], group = null }) {
+  applySnapshot({ channel_id, codecs, clients = [], sources = [], speakers = [], group = null }) {
     const previous = this.sources
     const next = new Map()
     for (const source of sources) next.set(source.node, normalizeSource(source))
@@ -438,7 +671,7 @@ export class VoiceChannelState {
 
     this.channelId = channel_id == null ? null : String(channel_id)
     this.setCodecs(codecs)
-    this.members = new Set(members.map(String))
+    this.clients = new Set(clients.map(String))
     this.sources = next
     this.group = group
     this.hasSnapshot = true
@@ -448,8 +681,8 @@ export class VoiceChannelState {
   addClients(clients = []) {
     const added = []
     for (const client of clients.map(String)) {
-      if (this.members.has(client)) continue
-      this.members.add(client)
+      if (this.clients.has(client)) continue
+      this.clients.add(client)
       added.push(client)
     }
     return added
@@ -458,7 +691,7 @@ export class VoiceChannelState {
   removeClients(clients = []) {
     const removed = []
     for (const client of clients.map(String)) {
-      if (this.members.delete(client)) removed.push(client)
+      if (this.clients.delete(client)) removed.push(client)
     }
     return removed
   }
@@ -541,7 +774,8 @@ export class VoiceChannelState {
   }
 }
 
-// Flattens a ChannelSource. `kind` becomes its SourceType. `codec` is the
+// Flattens a ChannelSource. `node` stays the NodeId string the server sent,
+// to be echoed back in CreateSink. `kind` becomes its SourceType. `codec` is the
 // VideoCodec a Webcam / Stream is sent in, null for audio. `streamKey` is the
 // stream of a Stream / StreamAudio, null for a Microphone or Webcam. All three
 // are fixed for the source's life: a codec change replaces the source.

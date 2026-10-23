@@ -685,8 +685,9 @@ function adoptShareProducer(ctx, candidate, { applyState, scalabilityMode, onSta
   }
 
   // The server starts a replacement with its predecessor's pause, but a pause
-  // or resume that raced the swap reached the old source too late (NotFound).
-  // Once the share has been paused at all, restate it on the successor.
+  // or resume that raced the swap reached the old source too late (the server
+  // drops a request on a closed source). Once the share has been paused at all,
+  // restate it on the successor.
   if (ctx.paused != null) {
     if (ctx.paused) candidate.producer.pause()
     else candidate.producer.resume()

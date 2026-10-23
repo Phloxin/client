@@ -1,4 +1,4 @@
-// pylon-voice v1 wire protocol: encoders, FIFO reply matching, channel state,
+// pylon-voice v1 wire protocol: encoders, answer matching, channel state,
 // view roles, and the event-socket stream requests and directory.
 //   node --test src/renderer/src/lib/soup/protocol.test.mjs
 import assert from 'node:assert/strict'
@@ -36,9 +36,10 @@ import {
   viewRoleFor
 } from './protocol.js'
 
-const flush = () => new Promise((resolve) => setImmediate(resolve))
-
 const CODECS = { allowed: ['Av1', 'Vp9', 'H264', 'Vp8'], preferred: 'Av1' }
+
+// Another client's source, as the server names it: "<owner's session>:<its LocalId>".
+const remote = (local) => `7318226815121408:${local}`
 
 function matcherHarness(options = {}) {
   const sent = []
@@ -63,9 +64,9 @@ function matcherHarness(options = {}) {
   return { matcher, sent, timeouts, protocolErrors, timers, reply }
 }
 
-test('requests encode as externally tagged enums with numeric node ids', () => {
+test('requests encode as externally tagged enums, with LocalId numbers and NodeId strings', () => {
   assert.deepEqual(Request.identify('t'), { Identify: { ticket: 't' } })
-  assert.equal(JSON.stringify(Request.getRoutingParams()), '"GetRoutingParams"')
+  assert.deepEqual(Request.sync(12), { Sync: { callback: 12 } })
   assert.deepEqual(Request.setCapabilities({ codecs: [] }, [1]), {
     SetCapabilities: { capabilities: { codecs: [] }, e2ee_formats: [1] }
   })
@@ -78,16 +79,18 @@ test('requests encode as externally tagged enums with numeric node ids', () => {
     }
   })
   // Microphone and Webcam never carry a stream key.
-  assert.deepEqual(Request.createSource('Microphone', { codecs: [] }), {
+  assert.deepEqual(Request.createSource(1, 'Microphone', { codecs: [] }), {
     CreateSource: {
+      new_node: 1,
       kind: 'Microphone',
       rtp_parameters: { codecs: [] },
       replaces: null,
       stream_key: null
     }
   })
-  assert.deepEqual(Request.createSource('Stream', { codecs: [] }, null, '1:2:abc'), {
+  assert.deepEqual(Request.createSource(2, 'Stream', { codecs: [] }, null, '1:2:abc'), {
     CreateSource: {
+      new_node: 2,
       kind: 'Stream',
       rtp_parameters: { codecs: [] },
       replaces: null,
@@ -95,26 +98,35 @@ test('requests encode as externally tagged enums with numeric node ids', () => {
     }
   })
   // A replacement may leave the key out: it inherits its predecessor's.
-  assert.deepEqual(Request.createSource('Stream', { codecs: [] }, 4), {
-    CreateSource: { kind: 'Stream', rtp_parameters: { codecs: [] }, replaces: 4, stream_key: null }
+  assert.deepEqual(Request.createSource(5, 'Stream', { codecs: [] }, 4), {
+    CreateSource: {
+      new_node: 5,
+      kind: 'Stream',
+      rtp_parameters: { codecs: [] },
+      replaces: 4,
+      stream_key: null
+    }
   })
-  assert.equal(JSON.stringify(Request.createSink(3)), '{"CreateSink":{"source":3}}')
+  assert.equal(
+    JSON.stringify(Request.createSink(6, remote(3))),
+    `{"CreateSink":{"new_node":6,"source":"${remote(3)}"}}`
+  )
   assert.equal(JSON.stringify(Request.close(0)), '{"Close":{"node":0}}')
 })
 
-test('sink config is flattened into CreateSink and SinkConfigure', () => {
-  assert.deepEqual(Request.createSink(3, { paused: false }), {
-    CreateSink: { source: 3, paused: false }
+test('sink config is flattened into CreateSink and ConfigureSink', () => {
+  assert.deepEqual(Request.createSink(6, remote(3), { paused: false }), {
+    CreateSink: { new_node: 6, source: remote(3), paused: false }
   })
-  assert.deepEqual(Request.sinkConfigure(7, { paused: false }), {
-    SinkConfigure: { node: 7, paused: false }
+  assert.deepEqual(Request.configureSink(7, { paused: false }), {
+    ConfigureSink: { node: 7, paused: false }
   })
   assert.deepEqual(
-    Request.sinkConfigure(7, { layers: { spatial: 1, temporal: 2 }, priority: 2, paused: true }),
-    { SinkConfigure: { node: 7, layers: { spatial: 1, temporal: 2 }, priority: 2, paused: true } }
+    Request.configureSink(7, { layers: { spatial: 1, temporal: 2 }, priority: 2, paused: true }),
+    { ConfigureSink: { node: 7, layers: { spatial: 1, temporal: 2 }, priority: 2, paused: true } }
   )
-  // Nothing to change is still a valid (no-op) SinkConfigure.
-  assert.equal(JSON.stringify(Request.sinkConfigure(7)), '{"SinkConfigure":{"node":7}}')
+  // Nothing to change is still a valid (no-op) ConfigureSink.
+  assert.equal(JSON.stringify(Request.configureSink(7)), '{"ConfigureSink":{"node":7}}')
 })
 
 test('sink config leaves out what it does not set, and refuses what the server would', () => {
@@ -144,10 +156,11 @@ test('SetSourcePaused carries a boolean pause', () => {
 })
 
 test('decodeMessage handles unit, struct and newtype variants', () => {
-  assert.deepEqual(decodeMessage('"SessionReady"'), { type: 'SessionReady', data: null })
-  assert.deepEqual(decodeMessage('{"SinkConfigured":{"node":7}}'), {
-    type: 'SinkConfigured',
-    data: { node: 7 }
+  // No top-level message is a unit variant today, but serde would send one as a bare string.
+  assert.deepEqual(decodeMessage('"Unit"'), { type: 'Unit', data: null })
+  assert.deepEqual(decodeMessage('{"Done":{"callback":7}}'), {
+    type: 'Done',
+    data: { callback: 7 }
   })
   assert.deepEqual(
     decodeMessage('{"Error":{"object":"Session","code":"InvalidState","message":"x"}}'),
@@ -162,158 +175,148 @@ test('decodeMessage handles unit, struct and newtype variants', () => {
   assert.equal(messageType(null), null)
 })
 
-test('replies resolve requests in FIFO order with their payload', async () => {
+test('Identify is answered by the pushed RoutingParams, SetCapabilities by the first Channel', async () => {
   const { matcher, sent, reply } = matcherHarness()
-  const routing = matcher.request(Request.getRoutingParams())
-  const ready = matcher.request(Request.setCapabilities({}, [1]))
-  assert.deepEqual(sent, [
-    'GetRoutingParams',
-    { SetCapabilities: { capabilities: {}, e2ee_formats: [1] } }
-  ])
-  assert.equal(matcher.size, 2)
-
+  const routing = matcher.request(Request.identify('ticket'))
+  assert.deepEqual(sent, [{ Identify: { ticket: 'ticket' } }])
   assert.equal(reply({ RoutingParams: { router_capabilities: { codecs: [] } } }), true)
-  assert.equal(reply('SessionReady'), true)
   assert.deepEqual(await routing, { router_capabilities: { codecs: [] } })
-  assert.equal(await ready, null)
+
+  const ready = matcher.request(Request.setCapabilities({}, [1]))
+  assert.equal(matcher.ready, false)
+  const snapshot = { channel_id: '1', codecs: CODECS, clients: [], sources: [], speakers: [] }
+  // The snapshot is still the caller's to apply, and the session is READY before it does.
+  assert.equal(reply({ Channel: snapshot }), false)
+  assert.equal(matcher.ready, true)
+  assert.deepEqual(await ready, snapshot)
   assert.equal(matcher.size, 0)
 })
 
-test('events never touch the queue', async () => {
+test('answers resolve the request they name, and new ids come from one counter', async () => {
+  const { matcher, sent, reply } = matcherHarness()
+  const source = matcher.create((node) => Request.createSource(node, 'Microphone', {}))
+  const sink = matcher.create((node) => Request.createSink(node, remote(3)))
+  const connect = matcher.request(Request.connectTransport(Direction.Receive, {}))
+  const configured = matcher.requestSynced(Request.configureSink(2, { paused: false }))
+  // Sources, sinks and Sync callbacks share the counter.
+  assert.equal(sent[0].CreateSource.new_node, 1)
+  assert.equal(sent[1].CreateSink.new_node, 2)
+  assert.deepEqual(sent.slice(3), [
+    { ConfigureSink: { node: 2, paused: false } },
+    { Sync: { callback: 3 } }
+  ])
+  assert.equal(matcher.size, 4)
+
+  // Paired by what they name, not by position.
+  assert.equal(reply({ Sink: { node: 2, rtp_parameters: {} } }), true)
+  assert.deepEqual(await sink, { node: 2, rtp_parameters: {} })
+  assert.equal(reply({ TransportConnected: { direction: 'Receive' } }), true)
+  assert.equal(reply({ Source: { node: 1, kind: { type: 'Microphone' } } }), true)
+  assert.equal(reply({ Done: { callback: 3 } }), true)
+  assert.deepEqual(await connect, { direction: 'Receive' })
+  assert.deepEqual(await source, { node: 1, kind: { type: 'Microphone' } })
+  assert.equal(await configured, undefined)
+  assert.equal(matcher.size, 0)
+})
+
+test('events are handed on and settle nothing', async () => {
   const { matcher, reply } = matcherHarness()
-  const sink = matcher.request(Request.createSink(3))
+  const sink = matcher.create((node) => Request.createSink(node, remote(3)))
+  const stream = (node, paused) => ({
+    node,
+    owner: '2',
+    kind: { type: 'Stream', attr: { codec: 'Vp9', stream_key: 'k' } },
+    paused
+  })
   for (const event of [
-    { Channel: { channel_id: '1', codecs: CODECS, members: [], sources: [], speakers: [] } },
+    { Channel: { channel_id: '1', codecs: CODECS, clients: [], sources: [], speakers: [] } },
     { ClientsJoined: { clients: ['2'] } },
     { ClientsLeft: { clients: ['2'] } },
     { SourcesAdded: { sources: [] } },
-    { SourcesRemoved: { nodes: [3] } },
-    {
-      SourceReplaced: {
-        old: 3,
-        new: {
-          node: 8,
-          owner: '2',
-          kind: { type: 'Stream', attr: { codec: 'Vp9', stream_key: 'k' } },
-          paused: false
-        }
-      }
-    },
-    {
-      SourceUpdated: {
-        source: {
-          node: 8,
-          owner: '2',
-          kind: { type: 'Stream', attr: { codec: 'Vp9', stream_key: 'k' } },
-          paused: true
-        }
-      }
-    },
+    { SourcesRemoved: { nodes: [remote(3)] } },
+    { SourceReplaced: { old: remote(3), new: stream(remote(8), false) } },
+    { SourceUpdated: { source: stream(remote(8), true) } },
     { Codecs: { codecs: CODECS } },
     { Speakers: { speakers: [] } },
-    { SinkLayers: { node: 7, layers: { spatial: 0, temporal: 1 } } },
-    { SinkLayers: { node: 7, layers: null } },
-    { Closed: { nodes: [7] } }
+    { SinkLayers: { node: 1, layers: { spatial: 0, temporal: 1 } } },
+    { SinkLayers: { node: 1, layers: null } },
+    { Closed: { nodes: [1] } }
   ]) {
     assert.equal(reply(event), false)
   }
   assert.equal(matcher.size, 1)
-  reply({ Sink: { node: 7, source: 3, rtp_parameters: {} } })
-  assert.deepEqual(await sink, { node: 7, source: 3, rtp_parameters: {} })
+  reply({ Sink: { node: 1, rtp_parameters: {} } })
+  assert.deepEqual(await sink, { node: 1, rtp_parameters: {} })
 })
 
-test('Closed settles the head Close for its node and is always handed on as an event', async () => {
-  const { matcher, protocolErrors, reply } = matcherHarness()
-  const close = matcher.request(Request.close(4))
-  const sink = matcher.request(Request.createSink(9))
+test('Close is sent and forgotten, and every Closed is an event', async () => {
+  const { matcher, sent, protocolErrors, reply } = matcherHarness()
+  // It's answered only while its node is alive, so nothing may wait for that answer.
+  await assert.rejects(matcher.request(Request.close(4)), /no success answer/)
+  matcher.notify(Request.close(4))
+  assert.deepEqual(sent, [{ Close: { node: 4 } }])
+  assert.equal(matcher.size, 0)
 
-  // Unprompted closes of other nodes, or of several at once, aren't its reply.
-  assert.equal(reply({ Closed: { nodes: [5] } }), false)
+  // Its answer, or the server closing nodes on its own: both are events.
+  assert.equal(reply({ Closed: { nodes: [4] } }), false)
   assert.equal(reply({ Closed: { nodes: [4, 5] } }), false)
-  assert.equal(matcher.size, 2)
-
-  assert.equal(reply({ Closed: { nodes: [4] } }), false)
-  assert.deepEqual(await close, { nodes: [4] })
-  assert.equal(matcher.headType, 'CreateSink')
-
-  reply({ Sink: { node: 10, source: 9, rtp_parameters: {} } })
-  assert.equal((await sink).node, 10)
   assert.equal(protocolErrors.length, 0)
+
+  // A request that gets an answer can't be sent and forgotten.
+  assert.throws(() => matcher.notify(Request.createSink(6, remote(3))), /send it with request/)
 })
 
-test('a Close settled early by an unprompted Closed leaves its real reply harmless', async () => {
+test('an Error rejects the request whose object it names and is not fatal', async () => {
   const { matcher, protocolErrors, reply } = matcherHarness()
-  // The server closed sink 4 on its own just as we asked it to.
-  const close = matcher.request(Request.close(4))
-  const resume = matcher.request(Request.sinkConfigure(6, { paused: false }))
-  reply({ Closed: { nodes: [4] } })
-  assert.deepEqual(await close, { nodes: [4] })
+  const first = matcher.create((node) => Request.createSink(node, remote(3)))
+  const second = matcher.create((node) => Request.createSink(node, remote(4)))
+  // A failed create names its new node, not the source it was for.
+  assert.equal(
+    reply({ Error: { object: { Sink: 2 }, code: 'NotFound', message: 'source not in channel' } }),
+    true
+  )
 
-  // The real reply to Close arrives with SinkConfigure at the head: not a reply.
-  assert.equal(reply({ Closed: { nodes: [4] } }), false)
-  assert.equal(matcher.headType, 'SinkConfigure')
-  reply({ SinkConfigured: { node: 6 } })
-  assert.deepEqual(await resume, { node: 6 })
-
-  // And with nothing in flight it's still just an event, not a protocol error.
-  assert.equal(reply({ Closed: { nodes: [4] } }), false)
-  assert.equal(protocolErrors.length, 0)
-})
-
-test('a reply other than Closed at the head of a Close is a protocol error', async () => {
-  const { matcher, protocolErrors, reply } = matcherHarness()
-  const close = matcher.request(Request.close(4))
-  reply({ SinkConfigured: { node: 4 } })
-  assert.ok((await close.catch((e) => e)) instanceof VoiceProtocolError)
-  assert.equal(protocolErrors.length, 1)
-})
-
-test('an Error rejects only the head request and is not fatal', async () => {
-  const { matcher, protocolErrors, reply } = matcherHarness()
-  const sink = matcher.request(Request.createSink(3))
-  const resume = matcher.request(Request.sinkConfigure(9, { paused: false }))
-  reply({ Error: { object: { Source: 3 }, code: 'NotFound', message: 'source gone' } })
-  reply({ SinkConfigured: { node: 9 } })
-
-  const err = await sink.catch((e) => e)
+  const err = await second.catch((e) => e)
   assert.ok(err instanceof VoiceRequestError)
   assert.equal(err.request, 'CreateSink')
   assert.equal(err.code, 'NotFound')
-  assert.deepEqual(err.object, { Source: 3 })
+  assert.deepEqual(err.object, { Sink: 2 })
   assert.equal(err.sourceGone, true)
-  assert.match(err.message, /Source\(3\) NotFound \(source gone\)/)
-  assert.deepEqual(await resume, { node: 9 })
+  assert.match(err.message, /Sink\(2\) NotFound \(source not in channel\)/)
+
+  reply({ Sink: { node: 1, rtp_parameters: {} } })
+  assert.equal((await first).node, 1)
+  // An Error nothing waits for (a request sent and forgotten) is the caller's to log.
+  assert.equal(
+    reply({ Error: { object: { Sink: 1 }, code: 'Internal', message: 'request keyframe' } }),
+    false
+  )
   assert.equal(protocolErrors.length, 0)
 })
 
-test('sourceGone is only true for a NotFound on a source', () => {
+test('sourceGone is a NotFound on a source or sink, never on the session', () => {
   const sessionError = new VoiceRequestError('CreateSink', { object: 'Session', code: 'NotFound' })
-  const internal = new VoiceRequestError('CreateSink', { object: { Source: 1 }, code: 'Internal' })
+  const internal = new VoiceRequestError('CreateSink', { object: { Sink: 1 }, code: 'Internal' })
   assert.equal(sessionError.sourceGone, false)
   assert.equal(internal.sourceGone, false)
 })
 
 test('Denied marks a request refused for want of a stream lease', async () => {
   const { matcher, reply } = matcherHarness()
-  const source = matcher.request(Request.createSource('Stream', {}, null, '1:2:abc'))
-  const sink = matcher.request(Request.createSink(4))
-  // What the server sends for each (session.rs): the source refusal names the
-  // send transport, the sink refusal the source it was for.
+  const source = matcher.create((node) => Request.createSource(node, 'Stream', {}, null, '1:2:abc'))
+  const sink = matcher.create((node) => Request.createSink(node, remote(4)))
+  // What the server sends for each (session.rs): both refusals name the new node.
   reply({
-    Error: {
-      object: { Transport: 'Send' },
-      code: 'Denied',
-      message: 'not allowed to publish this source'
-    }
+    Error: { object: { Source: 1 }, code: 'Denied', message: 'not allowed to publish this source' }
   })
   reply({
-    Error: { object: { Source: 4 }, code: 'Denied', message: 'not allowed to receive this source' }
+    Error: { object: { Sink: 2 }, code: 'Denied', message: 'not allowed to receive this source' }
   })
 
   const sourceErr = await source.catch((e) => e)
   assert.equal(sourceErr.code, ErrorCode.Denied)
   assert.equal(sourceErr.denied, true)
-  assert.match(sourceErr.message, /Transport\(Send\) Denied/)
+  assert.match(sourceErr.message, /Source\(1\) Denied/)
   const sinkErr = await sink.catch((e) => e)
   assert.equal(sinkErr.denied, true)
   // Denied isn't "the source is gone": the source is still there.
@@ -321,62 +324,93 @@ test('Denied marks a request refused for want of a stream lease', async () => {
   assert.equal(new VoiceRequestError('CreateSink', { code: 'NotFound' }).denied, false)
 })
 
-test('SinkConfigure and SetSourcePaused are answered by their own replies', async () => {
-  const { matcher, protocolErrors, reply } = matcherHarness()
-  const configured = matcher.request(Request.sinkConfigure(7, { paused: true }))
-  const paused = matcher.request(Request.setSourcePaused(4, true))
-  const mic = matcher.request(Request.setSourcePaused(1, true))
-  assert.equal(reply({ SinkConfigured: { node: 7 } }), true)
-  assert.equal(reply({ SourcePaused: { node: 4, paused: true } }), true)
+test('a request without a success answer settles on the Sync behind it', async () => {
+  const { matcher, sent, protocolErrors, reply } = matcherHarness()
+  const sink = matcher.create((node) => Request.createSink(node, remote(3)))
+  const stream = matcher.create((node) => Request.createSource(node, 'Stream', {}, null, 'k'))
+  const mic = matcher.create((node) => Request.createSource(node, 'Microphone', {}))
+  reply({ Sink: { node: 1, rtp_parameters: {} } })
+  reply({ Source: { node: 2, kind: { type: 'Stream', attr: { codec: 'Vp9', stream_key: 'k' } } } })
+  reply({ Source: { node: 3, kind: { type: 'Microphone' } } })
+  await Promise.all([sink, stream, mic])
+  sent.length = 0
+
+  const configured = matcher.requestSynced(Request.configureSink(1, { paused: true }))
+  const paused = matcher.requestSynced(Request.setSourcePaused(2, true))
+  const micPaused = matcher.requestSynced(Request.setSourcePaused(3, true))
+  assert.deepEqual(sent, [
+    { ConfigureSink: { node: 1, paused: true } },
+    { Sync: { callback: 4 } },
+    { SetSourcePaused: { node: 2, paused: true } },
+    { Sync: { callback: 5 } },
+    { SetSourcePaused: { node: 3, paused: true } },
+    { Sync: { callback: 6 } }
+  ])
+  assert.equal(reply({ Done: { callback: 4 } }), true)
+  assert.equal(reply({ Done: { callback: 5 } }), true)
   // A microphone is muted through voice state, never SetSourcePaused.
-  reply({
-    Error: {
-      object: { Source: 1 },
-      code: 'NotSupported',
-      message: 'microphones are muted through voice state'
-    }
-  })
-  assert.deepEqual(await configured, { node: 7 })
-  assert.deepEqual(await paused, { node: 4, paused: true })
-  assert.equal((await mic.catch((e) => e)).code, 'NotSupported')
+  assert.equal(
+    reply({
+      Error: {
+        object: { Source: 3 },
+        code: 'NotSupported',
+        message: 'microphones are muted through voice state'
+      }
+    }),
+    true
+  )
+  // The failed request's Done still comes, and is no surprise.
+  assert.equal(reply({ Done: { callback: 6 } }), true)
+  assert.equal(await configured, undefined)
+  assert.equal(await paused, undefined)
+  assert.equal((await micPaused.catch((e) => e)).code, 'NotSupported')
+  assert.equal(matcher.size, 0)
   assert.equal(protocolErrors.length, 0)
 })
 
-test('the removed ResumeSink is no longer a request, and Resumed no longer a reply', async () => {
+test('the removed requests and replies are gone', async () => {
   const { matcher, protocolErrors, reply } = matcherHarness()
-  assert.equal(Request.resumeSink, undefined)
+  assert.equal(Request.getRoutingParams, undefined)
+  assert.equal(Request.sinkConfigure, undefined)
+  // No success answer to wait for: ConfigureSink takes requestSynced or notify.
   await assert.rejects(
-    matcher.request({ ResumeSink: { node: 1 } }),
-    /not a request that gets a reply/
+    matcher.request(Request.configureSink(1, { paused: false })),
+    /no success answer/
   )
   // An unknown frame is left to the caller, not paired with anything.
-  assert.equal(reply({ Resumed: { node: 1 } }), false)
+  for (const removed of [
+    'SessionReady',
+    'GroupReceived',
+    { SinkConfigured: { node: 1 } },
+    { SourcePaused: { node: 1, paused: true } },
+    { KeyFrameRequested: { node: 1 } }
+  ]) {
+    assert.equal(reply(removed), false)
+  }
   assert.equal(protocolErrors.length, 0)
 })
 
-test('a reply of the wrong type rejects the head and reports a protocol error', async () => {
+test('an answer nothing is waiting for is a protocol error', async () => {
   const { matcher, protocolErrors, reply } = matcherHarness()
-  const source = matcher.request(Request.createSource('Microphone', {}))
-  reply({ Sink: { node: 1, source: 2, rtp_parameters: {} } })
-  const err = await source.catch((e) => e)
-  assert.ok(err instanceof VoiceProtocolError)
-  assert.equal(protocolErrors.length, 1)
+  const sink = matcher.create((node) => Request.createSink(node, remote(3)))
+  // A Source for the node a CreateSink named, and a Done nobody asked for.
+  assert.equal(reply({ Source: { node: 1, kind: { type: 'Microphone' } } }), true)
+  assert.equal(reply({ Done: { callback: 9 } }), true)
+  assert.equal(protocolErrors.length, 2)
+  assert.ok(protocolErrors.every((error) => error instanceof VoiceProtocolError))
+  // The request is still waiting for its own answer.
+  assert.equal(matcher.size, 1)
+  reply({ Sink: { node: 1, rtp_parameters: {} } })
+  assert.equal((await sink).node, 1)
 })
 
-test('a reply with nothing in flight is a protocol error', () => {
-  const { protocolErrors, reply } = matcherHarness()
-  assert.equal(reply({ SinkConfigured: { node: 1 } }), true)
-  assert.equal(protocolErrors.length, 1)
-  assert.ok(protocolErrors[0] instanceof VoiceProtocolError)
-})
-
-test('only the head request has a running timeout', async () => {
+test('only the oldest waiting request has a running timeout', async () => {
   const { matcher, timers, timeouts, reply } = matcherHarness({ timeoutMs: 100 })
-  matcher.request(Request.createSink(1)).catch(() => {})
-  matcher.request(Request.createSink(2)).catch(() => {})
+  matcher.create((node) => Request.createSink(node, remote(3))).catch(() => {})
+  matcher.create((node) => Request.createSink(node, remote(4))).catch(() => {})
   assert.equal(timers.filter((t) => !t.cleared).length, 1)
 
-  reply({ Sink: { node: 10, source: 1, rtp_parameters: {} } })
+  reply({ Sink: { node: 1, rtp_parameters: {} } })
   // The first timer was cleared and the second request got a fresh one.
   const live = timers.filter((t) => !t.cleared)
   assert.equal(live.length, 1)
@@ -386,16 +420,21 @@ test('only the head request has a running timeout', async () => {
 
 test('close rejects everything in flight and refuses new requests', async () => {
   const { matcher, sent } = matcherHarness()
-  const first = matcher.request(Request.createSink(1))
+  const first = matcher.create((node) => Request.createSink(node, remote(3)))
+  const synced = matcher.requestSynced(Request.configureSink(1, { paused: false }))
   const closed = new Error('socket closed')
   matcher.close(closed)
   assert.equal(await first.catch((e) => e), closed)
-  assert.equal(await matcher.request(Request.createSink(2)).catch((e) => e), closed)
-  assert.throws(() => matcher.notify(Request.identify('t')), closed)
-  assert.equal(sent.length, 1)
+  assert.equal(await synced.catch((e) => e), closed)
+  assert.equal(
+    await matcher.create((node) => Request.createSink(node, remote(4))).catch((e) => e),
+    closed
+  )
+  assert.throws(() => matcher.notify(Request.close(1)), closed)
+  assert.equal(sent.length, 3)
 })
 
-test('a transmit failure rejects without leaving a stale queue entry', async () => {
+test('a transmit failure rejects without leaving a stale entry', async () => {
   let fail = true
   const matcher = createRequestMatcher({
     transmit: () => {
@@ -403,24 +442,16 @@ test('a transmit failure rejects without leaving a stale queue entry', async () 
     },
     timeoutMs: 0
   })
-  await assert.rejects(matcher.request(Request.createSink(1)), /send failed/)
+  await assert.rejects(
+    matcher.create((node) => Request.createSink(node, remote(3))),
+    /send failed/
+  )
   assert.equal(matcher.size, 0)
   fail = false
-  const next = matcher.request(Request.createSink(2))
-  matcher.handle({ type: 'Sink', data: { node: 3, source: 2 } })
-  assert.deepEqual(await next, { node: 3, source: 2 })
-})
-
-test('Identify goes out through notify and never enters the queue', async () => {
-  const { matcher, sent } = matcherHarness()
-  matcher.notify(Request.identify('ticket'))
-  await flush()
-  assert.deepEqual(sent, [{ Identify: { ticket: 'ticket' } }])
-  assert.equal(matcher.size, 0)
-  await assert.rejects(
-    matcher.request(Request.identify('again')),
-    /not a request that gets a reply/
-  )
+  // The failed create used up its id all the same.
+  const next = matcher.create((node) => Request.createSink(node, remote(3)))
+  matcher.handle({ type: 'Sink', data: { node: 2, rtp_parameters: {} } })
+  assert.deepEqual(await next, { node: 2, rtp_parameters: {} })
 })
 
 test('a snapshot replaces channel state and reports the source diff', () => {
@@ -428,19 +459,19 @@ test('a snapshot replaces channel state and reports the source diff', () => {
   let diff = state.applySnapshot({
     channel_id: '100',
     codecs: CODECS,
-    members: ['1', '2'],
+    clients: ['1', '2'],
     sources: [
-      { node: 3, owner: '1', kind: { type: 'Microphone' }, paused: false },
-      { node: 4, owner: '2', kind: { type: 'Microphone' }, paused: false }
+      { node: remote(3), owner: '1', kind: { type: 'Microphone' }, paused: false },
+      { node: remote(4), owner: '2', kind: { type: 'Microphone' }, paused: false }
     ],
     speakers: ['1']
   })
   assert.equal(state.channelId, '100')
   assert.deepEqual(state.codecs, CODECS)
-  assert.deepEqual([...state.members], ['1', '2'])
+  assert.deepEqual([...state.clients], ['1', '2'])
   assert.deepEqual(
     diff.added.map((s) => s.node),
-    [3, 4]
+    [remote(3), remote(4)]
   )
   assert.deepEqual(diff.removed, [])
   assert.deepEqual(diff.speakers, { started: ['1'], stopped: [] })
@@ -449,24 +480,29 @@ test('a snapshot replaces channel state and reports the source diff', () => {
   diff = state.applySnapshot({
     channel_id: '100',
     codecs: { allowed: ['Vp9', 'H264'], preferred: 'Vp9' },
-    members: ['2', '5'],
+    clients: ['2', '5'],
     sources: [
-      { node: 4, owner: '2', kind: { type: 'Microphone' }, paused: false },
-      { node: 9, owner: '5', kind: { type: 'Webcam', attr: { codec: 'Vp9' } }, paused: false }
+      { node: remote(4), owner: '2', kind: { type: 'Microphone' }, paused: false },
+      {
+        node: remote(9),
+        owner: '5',
+        kind: { type: 'Webcam', attr: { codec: 'Vp9' } },
+        paused: false
+      }
     ],
     speakers: ['5']
   })
   assert.deepEqual(state.codecs, { allowed: ['Vp9', 'H264'], preferred: 'Vp9' })
   assert.deepEqual(diff.added, [
-    { node: 9, owner: '5', kind: 'Webcam', codec: 'Vp9', streamKey: null, paused: false }
+    { node: remote(9), owner: '5', kind: 'Webcam', codec: 'Vp9', streamKey: null, paused: false }
   ])
   assert.deepEqual(
     diff.removed.map((s) => s.node),
-    [3]
+    [remote(3)]
   )
   assert.deepEqual(diff.updated, [])
   assert.deepEqual(diff.speakers, { started: ['5'], stopped: ['1'] })
-  assert.deepEqual([...state.members], ['2', '5'])
+  assert.deepEqual([...state.clients], ['2', '5'])
 })
 
 test('a source kind flattens into its type, codec and stream', () => {
@@ -474,18 +510,23 @@ test('a source kind flattens into its type, codec and stream', () => {
   state.applySnapshot({
     channel_id: '1',
     codecs: CODECS,
-    members: ['7'],
+    clients: ['7'],
     sources: [
-      { node: 3, owner: '7', kind: { type: 'Microphone' }, paused: false },
-      { node: 4, owner: '7', kind: { type: 'Webcam', attr: { codec: 'Vp9' } }, paused: false },
+      { node: remote(3), owner: '7', kind: { type: 'Microphone' }, paused: false },
       {
-        node: 5,
+        node: remote(4),
+        owner: '7',
+        kind: { type: 'Webcam', attr: { codec: 'Vp9' } },
+        paused: false
+      },
+      {
+        node: remote(5),
         owner: '7',
         kind: { type: 'Stream', attr: { codec: 'Av1', stream_key: '1:7:abc' } },
         paused: true
       },
       {
-        node: 6,
+        node: remote(6),
         owner: '7',
         kind: { type: 'StreamAudio', attr: { stream_key: '1:7:abc' } },
         paused: false
@@ -501,13 +542,13 @@ test('a source kind flattens into its type, codec and stream', () => {
     streamKey,
     paused
   })
-  assert.deepEqual(state.source(3), flat(3, 'Microphone', null, null))
-  assert.deepEqual(state.source(4), flat(4, 'Webcam', 'Vp9', null))
-  assert.deepEqual(state.source(5), flat(5, 'Stream', 'Av1', '1:7:abc', true))
-  assert.deepEqual(state.source(6), flat(6, 'StreamAudio', null, '1:7:abc'))
+  assert.deepEqual(state.source(remote(3)), flat(remote(3), 'Microphone', null, null))
+  assert.deepEqual(state.source(remote(4)), flat(remote(4), 'Webcam', 'Vp9', null))
+  assert.deepEqual(state.source(remote(5)), flat(remote(5), 'Stream', 'Av1', '1:7:abc', true))
+  assert.deepEqual(state.source(remote(6)), flat(remote(6), 'StreamAudio', null, '1:7:abc'))
   assert.deepEqual(
     state.streamSources('1:7:abc').map((s) => s.node),
-    [5, 6]
+    [remote(5), remote(6)]
   )
   assert.deepEqual(state.streamSources('other'), [])
   assert.deepEqual(state.streamSources(null), [])
@@ -515,13 +556,13 @@ test('a source kind flattens into its type, codec and stream', () => {
 
 // One Stream source on the wire, and how the channel state holds it.
 const WIRE_STREAM = {
-  node: 4,
+  node: remote(4),
   owner: '7',
   kind: { type: 'Stream', attr: { codec: 'Vp9', stream_key: 'k' } },
   paused: false
 }
 const FLAT_STREAM = {
-  node: 4,
+  node: remote(4),
   owner: '7',
   kind: 'Stream',
   codec: 'Vp9',
@@ -532,29 +573,29 @@ const FLAT_STREAM = {
 test('SourceUpdated changes a known source and reports only real changes', () => {
   const state = new VoiceChannelState()
   const stream = WIRE_STREAM
-  state.applySnapshot({ channel_id: '1', codecs: CODECS, members: ['7'], sources: [stream] })
+  state.applySnapshot({ channel_id: '1', codecs: CODECS, clients: ['7'], sources: [stream] })
 
   assert.deepEqual(state.updateSource({ ...stream, paused: true }), {
     ...FLAT_STREAM,
     paused: true
   })
-  assert.equal(state.source(4).paused, true)
+  assert.equal(state.source(remote(4)).paused, true)
   // Repeating it changes nothing.
   assert.equal(state.updateSource({ ...stream, paused: true }), null)
   // A source we don't know isn't added by an update.
-  assert.equal(state.updateSource({ ...stream, node: 99 }), null)
-  assert.equal(state.source(99), null)
+  assert.equal(state.updateSource({ ...stream, node: remote(99) }), null)
+  assert.equal(state.source(remote(99)), null)
   assert.equal(state.updateSource(null), null)
 })
 
 test('a resync snapshot reports sources whose pause changed', () => {
   const state = new VoiceChannelState()
   const stream = WIRE_STREAM
-  state.applySnapshot({ channel_id: '1', codecs: CODECS, members: ['7'], sources: [stream] })
+  state.applySnapshot({ channel_id: '1', codecs: CODECS, clients: ['7'], sources: [stream] })
   const diff = state.applySnapshot({
     channel_id: '1',
     codecs: CODECS,
-    members: ['7'],
+    clients: ['7'],
     sources: [{ ...stream, paused: true }]
   })
   assert.deepEqual(diff.added, [])
@@ -564,23 +605,30 @@ test('a resync snapshot reports sources whose pause changed', () => {
 
 test('deltas are idempotent and report only real changes', () => {
   const state = new VoiceChannelState()
-  state.applySnapshot({ channel_id: '1', codecs: CODECS, members: [], sources: [], speakers: [] })
+  state.applySnapshot({ channel_id: '1', codecs: CODECS, clients: [], sources: [], speakers: [] })
 
   assert.deepEqual(state.addClients(['7', '7']), ['7'])
   assert.deepEqual(state.addClients(['7']), [])
-  const mic = { node: 11, owner: '7', kind: { type: 'Microphone' }, paused: false }
+  const mic = { node: remote(11), owner: '7', kind: { type: 'Microphone' }, paused: false }
   const added = state.addSources([mic])
   assert.deepEqual(added, [
-    { node: 11, owner: '7', kind: 'Microphone', codec: null, streamKey: null, paused: false }
+    {
+      node: remote(11),
+      owner: '7',
+      kind: 'Microphone',
+      codec: null,
+      streamKey: null,
+      paused: false
+    }
   ])
   assert.deepEqual(state.addSources([mic]), [])
-  assert.equal(state.source(11).owner, '7')
+  assert.equal(state.source(remote(11)).owner, '7')
 
   assert.deepEqual(
-    state.removeSources([11, 12]).map((s) => s.node),
-    [11]
+    state.removeSources([remote(11), remote(12)]).map((s) => s.node),
+    [remote(11)]
   )
-  assert.equal(state.source(11), null)
+  assert.equal(state.source(remote(11)), null)
   assert.deepEqual(state.removeClients(['7', '8']), ['7'])
 })
 
@@ -589,10 +637,10 @@ test('a replaced source swaps nodes and reports both halves', () => {
   state.applySnapshot({
     channel_id: '1',
     codecs: CODECS,
-    members: ['7'],
+    clients: ['7'],
     sources: [
       {
-        node: 3,
+        node: remote(3),
         owner: '7',
         kind: { type: 'Stream', attr: { codec: 'Av1', stream_key: 'k' } },
         paused: true
@@ -603,14 +651,14 @@ test('a replaced source swaps nodes and reports both halves', () => {
 
   // The replacement keeps its predecessor's stream and pause.
   const replacement = {
-    node: 8,
+    node: remote(8),
     owner: '7',
     kind: { type: 'Stream', attr: { codec: 'H264', stream_key: 'k' } },
     paused: true
   }
-  const { removed, added } = state.replaceSource(3, replacement)
+  const { removed, added } = state.replaceSource(remote(3), replacement)
   assert.deepEqual(removed, {
-    node: 3,
+    node: remote(3),
     owner: '7',
     kind: 'Stream',
     codec: 'Av1',
@@ -618,22 +666,22 @@ test('a replaced source swaps nodes and reports both halves', () => {
     paused: true
   })
   assert.deepEqual(added, {
-    node: 8,
+    node: remote(8),
     owner: '7',
     kind: 'Stream',
     codec: 'H264',
     streamKey: 'k',
     paused: true
   })
-  assert.equal(state.source(3), null)
-  assert.equal(state.source(8).codec, 'H264')
+  assert.equal(state.source(remote(3)), null)
+  assert.equal(state.source(remote(8)).codec, 'H264')
   assert.deepEqual(
     state.streamSources('k').map((s) => s.node),
-    [8]
+    [remote(8)]
   )
 
   // Replaying it changes nothing.
-  assert.deepEqual(state.replaceSource(3, replacement), {
+  assert.deepEqual(state.replaceSource(remote(3), replacement), {
     removed: null,
     added: null
   })
@@ -671,13 +719,13 @@ test('snowflakes are normalized to strings', () => {
   state.applySnapshot({
     channel_id: 5,
     codecs: CODECS,
-    members: [6],
-    sources: [{ node: 1, owner: 6, kind: { type: 'Microphone' }, paused: false }],
+    clients: [6],
+    sources: [{ node: remote(1), owner: 6, kind: { type: 'Microphone' }, paused: false }],
     speakers: [6]
   })
   assert.equal(state.channelId, '5')
-  assert.ok(state.members.has('6'))
-  assert.equal(state.source(1).owner, '6')
+  assert.ok(state.clients.has('6'))
+  assert.equal(state.source(remote(1)).owner, '6')
   assert.ok(state.speakers.has('6'))
 })
 
@@ -1087,14 +1135,17 @@ test('the stream directory groups owners by channel', () => {
   )
 })
 
-test('group requests get GroupReceived; group events and UpdateRequired', async () => {
+test('group requests settle on a Sync; group events and UpdateRequired', async () => {
   const { matcher, sent, reply } = matcherHarness()
-  const keyPackage = matcher.request(Request.group({ KeyPackage: { key_package: 'AQID' } }))
-  assert.deepEqual(sent, [{ Group: { KeyPackage: { key_package: 'AQID' } } }])
-  assert.equal(reply('GroupReceived'), true)
-  assert.equal(await keyPackage, null)
+  const keyPackage = matcher.requestSynced(Request.group({ KeyPackage: { key_package: 'AQID' } }))
+  assert.deepEqual(sent, [
+    { Group: { KeyPackage: { key_package: 'AQID' } } },
+    { Sync: { callback: 1 } }
+  ])
+  assert.equal(reply({ Done: { callback: 1 } }), true)
+  assert.equal(await keyPackage, undefined)
 
-  // Group events never touch the queue.
+  // Group events are handed on and settle nothing.
   assert.equal(EVENT_TYPES.has('Group'), true)
   assert.equal(reply({ Group: { Execute: { epoch: 2 } } }), false)
   assert.equal(reply({ Group: 'Rejoin' }), false)

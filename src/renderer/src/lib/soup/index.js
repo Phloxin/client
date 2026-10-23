@@ -77,6 +77,7 @@ import {
   sourceMediaKind,
   sourceTypeForAppData,
   ViewRole,
+  VoiceRequestError,
   viewRoleFor
 } from './protocol'
 
@@ -106,7 +107,7 @@ export {
 export { startStreamDebugStats, startVoiceConnectionStats } from './streamDiagnostics'
 
 // This module drives mediasoup-client over the pylon-voice v1 signaling
-// protocol. The wire format itself (encoders, reply matching, channel state,
+// protocol. The wire format itself (encoders, answer matching, channel state,
 // close codes, and the event-socket stream ops) lives in ./protocol.js;
 // nothing here builds a frame by hand.
 //
@@ -117,8 +118,9 @@ export { startStreamDebugStats, startVoiceConnectionStats } from './streamDiagno
 // ─── State ──────────────────────────────────────────────────────
 let device = null
 let ws = null
-// The live socket's signaling: its reply matcher, and whether the session has
-// reached READY (SessionReady). One per socket; null between sockets.
+// The live socket's signaling: its matcher (which also hands out the socket's
+// LocalIds), and whether the session has reached READY (its first Channel
+// snapshot). One per socket; null between sockets.
 let signal = null
 // Both transports arrive with RoutingParams; the server creates them when we
 // identify, so there is nothing to allocate on demand.
@@ -127,12 +129,12 @@ let consumerTransport = null
 let producers = []
 const localProducerIds = new Set()
 // Our own server sources (the mic, and anything screenShare publishes) by
-// node. Closed { nodes } can name them, so they need a node → type lookup.
-const localSources = new Map() // NodeId -> SourceType
+// LocalId. Closed { nodes } can name them, so they need a node → type lookup.
+const localSources = new Map() // LocalId -> SourceType
 // Sources a CreateSource { replaces } in flight is swapping out. The server
-// closes each one with a Closed ahead of the reply, which is the hand-over
-// rather than a loss, so closeNodes leaves it to createSource.
-const sourceReplacements = new Map() // NodeId -> { closed }
+// closes each one with a Closed ahead of the Source answer, which is the
+// hand-over rather than a loss, so closeNodes leaves it to createSource.
+const sourceReplacements = new Map() // LocalId -> { closed }
 // Stop function for the active local audio processing chain (mono fold plus
 // optional RNNoise / volume gate). Tears down its nodes and analysis loop; null
 // when no chain is active.
@@ -175,10 +177,12 @@ const enqueueRepublish = createSerialQueue()
 let mediaStateGeneration = 0
 let activeCallbacks = {}
 let micMuted = false
-// Sinks we hold, keyed by the id of the *source* they receive. That id is
-// String(source node): what mediasoup-client and the UI call a producer id.
+// Sinks we hold, keyed by the id of the *source* they receive: its NodeId
+// string, which is what mediasoup-client and the UI call a producer id (see
+// "Remote sources").
 const remoteConsumers = new Map()
-// sink node -> source id, for matching Closed { nodes } to the entry it ends.
+// sink LocalId -> source id, for matching Closed { nodes } to the entry it
+// ends. The Sink answer doesn't name its source, so this is the only link.
 // Filled as soon as CreateSink answers, so a Closed racing setup is caught too.
 const sinkSources = new Map()
 // The media-side view of the current channel: Channel snapshot plus deltas.
@@ -241,8 +245,8 @@ const audioHealHistory = new Map()
 // session's Channel snapshot; onConnect re-publishes the mic.
 const VOICE_RECONNECT_BASE_DELAY_MS = 1000
 const VOICE_RECONNECT_MAX_DELAY_MS = 30000
-// Socket open → SessionReady. The node waits up to 5s for the backend's ticket
-// push before it answers anything, so this has to cover that.
+// Socket open → READY (the first Channel). The node waits up to 5s for the
+// backend's ticket push before it sends anything, so this has to cover that.
 const VOICE_ESTABLISH_TIMEOUT_MS = 20000
 const VOICE_REQUEST_TIMEOUT_MS = 15000
 // A join that never reaches READY is retried (each retry a leave + rejoin for a
@@ -422,29 +426,55 @@ subscribeDeviceChange(() => {
 
 // ─── Signaling ───────────────────────────────────────────────────
 // Every request goes through the live socket's matcher (protocol.js), the one
-// place replies are paired with requests.
+// place answers and errors are paired with requests. Only a request with a
+// success answer is awaited (request, requestCreate). One without it either
+// gets a Sync behind it when the caller has to know it went through
+// (requestSynced), or is sent and forgotten (notify).
 function request(message) {
   if (!signal) return Promise.reject(new Error('Voice socket not open'))
   return signal.matcher.request(message)
+}
+
+// A CreateSource or CreateSink. `build(node)` makes it around the new node's
+// LocalId, which the live socket's matcher takes from its counter and sends at
+// once, so the id belongs to the socket the request goes out on.
+function requestCreate(build) {
+  if (!signal) return Promise.reject(new Error('Voice socket not open'))
+  return signal.matcher.create(build)
+}
+
+function requestSynced(message) {
+  if (!signal) return Promise.reject(new Error('Voice socket not open'))
+  return signal.matcher.requestSynced(message)
+}
+
+function notify(message) {
+  if (!signal) throw new Error('Voice socket not open')
+  signal.matcher.notify(message)
 }
 
 // ─── E2EE ────────────────────────────────────────────────────────
 // Every frame is end-to-end encrypted (lib/e2ee). Its worker runs the channel's MLS group: it
 // gets the node's Group events from handleEvent and sends its Group requests through here.
 setE2eeHandlers({
-  request: (groupRequest) => request(Request.group(groupRequest)),
+  // Group has no success answer. The Sync behind it says the session took it, and an
+  // Error { "Session" } before that Done says it didn't.
+  request: (groupRequest) => requestSynced(Request.group(groupRequest)),
   onFatal: (reason) =>
     failVoice(
       reason === 'update-required'
         ? 'This version of Pylon can no longer join voice on this server; update to continue'
         : "Couldn't set up encryption for this call"
     ),
-  // A video sink decrypts again after dropping frames, so its decoder needs a keyframe.
+  // A video sink decrypts again after dropping frames, so its decoder needs a keyframe. Sent
+  // and forgotten: one for a sink the server already closed is dropped there, and a failure
+  // arrives as an Error nothing waits for, which is logged when it comes.
   onKeyFrame: (sinkNode) => {
-    request(Request.requestKeyFrame(sinkNode)).catch((err) => {
-      if (!err?.sourceGone)
-        console.warn(`[Soup] Keyframe request for sink ${sinkNode} failed:`, err?.message ?? err)
-    })
+    try {
+      notify(Request.requestKeyFrame(sinkNode))
+    } catch (err) {
+      console.warn(`[Soup] Keyframe request for sink ${sinkNode} not sent:`, err?.message ?? err)
+    }
   },
   // Video sinks stay paused until we can decrypt what they'd carry (applyViewRole).
   onMediaReadyChange: () => {
@@ -455,19 +485,22 @@ setE2eeHandlers({
 // Called (by screenShare and the mic paths) once a local producer is closed.
 // A source the server already closed (a switch, or a replacement) is no
 // longer in localSources and needs nothing.
-async function closeServerProducer(id) {
-  const node = sourceNode(id)
+function closeServerProducer(id) {
+  const node = ownNode(id)
   const type = localSources.get(node)
   if (!localSources.delete(node)) return
   if (type === SourceType.Stream) publishStreamViewers()
-  await closeServerNode(node)
+  closeServerNode(node)
 }
 
-// Close one of our nodes on the server. Close always succeeds, so the only
-// failure is the socket going away, which closes the node anyway.
-async function closeServerNode(node) {
+// Close one of our nodes on the server. Never awaited: a node the server has
+// already closed gets no answer (its own Closed came first), and the answer
+// for one it hadn't is a Closed like any other, a no-op by then because the
+// caller let go of the node before sending this. The only failure is the
+// socket going away, which closes the node anyway.
+function closeServerNode(node) {
   try {
-    await request(Request.close(node))
+    notify(Request.close(node))
   } catch (err) {
     console.warn(`[Soup] Close for node ${node} not delivered:`, err?.message ?? err)
   }
@@ -619,13 +652,15 @@ function waitForOwnStreamEnd() {
 }
 
 // The screen share's setSourcePaused: the owner's pause of one of our Stream,
-// StreamAudio or Webcam sources. A source a replacement swapped out meanwhile
-// fails with NotFound; the share re-applies its pause to the successor.
+// StreamAudio or Webcam sources. SetSourcePaused has no success answer, so a
+// Sync behind it says it went through. A source a replacement swapped out
+// meanwhile is already closed on the server, which drops the request without a
+// word; the share re-applies its pause to the successor.
 async function setServerSourcePaused(producerId, paused) {
-  const node = sourceNode(producerId)
+  const node = ownNode(producerId)
   if (!localSources.has(node)) return false
   try {
-    await request(Request.setSourcePaused(node, paused))
+    await requestSynced(Request.setSourcePaused(node, paused))
     console.log(`[Soup] Source ${node} ${paused ? 'paused' : 'resumed'}`)
     return true
   } catch (err) {
@@ -697,10 +732,9 @@ async function ensureStreamWatch(key) {
 // lands, so a sink still being set up keeps its watch until then.
 function releaseUnusedStreamWatches() {
   for (const key of [...grantedWatches]) {
-    const inUse = channelState.streamSources(key).some((source) => {
-      const id = sourceId(source.node)
-      return isConsumingSource(id) || sourceIsWatched(id)
-    })
+    const inUse = channelState
+      .streamSources(key)
+      .some((source) => isConsumingSource(source.node) || sourceIsWatched(source.node))
     if (inUse) continue
     grantedWatches.delete(key)
     console.log(`[Soup] No longer watching stream ${key}`)
@@ -755,12 +789,12 @@ function publishStreamViewers() {
 function streamVideoSourceId(key) {
   if (ownStream?.key === key) {
     for (const [node, type] of localSources) {
-      if (type === SourceType.Stream) return sourceId(node)
+      if (type === SourceType.Stream) return ownId(node)
     }
     return null
   }
   const video = channelState.streamSources(key).find((source) => source.kind === SourceType.Stream)
-  return video ? sourceId(video.node) : null
+  return video ? video.node : null
 }
 
 // Two maps of sorted id lists hold the same thing.
@@ -802,11 +836,18 @@ function publishLiveStreams() {
 }
 
 // ─── Remote sources ──────────────────────────────────────────────
-// Keyed by source id: String(source node). That's the id mediasoup-client and
-// the UI use (the UI round-trips them through strings, and node 0 is a real
-// node), so a numeric NodeId never leaves this module except on the wire.
-const sourceId = (node) => String(node)
-const sourceNode = (id) => Number(id)
+// Keyed by source id, which for another client's source is its NodeId string
+// ("<session>:<local>") exactly as the server sent it: that's the id
+// mediasoup-client and the UI use (the UI round-trips them through strings),
+// and what CreateSink echoes back.
+//
+// Our own sources and sinks are LocalIds, numbers we picked, and go to
+// mediasoup-client and the UI as strings too (ownId). A NodeId always has a
+// colon and a stringified LocalId never does, so maps that hold both, like
+// the video grid's tiles, can't mix them up. And since sources and sinks share
+// one counter, a LocalId names one or the other, never both.
+const ownId = (node) => String(node)
+const ownNode = (id) => Number(id)
 
 // Remote video sources in the channel, watched or not. Tiles are driven by
 // this — a stream is listed as soon as it exists.
@@ -966,7 +1007,7 @@ function removeRemoteConsumer(id, { closeSink = false } = {}) {
   const serverHasSink = sinkSources.delete(entry.sinkNode)
   entry.consumer.close()
   entry.cleanup?.()
-  if (closeSink && serverHasSink) void closeServerNode(entry.sinkNode)
+  if (closeSink && serverHasSink) closeServerNode(entry.sinkNode)
   return entry
 }
 
@@ -990,7 +1031,9 @@ function closeScreenAudioConsumer(id) {
 }
 
 // ─── Channel events ──────────────────────────────────────────────
-// Unsolicited server events. None of them touch the request queue.
+// Server events, after the matcher has seen them: a Closed may be the answer to
+// our Close, and the first Channel is what SetCapabilities waits for, but both
+// are applied here like any other.
 function handleEvent(type, data) {
   switch (type) {
     case 'Channel':
@@ -1034,8 +1077,9 @@ function handleEvent(type, data) {
   }
 }
 
-// A Channel snapshot replaces the channel state. It follows SessionReady, every
-// channel switch, and every server-side resync. Before it, the server has
+// A Channel snapshot replaces the channel state. The first one is the session
+// becoming READY (the matcher marks it before this runs); later ones follow
+// every channel switch and every server-side resync. Before one, the server has
 // already sent Closed for each sink whose source is gone (on a switch: all of
 // them), so this only has to diff sources and fill in missing sinks.
 function applyChannelSnapshot(data) {
@@ -1047,8 +1091,8 @@ function applyChannelSnapshot(data) {
   // package. A resync of the same session comes with a Group Rejoin instead.
   if (firstOfSession || switched) e2eeJoin(channelState.group, { move: switched })
   console.log(
-    `[Soup] Channel ${channelState.channelId} snapshot: ${channelState.members.size} ` +
-      `member(s), ${channelState.sources.size} source(s), ` +
+    `[Soup] Channel ${channelState.channelId} snapshot: ${channelState.clients.size} ` +
+      `client(s), ${channelState.sources.size} source(s), ` +
       `codecs ${describeCodecs(channelState.codecs)}` +
       (switched ? ` (switched from ${previousChannelId})` : '')
   )
@@ -1074,8 +1118,7 @@ function describeCodecs(codecs) {
 }
 
 function addRemoteSources(sources) {
-  for (const { node, owner: clientId, kind: type, streamKey, paused } of sources) {
-    const id = sourceId(node)
+  for (const { node: id, owner: clientId, kind: type, streamKey, paused } of sources) {
     console.log(
       `[Soup] Source ${id} added (${type} from ${clientId}` +
         (streamKey != null ? `, stream ${streamKey}` : '') +
@@ -1130,7 +1173,7 @@ function addRemoteSources(sources) {
 // both stay.
 function updateRemoteSource(source) {
   if (!source) return
-  const id = sourceId(source.node)
+  const id = source.node
   console.log(`[Soup] Source ${id} ${source.paused ? 'paused' : 'resumed'} by its owner`)
   if (sourceMediaKind(source.kind) !== 'video') return
   activeCallbacks.onStreamPaused?.({
@@ -1162,18 +1205,15 @@ function applySinkLayers({ node, layers = null } = {}) {
 // new node without waiting for the UI to re-assert the watch.
 function replaceRemoteSource({ removed, added }) {
   if (removed) {
-    console.log(`[Soup] Source ${sourceId(removed.node)} replaced by ${added?.node ?? '?'}`)
-    if (added && watchedProducerIds.delete(sourceId(removed.node))) {
-      watchedProducerIds.add(sourceId(added.node))
-    }
+    console.log(`[Soup] Source ${removed.node} replaced by ${added?.node ?? '?'}`)
+    if (added && watchedProducerIds.delete(removed.node)) watchedProducerIds.add(added.node)
     removeRemoteSources([removed], { replaced: added != null })
   }
   if (added) addRemoteSources([added])
 }
 
 function removeRemoteSources(sources, { replaced = false } = {}) {
-  for (const { node, owner, streamKey } of sources) {
-    const id = sourceId(node)
+  for (const { node: id, owner, streamKey } of sources) {
     console.log(`[Soup] Source ${id} removed`)
     const knownVideo = knownVideoProducers.get(id)
     knownVideoProducers.delete(id)
@@ -1214,7 +1254,8 @@ function applySpeakers({ started, stopped }) {
   for (const clientId of started) activeCallbacks.onClientSpeaking?.(clientId, true)
 }
 
-// Closed names nodes the server closed: our sinks, or our own sources.
+// Closed names nodes the server closed, by LocalId: our sinks, or our own
+// sources. It also answers our own Close, by which time the node is gone here.
 function closeNodes(nodes) {
   for (const node of nodes) {
     const replacement = sourceReplacements.get(node)
@@ -1245,19 +1286,19 @@ function closeNodes(nodes) {
 }
 
 // The server closes our webcam/stream sources on a channel switch (the mic is
-// kept and keeps its node), and our stream sources when the backend ends the
-// stream: EndStream from another of our sessions, or the voice node losing its
-// backend link. Stop the capture behind a closed source so nothing keeps
-// encoding into it.
+// kept and keeps its node), our stream sources when the backend ends the
+// stream (EndStream from another of our sessions, or the voice node losing its
+// backend link), and any source whose producer died on the server. Stop the
+// capture behind a closed source so nothing keeps encoding into it.
 function closeLocalSource(node) {
   const type = localSources.get(node)
   if (!localSources.delete(node)) return
-  const id = sourceId(node)
+  const id = ownId(node)
   console.log(`[Soup] Own ${type} source ${id} closed by server`)
 
   if (type === SourceType.Microphone) {
-    // Only we close or replace the mic. Release it and let the watchdog bring
-    // it back.
+    // Only we close or replace the mic, unless its producer died on the
+    // server. Release it and let the watchdog bring it back.
     const closed = producers.filter((producer) => producer.id === id)
     producers = producers.filter((producer) => producer.id !== id)
     for (const producer of closed) {
@@ -1436,11 +1477,15 @@ async function openSocket(connectionGeneration = voiceConnectionGeneration) {
   const recentFrames = []
   const current = {
     socket,
-    ready: false,
     // Why we closed this socket ourselves, reported in place of the generic
     // close error.
     failure: null,
-    matcher: null
+    matcher: null,
+    // READY: the matcher has seen the first Channel snapshot, which it marks
+    // before that snapshot is applied, so its sinks can already be set up.
+    get ready() {
+      return this.matcher?.ready === true
+    }
   }
   current.matcher = createRequestMatcher({
     transmit: (frame) => {
@@ -1454,8 +1499,9 @@ async function openSocket(connectionGeneration = voiceConnectionGeneration) {
     timeoutMs: VOICE_REQUEST_TIMEOUT_MS,
     onTimeout: (type) =>
       abandonSocket(current, connectFailure(`Voice request timed out (${type})`)),
-    // Client and server disagree about the request stream; nothing after this
-    // can be trusted, so start over (handoff §6).
+    // An answer nothing asked for: client and server disagree about the
+    // request stream, so nothing after this can be trusted. Start over
+    // (handoff §6).
     onProtocolError: (error) => {
       console.error('[Soup] Voice protocol error:', error)
       abandonSocket(current, connectFailure(error.message))
@@ -1491,8 +1537,8 @@ async function openSocket(connectionGeneration = voiceConnectionGeneration) {
     try {
       message = decodeMessage(event.data)
     } catch (err) {
-      // A frame we can't read may have been a reply, and guessing would shift
-      // every later reply onto the wrong request. Start over instead.
+      // A frame we can't read may have been an answer a request is waiting for,
+      // or an event the media state can't do without. Start over instead.
       console.error('[Soup] Unreadable voice frame:', err, event.data)
       abandonSocket(current, connectFailure('Unreadable voice frame'))
       return
@@ -1505,6 +1551,11 @@ async function openSocket(connectionGeneration = voiceConnectionGeneration) {
       } catch (err) {
         console.error(`[Soup] Failed to apply ${message.type}:`, err)
       }
+      return
+    }
+    if (message.type === 'Error') {
+      // Nothing was waiting on it: a request sent and forgotten failed.
+      console.warn('[Soup]', new VoiceRequestError(null, message.data ?? {}).message)
       return
     }
     console.warn('[Soup] Unhandled voice message:', message.type)
@@ -1568,13 +1619,7 @@ async function openSocket(connectionGeneration = voiceConnectionGeneration) {
   socket.onopen = () => {
     if (ws !== socket) return
     console.log('[Soup] Voice socket open, identifying')
-    try {
-      current.matcher.notify(Request.identify(acquired.ticket))
-    } catch (err) {
-      abandonSocket(current, connectFailure(`Identify failed to send: ${err.message}`))
-      return
-    }
-    establishSession(current).then(
+    establishSession(current, acquired.ticket).then(
       () => settle(),
       (err) => {
         const error = err instanceof Error ? err : new Error(String(err))
@@ -1603,17 +1648,18 @@ async function openSocket(connectionGeneration = voiceConnectionGeneration) {
   )
 }
 
-// Identify → GetRoutingParams → Device + both transports → SetCapabilities.
-// GetRoutingParams goes out right behind Identify (the server reads it once
-// identify finishes), and its reply is the only sign identify succeeded: v1
-// sends nothing on success and closes with 4001 on failure. SetCapabilities'
-// reply, SessionReady, joins the channel; a Channel snapshot follows it.
-async function establishSession(current) {
+// Identify → RoutingParams → Device + both transports → SetCapabilities →
+// Channel. Neither request has an answer of its own, so the matcher waits on
+// what follows each. The server pushes RoutingParams once identify succeeds,
+// and closes with 4001 when it fails. SetCapabilities joins the channel, and
+// the Channel snapshot after it is its sign of success (the session is READY),
+// applied as an event as well; a refusal is an Error on the session.
+async function establishSession(current, ticket) {
   const generation = mediaStateGeneration
   const isCurrent = () => signal === current && generation === mediaStateGeneration
 
   voiceConnectStep = 'identify'
-  const routing = await current.matcher.request(Request.getRoutingParams())
+  const routing = await current.matcher.request(Request.identify(ticket))
   if (!isCurrent()) throw mediaResetError()
   emitMediaState('authenticated')
 
@@ -1646,7 +1692,6 @@ async function establishSession(current) {
     throw err
   }
   if (!isCurrent()) throw mediaResetError()
-  current.ready = true
   console.log('[Soup] Voice session ready')
 }
 
@@ -1850,7 +1895,7 @@ function createSendTransport(loadedDevice, params, generation) {
   )
   transport.on('produce', ({ rtpParameters, appData }, callback, errback) => {
     createSource(rtpParameters, appData, isCurrentTransport)
-      .then((node) => callback({ id: sourceId(node) }))
+      .then((node) => callback({ id: ownId(node) }))
       .catch((err) => errback(err))
   })
   return transport
@@ -1886,8 +1931,9 @@ function connectTransport(direction, dtlsParameters, isCurrentTransport, callbac
 }
 
 // The send transport's 'produce': CreateSource with the source type the
-// producer's appData names (see sourceTypeForAppData). The node it returns is
-// the producer's id.
+// producer's appData names (see sourceTypeForAppData). We name the new source;
+// once its Source answer confirms it, that LocalId (as a string) is the
+// producer's id. An Error naming it fails the produce.
 //
 // appData.replaces (a producer id) swaps that source for this one on the
 // server. The old producer stays the caller's to close locally, with no Close
@@ -1912,12 +1958,14 @@ async function createSource(rtpParameters, appData, isCurrentTransport) {
   await runBeforeServerProduce(appData, rtpParameters)
   if (!isCurrentTransport()) throw mediaResetError()
 
-  const replaces = appData?.replaces == null ? null : sourceNode(appData.replaces)
+  const replaces = appData?.replaces == null ? null : ownNode(appData.replaces)
   const replacement = replaces == null ? null : { closed: false }
   if (replacement) sourceReplacements.set(replaces, replacement)
   let created
   try {
-    created = await request(Request.createSource(type, rtpParameters, replaces, streamKey))
+    created = await requestCreate((node) =>
+      Request.createSource(node, type, rtpParameters, replaces, streamKey)
+    )
   } catch (err) {
     // Nothing was handed over, so a Closed for the old source meanwhile (say,
     // a channel switch) was a real close.
@@ -2998,18 +3046,19 @@ function sourceGoneError(id) {
   return error
 }
 
-// CreateSink for a source, with the stream watch a stream source needs first.
-// A Denied means the watch we counted on is gone (revoked, or never granted on
-// the node), so forget it and ask for it once more.
-async function requestSink(id, node, streamKey, isCurrent) {
+// CreateSink for a source (`id`, its NodeId), with the stream watch a stream
+// source needs first. A Denied means the watch we counted on is gone (revoked,
+// or never granted on the node), so forget it and ask for it once more. Each
+// attempt names a new sink: an id is used up even when its create fails.
+async function requestSink(id, streamKey, isCurrent) {
   for (let attempt = 0; ; attempt++) {
     if (streamKey != null) {
       await ensureStreamWatch(streamKey)
       if (!isCurrent()) throw mediaResetError()
-      if (channelState.source(node) == null) throw sourceGoneError(id)
+      if (channelState.source(id) == null) throw sourceGoneError(id)
     }
     try {
-      return await request(Request.createSink(node))
+      return await requestCreate((node) => Request.createSink(node, id))
     } catch (err) {
       if (!err?.denied || streamKey == null || attempt > 0) throw err
       console.warn(`[Soup] Sink for source ${id} denied; asking to watch stream ${streamKey} again`)
@@ -3018,7 +3067,7 @@ async function requestSink(id, node, streamKey, isCurrent) {
   }
 }
 
-// [watch →] CreateSink → recvTransport.consume() → SinkConfigure. The server
+// [watch →] CreateSink → recvTransport.consume() → ConfigureSink. The server
 // creates every sink paused. Audio is resumed at once; video stays paused until
 // the video grid gives it a view role (applyViewRole), since a stream nobody
 // is looking at costs nothing paused. The first consume also fires the receive
@@ -3027,8 +3076,7 @@ async function createSinkFor(id) {
   const generation = mediaStateGeneration
   const transport = consumerTransport
   if (!signal?.ready || !transport || transport.closed) throw mediaResetError()
-  const node = sourceNode(id)
-  const source = channelState.source(node)
+  const source = channelState.source(id)
   if (!source) throw sourceGoneError(id)
   const kind = sourceMediaKind(source.kind)
   const producedType = producedTypeForSource(source.kind)
@@ -3036,19 +3084,19 @@ async function createSinkFor(id) {
   const isCurrent = () =>
     generation === mediaStateGeneration && consumerTransport === transport && !transport.closed
 
-  const sink = await requestSink(id, node, source.streamKey, isCurrent)
+  const sink = await requestSink(id, source.streamKey, isCurrent)
   if (!isCurrent()) throw mediaResetError()
   sinkSources.set(sink.node, id)
   // Closed for this sink, or SourcesRemoved for its source, while we were
   // still setting it up.
-  const sinkGone = () => sinkSources.get(sink.node) !== id || channelState.source(node) == null
+  const sinkGone = () => sinkSources.get(sink.node) !== id || channelState.source(id) == null
   // Tear down a sink that never committed, and close it on the server unless
   // a Closed already took it (or a reset already forgot it).
   const discard = (consumer) => {
     consumer?.close()
     if (sinkSources.get(sink.node) !== id) return
     sinkSources.delete(sink.node)
-    void closeServerNode(sink.node)
+    closeServerNode(sink.node)
   }
   if (sinkGone()) {
     discard(null)
@@ -3058,7 +3106,7 @@ async function createSinkFor(id) {
   let consumer
   try {
     consumer = await transport.consume({
-      id: sourceId(sink.node),
+      id: ownId(sink.node),
       producerId: id,
       kind,
       rtpParameters: sink.rtp_parameters,
@@ -3089,8 +3137,10 @@ async function createSinkFor(id) {
   // What we last asked the server for this sink, which view roles diff against.
   const sinkConfig = { paused: true }
   if (kind === 'audio') {
+    // ConfigureSink has no success answer; the Sync behind it says the resume
+    // went through, and a failure still fails the sink (and so gets retried).
     try {
-      await request(Request.sinkConfigure(sink.node, { paused: false }))
+      await requestSynced(Request.configureSink(sink.node, { paused: false }))
     } catch (err) {
       discard(consumer)
       throw err
@@ -3110,7 +3160,7 @@ async function createSinkFor(id) {
   // health-driven rebuild can all reference it (a rebuild reuses entry.stream).
   const entry = {
     consumer,
-    consumerId: sourceId(sink.node),
+    consumerId: ownId(sink.node),
     sinkNode: sink.node,
     kind,
     clientId,
@@ -3167,7 +3217,7 @@ async function createSinkFor(id) {
       producerId: id,
       clientId,
       codec: codecLabel(consumer.rtpParameters),
-      paused: channelState.source(node)?.paused === true
+      paused: channelState.source(id)?.paused === true
     })
   }
 
@@ -3218,14 +3268,15 @@ function applyViewRole(entry) {
     sinkConfigForViewRole(role, entry.layerCapabilities ?? undefined)
   )
   if (!changes) return
-  // Recorded before the reply. The server handles requests in order, so the
-  // last one sent is where the sink ends up, and one SinkConfigure sets the
+  // Recorded before it's sent. The server handles requests in order, so the
+  // last one sent is where the sink ends up, and one ConfigureSink sets the
   // layers before it resumes, so a sink never bursts at its top layer first.
+  // It has no success answer; the Sync behind it is what tells a failure apart.
   Object.assign(entry.sinkConfig, changes)
-  request(Request.sinkConfigure(entry.sinkNode, changes)).catch((err) => {
+  requestSynced(Request.configureSink(entry.sinkNode, changes)).catch((err) => {
     // Forget what we asked for, so the next role change sends it all again.
     entry.sinkConfig = {}
-    console.warn(`[Soup] SinkConfigure for sink ${entry.sinkNode} failed:`, err?.message ?? err)
+    console.warn(`[Soup] ConfigureSink for sink ${entry.sinkNode} failed:`, err?.message ?? err)
   })
 }
 

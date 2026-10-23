@@ -2,8 +2,8 @@
 // consume/close decisions are unit-testable without a signaling session.
 //
 // The hard part isn't the diff, it's the timing: a consume takes several awaited
-// round-trips (Consume → transport.consume → Pause/Resume) before it appears in
-// the consumer map, and the watch set can move twice in that window. Anything
+// round-trips (CreateSink → transport.consume → ConfigureSink) before it appears
+// in the consumer map, and the watch set can move twice in that window. Anything
 // that reads "am I consuming this?" therefore has to count consumes that are
 // still in flight, or a watch→unwatch→watch race starts a second consumer for
 // the same producer and orphans the first server-side.

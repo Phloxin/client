@@ -670,6 +670,19 @@ function Main() {
     setViewMode('video')
   }
 
+  // Starting our own stream or camera jumps straight to it, as if we'd clicked
+  // its tile, so the sharer immediately sees what they're sending. Keyed on the
+  // self tile appearing: shares are never auto-restored after a reconnect and
+  // a codec fallback swaps the tile in place, so only a user-started share (or
+  // a retune's restart, which re-focuses the tile it was launched from) lands here.
+  const selfStreamClientId = allVideoStreams.find((s) => s.isSelf)?.clientId ?? null
+  useEffect(() => {
+    if (selfStreamClientId != null) handleWatchStream(selfStreamClientId)
+    // Fires on the tile's arrival only; handleWatchStream is a fresh closure
+    // every render and would re-jump the view on each one.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selfStreamClientId])
+
   // Replacement handoffs retain a placeholder tile (the SFU marks their
   // ProducerClosed event), so any client absent here genuinely stopped sharing.
   // Clear intent immediately: a later unrelated share must require a new click.
@@ -1507,23 +1520,19 @@ function Main() {
     lastSelfChannelActionAtRef.current = Date.now()
   }
 
-  // Create a channel on the server. Position is computed to append after the current last channel.
-  //The server also broadcasts ChannelCreated, so the add here is deduped by id in case that broadcast echoes back to us.
-  const handleCreateChannel = async ({ name, user_limit, afterPosition }) => {
+  // Create a channel on the server directly below the channel `after`, or last
+  // when `after` is undefined (JSON.stringify drops it, which the server reads as
+  // append). The backend shifts the rest. The server also broadcasts
+  // ChannelCreated, so the add here is deduped by id in case that broadcast echoes back to us.
+  const handleCreateChannel = async ({ name, user_limit, after }) => {
     const trimmed = name.trim()
     if (!trimmed) return
-    // Insert just below the channel the create was launched from; otherwise
-    // append after the current last channel. The backend reorders the rest.
-    const position =
-      typeof afterPosition === 'number'
-        ? afterPosition + 1
-        : channels.reduce((max, ch) => Math.max(max, ch.position ?? 0), -1) + 1
 
     try {
       const res = await authFetch(`${apiBase()}/server/channel`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: trimmed, user_limit, position })
+        body: JSON.stringify({ name: trimmed, user_limit, after })
       })
       await throwIfError(res)
       const created = await res.json().catch(() => null)
@@ -1551,16 +1560,16 @@ function Main() {
     }
   }
 
-  // Move a channel to a new position (drag-to-reorder). The server reindexes the
-  // rest and broadcasts ChannelUpdated for the affected channels, so we don't
-  // mutate locally on success.
-  const handleReorderChannel = async (id, position) => {
+  // Move a channel directly below the channel `after` (null = top) for
+  // drag-to-reorder. The server reindexes the rest and broadcasts ChannelUpdated
+  // for the affected channels, so we don't mutate locally on success.
+  const handleReorderChannel = async (id, after) => {
     markSelfChannelAction()
     try {
       const res = await authFetch(`${apiBase()}/channels/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ position })
+        body: JSON.stringify({ after })
       })
       await throwIfError(res)
       playUiSound('channel_moved')
