@@ -143,7 +143,8 @@ export function setE2eeSelf(id) {
   pushConfig()
 }
 
-//   request(groupRequest)  sends `{ Group: groupRequest }` and resolves on GroupReceived
+//   request(groupRequest)  sends `{ Group: groupRequest }` with a Sync behind it: resolves once
+//                          the session took it, rejects (VoiceRequestError) when it refused it
 //   onFatal(reason)        'update-required' or 'e2ee-failed': the call can't be encrypted
 //   onKeyFrame(sinkNode)   a video sink decrypts again after failures; ask for a keyframe
 //   onMediaReadyChange(ready) video sinks may (or may no longer) be resumed (plan 5.5)

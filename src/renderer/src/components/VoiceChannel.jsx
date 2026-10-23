@@ -1133,7 +1133,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
             className="channel-context-item"
             onClick={() => {
               setMenuPos(null)
-              onRequestCreateChannel?.(channel.position)
+              onRequestCreateChannel?.(channel.id)
             }}
           >
             <IconPlus size={16} /> Add Channel

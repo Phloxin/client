@@ -153,15 +153,15 @@ function Sidebar({
   const [channelName, setChannelName] = useState('')
   const [channelLimit, setChannelLimit] = useState(0)
   const [channelError, setChannelError] = useState(null)
-  // Position of the channel the create was launched from (via its right-click
+  // Id of the channel the create was launched from (via its right-click
   // "Add Channel"); the new channel is inserted just below it. null = append.
-  const [createAfterPos, setCreateAfterPos] = useState(null)
+  const [createAfterId, setCreateAfterId] = useState(null)
 
-  const openCreateChannel = (afterPos = null) => {
+  const openCreateChannel = (afterId = null) => {
     setChannelName('')
     setChannelLimit(0)
     setChannelError(null)
-    setCreateAfterPos(typeof afterPos === 'number' ? afterPos : null)
+    setCreateAfterId(afterId)
     setShowCreateChannel(true)
   }
 
@@ -171,10 +171,13 @@ function Sidebar({
       setChannelError('Channel name is required.')
       return
     }
+    // Insert just below the launching channel; leaving `after` unset appends
+    // (also the fallback if that channel is gone).
+    const anchored = sortedChannels.some((c) => c.id === createAfterId)
     onCreateChannel?.({
       name,
       user_limit: Math.max(0, Number(channelLimit) || 0),
-      afterPosition: createAfterPos
+      after: anchored ? createAfterId : undefined
     })
     setShowCreateChannel(false)
   }
@@ -236,8 +239,8 @@ function Sidebar({
   }, [movedChannelId])
 
   // Drag-to-reorder channels. dropTarget marks which gap the dragged channel
-  // would land in ({ id, edge: 'before' | 'after' }); the drop sends the target
-  // position to the server, which reindexes the rest and broadcasts the updates.
+  // would land in ({ id, edge: 'before' | 'after' }); the drop sends the channel
+  // above that gap to the server, which reindexes the rest and broadcasts the updates.
   const [dragId, setDragId] = useState(null)
   const [dropTarget, setDropTarget] = useState(null)
 
@@ -247,11 +250,10 @@ function Sidebar({
     e.dataTransfer.setData('text/plain', String(id)) // Firefox needs data to start a drag
   }
 
-  // The absolute 0-based slot the dragged channel would land in for a hover over
-  // `targetId`'s `edge` — this is exactly the `position` the server's MoveTo wants
-  // (it shifts the affected siblings by ±1 to open that slot). Returns null when
-  // the drop wouldn't move it: the two gaps touching the dragged channel resolve
-  // to its current slot, so no indicator is shown there.
+  // The 0-based index in this client's list the dragged channel would land at
+  // for a hover over `targetId`'s `edge`. Returns null when the drop wouldn't
+  // move it: the two gaps touching the dragged channel resolve to its current
+  // slot, so no indicator is shown there.
   const dropPositionFor = (targetId, edge) => {
     if (dragId == null) return null
     const dragIndex = sortedChannels.findIndex((c) => c.id === dragId)
@@ -279,7 +281,12 @@ function Sidebar({
     if (dragId == null || dropTarget == null) return
     const position = dropPositionFor(dropTarget.id, dropTarget.edge)
     if (position == null) return
-    onReorderChannel?.(dragId, position)
+    // Send the channel it should land directly below (null = top), not the
+    // index: the server resolves that anchor against the full list, so channels
+    // this client can't see, or moves it hasn't heard about yet, can't shift
+    // where the drop lands.
+    const others = sortedChannels.filter((c) => c.id !== dragId)
+    onReorderChannel?.(dragId, position === 0 ? null : others[position - 1].id)
   }
   const handleChannelDragEnd = () => {
     setDragId(null)
