@@ -1,13 +1,10 @@
 import { getServerHost } from '../serverConfig'
 import { configureMediaDevices, shortDeviceId } from '../mediaDevices'
-import { createSpeakingDetector } from './localAudio'
 
 let getRemoteConsumers = () => new Map()
-let onClientSpeaking = null
 
 export function configurePlayback(dependencies = {}) {
   if (dependencies.getRemoteConsumers) getRemoteConsumers = dependencies.getRemoteConsumers
-  if (dependencies.onClientSpeaking) onClientSpeaking = dependencies.onClientSpeaking
 }
 
 let soundMuted = false
@@ -39,9 +36,9 @@ let clientAudioOverridesHost
 // ─── Rebuildable remote-audio Web Audio graph ────────────────────
 // Given an audio entry (carries stream / clientId / producedType), build the
 // playback graph: one source node off entry.stream on the shared playback
-// context -> gain (per-client volume, may exceed 1) -> destination, plus a
-// speaking detector that TAPS that same source node (see createSpeakingDetector)
-// instead of making its own context/source. Gain starts at 0; callers must run
+// context -> gain (per-client volume, may exceed 1) -> destination. Speaking
+// rings come from the server's Speakers event, so nothing here analyses the
+// received audio. Gain starts at 0; callers must run
 // applyAllAudioState() afterwards to set the real volume. Isolated from the
 // <audio> element so the graph can be torn down and rebuilt (health self-heal)
 // without dropping the WebRTC track pull.
@@ -53,32 +50,12 @@ export function buildAudioGraph(entry) {
   srcNode.connect(gainNode)
   gainNode.connect(ctx.destination)
 
-  // Screen/tab audio isn't the client's voice - don't feed it into the speaking
-  // indicator; clientId == null means we can't attribute speaking to anyone.
-  // Without an onClientSpeaking hook speaking comes from elsewhere (the voice
-  // server's Speakers event), so don't spend an analyser on it.
-  let stopDetector = null
-  if (onClientSpeaking && entry.clientId != null && entry.producedType !== 'ScreenShareAudio') {
-    stopDetector = createSpeakingDetector(
-      entry.stream,
-      (isSpeaking) => {
-        onClientSpeaking?.(entry.clientId, isSpeaking)
-      },
-      { audioContext: ctx, sourceNode: srcNode }
-    )
-  }
-
   entry.srcNode = srcNode
   entry.gain = gainNode
-  entry.stopDetector = stopDetector
 }
 
 // Tear down only the rebuildable graph nodes (leaves the <audio> element alone).
-// Stop the detector first so it detaches its own tap into the source before we
-// fully disconnect the source node.
 export function teardownAudioGraph(entry) {
-  entry.stopDetector?.()
-  entry.stopDetector = null
   try {
     entry.srcNode?.disconnect()
   } catch {

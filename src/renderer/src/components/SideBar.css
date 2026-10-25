@@ -222,69 +222,6 @@ html[data-transparency='true'] .control-dock {
   );
 }
 
-.dock-user {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  padding: 2px 2px 0;
-}
-
-.dock-avatar {
-  position: relative;
-  width: 30px;
-  height: 30px;
-  border-radius: 50%;
-  background: color-mix(in srgb, var(--color-primary) 18%, transparent);
-  color: var(--color-primary);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 13px;
-  font-weight: var(--font-weight-bold);
-  flex-shrink: 0;
-  overflow: hidden;
-}
-
-.dock-avatar.in-voice {
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-success) 70%, transparent);
-}
-
-.dock-avatar-img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-.dock-user-text {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.dock-user-name {
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-semibold);
-  color: var(--color-text);
-  line-height: 1.3;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.dock-user-status {
-  font-size: var(--font-size-xs);
-  color: var(--color-text-tertiary);
-  line-height: 1.3;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.dock-user-status.voice {
-  color: var(--color-success);
-}
-
 /* Voice connection strip: shown above the dock buttons while in a voice
    channel. The tone class colors the signal icon and status label by link
    quality (or reconnect/failure). */
@@ -593,6 +530,12 @@ html[data-client-panel-position='right'] .sidebar-resize-handle {
   transition:
     background 0.12s,
     color 0.12s;
+}
+
+/* In the channel, but its media session isn't up (VoiceStateApiObject.connected).
+   Dimmed on the children, so the row's enter/exit animations keep its opacity. */
+.client-indicator.connecting > * {
+  opacity: 0.55;
 }
 
 .client-indicator:hover {

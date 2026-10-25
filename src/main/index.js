@@ -13,9 +13,7 @@ import {
 } from 'electron'
 import { basename, join } from 'path'
 import { createRequire } from 'node:module'
-import { readFileSync, writeFileSync, unlinkSync } from 'fs'
-import http from 'http'
-import https from 'https'
+import { readFileSync, writeFileSync } from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import iconPng from '../../resources/icon.png?asset'
 import iconIco from '../../build/icon.ico?asset'
@@ -212,56 +210,6 @@ if (enableFeatures.length > 0) {
       `[main] Ignoring invalid PREFER_SCREENSHARE_CODEC="${process.env.PREFER_SCREENSHARE_CODEC}" ` +
         '(expected H264, AV1, or VP9)'
     )
-  }
-}
-
-// Store auth token in main process so it persists across windows
-let authToken = null
-let authClient = null
-
-// ─── Encrypted auth persistence ───────────────────────────────────
-// Persists the token/client to disk (encrypted via the OS keychain) so the
-// user stays logged in across app restarts. Falls back to in-memory-only
-// storage if encryption isn't available on this platform.
-function authFilePath() {
-  return join(app.getPath('userData'), 'auth.json')
-}
-
-function readAuthFile() {
-  try {
-    const raw = readFileSync(authFilePath(), 'utf-8')
-    const data = JSON.parse(raw)
-    if (safeStorage.isEncryptionAvailable() && (data.token || data.client)) {
-      return {
-        token: data.token ? safeStorage.decryptString(Buffer.from(data.token, 'base64')) : null,
-        client: data.client ? safeStorage.decryptString(Buffer.from(data.client, 'base64')) : null
-      }
-    }
-    return {
-      token: data.plainToken ?? null,
-      client: data.plainClient ?? null
-    }
-  } catch (err) {
-    if (err?.code !== 'ENOENT') {
-      console.warn('[auth] Failed to restore saved authentication:', err)
-    }
-    return { token: null, client: null }
-  }
-}
-
-function persistAuth() {
-  try {
-    if (safeStorage.isEncryptionAvailable()) {
-      const data = {}
-      if (authToken != null) data.token = safeStorage.encryptString(authToken).toString('base64')
-      if (authClient != null) data.client = safeStorage.encryptString(authClient).toString('base64')
-      writeFileSync(authFilePath(), JSON.stringify(data))
-    } else {
-      const data = { plainToken: authToken, plainClient: authClient }
-      writeFileSync(authFilePath(), JSON.stringify(data))
-    }
-  } catch (err) {
-    console.error('Failed to persist auth data:', err)
   }
 }
 
@@ -861,11 +809,6 @@ app.whenReady().then(() => {
     (e) => BrowserWindow.fromWebContents(e.sender)?.isMaximized() ?? false
   )
 
-  // Load any previously persisted auth from disk
-  const persisted = readAuthFile()
-  authToken = persisted.token
-  authClient = persisted.client
-
   // Load the saved server list from disk
   servers = readServersFile()
 
@@ -924,37 +867,6 @@ app.whenReady().then(() => {
     persistServers()
   })
 
-  // Store token from any window
-  ipcMain.on('store-token', (_, token) => {
-    authToken = token
-    persistAuth()
-  })
-
-  // Return stored token to any window that asks
-  ipcMain.handle('get-token', () => {
-    return authToken
-  })
-
-  ipcMain.on('store-client', (_, client) => {
-    authClient = client
-    persistAuth()
-  })
-
-  ipcMain.handle('get-client', () => {
-    return authClient
-  })
-
-  // Clear persisted + in-memory auth (e.g. on logout or token invalidation)
-  ipcMain.on('clear-auth', () => {
-    authToken = null
-    authClient = null
-    try {
-      unlinkSync(authFilePath())
-    } catch (err) {
-      if (err?.code !== 'ENOENT') console.warn('[auth] Failed to remove saved authentication:', err)
-    }
-  })
-
   // Download a remote file (e.g. a chat image attachment) to a user-chosen
   // location. Shows a native save dialog, then fetches the URL and writes it.
   ipcMain.handle('download-file', async (event, { url, filename }) => {
@@ -985,81 +897,6 @@ app.whenReady().then(() => {
       return { ok: false, error: err.message }
     }
   })
-
-  // Fetch a channel's recent messages. The endpoint is GET but expects a JSON
-  // body ({ limit }), which the renderer's fetch can't send (the Fetch spec
-  // forbids a body on GET). Node's http.request has no such restriction, so we
-  // make the request here and hand the parsed messages back to the renderer.
-  ipcMain.handle(
-    'get-channel-messages',
-    async (_, { url, token, limit, before, after, around }) => {
-      return new Promise((resolve) => {
-        let target
-        try {
-          target = new URL(url)
-        } catch (err) {
-          console.warn('[messages] Rejected invalid channel-history URL:', err)
-          resolve({ ok: false, error: 'Invalid URL' })
-          return
-        }
-        const lib = target.protocol === 'https:' ? https : http
-        const body = JSON.stringify({
-          limit,
-          ...(before != null ? { before } : {}),
-          ...(after != null ? { after } : {}),
-          ...(around != null ? { around } : {})
-        })
-        const req = lib.request(
-          {
-            hostname: target.hostname,
-            port: target.port,
-            path: target.pathname + target.search,
-            method: 'GET',
-            headers: {
-              'Content-Type': 'application/json',
-              'Content-Length': Buffer.byteLength(body),
-              Authorization: `Bearer ${token}`
-            }
-          },
-          (res) => {
-            let data = ''
-            res.on('data', (chunk) => {
-              data += chunk
-            })
-            res.on('end', () => {
-              if (res.statusCode >= 200 && res.statusCode < 300) {
-                try {
-                  resolve({ ok: true, messages: JSON.parse(data) })
-                } catch (err) {
-                  console.error('[messages] Channel history returned invalid JSON:', {
-                    host: target.host,
-                    status: res.statusCode,
-                    error: err
-                  })
-                  resolve({ ok: false, error: 'Invalid response JSON' })
-                }
-              } else {
-                console.warn('[messages] Channel history request failed:', {
-                  host: target.host,
-                  status: res.statusCode
-                })
-                resolve({ ok: false, status: res.statusCode, error: data })
-              }
-            })
-          }
-        )
-        req.on('error', (err) => {
-          console.error('[messages] Channel history network request failed:', {
-            host: target.host,
-            error: err
-          })
-          resolve({ ok: false, error: err.message })
-        })
-        req.write(body)
-        req.end()
-      })
-    }
-  )
 
   ipcMain.on('theme-changed-ipc', (_, themeId) => {
     const windows = BrowserWindow.getAllWindows()

@@ -5,6 +5,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  CloseAction,
   CloseCode,
   Direction,
   EVENT_TYPES,
@@ -18,9 +19,12 @@ import {
   VoiceChannelState,
   VoiceProtocolError,
   VoiceRequestError,
+  VoiceTicketError,
   classifyClose,
+  createEventCursor,
   createRequestMatcher,
   createStreamRequests,
+  decodeFrame,
   decodeMessage,
   mapTransportParams,
   messageType,
@@ -33,7 +37,8 @@ import {
   sourceTypeForAppData,
   videoCodecForMime,
   videoCodecMime,
-  viewRoleFor
+  viewRoleFor,
+  voiceTicketError
 } from './protocol.js'
 
 const CODECS = { allowed: ['Av1', 'Vp9', 'H264', 'Vp8'], preferred: 'Av1' }
@@ -72,6 +77,19 @@ test('requests encode as externally tagged enums, with LocalId numbers and NodeI
   })
   assert.deepEqual(Request.group({ Ready: { epoch: 3 } }), { Group: { Ready: { epoch: 3 } } })
   assert.deepEqual(Request.requestKeyFrame(5), { RequestKeyFrame: { node: 5 } })
+  // The session id is a snowflake string, echoed as the Session message sent it;
+  // last_seq is the highest seq received, 0 if none.
+  assert.deepEqual(Request.resume('175928847299117063', 'tok', 409), {
+    Resume: { session: '175928847299117063', resume_token: 'tok', last_seq: 409 }
+  })
+  assert.deepEqual(Request.resume('1', 'tok'), {
+    Resume: { session: '1', resume_token: 'tok', last_seq: 0 }
+  })
+  assert.throws(() => Request.resume('1', 'tok', -1), TypeError)
+  assert.throws(() => Request.resume('1', 'tok', '4'), TypeError)
+  assert.deepEqual(Request.restartIce(Direction.Receive), {
+    RestartIce: { direction: 'Receive' }
+  })
   assert.deepEqual(Request.connectTransport(Direction.Send, { role: 'client' }), {
     ConnectTransport: {
       transport_parameters: { dtlsParameters: { role: 'client' } },
@@ -173,6 +191,58 @@ test('decodeMessage handles unit, struct and newtype variants', () => {
   assert.throws(() => decodeMessage('42'))
   assert.throws(() => decodeMessage('not json'))
   assert.equal(messageType(null), null)
+})
+
+test('server frames are { seq, ev } envelopes; only Session and Resumed have no seq', () => {
+  assert.deepEqual(
+    decodeFrame('{"ev":{"Session":{"id":"175928847299117063","resume_token":"t"}}}'),
+    { seq: null, type: 'Session', data: { id: '175928847299117063', resume_token: 't' } }
+  )
+  assert.deepEqual(decodeFrame('{"ev":{"Resumed":{"resume_token":"u"}}}'), {
+    seq: null,
+    type: 'Resumed',
+    data: { resume_token: 'u' }
+  })
+  assert.deepEqual(decodeFrame('{"seq":1,"ev":{"RoutingParams":{"router_capabilities":{}}}}'), {
+    seq: 1,
+    type: 'RoutingParams',
+    data: { router_capabilities: {} }
+  })
+  assert.deepEqual(decodeFrame('{"seq":412,"ev":{"Group":{"Commit":{"epoch":3}}}}'), {
+    seq: 412,
+    type: 'Group',
+    data: { Commit: { epoch: 3 } }
+  })
+  // A bare message (the pre-envelope wire) is not a frame.
+  assert.throws(() => decodeFrame('{"Done":{"callback":7}}'), /envelope/)
+  assert.throws(() => decodeFrame('null'))
+  // A handshake frame with a seq, or any other without a valid one, can't be placed.
+  assert.throws(() => decodeFrame('{"seq":3,"ev":{"Resumed":{"resume_token":"u"}}}'), /seq/)
+  assert.throws(() => decodeFrame('{"ev":{"Done":{"callback":7}}}'), /seq/)
+  assert.throws(() => decodeFrame('{"seq":0,"ev":{"Done":{"callback":7}}}'), /seq/)
+  assert.throws(() => decodeFrame('{"seq":"5","ev":{"Done":{"callback":7}}}'), /seq/)
+  assert.throws(() => decodeFrame('{"seq":5,"ev":{"a":1,"b":2}}'))
+})
+
+test('the event cursor applies each seq once and remembers the highest', () => {
+  const cursor = createEventCursor()
+  assert.equal(cursor.lastSeq, 0)
+  assert.equal(cursor.accept(1), true)
+  assert.equal(cursor.accept(2), true)
+  assert.equal(cursor.lastSeq, 2)
+  // A duplicate between the node's queue and the replay, or an older frame.
+  assert.equal(cursor.accept(2), false)
+  assert.equal(cursor.accept(1), false)
+  assert.equal(cursor.lastSeq, 2)
+  // A gap isn't the cursor's to judge; it moves on.
+  assert.equal(cursor.accept(5), true)
+  assert.equal(cursor.lastSeq, 5)
+  assert.throws(() => cursor.accept(null), TypeError)
+  // Resuming at 4 with 5 and 6 already queued: the replay of 5..9 only adds 7..9.
+  const resumed = createEventCursor(4)
+  const applied = [5, 6, 5, 6, 7, 8, 9, 10].filter((seq) => resumed.accept(seq))
+  assert.deepEqual(applied, [5, 6, 7, 8, 9, 10])
+  assert.throws(() => createEventCursor(-1), TypeError)
 })
 
 test('Identify is answered by the pushed RoutingParams, SetCapabilities by the first Channel', async () => {
@@ -774,19 +844,269 @@ test('transport descriptors map snake_case keys only', () => {
   assert.equal(mapTransportParams(null), null)
 })
 
-test('close codes classify into recoverable and fatal', () => {
-  assert.equal(classifyClose(CloseCode.UNSUPPORTED).recoverable, false)
-  assert.equal(classifyClose(CloseCode.PARSE).recoverable, false)
-  assert.equal(classifyClose(CloseCode.FAIL_IDENTIFY).recoverable, true)
-  assert.equal(classifyClose(CloseCode.INTERNAL_ERROR).recoverable, true)
-  assert.equal(classifyClose(CloseCode.SESSION_TERMINATED).expected, true)
-  // Kicked or banned: rejoining on our own would undo a moderator's decision.
-  assert.equal(classifyClose(CloseCode.KICKED).recoverable, false)
-  assert.equal(classifyClose(CloseCode.KICKED).expected, false)
-  // The node's E2EE delivery service died: a fresh session gets a new group.
-  assert.equal(classifyClose(CloseCode.E2EE_FAILED).recoverable, true)
-  assert.equal(classifyClose(1006).recoverable, true)
-  assert.equal(classifyClose(undefined).recoverable, true)
+test('one close-code table for both sockets, by action', () => {
+  // The numbers are the server's utils::CloseCode.
+  assert.deepEqual(
+    [
+      CloseCode.ServerShutdown,
+      CloseCode.UpdateRequired,
+      CloseCode.InvalidPayload,
+      CloseCode.AuthFailed,
+      CloseCode.TicketRejected,
+      CloseCode.Replaced,
+      CloseCode.HeartbeatTimeout,
+      CloseCode.Kicked,
+      CloseCode.Banned,
+      CloseCode.VoiceEnded,
+      CloseCode.E2eeFailed,
+      CloseCode.InternalError
+    ],
+    [1001, 4000, 4001, 4002, 4003, 4004, 4005, 4006, 4007, 4008, 4009, 4010]
+  )
+  const action = (code) => classifyClose(code).action
+  // A dropped connection resumes: /ws its event stream, /voice its session.
+  for (const code of [1001, 4005, 4010, 1006, 1005, 1000, undefined, null]) {
+    assert.equal(action(code), CloseAction.Resume, `code ${code}`)
+  }
+  // A new session (op 13, then Identify): a refused ticket or resume, a frame
+  // the server couldn't read, the node's E2EE failing.
+  assert.equal(action(4003), CloseAction.Fresh)
+  assert.equal(action(4001), CloseAction.Fresh)
+  assert.equal(action(4009), CloseAction.Fresh)
+  assert.equal(action(4002), CloseAction.Reauth)
+  assert.equal(action(4008), CloseAction.IfInVoice)
+  // Another connection took over, or a moderator acted: never come back on our own.
+  assert.equal(action(4004), CloseAction.Stop)
+  assert.equal(action(4006), CloseAction.Stop)
+  assert.equal(action(4007), CloseAction.Stop)
+  assert.equal(action(4000), CloseAction.Update)
+  assert.equal(classifyClose(4004).name, 'Replaced')
+  assert.equal(classifyClose(4999).name, null)
+})
+
+test('ticket refusals are told apart by their text', () => {
+  assert.equal(
+    voiceTicketError('Client must join a voice channel before requesting a voice ticket'),
+    VoiceTicketError.NotInVoice
+  )
+  assert.equal(voiceTicketError('Voice media is unavailable'), VoiceTicketError.VoiceUnavailable)
+  assert.equal(voiceTicketError('Client is already streaming'), null)
+  assert.equal(voiceTicketError(undefined), null)
+})
+
+// ─── Resume ──────────────────────────────────────────────────────
+
+test('RestartIce is answered by IceRestarted for its direction', async () => {
+  const { matcher, sent, reply } = matcherHarness()
+  const send = matcher.request(Request.restartIce(Direction.Send))
+  const receive = matcher.request(Request.restartIce(Direction.Receive))
+  assert.deepEqual(sent, [
+    { RestartIce: { direction: 'Send' } },
+    { RestartIce: { direction: 'Receive' } }
+  ])
+  const ice = { usernameFragment: 'u', password: 'p', iceLite: true }
+  assert.equal(reply({ IceRestarted: { direction: 'Receive', ice_parameters: ice } }), true)
+  assert.deepEqual(await receive, { direction: 'Receive', ice_parameters: ice })
+  // A failure names the transport.
+  assert.equal(
+    reply({ Error: { object: { Transport: 'Send' }, code: 'Internal', message: 'x' } }),
+    true
+  )
+  await assert.rejects(send, (err) => err instanceof VoiceRequestError && err.code === 'Internal')
+  assert.equal(matcher.size, 0)
+})
+
+test('a detached matcher holds what is in flight, refuses new requests, and times nothing', async () => {
+  const { matcher, sent, timers } = matcherHarness()
+  const sink = matcher.create((node) => Request.createSink(node, remote(3)))
+  assert.equal(timers.filter((timer) => !timer.cleared).length, 1)
+  matcher.detach(new Error('socket gone'))
+  assert.equal(matcher.detached, true)
+  assert.equal(matcher.size, 1)
+  assert.equal(timers.filter((timer) => !timer.cleared).length, 0)
+  await assert.rejects(matcher.request(Request.sync(9)), /socket gone/)
+  await assert.rejects(
+    matcher.create((node) => Request.createSink(node, remote(4))),
+    /socket gone/
+  )
+  await assert.rejects(matcher.requestSynced(Request.configureSink(1, {})), /socket gone/)
+  assert.throws(() => matcher.notify(Request.close(1)), /socket gone/)
+  assert.equal(sent.length, 1)
+  // Closing for good still rejects what was held.
+  matcher.close(new Error('over'))
+  await assert.rejects(sink, /over/)
+  assert.equal(matcher.detached, false)
+})
+
+test('after a resume, the replay answers what arrived and the Done behind it resends what was lost', async () => {
+  const { matcher, sent, reply, timers, protocolErrors } = matcherHarness()
+  const source = matcher.create((node) => Request.createSource(node, 'Webcam', {})) // 1
+  const lostSink = matcher.create((node) => Request.createSink(node, remote(3))) // 2
+  const synced = matcher.requestSynced(Request.configureSink(9, { paused: false })) // Sync 3
+  const lostConfig = matcher.requestSynced(Request.configureSink(9, { priority: 2 })) // Sync 4
+  const connectSend = matcher.request(Request.connectTransport(Direction.Send, {}))
+  const lostConnect = matcher.request(Request.connectTransport(Direction.Receive, {}))
+  const lostRestart = matcher.request(Request.restartIce(Direction.Send))
+  const lostGroup = matcher.requestSynced(Request.group({ Ready: { epoch: 2 } })) // Sync 5
+  matcher.detach(new Error('socket gone'))
+  sent.length = 0
+
+  // Resumed: new requests are accepted again, and only a Sync goes out, behind the replay.
+  const resumed = matcher.resume()
+  assert.equal(matcher.detached, false)
+  assert.deepEqual(sent, [{ Sync: { callback: 6 } }])
+  assert.equal(timers.filter((timer) => !timer.cleared).length, 1)
+
+  // The replay answers whatever reached the server, like any answer.
+  assert.equal(reply({ Source: { node: 1, kind: { type: 'Webcam' } } }), true)
+  assert.equal(reply({ Done: { callback: 3 } }), true)
+  assert.equal(reply({ TransportConnected: { direction: 'Send' } }), true)
+  assert.deepEqual(await source, { node: 1, kind: { type: 'Webcam' } })
+  assert.equal(await synced, undefined)
+  assert.deepEqual(await connectSend, { direction: 'Send' })
+
+  // A request made before the Done goes out after the Sync, so it is never in doubt.
+  const fresh = matcher.create((node) => Request.createSink(node, remote(7))) // 7
+  sent.length = 0
+
+  // The Done: everything sent before the drop and still waiting was lost. Creates and
+  // Syncs get new ids (the old ones are below ids the server has seen); the rest goes
+  // out as it was, in order.
+  assert.equal(reply({ Done: { callback: 6 } }), true)
+  await resumed
+  assert.deepEqual(sent, [
+    { CreateSink: { new_node: 8, source: remote(3) } },
+    { ConfigureSink: { node: 9, priority: 2 } },
+    { Sync: { callback: 9 } },
+    {
+      ConnectTransport: { transport_parameters: { dtlsParameters: {} }, direction: 'Receive' }
+    },
+    { RestartIce: { direction: 'Send' } },
+    { Group: { Ready: { epoch: 2 } } },
+    { Sync: { callback: 10 } }
+  ])
+  assert.equal(matcher.size, 6)
+
+  // And they are answered like any request; a create resolves with its new node.
+  reply({ Sink: { node: 7, rtp_parameters: {} } })
+  reply({ Sink: { node: 8, rtp_parameters: { codecs: ['x'] } } })
+  reply({ Done: { callback: 9 } })
+  reply({ TransportConnected: { direction: 'Receive' } })
+  reply({ IceRestarted: { direction: 'Send', ice_parameters: {} } })
+  reply({ Done: { callback: 10 } })
+  assert.deepEqual(await fresh, { node: 7, rtp_parameters: {} })
+  assert.deepEqual(await lostSink, { node: 8, rtp_parameters: { codecs: ['x'] } })
+  assert.equal(await lostConfig, undefined)
+  assert.deepEqual(await lostConnect, { direction: 'Receive' })
+  assert.deepEqual(await lostRestart, { direction: 'Send', ice_parameters: {} })
+  assert.equal(await lostGroup, undefined)
+  assert.equal(matcher.size, 0)
+  assert.equal(protocolErrors.length, 0)
+
+  // New ids continue above everything this session used.
+  matcher.create((node) => Request.createSink(node, remote(6)))
+  assert.equal(sent.at(-1).CreateSink.new_node, 11)
+})
+
+test('a replayed Error settles a request in doubt, and only its Sync can still be lost', async () => {
+  const { matcher, sent, reply } = matcherHarness()
+  const sink = matcher.create((node) => Request.createSink(node, remote(3))) // 1
+  const paused = matcher.requestSynced(Request.setSourcePaused(4, true)) // Sync 2
+  matcher.detach(new Error('socket gone'))
+  sent.length = 0
+  const resumed = matcher.resume() // Sync 3
+  reply({ Error: { object: { Sink: 1 }, code: 'NotFound', message: 'no source' } })
+  // SetSourcePaused failed and its Sync never made it: nothing is left to send.
+  reply({ Error: { object: { Source: 4 }, code: 'NotSupported', message: 'x' } })
+  reply({ Done: { callback: 3 } })
+  await resumed
+  await assert.rejects(sink, (err) => err.sourceGone)
+  assert.equal((await paused.catch((e) => e)).code, 'NotSupported')
+  assert.deepEqual(sent, [{ Sync: { callback: 3 } }])
+  assert.equal(matcher.size, 0)
+})
+
+test('a drop before the Done leaves everything for the next resume, whose Sync takes over', async () => {
+  const { matcher, sent, reply, protocolErrors } = matcherHarness()
+  const lost = matcher.create((node) => Request.createSink(node, remote(3))) // 1
+  matcher.detach(new Error('socket gone'))
+  const first = matcher.resume() // Sync 2
+  matcher.detach(new Error('socket gone again'))
+  assert.equal(matcher.size, 2)
+  sent.length = 0
+
+  const second = matcher.resume() // Sync 3
+  assert.deepEqual(sent, [{ Sync: { callback: 3 } }])
+  // The first Sync did reach the server, so its Done comes in the replay. It sorts
+  // nothing out: requests on the second socket aren't covered by it.
+  reply({ Done: { callback: 2 } })
+  await first
+  assert.deepEqual(sent, [{ Sync: { callback: 3 } }])
+  reply({ Done: { callback: 3 } })
+  await second
+  assert.deepEqual(sent.at(-1), { CreateSink: { new_node: 4, source: remote(3) } })
+  reply({ Sink: { node: 4, rtp_parameters: {} } })
+  assert.equal((await lost).node, 4)
+  assert.equal(protocolErrors.length, 0)
+
+  // When the earlier Sync was lost too, the later Done settles it, and it isn't resent.
+  matcher.detach(new Error('socket gone'))
+  const lostSync = matcher.resume() // Sync 5
+  matcher.detach(new Error('socket gone again'))
+  sent.length = 0
+  const third = matcher.resume() // Sync 6
+  reply({ Done: { callback: 6 } })
+  await third
+  await assert.rejects(lostSync, /Superseded/)
+  assert.deepEqual(sent, [{ Sync: { callback: 6 } }])
+  assert.equal(matcher.size, 0)
+})
+
+test('a notified request lost with the socket goes out again, unless an answer vouched for it', async () => {
+  const { matcher, sent, reply } = matcherHarness()
+  matcher.notify(Request.close(4))
+  const confirmed = matcher.requestSynced(Request.configureSink(5, {})) // Sync 1
+  // The Sync went out after Close 4, so Close 4 arrived.
+  reply({ Done: { callback: 1 } })
+  await confirmed
+  matcher.notify(Request.close(6))
+  matcher.notify(Request.requestKeyFrame(7))
+  matcher.detach(new Error('socket gone'))
+  sent.length = 0
+
+  // The resume's own Sync went out on the new socket: its Done vouches for nothing sent
+  // on the old one.
+  const resumed = matcher.resume() // Sync 2
+  reply({ Done: { callback: 2 } })
+  await resumed
+  assert.deepEqual(sent, [
+    { Sync: { callback: 2 } },
+    { Close: { node: 6 } },
+    { RequestKeyFrame: { node: 7 } }
+  ])
+
+  // A replayed Done of a Sync sent after them on the old socket does.
+  const later = matcher.requestSynced(Request.configureSink(5, {})) // Sync 3
+  matcher.detach(new Error('socket gone'))
+  sent.length = 0
+  const again = matcher.resume() // Sync 4
+  reply({ Done: { callback: 3 } })
+  reply({ Done: { callback: 4 } })
+  await again
+  await later
+  assert.deepEqual(sent, [{ Sync: { callback: 4 } }])
+})
+
+test('a resume can only lose what a ready session can resend', async () => {
+  const { matcher, reply } = matcherHarness()
+  const caps = matcher.request(Request.setCapabilities({}, [1]))
+  matcher.detach(new Error('socket gone'))
+  const resumed = matcher.resume() // Sync 1
+  reply({ Done: { callback: 1 } })
+  await resumed
+  await assert.rejects(caps, (err) => err instanceof VoiceProtocolError)
+  matcher.close(new Error('over'))
+  await assert.rejects(matcher.resume(), /over/)
 })
 
 // ─── View roles ──────────────────────────────────────────────────

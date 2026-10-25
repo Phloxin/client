@@ -842,16 +842,7 @@ function Sidebar({
           <button
             className="control-btn"
             title="Settings"
-            onClick={() => {
-              if (typeof onOpenSettings === 'function') {
-                onOpenSettings()
-              } else if (typeof window.openSettings === 'function') {
-                window.openSettings()
-              } else {
-                // fallback to main process IPC for older behavior
-                window.electron.ipcRenderer.send('open-settings')
-              }
-            }}
+            onClick={onOpenSettings}
           >
             <IconSettings size={18} />
           </button>

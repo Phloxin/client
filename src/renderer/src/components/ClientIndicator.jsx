@@ -335,9 +335,14 @@ function ClientIndicator({
     statusIcon = <IconMicrophone size={18} className="mic-indicator" aria-label="Not speaking" />
   }
 
+  // In a voice channel on the backend, but no voice node session carries its
+  // media yet (still connecting, or lost and not back).
+  const connecting = !rosterMode && client.channel_id != null && client.connected === false
+
   return (
     <div
-      className="client-indicator"
+      className={`client-indicator${connecting ? ' connecting' : ''}`}
+      title={connecting ? `${client.name} is connecting to voice…` : undefined}
       data-anim-status={animStatus}
       draggable={canDragToChannel}
       onDragStart={canDragToChannel ? handleDragStart : undefined}
