@@ -116,7 +116,7 @@ async function getMicContext() {
 // processed stream is also the source of truth for the local speaking indicator,
 // so it reflects everything that can affect what peers receive (including
 // RNNoise and a closed volume gate).
-export async function buildAudioProcessor(stream, micSettings) {
+export async function buildAudioProcessor(stream, micSettings, hooks = {}) {
   const stereo = micProfileWantsStereo(micSettings)
   // The RNNoise worklet is a mono, speech-trained denoiser: it cannot preserve a
   // stereo image and would gut music, which is exactly what Hi-Fi Voice is for.
@@ -135,6 +135,7 @@ export async function buildAudioProcessor(stream, micSettings) {
   let node = input
   let rnnoiseNode = null
   let stopGateTicker = null
+  let gateController = null
 
   if (needsRnnoise) {
     try {
@@ -151,8 +152,9 @@ export async function buildAudioProcessor(stream, micSettings) {
   if (needsGate) {
     const reader = createSpeechLevelReader(audioContext)
     const gate = audioContext.createGain()
-    const gateController = createLevelGateController(audioContext, gate, reader.read, {
-      threshold: micSettings.volumeGateThreshold
+    gateController = createLevelGateController(audioContext, gate, reader.read, {
+      threshold: micSettings.volumeGateThreshold,
+      onOpenChange: hooks.onGateOpenChange
     })
     chainNodes.push(...reader.nodes, gate)
     // Analysis is a sidechain so the speech-band filters never color outgoing
@@ -196,7 +198,13 @@ export async function buildAudioProcessor(stream, micSettings) {
   // The muted-talk detector listens there instead of the raw capture, so it only
   // hears audio that would really be transmitted, and it keeps hearing it while
   // muted (muting disables the destination's *track*, not the graph feeding it).
-  return { stream: destination.stream, stop, tap: { context: audioContext, node } }
+  return {
+    stream: destination.stream,
+    stop,
+    tap: { context: audioContext, node },
+    gated: Boolean(needsGate),
+    gateOpen: () => gateController?.isOpen() === true
+  }
 }
 
 // Release a raw getUserMedia capture, closing the OS mic handle. Safe on null.
@@ -334,7 +342,8 @@ export function createLevelGateController(
     threshold = DEFAULT_VOLUME_GATE_THRESHOLD,
     hysteresis = 3,
     holdMs = 200,
-    rampSeconds = 0.03
+    rampSeconds = 0.03,
+    onOpenChange = () => {}
   } = {}
 ) {
   let open = false
@@ -349,6 +358,7 @@ export function createLevelGateController(
     gate.gain.cancelScheduledValues(now)
     gate.gain.setValueAtTime(current, now)
     gate.gain.linearRampToValueAtTime(next ? 1 : 0, now + rampSeconds)
+    onOpenChange(next)
   }
 
   const update = (nextThreshold = threshold) => {

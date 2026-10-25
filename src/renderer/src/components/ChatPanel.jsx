@@ -466,6 +466,7 @@ function ChatPanel({
   onEditMessage,
   onDeleteMessage,
   onReactMessage,
+  onLoadReactors,
   onTyping,
   onError,
   typingUsers = [],
@@ -997,15 +998,16 @@ function ChatPanel({
   }, [currentMatch])
 
   // Hover text for a reaction chip: who reacted, with anyone we can't name
-  // (someone who has since left the server) folded into "+N others". Ids
+  // folded into "+N others". `userIds` is the first page of reactors, fetched on
+  // the chip's first hover (onLoadReactors) and kept current by live events, so
+  // it can be a subset; `count` covers the rest and `me` supplies "You". Ids
   // compare as strings — roster ids may be numbers while the server's are
   // snowflake strings.
   const reactionTitle = (r) => {
-    const names = (r.userIds || []).map((id) =>
-      String(id) === String(selfId)
-        ? 'You'
-        : clients?.find((c) => String(c.id) === String(id))?.name || null
-    )
+    const names = (r.userIds || [])
+      .filter((id) => String(id) !== String(selfId))
+      .map((id) => clients?.find((c) => String(c.id) === String(id))?.name || null)
+    if (r.me) names.unshift('You')
     const known = names.filter(Boolean).slice(0, MAX_REACTION_NAMES)
     const others = r.count - known.length
     if (!known.length) return `${r.count} reaction${r.count === 1 ? '' : 's'}`
@@ -1350,6 +1352,13 @@ function ChatPanel({
                           type="button"
                           className={`chat-reaction${r.me ? ' mine' : ''}`}
                           title={reactionTitle(r)}
+                          // Enough reactors for the names the title shows, us included.
+                          onMouseEnter={() =>
+                            onLoadReactors?.(entry.id, r.emoji, MAX_REACTION_NAMES + 1)
+                          }
+                          onFocus={() =>
+                            onLoadReactors?.(entry.id, r.emoji, MAX_REACTION_NAMES + 1)
+                          }
                           onClick={() => onReactMessage?.(entry.id, r.emoji)}
                           layout={msgAnim}
                           // Only re-measure when this message's own reactions

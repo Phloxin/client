@@ -10,7 +10,6 @@ import {
   IconChevronUp,
   IconVolume,
   IconVolume2,
-  IconVolume3,
   IconVolume4,
   IconVolumeOff,
   IconExternalLink,

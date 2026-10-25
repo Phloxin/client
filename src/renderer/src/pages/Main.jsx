@@ -30,7 +30,9 @@ import {
   receiveEventSocketError,
   receiveStreamReply,
   receiveVoiceTicket,
+  restartVoiceSession,
   setEventSocketSender,
+  setVoiceServerHooks,
   setFocusedScreenAudio,
   setVideoStreamRoles,
   setWatchedProducers,
@@ -42,6 +44,12 @@ import { setServerHost, apiBase, wsBase, cdnUrl, throwIfError } from '../lib/ser
 import { validateMessage, statusOf } from '../lib/presence'
 import { useAutoIdle } from '../lib/useAutoIdle'
 import { authFetch, getFreshToken, setOnSessionExpired } from '../lib/auth'
+import {
+  CloseAction,
+  CloseCode,
+  REQUEST_VOICE_TICKET_OP,
+  classifyClose
+} from '../lib/soup/protocol'
 import { httpFetch } from '../lib/http'
 import {
   isVoiceRecoveryReady,
@@ -67,6 +75,9 @@ const HISTORY_LIMIT = 50
 const HEARTBEAT_INTERVAL_MS = 10000
 const RECONNECT_BASE_DELAY_MS = 1000
 const RECONNECT_MAX_DELAY_MS = 30000
+// Event-socket 4002 (AuthFailed) closes in a row, each answered by a token
+// refresh, before we give up on the session.
+const MAX_EVENT_AUTH_FAILURES = 2
 const TYPING_DURATION_MS = 10000
 
 // Grace period after (re)connecting or changing channels during which streams
@@ -118,8 +129,16 @@ function messageFromApi(msg) {
     // are skipped — the server marks them NOT YET IMPLEMENTED.
     reactions: (msg.reactions || [])
       .filter((r) => r.emoji?.type === 'basic')
-      // `user_ids` names everyone who reacted, for the chip's hover tooltip.
-      .map((r) => ({ emoji: r.emoji.value, count: r.count, me: r.me, userIds: r.user_ids || [] })),
+      // Messages carry only counts. `userIds` is filled on the chip's first hover
+      // (GET .../reactions/{emoji}, see handleLoadReactors) and kept current by
+      // live reaction events. `reactorsLoaded` marks that the fetch has happened.
+      .map((r) => ({
+        emoji: r.emoji.value,
+        count: r.count,
+        me: r.me,
+        userIds: [],
+        reactorsLoaded: false
+      })),
     mentions: msg.mentions || [],
     mentionEveryone: !!msg.mention_everyone,
     // Reply target. `message_reference` survives the target's deletion while
@@ -139,6 +158,57 @@ function messageFromApi(msg) {
     // edited. Drives the "(edited)" marker; set/refreshed via MessageUpdated.
     editedTs: msg.edited_timestamp ?? null
   }
+}
+
+// Apply one user's reaction toggle to a message's reaction chips. Our own
+// toggles key off `me`, so the event echoing an optimistic flip is a no-op.
+// Ids compare as strings, as in ChatPanel's tooltip.
+function applyReaction(reactions, emoji, userId, added, selfId) {
+  const isSelf = String(userId) === String(selfId)
+  const existing = reactions.find((r) => r.emoji === emoji)
+  const listed = (existing?.userIds || []).some((id) => String(id) === String(userId))
+  if (isSelf ? !!existing?.me === added : added && listed) return reactions
+  if (!existing) {
+    if (!added) return reactions
+    // A new chip's one reactor is the whole list, so it never needs fetching.
+    return [
+      ...reactions,
+      { emoji, count: 1, me: isSelf, userIds: userId == null ? [] : [userId], reactorsLoaded: true }
+    ]
+  }
+  const others = (existing.userIds || []).filter((id) => String(id) !== String(userId))
+  const chip = added
+    ? {
+        ...existing,
+        count: existing.count + 1,
+        me: existing.me || isSelf,
+        userIds: [...others, userId]
+      }
+    : { ...existing, count: existing.count - 1, me: existing.me && !isSelf, userIds: others }
+  return reactions.map((r) => (r.emoji === emoji ? chip : r)).filter((r) => r.count > 0)
+}
+
+// GET the first `limit` users (ascending id) who reacted to a message with
+// `emoji`. The server pages with `after`, but a tooltip only needs the first page.
+async function fetchReactors(channelId, messageId, emoji, limit) {
+  const res = await authFetch(
+    `${apiBase()}/channels/${channelId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}?limit=${limit}`
+  )
+  await throwIfError(res)
+  const data = await res.json()
+  return Array.isArray(data?.user_ids) ? data.user_ids : []
+}
+
+// GET one page of a channel's history. Cursors (`before`/`after`/`around`) and
+// `limit` go in the query string; unset ones are left out.
+async function fetchChannelMessages(channelId, params) {
+  const query = new URLSearchParams()
+  for (const [key, value] of Object.entries(params)) {
+    if (value != null) query.set(key, String(value))
+  }
+  const res = await authFetch(`${apiBase()}/channels/${channelId}/messages?${query}`)
+  await throwIfError(res)
+  return res.json()
 }
 
 function kindFromContentType(type) {
@@ -162,11 +232,26 @@ function dmOther(channel, selfId) {
   return { id: undefined, name: undefined }
 }
 
-// Normalize a ClientApiObject's voice fields for the roster. Self toggles stay
-// `self_mute`/`self_deaf`; the server-forced pair (`muted`/`deaf` — a moderator
-// gag / server deafen) becomes `server_mute`/`server_deaf`, so `server_mute`
-// alone means "gagged". Also resolves the avatar URL.
-function normalizeClientVoice(c) {
+// The roster's voice fields, from a VoiceStateApiObject (null: not in voice).
+// Self toggles are `self_mute`/`self_deaf`; the server-forced pair (a moderator
+// gag / server deafen) is `server_mute`/`server_deaf`, so `server_mute` alone
+// means "gagged". `connected` says a voice node session carries the member's
+// media; false while it is still connecting (or has lost it).
+function voiceFields(state) {
+  return {
+    channel_id: state?.channel_id ?? null,
+    self_mute: !!state?.self_mute,
+    self_deaf: !!state?.self_deaf,
+    server_mute: !!state?.server_mute,
+    server_deaf: !!state?.server_deaf,
+    connected: !!state?.connected
+  }
+}
+
+// A roster entry: a ClientApiObject (profile, roles, vanity) plus its voice
+// state, which the server sends separately (Ready.voice_states and
+// VoiceStateUpdate). Also resolves the avatar URL.
+function normalizeClientVoice(c, voiceState = null) {
   return {
     ...c,
     avatar: cdnUrl(c.avatar),
@@ -174,10 +259,7 @@ function normalizeClientVoice(c) {
     // ids and resolve names/icons against the global vanity list, so icon/name
     // edits propagate from one place.
     vanity_ids: (c.vanity || []).map((v) => v.id),
-    self_mute: !!c.self_mute,
-    self_deaf: !!c.self_deaf,
-    server_mute: !!c.muted,
-    server_deaf: !!c.deaf
+    ...voiceFields(voiceState)
   }
 }
 
@@ -415,6 +497,13 @@ function Main() {
   const selfIdRef = useRef(null)
   const selfChannelIdRef = useRef(null)
   const voiceStateRef = useRef({ self_mute: false, self_deaf: false, channel_id: null })
+  // The voice channel the backend lists us in (Ready.voice_states and our own
+  // VoiceStateUpdates), as opposed to voiceStateRef's intent. Soup asks it how
+  // to get a ticket (op 13 while listed) and what a 4008 means.
+  const serverVoiceChannelRef = useRef(null)
+  // A fresh Ready didn't list us in the channel we mean to be in (the backend
+  // lost us). Set until we're listed again; soup rejoins with op 1.
+  const rejoinAfterReadyRef = useRef(false)
   // Timestamp of our last own channel action (create/edit/move/etc). The server
   // echoes ChannelUpdated back to us, and a reorder also reindexes sibling
   // channels — so within a short window after acting we suppress the "your
@@ -446,7 +535,9 @@ function Main() {
   // This is a diagnostic/recovery boundary, not a success boundary. Membership
   // alone only proves events recovered; soup must also rebuild a live local
   // media producer before the UI may claim voice is connected again.
-  const VOICE_REJOIN_TIMEOUT_MS = 20000
+  // Above soup's own give-up deadline (40 s), which leaves the channel and says
+  // why, so that one normally speaks first.
+  const VOICE_REJOIN_TIMEOUT_MS = 45000
   const isReconnectRecovering = useCallback(
     () => eventsRecoveringRef.current || awaitingRejoinRef.current != null,
     []
@@ -1318,12 +1409,12 @@ function Main() {
     [token, vanity, clients, showError, showSuccess]
   )
 
-  // durationSeconds 0 = permanent (server default); reason optional.
+  // durationSeconds 0 = permanent (server default); reason optional. The API takes ms.
   const handleBanUser = useCallback(
     async (userId, { durationSeconds = 0, reason } = {}) => {
       if (!userId || userId === client?.id) return
       try {
-        const body = { duration_seconds: durationSeconds }
+        const body = { duration_ms: durationSeconds * 1000 }
         if (reason) body.reason = reason
         const res = await authFetch(`${apiBase()}/server/clients/${userId}/ban`, {
           method: 'POST',
@@ -1399,28 +1490,15 @@ function Main() {
   )
 
   // Fetch a channel's recent history and replace that channel's feed entries with it.
-  // Routed through the main process (GET with a JSON body). `shouldApply`
-  // bails if the result is stale (user switched channels before it arrived).
+  // `shouldApply` bails if the result is stale (user switched channels before it
+  // arrived).
   const loadChannelHistory = useCallback(
     (channelId, shouldApply = () => true) => {
       if (!token || channelId == null) return Promise.resolve()
-      // The request runs in the main process, outside authFetch — hand it a
-      // token refreshed here if needed.
-      return getFreshToken()
-        .then((accessToken) =>
-          window.electron.ipcRenderer.invoke('get-channel-messages', {
-            url: `${apiBase()}/channels/${channelId}/messages`,
-            token: accessToken,
-            limit: HISTORY_LIMIT
-          })
-        )
-        .then((res) => {
+      return fetchChannelMessages(channelId, { limit: HISTORY_LIMIT })
+        .then((messages) => {
           if (!shouldApply()) return
-          if (!res?.ok) {
-            if (res?.error) console.error('Failed to load chat history:', res.error)
-            return
-          }
-          const history = (res.messages || []).map(messageFromApi).sort(byChronology)
+          const history = (messages || []).map(messageFromApi).sort(byChronology)
           // We just replaced this channel's messages with the recent page, so
           // it's no longer scrolled to the start — let scroll-up paginate again.
           setExhaustedChannels((prev) => {
@@ -1451,21 +1529,9 @@ function Main() {
     }, null)
     if (!oldest) return Promise.resolve()
     loadingOlderRef.current = true
-    return getFreshToken()
-      .then((accessToken) =>
-        window.electron.ipcRenderer.invoke('get-channel-messages', {
-          url: `${apiBase()}/channels/${channelId}/messages`,
-          token: accessToken,
-          limit: HISTORY_LIMIT,
-          before: oldest.id
-        })
-      )
-      .then((res) => {
-        if (!res?.ok) {
-          if (res?.error) console.error('Failed to load older messages:', res.error)
-          return 0
-        }
-        const older = (res.messages || []).map(messageFromApi)
+    return fetchChannelMessages(channelId, { limit: HISTORY_LIMIT, before: oldest.id })
+      .then((messages) => {
+        const older = (messages || []).map(messageFromApi)
         if (older.length < HISTORY_LIMIT) {
           setExhaustedChannels((prev) => new Set(prev).add(channelId))
         }
@@ -1652,8 +1718,9 @@ function Main() {
   }
 
   // Move another client into a channel (drag their entry onto a channel header).
-  // The server enforces permissions and broadcasts ClientModified, so we don't
-  // mutate locally on success.
+  // The server enforces permissions and broadcasts VoiceStateUpdate (the PATCH
+  // answers with the same VoiceStateApiObject), so we don't mutate locally on
+  // success.
   const handleMoveClientToChannel = useCallback(
     async (userId, channelId) => {
       if (userId == null) return
@@ -1688,7 +1755,7 @@ function Main() {
     [handleMoveClientToChannel]
   )
 
-  // Gag / ungag a client: server-wide mute (PATCH /client { mute }) so they can't
+  // Gag / ungag a client: server-wide mute (PATCH /client { server_mute }) so they can't
   // speak in any channel. The server broadcasts VoiceStateUpdate with the new
   // server_mute, so we don't mutate locally on success.
   const handleGagUser = useCallback(
@@ -1697,7 +1764,7 @@ function Main() {
         const res = await authFetch(`${apiBase()}/client/${userId}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ mute: gag })
+          body: JSON.stringify({ server_mute: gag })
         })
         await throwIfError(res)
       } catch (err) {
@@ -1782,6 +1849,16 @@ function Main() {
       }
       popoutWindowRef.current = null
       setPoppedOut(false)
+      // A closed event socket no longer means "leave voice": the backend keeps
+      // us in the channel for its event-socket grace. Say so while we still can.
+      if (
+        voiceStateRef.current.channel_id != null &&
+        eventsWsRef.current?.readyState === WebSocket.OPEN
+      ) {
+        eventsWsRef.current.send(JSON.stringify({ op: 1, data: { channel_id: null } }))
+      }
+      serverVoiceChannelRef.current = null
+      rejoinAfterReadyRef.current = false
       awaitingRejoinRef.current = null
       voiceRebuildKindRef.current = null
       preDropChannelRef.current = null
@@ -1887,6 +1964,10 @@ function Main() {
     // teardown (effect cleanup, disconnect, or an auth failure).
     let closedByUs = false
     let reconnectAttempts = 0
+    // 4002 closes in a row, each followed by a forced token refresh. One that
+    // keeps coming back means the session is gone for good.
+    let authFailures = 0
+    let forceTokenRefresh = false
     let reconnectTimer = null
     let heartbeatTimer = null
     let ws = null
@@ -1939,10 +2020,10 @@ function Main() {
     }
 
     // The server's one-shot reply to IDENTIFY (op 0) is an internally-tagged
-    // enum: { type: 'Authenticated' | 'Resumed' | 'InvalidSession' | 'Unauthorized',
-    // ...payload }. Returns it (renaming `type` → `kind`) or null for anything
-    // else (heartbeat acks, dispatches).
-    const IDENTIFY_KINDS = ['Authenticated', 'Resumed', 'InvalidSession', 'Unauthorized']
+    // enum: { type: 'Authenticated' | 'Resumed' | 'InvalidSession', ...payload }.
+    // Returns it (renaming `type` → `kind`) or null for anything else (heartbeat
+    // acks, dispatches). A refused token closes the socket with 4002 instead.
+    const IDENTIFY_KINDS = ['Authenticated', 'Resumed', 'InvalidSession']
     const readIdentifyReply = (msg) => {
       if (typeof msg?.type === 'string' && IDENTIFY_KINDS.includes(msg.type)) {
         return { kind: msg.type, ...msg }
@@ -1965,6 +2046,7 @@ function Main() {
           console.warn(`[Events] Reconnected after ${reconnectAttempts} attempt(s) (${reply.kind})`)
         }
         reconnectAttempts = 0
+        authFailures = 0
         dropAnnounced = false
         eventsRecoveringRef.current = false
         // The events link is back, so the overlay comes down even if voice is
@@ -1979,9 +2061,11 @@ function Main() {
           setConnectionStatus('connected')
           playUiSound('connected')
         } else {
-          // The events link is back, but the server dropped us from voice during
-          // the outage. Stay "reconnecting" until soup rejoins our channel —
-          // completeRecovery fires from the selfChannelId effect then.
+          // The events link is back. Voice may have carried on through the outage
+          // (the backend keeps our membership for its event-socket grace), or the
+          // backend may have dropped us. Stay "reconnecting" until soup reports
+          // media ready in our channel — completeRecovery fires from the
+          // selfChannelId effect then.
           // Keep waiting if media is still missing. Soup's bounded media
           // watchdog performs one full voice reconnect; this timer only records
           // why we are still waiting and must never turn a failed recovery into
@@ -2016,12 +2100,13 @@ function Main() {
         // Ready follows and carries a presence snapshot, so no resync needed here.
         // A fresh session also knows nothing about our declared voice state, so
         // re-assert it — otherwise mute/deafen intent held here silently diverges
-        // from what the new server session believes. Channel re-assertion is NOT
-        // this path's job (the voice reconnect owns it, because that is what mints
-        // a ticket), so skip entirely while a rejoin is pending rather than
-        // double-declaring against it.
+        // from what the new server session believes. Only the flags go out: channel
+        // re-assertion is the voice reconnect's job (that is what mints a ticket),
+        // and a pending rejoin's join already carries the flags.
         const { self_mute: selfMute, self_deaf: selfDeaf } = voiceStateRef.current
-        if (awaitingRejoinRef.current == null && (selfMute || selfDeaf)) sendVoiceState({})
+        if (awaitingRejoinRef.current == null && (selfMute || selfDeaf)) {
+          sendVoiceState({ self_mute: selfMute, self_deaf: selfDeaf })
+        }
       } else if (reply.kind === 'Resumed') {
         // Replay should redeliver the PresenceUpdates we missed, but a resume that
         // outlived the server's buffer would silently leave stale dots on screen.
@@ -2040,13 +2125,6 @@ function Main() {
         reloadHistory()
         closedByUs = false
         ws.close()
-      } else if (reply.kind === 'Unauthorized') {
-        // Token rejected — stop reconnecting and return to a fully clean
-        // disconnected state (not a half-torn-down one that would leave a stale
-        // channel list on screen).
-        closedByUs = true
-        ws.close()
-        handleDisconnect()
       }
 
       // Last, so the recovery refs above are settled before soup can declare a
@@ -2084,6 +2162,11 @@ function Main() {
       }, 150)
     }
 
+    // The voice channel the roster has a client in. Client objects carry no
+    // voice state; it lives on the roster entry (VoiceStateUpdate).
+    const rosterChannelOf = (clientId) =>
+      clientsRef.current.find((c) => c.id === clientId)?.channel_id ?? null
+
     // Apply a dispatched event to local state.
     const handleEvent = (ev, data) => {
       // Initial snapshot pushed by the server right after a fresh, non-resuming
@@ -2093,11 +2176,21 @@ function Main() {
         setChannels(data.channels)
         // Authoritative presence snapshot. Keyed by client_id; absent = offline.
         setPresences(Object.fromEntries((data.presences || []).map((p) => [p.client_id, p])))
-        // Voice state splits into self toggles (`self_mute`/`self_deaf`) and
-        // server-forced state (`muted`/`deaf`, i.e. a moderator gag / server
-        // deafen). Normalize the server-forced pair to `server_mute`/`server_deaf`
-        // so `server_mute` alone means "gagged".
-        setClients(data.clients.map(normalizeClientVoice))
+        // Voice state comes separately, only for clients in voice: merge it
+        // onto the roster (see normalizeClientVoice).
+        const voiceStates = new Map((data.voice_states || []).map((v) => [v.client_id, v]))
+        setClients(data.clients.map((c) => normalizeClientVoice(c, voiceStates.get(c.id))))
+        // A fresh Ready is the truth about our voice state. If it
+        // doesn't list us in the channel we mean to be in, the backend lost us
+        // (its event-socket grace ran out, or it restarted): the voice session
+        // is over, and soup gets back in with op 1.
+        const selfVoiceChannel = voiceStates.get(selfIdRef.current)?.channel_id ?? null
+        serverVoiceChannelRef.current = selfVoiceChannel
+        rejoinAfterReadyRef.current = false
+        if (voiceStateRef.current.channel_id != null && selfVoiceChannel == null) {
+          rejoinAfterReadyRef.current = true
+          restartVoiceSession('A fresh Ready does not list us in voice')
+        }
         // Seed read cursors (one entry per visible channel).
         const reads = {}
         for (const rs of data.read_states || []) {
@@ -2139,30 +2232,84 @@ function Main() {
         return
       }
 
-      // Voice state update broadcast for a client: self toggles + server-forced
-      // gag/deafen. Authoritative source for all mute/deafen state (ClientModified
-      // no longer carries it).
+      // A client's whole voice state (VoiceStateApiObject): join, move, leave
+      // (`channel_id: null`), every mute or deafen change, and every
+      // `connected` change. The only source of voice state; ClientModified is
+      // profile, roles and vanity only.
       if (ev === 'VoiceStateUpdate') {
-        const { client_id, muted, deaf, self_mute, self_deaf } = data
+        const clientId = data.client_id
+        const isSelf = clientId === selfIdRef.current
+        const newChannelId = data.channel_id ?? null
+        const previous = clientsRef.current.find((c) => c.id === clientId)
+        const oldChannelId = previous?.channel_id ?? null
         // A change to our own server_mute is a gag/ungag by a moderator (our own
         // mic mute is self_mute, not this). Chime on the transition only.
-        if (client_id === selfIdRef.current) {
-          const wasGagged = !!clientsRef.current.find((c) => c.id === client_id)?.server_mute
-          if (!!muted !== wasGagged) playUiSound(muted ? 'you_were_gagged' : 'you_were_ungagged')
+        if (isSelf) {
+          const wasGagged = !!previous?.server_mute
+          if (!!data.server_mute !== wasGagged) {
+            playUiSound(data.server_mute ? 'you_were_gagged' : 'you_were_ungagged')
+          }
+          serverVoiceChannelRef.current = newChannelId
+          if (newChannelId != null) rejoinAfterReadyRef.current = false
         }
         setClients((prev) =>
-          prev.map((c) =>
-            c.id === client_id
-              ? {
-                  ...c,
-                  self_mute: !!self_mute,
-                  self_deaf: !!self_deaf,
-                  server_mute: !!muted,
-                  server_deaf: !!deaf
-                }
-              : c
-          )
+          prev.map((c) => (c.id === clientId ? { ...c, ...voiceFields(data) } : c))
         )
+        if (oldChannelId === newChannelId) return
+
+        // What channel WE last declared (pre-sync). If it still differs from what
+        // the server now reports for us, we never asked for this change — it was
+        // forced (a moderator kick/move), not our own leave/switch.
+        const selfDeclaredChannel = voiceStateRef.current.channel_id
+
+        // A forced move (a moderator's PATCH /client) changes our channel without
+        // us sending a VoiceStateUpdate, so sync the voice-state intent. Otherwise
+        // a rejoin after a reconnect would take us back to the channel we were
+        // moved out of. A reconnect no longer leaves and rejoins (it resumes, or
+        // asks for a ticket with op 13), so a null here is always a real removal.
+        if (isSelf) {
+          voiceStateRef.current = { ...voiceStateRef.current, channel_id: newChannelId }
+        }
+
+        // A moderator move between two channels explains any voice rebuild
+        // that's currently in flight, even though the voice reset can arrive
+        // before this event does. Mark it here instead of waiting for the
+        // channel component to notice, since that happens after a re-render.
+        if (
+          isSelf &&
+          oldChannelId != null &&
+          newChannelId != null &&
+          awaitingRejoinRef.current != null &&
+          !eventsRecoveringRef.current &&
+          preDropChannelRef.current == null
+        ) {
+          voiceRebuildKindRef.current = 'intentional'
+          setConnectionStatus('connected')
+        }
+
+        // Join/leave chimes. For ourselves: a move into a channel is a "join",
+        // dropping out (channel_id null) is a "leave". For others: only sound
+        // when they enter or leave the channel we're currently in.
+        const myChannel = selfChannelIdRef.current
+        if (isSelf) {
+          // A voice rebuild can briefly report us out of voice and back in,
+          // which is not a real join or kick. Let the helper decide what
+          // cue, if any, this change actually deserves.
+          const cue = selfChannelChime({
+            oldChannelId,
+            newChannelId,
+            awaitingRejoin: awaitingRejoinRef.current,
+            rebuildKind: voiceRebuildKindRef.current,
+            selfDeclaredChannel
+          })
+          if (cue) playUiSound(cue)
+        } else if (myChannel != null) {
+          if (newChannelId === myChannel && oldChannelId !== myChannel) {
+            playUiSound('channel-join')
+          } else if (oldChannelId === myChannel && newChannelId !== myChannel) {
+            playUiSound('channel-leave')
+          }
+        }
         return
       }
 
@@ -2191,8 +2338,6 @@ function Main() {
           ].slice(0, 50)
         )
       } else if (ev === 'ClientModified') {
-        const oldChannelId = clientsRef.current.find((c) => c.id === data.id)?.channel_id
-
         // Someone changed OUR roles: diff old vs new ids and toast. When we
         // changed them ourselves, handleAssignRole/handleRemoveRole already
         // updated local state (and toasted), so the diff here is empty and
@@ -2239,12 +2384,12 @@ function Main() {
         }
         // ClientModified also carries profile changes (avatar / nickname). Merge
         // whatever fields are present so we don't clobber the others; `in` guards
-        // keep an event that omits a field from wiping it.
+        // keep an event that omits a field from wiping it. Voice state is never
+        // in it (VoiceStateUpdate).
         setClients((prev) =>
           prev.map((c) => {
             if (c.id !== data.id) return c
             const next = { ...c }
-            if ('channel_id' in data) next.channel_id = data.channel_id
             if ('role_ids' in data) next.role_ids = data.role_ids
             if ('vanity' in data) next.vanity_ids = (data.vanity || []).map((v) => v.id)
             if ('avatar' in data) next.avatar = cdnUrl(data.avatar)
@@ -2253,70 +2398,6 @@ function Main() {
             return next
           })
         )
-
-        // What channel WE last declared (pre-sync). If it still differs from what
-        // the server now reports for us, we never asked for this change — it was
-        // forced (a moderator kick/move), not our own leave/switch.
-        const selfDeclaredChannel = voiceStateRef.current.channel_id
-
-        // A forced move (a moderator's PATCH /client) changes our channel without
-        // us sending a VoiceStateUpdate, so sync the declarative voice-state ref.
-        // Otherwise the next mute/deafen merges our stale channel_id and yanks us
-        // back to the channel we were moved out of.
-        if (
-          data.id === selfIdRef.current &&
-          'channel_id' in data &&
-          !(data.channel_id == null && isReconnectRecovering())
-        ) {
-          voiceStateRef.current = { ...voiceStateRef.current, channel_id: data.channel_id }
-        }
-
-        // A moderator move between two channels explains any voice rebuild
-        // that's currently in flight, even though the voice reset can arrive
-        // before this event does. Mark it here instead of waiting for the
-        // channel component to notice, since that happens after a re-render.
-        if (
-          data.id === selfIdRef.current &&
-          oldChannelId != null &&
-          data.channel_id != null &&
-          oldChannelId !== data.channel_id &&
-          awaitingRejoinRef.current != null &&
-          !eventsRecoveringRef.current &&
-          preDropChannelRef.current == null
-        ) {
-          voiceRebuildKindRef.current = 'intentional'
-          setConnectionStatus('connected')
-        }
-
-        // Join/leave chimes. For ourselves: a move into a channel is a "join",
-        // dropping out (channel_id null) is a "leave" — but only when the channel
-        // actually changed. ClientModified now also fires for same-channel updates
-        // (e.g. a mute/deafen VoiceStateUpdate re-asserts our channel_id), and
-        // those must stay silent. For others: only sound when they enter or leave
-        // the channel we're currently in. Skip entirely for profile-only edits
-        // (avatar/nickname) that don't carry a channel_id.
-        const myChannel = selfChannelIdRef.current
-        if (!('channel_id' in data)) {
-          // no channel move to chime for
-        } else if (data.id === selfIdRef.current) {
-          // A voice rebuild can briefly report us out of voice and back in,
-          // which is not a real join or kick. Let the helper decide what
-          // cue, if any, this change actually deserves.
-          const cue = selfChannelChime({
-            oldChannelId,
-            newChannelId: data.channel_id,
-            awaitingRejoin: awaitingRejoinRef.current,
-            rebuildKind: voiceRebuildKindRef.current,
-            selfDeclaredChannel
-          })
-          if (cue) playUiSound(cue)
-        } else if (myChannel != null) {
-          if (data.channel_id === myChannel && oldChannelId !== myChannel) {
-            playUiSound('channel-join')
-          } else if (oldChannelId === myChannel && data.channel_id !== myChannel) {
-            playUiSound('channel-leave')
-          }
-        }
       } else if (ev === 'MessageCreated') {
         setFeed((prev) => appendFeed(prev, messageFromApi(data)))
         // Advance the channel's newest-message pointer — unread is derived from
@@ -2384,10 +2465,31 @@ function Main() {
           ...prev,
           [data.channel_id]: data.last_acknowledged_message_id
         }))
+      } else if (ev === 'ReactionAdded' || ev === 'ReactionRemoved') {
+        // { channel_id, message_id, user_id, emoji } — one user's toggle.
+        if (data.emoji?.type === 'basic') {
+          const added = ev === 'ReactionAdded'
+          setFeed((prev) =>
+            prev.map((e) =>
+              e.type === 'message' && e.id === data.message_id
+                ? {
+                    ...e,
+                    reactions: applyReaction(
+                      e.reactions || [],
+                      data.emoji.value,
+                      data.user_id,
+                      added,
+                      selfIdRef.current
+                    )
+                  }
+                : e
+            )
+          )
+        }
       } else if (ev === 'MessageUpdated') {
-        // Pushed after async work (e.g. link-unfurl embeds). Carries either the
-        // full updated message, or a partial { message_id, embeds }. Patch the
-        // matching feed entry in place by id.
+        // An edit, or async work such as link-unfurl embeds; never a reaction.
+        // Carries either the full updated message, or a partial
+        // { message_id, embeds }. Patch the matching feed entry in place by id.
         const isFull = data.content !== undefined && data.author !== undefined
         const targetId = data.id ?? data.message_id
         setFeed((prev) =>
@@ -2437,18 +2539,13 @@ function Main() {
         }
         setChannels((prev) => prev.filter((ch) => ch.id !== removedId))
       } else if (ev === 'TypingStarted') {
-        // { channel_id, timestamp, client } — refresh this client's typing entry
-        // with a fresh 10s expiry (replacing any existing one). Self is filtered
-        // out at render time using the current client id.
-        const { channel_id, client: typingClient } = data
+        // { channel_id, client_id, timestamp } — refresh this client's typing
+        // entry with a fresh 10s expiry (replacing any existing one). Names come
+        // from the roster and self is filtered out at render time.
+        const { channel_id, client_id } = data
         setTypingEntries((prev) => [
-          ...prev.filter((t) => t.clientId !== typingClient.id),
-          {
-            clientId: typingClient.id,
-            name: typingClient.name,
-            channelId: channel_id,
-            expiresAt: Date.now() + TYPING_DURATION_MS
-          }
+          ...prev.filter((t) => t.clientId !== client_id),
+          { clientId: client_id, channelId: channel_id, expiresAt: Date.now() + TYPING_DURATION_MS }
         ])
       } else if (ev === 'ClientRemoved') {
         // Authoritative roster removal (leave / kick / ban all emit this). `data`
@@ -2464,7 +2561,8 @@ function Main() {
         // handled on the socket close).
         if (
           data.client?.id !== selfIdRef.current &&
-          data.client?.channel_id === selfChannelIdRef.current
+          selfChannelIdRef.current != null &&
+          rosterChannelOf(data.client?.id) === selfChannelIdRef.current
         ) {
           playUiSound('neutral_kicked_server_currentchannel')
         }
@@ -2472,12 +2570,13 @@ function Main() {
           logTraffic(data.client?.id, data.client?.name || 'Someone', 'was kicked', false)
         }
       } else if (ev === 'ClientBanned') {
-        // { client, duration_seconds, reason }. Drop from the roster and record
+        // { client, expires_at, reason }. Drop from the roster and record
         // the ban so they surface in the Users tab (where they can be unbanned).
         // The event carries the full client, so no /server/bans refetch is needed.
         if (
           data.client?.id !== selfIdRef.current &&
-          data.client?.channel_id === selfChannelIdRef.current
+          selfChannelIdRef.current != null &&
+          rosterChannelOf(data.client?.id) === selfChannelIdRef.current
         ) {
           playUiSound('neutral_banned_server_currentchannel')
         }
@@ -2488,7 +2587,14 @@ function Main() {
         setBans((prev) =>
           prev.some((b) => b.user.id === data.client.id)
             ? prev
-            : [...prev, { reason: data.reason ?? null, user: data.client }]
+            : [
+                ...prev,
+                {
+                  reason: data.reason ?? null,
+                  expires_at: data.expires_at ?? null,
+                  user: data.client
+                }
+              ]
         )
       } else if (ev === 'VanityCreated') {
         // data is the VanityItem ({ id, type: 'group', name, avatar }). Upsert
@@ -2521,7 +2627,9 @@ function Main() {
       // expired while we were disconnected, so refresh first when needed.
       let accessToken
       try {
-        accessToken = await getFreshToken()
+        const force = forceTokenRefresh
+        forceTokenRefresh = false
+        accessToken = await getFreshToken({ force })
       } catch {
         // Couldn't refresh (network). Back off and retry; a dead session fires
         // the session-expired handler instead, which tears this effect down.
@@ -2635,26 +2743,56 @@ function Main() {
           // Stream replies still owed on this socket will never arrive.
           eventSocketClosed()
         }
-        // Forced removal by an admin: the server closes with an application code
-        // and a reason. Stop retrying (a reconnect would just be rejected) and
-        // tell the user instead of silently dropping to the disconnected screen.
-        // ponytail: codes assumed 4001 kick / 4002 ban; the reason-text match is
-        // the fallback if the server numbers them differently.
-        const reason = (event.reason || '').toLowerCase()
-        const banned = event.code === 4002 || reason.includes('ban')
-        const kicked = event.code === 4001 || reason.includes('kick')
-        if (banned || kicked) {
+        if (closedByUs) return
+        // The close code says what to do (the shared table, classifyClose).
+        const close = classifyClose(event.code)
+        if (close.action === CloseAction.Stop || close.action === CloseAction.Update) {
           closedByUs = true // suppress the reconnect path below
-          showError(`You have been ${banned ? 'banned' : 'kicked'} from the server`, {
-            silent: true,
-            soundId: banned ? 'you_were_banned' : 'you_kicked_server'
-          })
-          playUiSound(banned ? 'you_were_banned' : 'you_kicked_server')
-          handleDisconnect({ skipSound: true })
+          if (event.code === CloseCode.Kicked || event.code === CloseCode.Banned) {
+            // Forced removal by an admin: a reconnect would just be rejected, so
+            // tell the user instead of silently dropping to the disconnected screen.
+            const banned = event.code === CloseCode.Banned
+            showError(`You have been ${banned ? 'banned' : 'kicked'} from the server`, {
+              silent: true,
+              soundId: banned ? 'you_were_banned' : 'you_kicked_server'
+            })
+            playUiSound(banned ? 'you_were_banned' : 'you_kicked_server')
+            handleDisconnect({ skipSound: true })
+          } else if (close.action === CloseAction.Update) {
+            showError(
+              'This version of Pylon is no longer supported by the server; update to continue'
+            )
+            handleDisconnect()
+          } else {
+            // Replaced: a newer connection of this login took over.
+            showError('Disconnected: this session connected again elsewhere')
+            handleDisconnect()
+          }
           return
         }
-        // Recover unless the close was intentional. We resume if we still hold a
-        // session; the next handshake reply decides resume vs. fresh.
+        if (close.action === CloseAction.Reauth) {
+          // The server refused our access token (expired, revoked, or the
+          // identify was rate limited). Refresh it before the next identify; a
+          // refresh the server rejects fires the session-expired handler, which
+          // logs us out. One that keeps being refused ends the session here.
+          authFailures++
+          if (authFailures > MAX_EVENT_AUTH_FAILURES) {
+            closedByUs = true
+            showError('Session expired — please reconnect', { silent: true })
+            handleDisconnect()
+            return
+          }
+          forceTokenRefresh = true
+        } else if (close.action === CloseAction.Fresh) {
+          // The server couldn't read what we sent: a client bug. Start over
+          // without resuming rather than replaying into the same state.
+          console.error(`[Events] Server closed the socket: ${close.reason} (${event.code})`)
+          sessionIdRef.current = null
+          lastEventSeqRef.current = null
+          reloadHistory()
+        }
+        // Recover. We resume if we still hold a session; the next handshake reply
+        // decides resume vs. fresh.
         scheduleReconnect()
       }
 
@@ -2802,45 +2940,23 @@ function Main() {
     }
   }
 
-  // Flip one reaction in the local feed (add / bump / un-react).
+  // Flip our own reaction in the local feed (add / bump / un-react).
   const toggleReactionLocal = (messageId, emoji) => {
+    const self = selfIdRef.current
     setFeed((prev) =>
       prev.map((e) => {
         if (e.type !== 'message' || e.id !== messageId) return e
         const reactions = e.reactions || []
-        const existing = reactions.find((r) => r.emoji === emoji)
-        const self = selfIdRef.current
-        // Keep `userIds` in step with the count so the hover tooltip doesn't lag
-        // behind the optimistic flip; the MessageUpdated broadcast overwrites it.
-        const withoutSelf = (ids) => (ids || []).filter((id) => String(id) !== String(self))
-        let next
-        if (existing?.me) {
-          // Un-react: drop our count; remove the chip when it hits zero.
-          next = reactions
-            .map((r) =>
-              r.emoji === emoji
-                ? { ...r, count: r.count - 1, me: false, userIds: withoutSelf(r.userIds) }
-                : r
-            )
-            .filter((r) => r.count > 0)
-        } else if (existing) {
-          next = reactions.map((r) =>
-            r.emoji === emoji
-              ? { ...r, count: r.count + 1, me: true, userIds: [...withoutSelf(r.userIds), self] }
-              : r
-          )
-        } else {
-          next = [...reactions, { emoji, count: 1, me: true, userIds: self == null ? [] : [self] }]
-        }
-        return { ...e, reactions: next }
+        const had = !!reactions.find((r) => r.emoji === emoji)?.me
+        return { ...e, reactions: applyReaction(reactions, emoji, self, !had, self) }
       })
     )
   }
 
   // Toggle a reaction: optimistic local flip, then PUT (add) or DELETE
-  // (remove) with the emoji as the path segment. The server's MessageUpdated
-  // broadcast carries the authoritative aggregate and overwrites the guess;
-  // on request failure we flip back.
+  // (remove) with the emoji as the path segment. The server's ReactionAdded /
+  // ReactionRemoved echo then matches the flip and changes nothing; on request
+  // failure we flip back.
   const handleReactMessage = async (messageId, emoji) => {
     const entry = feed.find((e) => e.type === 'message' && e.id === messageId)
     if (!entry) return
@@ -2856,6 +2972,48 @@ function Main() {
     } catch (err) {
       toggleReactionLocal(messageId, emoji)
       showError(`Failed to ${had ? 'remove' : 'add'} reaction: ${err.message}`, err)
+    }
+  }
+
+  // Fill a reaction chip's reactors for its hover tooltip, once per chip. Skipped
+  // when the ids we already know (plus ourselves via `me`) account for every
+  // reaction. Live events keep the list current afterwards. If the count moved
+  // while the request was out, the page may be stale (it could still list
+  // someone who just un-reacted), so it's dropped and the next hover refetches.
+  const reactorRequestsRef = useRef(new Set())
+  const handleLoadReactors = async (messageId, emoji, limit) => {
+    const entry = feed.find((e) => e.type === 'message' && e.id === messageId)
+    const chip = entry?.reactions?.find((r) => r.emoji === emoji)
+    if (!chip || chip.reactorsLoaded) return
+    const self = String(selfIdRef.current)
+    const others = (chip.userIds || []).filter((id) => String(id) !== self).length
+    if (others + (chip.me ? 1 : 0) >= chip.count) return
+
+    const key = `${messageId}:${emoji}`
+    if (reactorRequestsRef.current.has(key)) return
+    reactorRequestsRef.current.add(key)
+    try {
+      const fetched = await fetchReactors(entry.channelId, messageId, emoji, limit)
+      setFeed((prev) =>
+        prev.map((e) =>
+          e.type === 'message' && e.id === messageId
+            ? {
+                ...e,
+                reactions: (e.reactions || []).map((r) => {
+                  if (r.emoji !== emoji || r.count !== chip.count) return r
+                  const known = new Set((r.userIds || []).map(String))
+                  const added = fetched.filter((id) => !known.has(String(id)))
+                  return { ...r, userIds: [...(r.userIds || []), ...added], reactorsLoaded: true }
+                })
+              }
+            : e
+        )
+      )
+    } catch (err) {
+      // Only the tooltip suffers; the next hover tries again.
+      console.error('Failed to load reactors:', err)
+    } finally {
+      reactorRequestsRef.current.delete(key)
     }
   }
 
@@ -2878,12 +3036,11 @@ function Main() {
   }
 
   // Single source of truth for our outbound voice state. The server's
-  // VoiceStateUpdate (op 1) is declarative: it carries the *full* desired state,
-  // and a missing channel_id is read as "leave all channels". So every send must
-  // include all three fields. We hold them in a ref and merge each partial update
-  // optimistically — that way a mute toggle never drops our channel, a channel
-  // move never resets our mute/deafen, and a rapid move-then-mute can't race on a
-  // server-echoed field that hasn't arrived yet.
+  // VoiceStateUpdate (op 1) is partial: an omitted field is left unchanged and
+  // `channel_id: null` leaves voice. So we send only the fields that changed,
+  // except that a join also carries our mute/deafen, so a server that lost them
+  // (a fresh session) learns them with the membership. The ref holds our
+  // intent, merged optimistically, for re-declaring after a reconnect.
   //
   // Returns whether the declaration actually reached the server. A dropped send
   // still updates the ref (that's our intent, re-declared on the next handshake),
@@ -2907,7 +3064,11 @@ function Main() {
         setSelectedStreamClientId(null)
       }
       if (eventsWsRef.current?.readyState !== WebSocket.OPEN) return false
-      eventsWsRef.current.send(JSON.stringify({ op: 1, data: next }))
+      const data =
+        patch.channel_id != null
+          ? { ...patch, self_mute: next.self_mute, self_deaf: next.self_deaf }
+          : patch
+      eventsWsRef.current.send(JSON.stringify({ op: 1, data }))
       return true
     },
     [isReconnectRecovering]
@@ -2926,6 +3087,40 @@ function Main() {
       return true
     })
     return () => setEventSocketSender(null)
+  }, [])
+
+  // Soup gets its voice tickets through this socket (see setVoiceServerHooks):
+  // op 13 while the backend lists us in voice, or an op 1 back into our
+  // channel when a fresh Ready showed the backend lost us.
+  useEffect(() => {
+    setVoiceServerHooks({
+      requestTicket: () => {
+        const socket = eventsWsRef.current
+        if (socket?.readyState !== WebSocket.OPEN) return 'offline'
+        if (serverVoiceChannelRef.current != null) {
+          socket.send(JSON.stringify({ op: REQUEST_VOICE_TICKET_OP, data: null }))
+          return 'sent'
+        }
+        const channelId = voiceStateRef.current.channel_id
+        if (channelId == null) return 'not-in-voice'
+        return sendVoiceState({ channel_id: channelId }) ? 'sent' : 'offline'
+      },
+      inVoice: () => serverVoiceChannelRef.current != null || rejoinAfterReadyRef.current
+    })
+    return () => setVoiceServerHooks({})
+  }, [sendVoiceState])
+
+  // Closing the window or reloading the renderer ends our voice session, but a
+  // closed event socket no longer takes us out of voice (the backend waits out
+  // its grace first). So leave explicitly.
+  useEffect(() => {
+    const leaveVoice = () => {
+      const socket = eventsWsRef.current
+      if (voiceStateRef.current.channel_id == null || socket?.readyState !== WebSocket.OPEN) return
+      socket.send(JSON.stringify({ op: 1, data: { channel_id: null } }))
+    }
+    window.addEventListener('pagehide', leaveVoice)
+    return () => window.removeEventListener('pagehide', leaveVoice)
   }, [])
 
   // Automatic updates wait for the gateway handshake and retry silently if
@@ -3060,7 +3255,8 @@ function Main() {
   // Names of other clients typing in the channel we're viewing (self excluded).
   const typingUsers = typingEntries
     .filter((t) => t.channelId === activeChatChannelId && t.clientId !== client?.id)
-    .map((t) => t.name)
+    .map((t) => clients.find((c) => c.id === t.clientId)?.name)
+    .filter(Boolean)
 
   const previewChannel = channels.find((c) => c.id === previewChannelId)
   let previewChannelName
@@ -3374,6 +3570,7 @@ function Main() {
                   onEditMessage={handleEditMessage}
                   onDeleteMessage={handleDeleteMessage}
                   onReactMessage={handleReactMessage}
+                  onLoadReactors={handleLoadReactors}
                   onTyping={handleTyping}
                   onError={showError}
                   typingUsers={typingUsers}

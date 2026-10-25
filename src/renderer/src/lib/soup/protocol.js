@@ -18,6 +18,9 @@
 // Wire conventions worth remembering:
 //   - Messages are serde externally tagged enums: { "CreateSink": { ... } }, or
 //     a bare string for a variant with no fields ({ "Group": "Rejoin" }).
+//   - Every server frame is an envelope, { "seq": n, "ev": <message> }. seq
+//     numbers the session's events from 1 and carries on across a resume; only
+//     the handshake frames Session and Resumed have none (decodeFrame).
 //   - Our own sources and sinks are LocalIds: JSON numbers (u32) this client
 //     picks. CreateSource, CreateSink and Sync each name a new one, and every
 //     new id must be above every id this socket used before, so one counter
@@ -27,7 +30,7 @@
 //     <session> being the owner's voice session. Only ever echo one the server
 //     sent (CreateSink.source); a reconnect gives the owner's sources new ones.
 //   - A wrong JSON type for either is a frame the server can't parse: it closes
-//     the socket (4004). The encoders below refuse one instead.
+//     the socket (4001 InvalidPayload). The encoders below refuse one instead.
 //   - mediasoup-client wants string ids, so the soup layer hands it
 //     String(localId) for our producers and consumers and the NodeId string
 //     as-is for a remote producer. Only a NodeId has a colon, so the two never
@@ -38,17 +41,32 @@
 //     { type: SourceType, attr?: { codec?, stream_key? } }. `attr` is absent for
 //     a Microphone. CreateSource still sends a bare SourceType plus stream_key.
 
-export const PROTOCOL_VERSION = 1
-
 // ─── Requests (client → server) ──────────────────────────────────
 
 // `node`, `newNode` and `callback` are LocalIds (ours); `source` is a NodeId
 // (another client's). Which answer, if any, each request gets is in the
 // matcher's section below.
 export const Request = Object.freeze({
-  // First frame only, exactly once. The server pushes RoutingParams once it
-  // succeeds; failure closes the socket with 4001.
+  // First frame only, exactly once. The server answers with Session (the id
+  // and resume token), then pushes RoutingParams (seq 1); a refused ticket
+  // closes the socket with 4003 TicketRejected.
   identify: (ticket) => ({ Identify: { ticket } }),
+  // First frame instead of Identify, to take over a session whose socket
+  // dropped. `lastSeq` is the highest seq received on the session (0 if none).
+  // Answered with Resumed { resume_token } (the token rotates on every resume),
+  // and then the same event stream simply continues from lastSeq + 1, with the
+  // original seq numbers: there is no snapshot to reconcile. A refusal (unknown
+  // session, wrong or rotated token, grace over, no longer in voice) or a
+  // lastSeq the server no longer has closes the socket with 4003
+  // TicketRejected. `session` is the Session id as the server sent it (a
+  // snowflake string).
+  resume: (session, resumeToken, lastSeq = 0) => ({
+    Resume: {
+      session: String(session),
+      resume_token: resumeToken,
+      last_seq: seqNumber('last_seq', lastSeq)
+    }
+  }),
   // Answered with Done { callback } once every request sent before it has been
   // handled, and its answer or Error has arrived.
   sync: (callback) => ({ Sync: { callback: localId('callback', callback) } }),
@@ -63,6 +81,11 @@ export const Request = Object.freeze({
   connectTransport: (direction, dtlsParameters) => ({
     ConnectTransport: { transport_parameters: { dtlsParameters }, direction }
   }),
+  // New local ICE parameters for one transport, after a network change.
+  // Answered with IceRestarted { direction, ice_parameters }, which go to
+  // mediasoup-client's transport.restartIce(). Allowed before the session is
+  // ready too.
+  restartIce: (direction) => ({ RestartIce: { direction } }),
   // Names the new source `newNode`. Refused before SetCapabilities. `replaces`
   // names one of our own sources of the same kind to swap out atomically: peers
   // get SourceReplaced rather than a remove and an add, and the server closes
@@ -111,15 +134,31 @@ export const Request = Object.freeze({
   // Error { "Session", InvalidArgument }.
   group: (request) => ({ Group: request }),
   // Asks one of our sinks' source for a keyframe, once its frames decrypt again.
-  requestKeyFrame: (node) => ({ RequestKeyFrame: { node: localId('node', node) } })
+  requestKeyFrame: (node) => ({ RequestKeyFrame: { node: localId('node', node) } }),
+  // SpeakingFlags we are speaking with. Sent on change, no answer.
+  setSpeaking: (flags) => ({ SetSpeaking: { flags: flagBits('flags', flags) } })
 })
 
 // The server can't parse a LocalId that isn't a u32 or a NodeId that isn't a
 // string, and closes the socket for it (4004). Refuse one here, where the
 // caller is, rather than lose the session to it.
+function seqNumber(name, value) {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new TypeError(`${name} must be a seq (an integer from 0), got ${value}`)
+  }
+  return value
+}
+
 function localId(name, value) {
   if (!Number.isInteger(value) || value < 0 || value > 0xffff_ffff) {
     throw new TypeError(`${name} must be a LocalId (a u32 this client picked), got ${value}`)
+  }
+  return value
+}
+
+function flagBits(name, value) {
+  if (!Number.isInteger(value) || value < 0 || value > 0xffff_ffff) {
+    throw new TypeError(`${name} must be flags (a u32), got ${value}`)
   }
   return value
 }
@@ -191,10 +230,10 @@ export const SourceType = Object.freeze({
   StreamAudio: 'StreamAudio'
 })
 
-// The server's video codec ladder, best first. Channel/Codecs list a channel's
-// allowed codecs in this order.
-export const VideoCodec = Object.freeze({ Av1: 'Av1', Vp9: 'Vp9', H264: 'H264', Vp8: 'Vp8' })
+export const SpeakingFlags = Object.freeze({ MICROPHONE: 1 })
 
+// The server's video codec ladder (VideoCodec), best first, with each codec's
+// mime type. Channel/Codecs list a channel's allowed codecs in this order.
 const VIDEO_CODEC_MIME = Object.freeze({
   Av1: 'video/av1',
   Vp9: 'video/vp9',
@@ -228,10 +267,61 @@ export function messageType(message) {
 // a single externally tagged variant, so a malformed frame is never mistaken
 // for an answer.
 export function decodeMessage(text) {
-  const message = JSON.parse(text)
+  return decodeEvent(JSON.parse(text))
+}
+
+function decodeEvent(message) {
   const type = messageType(message)
   if (type == null) throw new Error('Voice frame is not an externally tagged message')
   return { type, data: typeof message === 'string' ? null : message[type] }
+}
+
+// ─── Frames and the event stream ─────────────────────────────────
+// Every server frame is { "seq": n, "ev": <message> }. The session numbers
+// every event it emits from 1 (RoutingParams is 1) and keeps the last few in a
+// window, so a resume replays what the client missed with the same numbers.
+// The two handshake frames the node sends itself, Session (after Identify) and
+// Resumed (after Resume), carry no seq.
+const HANDSHAKE_TYPES = new Set(['Session', 'Resumed'])
+
+// Parse one server frame into { seq, type, data }, seq null for a handshake
+// frame. Throws on a frame without `ev`, a handshake frame with a seq, and any
+// other frame without a valid one: none of them can be placed in the stream.
+export function decodeFrame(text) {
+  const frame = JSON.parse(text)
+  if (frame == null || typeof frame !== 'object' || !Object.hasOwn(frame, 'ev')) {
+    throw new Error('Voice frame is not a { seq, ev } envelope')
+  }
+  const { type, data } = decodeEvent(frame.ev)
+  const seq = frame.seq ?? null
+  if (HANDSHAKE_TYPES.has(type)) {
+    if (seq != null) throw new Error(`${type} frame carries a seq`)
+  } else if (!Number.isSafeInteger(seq) || seq < 1) {
+    throw new Error(`${type} frame has no valid seq (${frame.seq})`)
+  }
+  return { seq, type, data }
+}
+
+// Where a session is in its event stream: `lastSeq`, the highest seq applied,
+// is what a Resume sends. A frame at or below it is a duplicate and is skipped:
+// the node filters the events it held before a resume against the replay
+// already, this is defence in depth. One per session, kept across a resume; a
+// new session starts again at 0.
+export function createEventCursor(lastSeq = 0) {
+  seqNumber('lastSeq', lastSeq)
+  return {
+    get lastSeq() {
+      return lastSeq
+    },
+    // True for a frame not seen yet, which moves the cursor to it; false for
+    // a duplicate.
+    accept(seq) {
+      seqNumber('seq', seq)
+      if (seq <= lastSeq) return false
+      lastSeq = seq
+      return true
+    }
+  }
 }
 
 // ─── Errors ──────────────────────────────────────────────────────
@@ -310,17 +400,18 @@ export class VoiceProtocolError extends Error {
 // answered only when it has something to report:
 //
 //   Identify                        RoutingParams, pushed once identify succeeds
-//                                   (failure closes the socket with 4001)
+//                                   (after Session; failure closes with 4003)
 //   SetCapabilities                 the first Channel snapshot: the session is ready
 //   Sync { callback }               Done { callback }
 //   ConnectTransport { direction }  TransportConnected { direction }
+//   RestartIce { direction }        IceRestarted { direction, ice_parameters }
 //   CreateSource { new_node }       Source { node: new_node }
 //   CreateSink { new_node }         Sink { node: new_node }
 //   Close { node }                  Closed { nodes: [node] }, if the node was still alive
 //
-// ConfigureSink, SetSourcePaused, RequestKeyFrame and Group have no success
-// answer. A request on one of our ids that is no longer alive (closed, or its
-// create failed) gets nothing at all, not even an Error.
+// ConfigureSink, SetSourcePaused, RequestKeyFrame, SetSpeaking and Group have
+// no success answer. A request on one of our ids that is no longer alive
+// (closed, or its create failed) gets nothing at all, not even an Error.
 //
 // So the matcher pairs by what an answer or Error is about, not by position:
 //   request(message)        waits for the answer above, found by its key (the
@@ -339,6 +430,12 @@ export class VoiceProtocolError extends Error {
 // already gone locally is a no-op. An Error no request claims (a notified
 // request failing) is handed back to the caller to log.
 //
+// A session outlives its socket (resume). detach() parks the requests still
+// waiting while the socket is gone. After Resumed, the replayed stream answers
+// every one the server got, like any answer; resume() sends a Sync behind the
+// replay, and whatever is still waiting when its Done arrives was lost with the
+// socket and goes out again. See resume() below.
+//
 //   transmit(frame)        writes one already-serialized frame; may throw
 //   onTimeout(type)        the oldest request still waiting went unanswered for timeoutMs
 //   onProtocolError(error) an answer arrived that no request is waiting for
@@ -351,20 +448,37 @@ export function createRequestMatcher({
   clearTimer = clearTimeout
 }) {
   // Requests still waiting, oldest first:
-  //   { type, answer, key, objects, resolve, reject, failed }
+  //   { type, answer, key, objects, messages, build, resolve, reject, failed,
+  //     inDoubt, boundary }
   // `failed` marks a synced request its Error already rejected, kept until its
-  // Done so that Done is accounted for.
+  // Done so that Done is accounted for. `messages` are the frames it went out
+  // as; `build` (a create's) makes it again around a new node. `inDoubt` marks
+  // a request sent before the last resume, which may never have reached the
+  // server; `boundary` the Sync a resume sends to find out (see resume()).
   const pending = []
   let lastId = 0
   let ready = false
   let timer = null
   let closedError = null
+  // Set while detached: the socket is gone, the session may be resumed.
+  let detachedError = null
+  // The newest resume's Sync. Only its Done sorts out what was lost.
+  let boundary = null
+  // Notified requests (Close, RequestKeyFrame) not known to have arrived yet:
+  // { message, mark, inDoubt, doubtUntil }, `mark` being the newest id when it
+  // went out. An answer naming a newer id (Done, Source, Sink) is for a request
+  // sent after it on the same socket, so it arrived too. One in doubt (sent
+  // before a resume) only counts ids up to `doubtUntil`, the newest id before
+  // that resume: a later one went out on another socket. Kept so a resume can
+  // send a lost one again; both are harmless twice (a Close of a closed node
+  // is dropped).
+  const notified = []
 
   const armOldest = () => {
     if (timer != null) clearTimer(timer)
     timer = null
     const oldest = pending[0]
-    if (!oldest || !(timeoutMs > 0)) return
+    if (!oldest || !(timeoutMs > 0) || detachedError) return
     // Answers come in request order, so only the oldest request is actually
     // awaiting the server. Later ones get their full budget once they're oldest.
     timer = setTimer(() => {
@@ -400,14 +514,17 @@ export function createRequestMatcher({
     }
   }
 
+  // Closed for good, or detached: no new request goes out.
+  const refusal = () => closedError ?? detachedError
+
   // Send a request with a success answer and resolve with that answer's
   // payload (the Channel snapshot, for SetCapabilities), or reject with
-  // VoiceRequestError.
-  const request = (message) =>
+  // VoiceRequestError. `build` is a create's (see create()).
+  const submit = (message, build) =>
     new Promise((resolve, reject) => {
       const type = messageType(message)
-      if (closedError) {
-        reject(closedError)
+      if (refusal()) {
+        reject(refusal())
         return
       }
       if (!Object.hasOwn(SUCCESS_ANSWER, type ?? '')) {
@@ -420,17 +537,24 @@ export function createRequestMatcher({
         answer: SUCCESS_ANSWER[type],
         key: requestKey(type, body),
         objects: errorObjects(type, body),
+        messages: [message],
+        build,
         resolve,
         reject,
-        failed: false
+        failed: false,
+        inDoubt: false,
+        boundary: false
       }
-      enqueue(entry, [message])
+      enqueue(entry, entry.messages)
     })
+  const request = (message) => submit(message, null)
 
   // CreateSource or CreateSink: `build(node)` makes the request around a new
-  // node, and it goes out at once, so new ids reach the server in order.
+  // node, and it goes out at once, so new ids reach the server in order. A
+  // create lost with a socket is built again around another new node, so
+  // callers take the node from the answer ({ node }), never from `build`.
   const create = (build) => {
-    if (closedError) return Promise.reject(closedError)
+    if (refusal()) return Promise.reject(refusal())
     let message
     try {
       message = build(newId())
@@ -438,7 +562,7 @@ export function createRequestMatcher({
       // An id taken and never sent is skipped, which the server allows.
       return Promise.reject(err)
     }
-    return request(message)
+    return submit(message, build)
   }
 
   // Send a request without a success answer, then a Sync. Resolves on that
@@ -448,8 +572,8 @@ export function createRequestMatcher({
   const requestSynced = (message) =>
     new Promise((resolve, reject) => {
       const type = messageType(message)
-      if (closedError) {
-        reject(closedError)
+      if (refusal()) {
+        reject(refusal())
         return
       }
       if (type == null || Object.hasOwn(SUCCESS_ANSWER, type)) {
@@ -462,22 +586,39 @@ export function createRequestMatcher({
         answer: 'Done',
         key: callback,
         objects: errorObjects(type, message[type] ?? {}),
+        messages: [message, Request.sync(callback)],
+        build: null,
         resolve: () => resolve(),
         reject,
-        failed: false
+        failed: false,
+        inDoubt: false,
+        boundary: false
       }
-      enqueue(entry, [message, Request.sync(callback)])
+      enqueue(entry, entry.messages)
     })
 
   // Write a request and forget it. One with a success answer has to go
   // through request(), or its answer would arrive with nothing waiting for it.
   const notify = (message) => {
-    if (closedError) throw closedError
+    if (refusal()) throw refusal()
     const type = messageType(message)
     if (Object.hasOwn(SUCCESS_ANSWER, type ?? '')) {
       throw new Error(`${type} gets an answer; send it with request()`)
     }
     transmit(JSON.stringify(message))
+    // The caller restates SetSpeaking after a resume; an old one is never resent.
+    if (type === 'SetSpeaking') return
+    notified.push({ message, mark: lastId, inDoubt: false, doubtUntil: 0 })
+    if (notified.length > NOTIFIED_LIMIT) notified.shift()
+  }
+
+  // Everything notified before the request that named `id` has arrived.
+  const confirmNotified = (id) => {
+    if (!Number.isInteger(id)) return
+    for (let i = notified.length - 1; i >= 0; i--) {
+      const sent = notified[i]
+      if (sent.mark < id && (!sent.inDoubt || id <= sent.doubtUntil)) notified.splice(i, 1)
+    }
   }
 
   // An Error goes to the oldest waiting request whose object it names. Errors
@@ -515,6 +656,7 @@ export function createRequestMatcher({
     }
     if (!ANSWER_TYPES.has(type)) return false
     const key = answerKey(type, data)
+    if (type === 'Done' || type === 'Source' || type === 'Sink') confirmNotified(key)
     const entry = pending.find((waiting) => waiting.answer === type && waiting.key === key)
     if (!entry) {
       const about = key == null ? '' : ` for ${key}`
@@ -526,13 +668,151 @@ export function createRequestMatcher({
     return true
   }
 
-  // Reject everything in flight and refuse new requests (socket closed).
+  // Reject everything in flight and refuse new requests (the session is over).
   const close = (error) => {
     closedError = error
+    detachedError = null
+    boundary = null
+    notified.length = 0
     if (timer != null) clearTimer(timer)
     timer = null
     for (const entry of pending.splice(0)) {
       if (!entry.failed) entry.reject(error)
+    }
+  }
+
+  // The socket dropped but the session may be resumed. Requests still waiting
+  // stay queued, unanswered and untimed, for resume(); new ones are refused
+  // with `error` until then. A resume that was still waiting for its Done
+  // stays queued too, and the next resume's Sync takes over from it.
+  const detach = (error) => {
+    if (closedError) return
+    detachedError = error
+    if (timer != null) clearTimer(timer)
+    timer = null
+  }
+
+  // A Resume worked (Resumed arrived) and `transmit` now writes to the new
+  // socket. The stream picks up after the last event we saw, so every request
+  // the server got before the drop is answered by the replay, through handle()
+  // like any answer. What the server never got can't be told apart yet, so
+  // this sends a Sync behind the replay: the session handles requests in order,
+  // so once its Done arrives, every request sent before the drop that is still
+  // waiting was lost with the socket, and goes out again:
+  //   - a create, built again around a new node (its old one is now below ids
+  //     the server has seen, so it would be refused);
+  //   - a request settled by a Sync (and a bare Sync), with a new callback;
+  //   - ConnectTransport and RestartIce, as they were. Like the synced ones,
+  //     they're safe to repeat: a duplicate is ignored or answers with an
+  //     Error, which settles nothing worse than a loss would;
+  //   - Identify and SetCapabilities can't be lost by a session that resumed
+  //     (only a ready one can), so one still waiting fails;
+  //   - and a notified request (Close, RequestKeyFrame) sent before the drop
+  //     and not confirmed since, as it was.
+  // New requests are accepted again at once; they go out after the Sync, so
+  // they're never in doubt. A drop before the Done leaves everything waiting
+  // for the next resume, whose Sync takes over. Resolves on the Done, after the
+  // resends are out; rejects if the session closes first, or if this Sync was
+  // itself lost and a newer resume's Done settled things instead.
+  const resume = () =>
+    new Promise((resolve, reject) => {
+      if (closedError) {
+        reject(closedError)
+        return
+      }
+      detachedError = null
+      for (const entry of pending) entry.inDoubt = true
+      for (const sent of notified) {
+        // Already in doubt from an earlier resume: still only its own socket's ids count.
+        if (sent.inDoubt) continue
+        sent.inDoubt = true
+        sent.doubtUntil = lastId
+      }
+      const callback = newId()
+      const entry = {
+        type: 'Sync',
+        answer: 'Done',
+        key: callback,
+        objects: [],
+        messages: [Request.sync(callback)],
+        build: null,
+        resolve: () => {
+          if (boundary !== entry) {
+            resolve()
+            return
+          }
+          boundary = null
+          resendLost()
+          resolve()
+        },
+        reject,
+        failed: false,
+        inDoubt: false,
+        boundary: true
+      }
+      boundary = entry
+      armOldest()
+      enqueue(entry, entry.messages)
+    })
+
+  // The newest resume's Done: what is still in doubt never reached the server.
+  const resendLost = () => {
+    const lost = pending.filter((entry) => entry.inDoubt)
+    const lostNotified = notified.filter((sent) => sent.inDoubt)
+    if (lost.length === 0 && lostNotified.length === 0) return
+    for (const entry of lost) pending.splice(pending.indexOf(entry), 1)
+    for (const sent of lostNotified) notified.splice(notified.indexOf(sent), 1)
+    const resend = []
+    for (const entry of lost) {
+      entry.inDoubt = false
+      if (entry.boundary) {
+        // An older resume's Sync, lost with its socket. This Done covers it.
+        entry.reject(new Error('Superseded by a later resume'))
+      } else if (entry.failed) {
+        // Its Error arrived and only its Sync was lost: nothing to account for.
+      } else if (entry.build) {
+        let message
+        try {
+          message = entry.build(newId())
+        } catch (err) {
+          entry.reject(err)
+          continue
+        }
+        const type = messageType(message)
+        const body = message[type] ?? {}
+        entry.key = requestKey(type, body)
+        entry.objects = errorObjects(type, body)
+        entry.messages = [message]
+        pending.push(entry)
+        resend.push(message)
+      } else if (entry.answer === 'Done') {
+        const callback = newId()
+        entry.key = callback
+        entry.messages =
+          entry.type === 'Sync'
+            ? [Request.sync(callback)]
+            : [entry.messages[0], Request.sync(callback)]
+        pending.push(entry)
+        resend.push(...entry.messages)
+      } else if (entry.answer === 'TransportConnected' || entry.answer === 'IceRestarted') {
+        pending.push(entry)
+        resend.push(...entry.messages)
+      } else {
+        entry.reject(new VoiceProtocolError(`${entry.type} was lost and can't be sent again`))
+      }
+    }
+    for (const sent of lostNotified) {
+      sent.inDoubt = false
+      sent.mark = lastId
+      notified.push(sent)
+      resend.push(sent.message)
+    }
+    armOldest()
+    try {
+      for (const message of resend) transmit(JSON.stringify(message))
+    } catch {
+      // The new socket is gone already. Its close detaches again, and the next
+      // resume's Sync sorts these out once more.
     }
   }
 
@@ -543,8 +823,13 @@ export function createRequestMatcher({
     notify,
     handle,
     close,
+    detach,
+    resume,
     get size() {
       return pending.length
+    },
+    get detached() {
+      return detachedError != null
     },
     // The first Channel snapshot has arrived: the session is READY. Set as the
     // snapshot is handled, before the caller applies it.
@@ -554,6 +839,9 @@ export function createRequestMatcher({
   }
 }
 
+// Notified requests a resume may still have to send again (see notified).
+const NOTIFIED_LIMIT = 256
+
 // The answer each request waits for on success (see above). Close is left out
 // on purpose: its answer is applied as an event, never waited for.
 const SUCCESS_ANSWER = Object.freeze({
@@ -561,12 +849,20 @@ const SUCCESS_ANSWER = Object.freeze({
   SetCapabilities: 'Channel',
   Sync: 'Done',
   ConnectTransport: 'TransportConnected',
+  RestartIce: 'IceRestarted',
   CreateSource: 'Source',
   CreateSink: 'Sink'
 })
 
 // Messages that only ever answer a request. Channel is an event too.
-const ANSWER_TYPES = new Set(['RoutingParams', 'Done', 'TransportConnected', 'Source', 'Sink'])
+const ANSWER_TYPES = new Set([
+  'RoutingParams',
+  'Done',
+  'TransportConnected',
+  'IceRestarted',
+  'Source',
+  'Sink'
+])
 
 // What finds the request an answer is for. RoutingParams and Channel need no
 // key: a socket sends one Identify and one SetCapabilities.
@@ -575,6 +871,7 @@ function requestKey(type, body) {
     case 'Sync':
       return body.callback
     case 'ConnectTransport':
+    case 'RestartIce':
       return body.direction
     case 'CreateSource':
     case 'CreateSink':
@@ -589,6 +886,7 @@ function answerKey(type, data) {
     case 'Done':
       return data?.callback ?? null
     case 'TransportConnected':
+    case 'IceRestarted':
       return data?.direction ?? null
     case 'Source':
     case 'Sink':
@@ -606,6 +904,7 @@ function errorObjects(type, body) {
     case 'Group':
       return ['Session']
     case 'ConnectTransport':
+    case 'RestartIce':
       return [{ Transport: body.direction }]
     // Every create failure names the new node: not the source a sink was for,
     // not the source being replaced, not the send transport.
@@ -1214,45 +1513,90 @@ function snowflake(value) {
 }
 
 // ─── Close codes ─────────────────────────────────────────────────
+// One table for both sockets, the backend's /ws and the voice node's /voice
+// (server: crates/utils/src/close_code.rs, `utils::CloseCode`). Callers switch
+// on the action, not on the socket.
 export const CloseCode = Object.freeze({
-  UNSUPPORTED: 4000,
-  FAIL_IDENTIFY: 4001,
-  INTERNAL_ERROR: 4002,
-  SESSION_TERMINATED: 4003,
-  PARSE: 4004,
-  REQUEST_FAILED: 4005,
-  KICKED: 4006,
-  E2EE_FAILED: 4007
+  ServerShutdown: 1001,
+  UpdateRequired: 4000,
+  InvalidPayload: 4001,
+  AuthFailed: 4002,
+  TicketRejected: 4003,
+  Replaced: 4004,
+  HeartbeatTimeout: 4005,
+  Kicked: 4006,
+  Banned: 4007,
+  VoiceEnded: 4008,
+  E2eeFailed: 4009,
+  InternalError: 4010
 })
 
-// What a voice socket close means for the client.
-//   recoverable: leave + rejoin for a fresh ticket can fix it
-//   expected:    the normal result of leaving voice
+export const CloseAction = Object.freeze({
+  // Reconnect with backoff and pick up where we were: /ws resumes its event
+  // stream, /voice sends Resume.
+  Resume: 'resume',
+  // Reconnect without resuming. On /voice: a new ticket (op 13), then Identify.
+  Fresh: 'fresh',
+  // /ws: refresh the access token and reconnect; log in again if that fails.
+  Reauth: 'reauth',
+  // /voice: we left voice or were moved off this node. A new ticket only if
+  // we're still in a voice channel.
+  IfInVoice: 'if-in-voice',
+  // Don't reconnect on our own.
+  Stop: 'stop',
+  // Stop and ask for an update.
+  Update: 'update'
+})
+
+const CLOSE_TABLE = Object.freeze({
+  [CloseCode.ServerShutdown]: ['ServerShutdown', CloseAction.Resume, 'server shutting down'],
+  [CloseCode.UpdateRequired]: ['UpdateRequired', CloseAction.Update, 'update required'],
+  [CloseCode.InvalidPayload]: [
+    'InvalidPayload',
+    CloseAction.Fresh,
+    'server could not read a frame'
+  ],
+  [CloseCode.AuthFailed]: ['AuthFailed', CloseAction.Reauth, 'authentication failed'],
+  [CloseCode.TicketRejected]: ['TicketRejected', CloseAction.Fresh, 'voice ticket rejected'],
+  [CloseCode.Replaced]: ['Replaced', CloseAction.Stop, 'replaced by a newer connection'],
+  [CloseCode.HeartbeatTimeout]: ['HeartbeatTimeout', CloseAction.Resume, 'heartbeat timeout'],
+  [CloseCode.Kicked]: ['Kicked', CloseAction.Stop, 'kicked'],
+  [CloseCode.Banned]: ['Banned', CloseAction.Stop, 'banned'],
+  [CloseCode.VoiceEnded]: ['VoiceEnded', CloseAction.IfInVoice, 'voice session ended'],
+  [CloseCode.E2eeFailed]: ['E2eeFailed', CloseAction.Fresh, 'voice encryption failed'],
+  [CloseCode.InternalError]: ['InternalError', CloseAction.Resume, 'server error']
+})
+
+// What a close means: { name, action, reason }. Anything not in the table (no
+// code, 1006, 1005, 1000) is a dropped connection, which resumes.
 export function classifyClose(code) {
-  switch (code) {
-    case CloseCode.UNSUPPORTED:
-      return { reason: 'unsupported protocol version', recoverable: false, expected: false }
-    case CloseCode.FAIL_IDENTIFY:
-      return { reason: 'voice ticket rejected', recoverable: true, expected: false }
-    case CloseCode.INTERNAL_ERROR:
-      return { reason: 'voice server error', recoverable: true, expected: false }
-    case CloseCode.SESSION_TERMINATED:
-      return { reason: 'voice session ended by server', recoverable: true, expected: true }
-    case CloseCode.PARSE:
-      return {
-        reason: 'voice server could not parse a message',
-        recoverable: false,
-        expected: false
-      }
-    case CloseCode.REQUEST_FAILED:
-      return { reason: 'voice request failed', recoverable: true, expected: false }
-    // Kicked or banned by a moderator. Rejoining on our own would undo that.
-    case CloseCode.KICKED:
-      return { reason: 'removed from voice', recoverable: false, expected: false }
-    // The channel's E2EE delivery service failed on the node. A fresh session builds a new group.
-    case CloseCode.E2EE_FAILED:
-      return { reason: 'voice encryption failed on the server', recoverable: true, expected: false }
-    default:
-      return { reason: 'voice connection lost', recoverable: true, expected: false }
-  }
+  const known = CLOSE_TABLE[code]
+  if (!known) return { name: null, action: CloseAction.Resume, reason: 'connection lost' }
+  const [name, action, reason] = known
+  return { name, action, reason }
+}
+
+// ─── Voice tickets on the event socket ───────────────────────────
+// Op 13 asks for a ticket while in a voice channel; it is answered with op 6,
+// like the join that mints the first one. A refusal is a plain { err } frame
+// until the event socket sends coded errors, so the two
+// refusals that matter are told apart by their text (the backend's
+// services/voice.rs and voice_control.rs).
+export const REQUEST_VOICE_TICKET_OP = 13
+
+export const VoiceTicketError = Object.freeze({
+  // Not in a voice channel (any more): stop.
+  NotInVoice: 'not_in_voice',
+  // No voice node can take the channel right now: back off and retry.
+  VoiceUnavailable: 'voice_unavailable'
+})
+
+const VOICE_TICKET_ERROR_TEXT = Object.freeze({
+  'Client must join a voice channel before requesting a voice ticket': VoiceTicketError.NotInVoice,
+  'Voice media is unavailable': VoiceTicketError.VoiceUnavailable
+})
+
+// The VoiceTicketError an { err } message means, or null for any other.
+export function voiceTicketError(message) {
+  return VOICE_TICKET_ERROR_TEXT[message] ?? null
 }

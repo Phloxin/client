@@ -46,10 +46,10 @@ export function shouldFallBackToDefaultInput({
   return !ids.has(selectedDeviceId)
 }
 
-// Voice recovery is hard-blocked on the events socket. The rejoin declaration
-// that mints a ticket can't leave the client while it's down, so every
-// attempt made during an events outage fails for a reason the voice backoff
-// knows nothing about. Its 30s cap outlives the UI's rejoin timeout, so a
+// A new voice session is hard-blocked on the events socket. The ticket request
+// (op 13) can't leave the client while it's down, so every attempt made during
+// an events outage fails for a reason the voice backoff knows nothing about.
+// (A resume needs no ticket and isn't blocked.) Its 30s cap outlives the UI's rejoin timeout, so a
 // restore that lands mid-backoff would otherwise be declared a failed recovery
 // seconds before it was going to succeed.
 export function shouldKickVoiceReconnect({
