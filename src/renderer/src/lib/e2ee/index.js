@@ -110,7 +110,12 @@ function sendGroupRequest(request) {
     // Only a refusal counts against the join. A socket going down ends the session, and the
     // next one starts the join over (e2eeSuspend).
     if (err?.name === 'VoiceRequestError') {
-      worker?.postMessage({ type: 'request-failed', request: type, message: err.message })
+      worker?.postMessage({
+        type: 'request-failed',
+        request: type,
+        code: err.code,
+        message: err.message
+      })
     }
   })
 }
@@ -179,6 +184,11 @@ export function e2eeLeave() {
 // reconnect's rejoin replaces our leaf in it; only the join timeout stops until then.
 export function e2eeSuspend() {
   worker?.postMessage({ type: 'suspend' })
+}
+
+// The voice session resumed. A key package lost with the old socket is sent again.
+export function e2eeResume() {
+  worker?.postMessage({ type: 'resume' })
 }
 
 // One `Group` event from the voice node.

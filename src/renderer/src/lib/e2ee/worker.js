@@ -24,8 +24,12 @@ const KID = 0
 const JOIN_TIMEOUT_MS = 15_000
 // Failed joins in a row before giving up on the call (5.3).
 const MAX_FAILED_JOINS = 3
+// A key package refused as RateLimited is resent after the node's refill interval.
+const RATE_LIMIT_RETRY_MS = 5_000
 // How long an epoch stays decryptable after the Execute that replaced it (plan 4).
 const RETIRE_AFTER_MS = 10_000
+// How far behind a sender's newest counter a frame may arrive before it counts as a replay (3.4).
+const REPLAY_WINDOW = 1024
 
 const STATIC_EPOCH = 0
 const STATIC_FORMAT = 1
@@ -65,6 +69,8 @@ let joinTimer = null
 let failedJoins = 0
 // Waiting for CreateGroup or a Welcome after sending a key package.
 let awaitingKeys = false
+// The socket dropped while awaitingKeys, so the key package may have died with it.
+let resendOnResume = false
 // The epoch whose Welcome added us. Its Execute is when video may resume (5.5).
 let joinedEpoch = null
 let mediaReady = false
@@ -115,7 +121,12 @@ function errorName(err) {
 function ensureSession() {
   if (session || selfId == null) return session
   // A random counter start costs nothing and keeps nonces apart even if a key ever came back.
-  session = new E2eeSession(selfId, KID, crypto.getRandomValues(new Uint32Array(1))[0] >>> 1)
+  session = new E2eeSession(
+    selfId,
+    KID,
+    crypto.getRandomValues(new Uint32Array(1))[0] >>> 1,
+    REPLAY_WINDOW
+  )
   return session
 }
 
@@ -183,6 +194,7 @@ function failJoin(reason) {
 
 function markKeyed() {
   awaitingKeys = false
+  resendOnResume = false
   failedJoins = 0
   clearJoinTimer()
 }
@@ -192,6 +204,7 @@ function joinVoice(params, move) {
   inVoice = true
   fatal = null
   failedJoins = 0
+  resendOnResume = false
   if (!ensureSession()) {
     console.error('[E2EE] no client id yet; cannot join')
     return
@@ -218,6 +231,7 @@ function joinVoice(params, move) {
 function leaveVoice() {
   inVoice = false
   awaitingKeys = false
+  resendOnResume = false
   clearJoinTimer()
   for (const timer of retireTimers) clearTimeout(timer)
   retireTimers.clear()
@@ -239,6 +253,19 @@ function scheduleRetire(epoch) {
     }
   }, RETIRE_AFTER_MS)
   retireTimers.add(timer)
+}
+
+// The encoders' first keyframe under a new key was dropped for lack of one; don't wait for a PLI.
+function requestSendKeyframes() {
+  for (const stream of streams.values()) {
+    if (
+      stream.role === 'send' &&
+      stream.kind === 'video' &&
+      typeof stream.transformer?.generateKeyFrame === 'function'
+    ) {
+      stream.transformer.generateKeyFrame().catch(() => {})
+    }
+  }
 }
 
 function commitAs(epoch) {
@@ -269,6 +296,7 @@ function handleGroupEvent(event) {
         console.error('[E2EE] could not found the group:', errorName(err))
         return failJoin('found')
       }
+      requestSendKeyframes()
       markKeyed()
       joinedEpoch = 0
       // The founder is alone and already sending.
@@ -346,6 +374,7 @@ function handleGroupEvent(event) {
         // We never entered this epoch, e.g. its Welcome went to our replaced leaf.
         return
       }
+      requestSendKeyframes()
       if (replaced != null) scheduleRetire(replaced)
       if (!mediaReady && data.epoch === joinedEpoch) mediaReady = true
       break
@@ -390,7 +419,7 @@ function staticReceiverFor(owner) {
 
   const key = staticKey(owner)
   if (!key) return null
-  receiver = new Receiver()
+  receiver = new Receiver(REPLAY_WINDOW)
   receiver.setKey(STATIC_FORMAT, STATIC_EPOCH, key)
   staticReceivers.set(owner, receiver)
   return receiver
@@ -425,15 +454,33 @@ self.onmessage = async ({ data }) => {
       break
     case 'suspend':
       // The socket session ended. Nothing can be sent until the next one joins again.
+      resendOnResume = awaitingKeys
       awaitingKeys = false
       clearJoinTimer()
+      break
+    case 'resume':
+      // The node has no timer on a key package, so one lost with the old socket is never answered.
+      if (!inVoice || fatal || !session) break
+      if (session.epoch == null || resendOnResume) {
+        resendOnResume = false
+        sendKeyPackage()
+      }
       break
     case 'group':
       handleGroupEvent(data.event)
       break
     case 'request-failed':
       // A key package the session refused fails like a join: retry, then give up.
-      if (data.request === 'KeyPackage' && awaitingKeys) failJoin(`refused: ${data.message}`)
+      if (data.request !== 'KeyPackage' || !awaitingKeys) break
+      if (data.code === 'RateLimited') {
+        clearJoinTimer()
+        joinTimer = setTimeout(() => {
+          joinTimer = null
+          sendKeyPackage()
+        }, RATE_LIMIT_RETRY_MS)
+      } else {
+        failJoin(`refused: ${data.message}`)
+      }
       break
     case 'capture':
       startCapture(data.ms)
@@ -479,6 +526,7 @@ self.onrtctransform = async ({ transformer }) => {
     id,
     role,
     kind,
+    transformer,
     owner,
     source,
     binding: null,
@@ -594,8 +642,10 @@ function decryptFrame(stream, frame, controller) {
       opened = session.decrypt(stream.owner, info.codec, stream.binding, data)
     }
   } catch (err) {
-    if (stream.kind === 'video') stream.failing = true
-    return drop(stream, info, errorName(err))
+    const reason = errorName(err)
+    // A replayed frame is a duplicate; the decoder missed nothing.
+    if (stream.kind === 'video' && reason !== 'replay') stream.failing = true
+    return drop(stream, info, reason)
   }
   frame.data = opened.buffer
   if (stream.failing) {

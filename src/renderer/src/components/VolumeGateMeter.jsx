@@ -4,7 +4,8 @@ import {
   createLevelGateController,
   createMicLevelMonitor,
   getRawMicStream,
-  onRawMicStreamChange
+  onRawMicStreamChange,
+  setMicTestActive
 } from '../lib/soup'
 import { micProfileWantsStereo } from '../lib/micAudioProfile'
 
@@ -53,9 +54,19 @@ function VolumeGateMeter({ threshold, onThresholdChange, micSettings, gateEnable
     } catch {}
     testGainRef.current = null
     testPlayingRef.current = false
+    setMicTestActive(false)
     setTestPlaying(false)
     setTestGateOpen(false)
   }
+
+  // Closing settings mid-test only tears down the audio graph, so lift the
+  // call mute here too or peers would keep hearing nothing.
+  useEffect(
+    () => () => {
+      if (testPlayingRef.current) setMicTestActive(false)
+    },
+    []
+  )
 
   // Stop when gate toggle actually changes value (not just re-renders)
   const gateEnabledPrevRef = useRef(gateEnabled)
@@ -211,6 +222,8 @@ function VolumeGateMeter({ threshold, onThresholdChange, micSettings, gateEnable
     }
 
     testPlayingRef.current = true
+    // We are hearing ourselves; peers in the call must not.
+    setMicTestActive(true)
     setTestPlaying(true)
     setTestGateOpen(!gateController)
 

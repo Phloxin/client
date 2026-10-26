@@ -23,6 +23,7 @@ import {
   acquireMicCapture,
   buildAudioProcessor,
   createSpeakingDetector,
+  onMicContextLost,
   stopRawStream,
   suspendMicContext
 } from './localAudio'
@@ -44,12 +45,14 @@ import {
   stopScreenEncoderStats
 } from './screenShare'
 import { configureStreamDiagnostics } from './streamDiagnostics'
+import { configureTestHooks } from '../testHooks'
 import {
   e2eeFormats,
   e2eeGroupEvent,
   e2eeJoin,
   e2eeLeave,
   e2eeMediaReady,
+  e2eeResume,
   e2eeSuspend,
   setE2eeHandlers,
   wrapRecvTransport,
@@ -188,6 +191,11 @@ const enqueueRepublish = createSerialQueue()
 let mediaStateGeneration = 0
 let activeCallbacks = {}
 let micMuted = false
+// The settings mic test is playing our mic back to us, so peers must not hear
+// it. Silences the published mic like micMuted, without touching the user's
+// own mute toggle (or the talking-while-muted warning, which follows that).
+let micTestActive = false
+const micSilenced = () => micMuted || micTestActive
 // What the current speaking source says, and the SpeakingFlags last sent on
 // this session (null: nothing sent yet).
 let localSpeaking = false
@@ -229,6 +237,13 @@ configureStreamDiagnostics({
   getProducers: () => producers,
   getScreenShareContext,
   getRemoteConsumers: () => remoteConsumers
+})
+configureTestHooks({
+  getRemoteConsumers: () => remoteConsumers,
+  getProducers: () => producers,
+  getScreenShareContext,
+  dropVoiceSocket: () =>
+    forceVoiceReconnect('Test harness dropped the voice socket', CloseAction.Resume)
 })
 
 // ─── Inbound audio health monitoring / self-heal ─────────────────
@@ -296,6 +311,11 @@ let socketCloseDeadlineTimer = null
 let mediaWatchdogTimer = null
 let mediaReadyTimer = null
 let mediaWatchdogRecoveryUsed = false
+// The last capture attempt failed because the device isn't there (a headset
+// unplugged mid-call), not because of a permission. The session is fine, so
+// the watchdog must not spend a reconnect on it. Cleared once a capture is
+// installed again.
+let localCaptureLost = false
 const MEDIA_WATCHDOG_DELAY_MS = 15000
 // Re-arm interval once a check has already found media degraded. Longer than
 // the first pass, so a session that stays broken reports periodically instead
@@ -363,6 +383,9 @@ function scheduleMediaReadyCheck(generation = mediaStateGeneration) {
     if (!isReady()) return
     clearMediaWatchdog()
     mediaWatchdogRecoveryUsed = false
+    // A repair that got media all the way back has earned another one. Without
+    // this, a second unplug in the same session would go unrepaired.
+    rawMicEndedRepairGeneration = null
     // The counts travel with the state so the channel component can compare
     // them against its own roster.
     emitMediaState('ready', {
@@ -417,6 +440,15 @@ function armMediaWatchdog(generation, delay = MEDIA_WATCHDOG_DELAY_MS) {
       return
     }
     if (!localReady) {
+      if (publishInFlight == null && localCaptureLost) {
+        // The microphone is gone, not the session. A reconnect can't conjure
+        // the device and only drops us out of the channel. Hand it to the
+        // publish ladder (VoiceChannel), which retries it and meanwhile falls
+        // back to the default input. A ladder already running ignores this.
+        emitMediaState('local-capture-lost')
+        armMediaWatchdog(generation, MEDIA_WATCHDOG_DEGRADED_DELAY_MS)
+        return
+      }
       // A publish already working is the repair, so tearing the socket down
       // under it would only restart the same work from further back. The
       // recovery budget is one-shot. Once it's spent, this is the only thing
@@ -1317,7 +1349,7 @@ function setLocalSpeaking(next) {
 }
 
 function syncSpeaking(force = false) {
-  const flags = localSpeaking && !micMuted ? SpeakingFlags.MICROPHONE : 0
+  const flags = localSpeaking && !micSilenced() ? SpeakingFlags.MICROPHONE : 0
   if (selfId != null && ownRingShown !== (flags !== 0)) {
     ownRingShown = flags !== 0
     activeCallbacks.onClientSpeaking?.(selfId, ownRingShown)
@@ -1996,6 +2028,8 @@ function afterResume(current) {
   const restarts = [...pendingIceRestarts]
   pendingIceRestarts.clear()
   for (const direction of restarts) restartTransportIce(direction, 'deferred until the resume')
+
+  e2eeResume()
 }
 
 // A ready session lost its socket. `action` is what the close calls for
@@ -2649,6 +2683,7 @@ export function onRawMicStreamChange(listener) {
 function setRawMicStream(stream) {
   if (rawMicStream === stream) return
   rawMicStream = stream
+  if (stream) localCaptureLost = false
   for (const track of stream?.getAudioTracks?.() ?? []) {
     track.addEventListener('ended', () => {
       // resetMediaState deliberately stops this track. Only repair a capture
@@ -2666,20 +2701,24 @@ function setRawMicStream(stream) {
         requestVoiceMediaRecovery('Microphone capture ended')
         return
       }
-      republish(settings).catch((err) => {
-        if (isPermanentMicError(err)) {
-          console.error('[Soup] Microphone capture needs user action:', micFailureDetail(err))
-          emitMediaState('failed', { reason: err.name })
-          return
-        }
-        if (err?.micCaptureFailure) {
-          // The device is absent, not the session. doRepublish already armed
-          // the watchdog for this. A reconnect would only cost an outage.
-          console.warn('[Soup] Microphone repair failed:', micFailureDetail(err))
-          return
-        }
-        requestVoiceMediaRecovery('Microphone republish failed')
-      })
+      republish(settings)
+        // Reaching ready again is what re-arms this repair for a later loss.
+        .then(() => scheduleMediaReadyCheck())
+        .catch((err) => {
+          if (isPermanentMicError(err)) {
+            console.error('[Soup] Microphone capture needs user action:', micFailureDetail(err))
+            emitMediaState('failed', { reason: err.name })
+            return
+          }
+          if (err?.micCaptureFailure) {
+            // The device is absent, not the session, so a reconnect would only
+            // cost an outage. The publish ladder waits for it to come back.
+            console.warn('[Soup] Microphone repair failed:', micFailureDetail(err))
+            emitMediaState('local-capture-lost', { reason: err.name })
+            return
+          }
+          requestVoiceMediaRecovery('Microphone republish failed')
+        })
     })
   }
   rawMicStreamListeners.forEach((listener) => {
@@ -2690,6 +2729,21 @@ function setRawMicStream(stream) {
     }
   })
 }
+
+// The mic chain renders on its own context. If that fails (the output device
+// it runs on went away), the producer keeps a live track that only carries
+// silence and nothing else notices. Rebuild the chain on the capture we hold.
+// A capture that died too is the 'ended' repair's, which rebuilds the chain.
+onMicContextLost(() => {
+  const settings = lastCommittedMicSettings
+  if (intentionalClose || !settings || !hasLiveAudioProducer()) return
+  republish(settings, undefined, { graphOnly: true }).catch((err) => {
+    if (err?.name === 'VoiceMediaResetError') return
+    console.error('[Soup] Mic chain rebuild after a context loss failed:', err)
+    // The capture is fine, so this was the producer or its transport.
+    requestVoiceMediaRecovery('Microphone chain rebuild failed')
+  })
+})
 
 // Register the "you're talking while muted" handler (UI plays a sound + shows a
 // warning toast). Mirrored in from the app layer.
@@ -2710,7 +2764,7 @@ function startLocalSpeakingDetector(stream, tap, gated) {
     stream,
     (isSpeaking) => {
       if (!gated && current) setLocalSpeaking(isSpeaking)
-      if (!isSpeaking || !micMuted) return
+      if (!isSpeaking || !micMuted || micTestActive) return
       const now = performance.now()
       if (now - lastTalkingWhileMutedAt < TALKING_WHILE_MUTED_COOLDOWN_MS) return
       lastTalkingWhileMutedAt = now
@@ -2758,6 +2812,14 @@ function micFailureDetail(err, micSettings) {
 // channel sending nothing until something else happens to trigger a republish.
 export async function publish(micSettings, onStream) {
   if (hasLiveAudioProducer()) return
+  // The mic's source is still up on the server and only its capture died (the
+  // device dropped mid-call). Reopen the capture onto it: producing here would
+  // put a second Microphone source beside the dead one.
+  if (producers.some((producer) => producer.kind === 'audio' && !producer.closed)) {
+    await republish(micSettings, onStream)
+    scheduleMediaReadyCheck()
+    return
+  }
   const generation = mediaStateGeneration
   if (publishInFlight?.generation === generation) return publishInFlight.promise
   const promise = doPublish(micSettings, onStream, generation).finally(() => {
@@ -2802,6 +2864,7 @@ async function doPublish(micSettings, onStream, generation) {
     } catch {
       // A non-extensible platform error only costs the caller this hint.
     }
+    if (isCurrent()) localCaptureLost = !isPermanentMicError(err)
     throw err
   }
 
@@ -2878,7 +2941,7 @@ async function doPublish(micSettings, onStream, generation) {
       localProducerIds.add(producer.id)
       // The server also starts a mic source created while muted paused; this
       // is for instant local feedback.
-      if (micMuted) producer.pause()
+      if (micSilenced()) producer.pause()
       console.log(`[Soup] Producing ${track.kind} [id:${producer.id}]`)
     }
   } catch (err) {
@@ -2988,7 +3051,7 @@ function restoreCommittedMicCapture(options) {
     ...micRepublishRecoveryEnv,
     ...options,
     rawMicStream,
-    micMuted
+    micMuted: micSilenced()
   })
 }
 
@@ -3063,6 +3126,7 @@ async function doRepublish(micSettings, onStream, expectedGeneration, { graphOnl
   } catch (err) {
     console.error('[Soup] republish getUserMedia failed:', micFailureDetail(err, micSettings))
     if (!isCurrent()) throw mediaResetError()
+    localCaptureLost = !isPermanentMicError(err)
     const restored = await restoreCommittedMicCapture({
       audioProducers,
       micSettings: previousMicSettings,
@@ -3187,7 +3251,7 @@ async function doRepublish(micSettings, onStream, expectedGeneration, { graphOnl
     producers = producers.filter((p) => p.kind !== 'audio').concat(freshProducers)
     for (const producer of freshProducers) {
       localProducerIds.add(producer.id)
-      if (micMuted) producer.pause()
+      if (micSilenced()) producer.pause()
       console.log(`[Soup] Republished ${producer.track.kind} [id:${producer.id}]`)
     }
     lastCommittedAudioProfile = audioProfile
@@ -3249,7 +3313,7 @@ async function doRepublish(micSettings, onStream, expectedGeneration, { graphOnl
       .concat(replacementProducers)
     for (const producer of replacementProducers) {
       localProducerIds.add(producer.id)
-      if (micMuted) producer.pause()
+      if (micSilenced()) producer.pause()
     }
     // The server closed the old sources as part of the swap; this only
     // releases them locally (closeServerProducer finds nothing to close).
@@ -3289,7 +3353,7 @@ async function doRepublish(micSettings, onStream, expectedGeneration, { graphOnl
         }
       }
 
-      if (micMuted) producer.pause()
+      if (micSilenced()) producer.pause()
       else producer.resume()
       console.log(`[Soup] Replaced track on producer [id:${producer.id}]`)
     }
@@ -3381,7 +3445,7 @@ async function doGraphOnlyRepublish({
       await producer.replaceTrack({ track })
       replaced.push({ producer, oldTrack })
 
-      if (micMuted) producer.pause()
+      if (micSilenced()) producer.pause()
       else producer.resume()
       console.log(`[Soup] Rebuilt processing graph on producer [id:${producer.id}]`)
     }
@@ -3907,6 +3971,7 @@ function resetMediaState() {
   // The session's group requests can't be answered any more; the next session rejoins.
   e2eeSuspend()
   rawMicEndedRepairGeneration = null
+  localCaptureLost = false
   clearMediaWatchdog()
   clearMediaReadyTimer()
   // Speaking rings belong to the session; clear them before forgetting who
@@ -3999,5 +4064,19 @@ export function setMicMuted(muted) {
   // Each mute starts a fresh warning budget, so muting and immediately talking
   // is always warned about even if the last warning was seconds ago.
   if (muted) lastTalkingWhileMutedAt = 0
-  producers.filter((p) => p.kind === 'audio').forEach((p) => (muted ? p.pause() : p.resume()))
+  applyMicPause()
+}
+
+// Silence the published mic while the settings mic test runs (see micTestActive).
+// Purely local like setMicMuted: peers just stop receiving audio, they don't see
+// a mute icon.
+export function setMicTestActive(active) {
+  micTestActive = active
+  syncSpeaking()
+  applyMicPause()
+}
+
+function applyMicPause() {
+  const silenced = micSilenced()
+  producers.filter((p) => p.kind === 'audio').forEach((p) => (silenced ? p.pause() : p.resume()))
 }

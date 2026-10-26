@@ -9,13 +9,13 @@ ipcRenderer.on('audiocapture:port', (e) => {
 })
 
 // Screen-share codec override from the environment (PREFER_SCREENSHARE_CODEC=
-// H264|AV1|VP9). Normalized here so the renderer reads a clean value or null;
+// H264|AV1|VP9|VP8). Normalized here so the renderer reads a clean value or null;
 // invalid values are ignored (main logs a warning to the terminal). This pins
 // the codec the share is produced with and disables the adaptive downgrade —
 // see pickVideoCodec/maybeDowngradeScreenCodec in renderer/src/lib/soup.js.
 function preferredScreenshareCodec() {
   const raw = process.env.PREFER_SCREENSHARE_CODEC?.trim().toUpperCase()
-  return raw === 'H264' || raw === 'AV1' || raw === 'VP9' ? raw : null
+  return raw === 'H264' || raw === 'AV1' || raw === 'VP9' || raw === 'VP8' ? raw : null
 }
 
 // Dev-only escape hatch: launch with PYLON_INSECURE=1 to reach a server over
@@ -40,6 +40,8 @@ const api = {
   preferScreenshareCodec: preferredScreenshareCodec(),
   insecureConnections,
   voiceEndpointOverride,
+  // Installs window.pylonTest (renderer lib/testHooks.js) for the e2e harness.
+  isTestHarness: process.env.PYLON_TEST === '1',
   screenAudio: {
     getCapabilities: () => ipcRenderer.invoke('audiocapture:get-capabilities'),
     listApps: () => ipcRenderer.invoke('audiocapture:list-apps'),

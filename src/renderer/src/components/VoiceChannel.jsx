@@ -432,7 +432,11 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   }
 
   const handleMediaState = (state) => {
-    if (state?.state === 'ready') {
+    if (state?.state === 'local-capture-lost') {
+      // The mic dropped mid-call and soup's one repair couldn't reopen it. The
+      // session stays up; the ladder gets the capture back.
+      if (joinedRef.current && !publishActiveRef.current) void publishMic()
+    } else if (state?.state === 'ready') {
       if (!inputFallbackRef.current) setError(null)
       // Zero known producers looks the same as a healthy empty room in soup,
       // so the roster is the only way to tell a missed producer replay from

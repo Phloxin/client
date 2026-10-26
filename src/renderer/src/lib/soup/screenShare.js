@@ -241,14 +241,15 @@ export function resetScreenCodecPreference() {
   clearScreenSvcRungStorage()
 }
 
-// User-forced screen codec from PREFER_SCREENSHARE_CODEC=H264|AV1|VP9 (normalized
+// User-forced screen codec from PREFER_SCREENSHARE_CODEC=H264|AV1|VP9|VP8 (normalized
 // in preload). When set, it overrides both the AV1-first default and the adaptive
 // H.264 downgrade — the user explicitly asked for this codec, so we keep it even
 // if it comes up software. undefined when unset/invalid.
 const SCREEN_CODEC_MIME = {
   H264: 'video/h264',
   AV1: 'video/av1',
-  VP9: 'video/vp9'
+  VP9: 'video/vp9',
+  VP8: 'video/vp8'
 }
 const FORCED_SCREEN_CODEC_MIME =
   SCREEN_CODEC_MIME[(typeof window !== 'undefined' && window.api?.preferScreenshareCodec) || '']

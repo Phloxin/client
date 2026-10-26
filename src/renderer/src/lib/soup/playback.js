@@ -1,5 +1,5 @@
 import { getServerHost } from '../serverConfig'
-import { configureMediaDevices, shortDeviceId } from '../mediaDevices'
+import { configureMediaDevices, shortDeviceId, subscribeDeviceChange } from '../mediaDevices'
 
 let getRemoteConsumers = () => new Map()
 
@@ -92,19 +92,21 @@ export function getPlaybackContext() {
   return playbackContext
 }
 
-// Every audible remote stream renders through this one context, created once
-// per app launch. If it stops running, the user hears nobody for the rest of
-// the session with nothing in the log to say so. The error event is the
-// spec's signal for "the selected sink device was removed".
+// Every audible remote stream renders through this one context. If it stops
+// running, the user hears nobody for the rest of the session with nothing in
+// the log to say so. The error event is the spec's signal for "the selected
+// sink device was removed".
 function watchPlaybackContext(context) {
   context.addEventListener?.('statechange', () => {
     if (context !== playbackContext) return
     reportPlaybackDown(`state=${context.state}`)
+    if (context.state !== 'running') schedulePlaybackCheck()
   })
   context.addEventListener?.('error', (event) => {
     if (context !== playbackContext) return
     console.warn('[Soup] playback context error:', event?.type ?? 'error')
     reportPlaybackDown('error event')
+    schedulePlaybackCheck()
   })
 }
 
@@ -115,10 +117,9 @@ function hasLiveRemoteAudio() {
   return false
 }
 
-// Detection only: a suspended context with live consumers, or an error event,
-// means playback is down. Resuming is the one repair that's safe today.
-// Recreating the context is deliberately not attempted until a field export
-// says which of the two failure modes actually happens.
+// Resuming is the cheap first try at a context that's down, and is enough for
+// a transient suspend (setSinkId passes through one). It is not enough for a
+// lost device: see checkPlayback.
 function reportPlaybackDown(reason) {
   const context = playbackContext
   if (!context) return
@@ -136,6 +137,92 @@ function reportPlaybackDown(reason) {
     })
     .catch((err) => console.warn('[Soup] playback context resume failed:', err))
 }
+
+// ─── Output device loss ──────────────────────────────────────────
+// A context bound to a sink that disappears fires 'error' and drops to
+// suspended. In the field (Windows, a USB headset) its resume() never settled
+// again, not even after the headset was back and voice had reconnected. Only
+// a new context (an app restart) played again. So a context that stays down
+// while there's someone to hear is replaced, and every remote stream is moved
+// onto the new one. The new context asks for the selected output and lands on
+// the default one while that's missing (setSinkId fails), the same fallback
+// the mic gets, then returns to the selected output when it re-enumerates.
+//
+// A device change is the event that can make a new context work, so a
+// replacement is allowed once per device change. A machine with no usable
+// output therefore can't churn through contexts.
+const PLAYBACK_CHECK_SETTLE_MS = 1000
+let playbackCheckTimer = null
+let playbackReplacedSinceDeviceChange = false
+// Output ids from the last device change, or null before one (or when
+// enumeration failed): unknown, so never read as "the device is back".
+let availableOutputIds = null
+
+function schedulePlaybackCheck() {
+  // Debounced: a headset unplug is an error, a state change and two device
+  // changes within a few ms, and the check should see where they settled.
+  clearTimeout(playbackCheckTimer)
+  playbackCheckTimer = setTimeout(() => {
+    playbackCheckTimer = null
+    checkPlayback()
+  }, PLAYBACK_CHECK_SETTLE_MS)
+}
+
+function checkPlayback() {
+  const context = playbackContext
+  if (!context) return
+  if (context.state === 'running') {
+    returnToSelectedOutput(context)
+    return
+  }
+  if (!hasLiveRemoteAudio()) {
+    // Nobody to hear right now. Drop it, so the next stream creates a context
+    // that works instead of inheriting this one.
+    console.warn(`[Soup] playback context dropped while down (${describePlayback(context)})`)
+    playbackContext = null
+    context.close().catch(() => {})
+    return
+  }
+  if (playbackReplacedSinceDeviceChange) return
+  playbackReplacedSinceDeviceChange = true
+  replacePlaybackContext(context)
+}
+
+// Move every remote stream's graph onto a new context. The <audio> pumps are
+// outside the graph and keep their tracks; buildAudioGraph creates the
+// context (with the selected sink) on first use.
+function replacePlaybackContext(previous) {
+  const entries = [...getRemoteConsumers().values()].filter((entry) => entry.kind === 'audio')
+  for (const entry of entries) teardownAudioGraph(entry)
+  playbackContext = null
+  previous.close().catch(() => {})
+  for (const entry of entries) {
+    try {
+      buildAudioGraph(entry)
+    } catch (err) {
+      console.error('[Soup] playback graph rebuild failed:', err)
+    }
+    // The pump is what keeps the remote track flowing into the graph, so it
+    // must not have been stopped by the same device loss.
+    if (entry.audioEl?.paused) entry.audioEl.play().catch(() => {})
+  }
+  applyAllAudioState()
+  console.warn(`[Soup] playback context replaced (${playbackDiagnostics()})`)
+}
+
+// Running on the default output because the selected one was missing when the
+// context was made. Move back once it's enumerated again.
+function returnToSelectedOutput(context) {
+  if (outputDeviceId === 'default' || context.sinkId === outputDeviceId) return
+  if (!availableOutputIds?.has(outputDeviceId)) return
+  applyOutputDeviceToContext()
+}
+
+subscribeDeviceChange((ids) => {
+  if (ids) availableOutputIds = ids.outputIds
+  playbackReplacedSinceDeviceChange = false
+  if (playbackContext) schedulePlaybackCheck()
+})
 
 function describePlayback(context) {
   return `state=${context.state} sink=${shortDeviceId(context.sinkId ?? '')} baseLatency=${context.baseLatency ?? '?'}`

@@ -81,6 +81,15 @@ function getRnnoiseBinary() {
 // survives for the next publish. RNNoise is trained on 48 kHz audio, so the
 // rate is pinned.
 let micContext = null
+// Set when the context reports that its output device failed (it renders to
+// the default output even though nothing here is audible). Such a context
+// goes silent and, as the playback context showed in the field, never resumes,
+// so it is replaced instead.
+let micContextLost = false
+const micContextLostListeners = new Set()
+// A resume that doesn't settle in this long is treated like a lost context. An
+// unbounded await here would wedge every later publish behind it.
+const MIC_CONTEXT_RESUME_TIMEOUT_MS = 2000
 const rnnoiseWorkletLoads = new WeakMap()
 
 function ensureRnnoiseWorklet(audioContext) {
@@ -100,12 +109,58 @@ async function createRnnoiseProcessor(audioContext) {
   return new RnnoiseWorkletNode(audioContext, { maxChannels: 1, wasmBinary: binary })
 }
 
+// Fires when the live mic context failed, so the caller can move the chain
+// onto a new one. Returns an unsubscribe.
+export function onMicContextLost(listener) {
+  micContextLostListeners.add(listener)
+  return () => micContextLostListeners.delete(listener)
+}
+
+function createMicContext() {
+  const context = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 })
+  micContextLost = false
+  context.addEventListener?.('error', () => {
+    if (context !== micContext || micContextLost) return
+    console.warn(`[Soup] mic context error (state=${context.state}), replacing it`)
+    micContextLost = true
+    for (const listener of [...micContextLostListeners]) {
+      try {
+        listener()
+      } catch (err) {
+        console.error('[Soup] mic context lost listener failed:', err)
+      }
+    }
+  })
+  return context
+}
+
+function resumeWithin(context, timeoutMs) {
+  let timer
+  return Promise.race([
+    context.resume().then(
+      () => true,
+      () => false
+    ),
+    new Promise((resolve) => {
+      timer = setTimeout(() => resolve(false), timeoutMs)
+    })
+  ]).finally(() => clearTimeout(timer))
+}
+
 async function getMicContext() {
-  if (!micContext || micContext.state === 'closed') {
-    micContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 })
+  if (micContext && micContext.state !== 'closed' && !micContextLost) {
+    if (micContext.state !== 'suspended') return micContext
+    if (await resumeWithin(micContext, MIC_CONTEXT_RESUME_TIMEOUT_MS)) return micContext
+    console.warn('[Soup] mic context did not resume, replacing it')
   }
-  if (micContext.state === 'suspended') await micContext.resume()
-  return micContext
+  // Its graphs are the failed chain, which is being rebuilt by this caller.
+  micContext?.close().catch(() => {})
+  const fresh = createMicContext()
+  micContext = fresh
+  // Best effort: a fresh context that can't start still mustn't block the
+  // publish. Its graph runs once the context does.
+  if (fresh.state === 'suspended') await resumeWithin(fresh, MIC_CONTEXT_RESUME_TIMEOUT_MS)
+  return fresh
 }
 
 // ─── Build the local audio processing chain ──────────────────────
