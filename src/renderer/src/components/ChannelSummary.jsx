@@ -215,14 +215,17 @@ function ChannelSummary({
         </p>
       </section>
 
-      <ChannelPermissions
-        channel={channel}
-        roles={roles}
-        clients={clients}
-        canManage={canManagePermissions}
-        onSet={onSetOverwrite}
-        onDelete={onDeleteOverwrite}
-      />
+      {/* DMs are not impacted by server roles/overwrites*/}
+      {channel?.type !== 'dm' && (
+        <ChannelPermissions
+          channel={channel}
+          roles={roles}
+          clients={clients}
+          canManage={canManagePermissions}
+          onSet={onSetOverwrite}
+          onDelete={onDeleteOverwrite}
+        />
+      )}
 
       {viewerOpen && hasIcon && (
         <ImageViewer
