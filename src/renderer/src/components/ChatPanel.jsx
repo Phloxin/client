@@ -16,12 +16,16 @@ import {
   IconArrowBackUp,
   IconSearch,
   IconChevronUp,
-  IconChevronDown
+  IconChevronDown,
+  IconDownload,
+  IconEye
 } from '@tabler/icons-react'
 import { motion, AnimatePresence } from 'motion/react'
 import ImageViewer from './ImageViewer'
+import FileViewer from './FileViewer'
 import EmojiPicker from './EmojiPicker'
 import { renderMarkdown } from '../lib/markdown'
+import { fitAttachments, formatBytes, previewKind } from '../lib/attachments'
 import { useClientMenu } from './ClientContextMenu'
 import { useClientActions } from '../context/ClientActionsContext'
 import { useAnimationCategory, useSettings } from '../context/SettingsContext'
@@ -310,6 +314,66 @@ function MessageEmbed({ embed, onImageClick }) {
   )
 }
 
+// A non-image, non-video attachment: name and size, plus Preview for text
+// formats the file viewer can show and Download for everything.
+function FileAttachment({ attachment, onPreview, onDownload }) {
+  const [downloading, setDownloading] = useState(false)
+  const canPreview = previewKind(attachment.name, attachment.contentType) != null
+
+  const download = async () => {
+    setDownloading(true)
+    try {
+      await onDownload(attachment)
+    } finally {
+      setDownloading(false)
+    }
+  }
+
+  return (
+    <div className="chat-attachment-file">
+      <IconFileText size={24} className="chat-attachment-file-icon" />
+      <div className="chat-attachment-file-info">
+        {canPreview ? (
+          <button
+            type="button"
+            className="chat-attachment-file-name chat-attachment-file-link"
+            title={`Preview ${attachment.name}`}
+            onClick={() => onPreview(attachment)}
+          >
+            {attachment.name}
+          </button>
+        ) : (
+          <span className="chat-attachment-file-name" title={attachment.name}>
+            {attachment.name}
+          </span>
+        )}
+        {attachment.size != null && (
+          <span className="chat-attachment-file-size">{formatBytes(attachment.size)}</span>
+        )}
+      </div>
+      {canPreview && (
+        <button
+          type="button"
+          className="chat-attachment-file-action"
+          title="Preview"
+          onClick={() => onPreview(attachment)}
+        >
+          <IconEye size={18} />
+        </button>
+      )}
+      <button
+        type="button"
+        className="chat-attachment-file-action"
+        title="Download"
+        onClick={download}
+        disabled={downloading}
+      >
+        <IconDownload size={18} />
+      </button>
+    </div>
+  )
+}
+
 // Copy an image to the clipboard. The clipboard only accepts PNG, so anything
 // else is re-encoded through a canvas first.
 async function copyImageToClipboard(url) {
@@ -403,6 +467,7 @@ function ChatPanel({
   onDeleteMessage,
   onReactMessage,
   onTyping,
+  onError,
   typingUsers = [],
   disabled,
   channelKey,
@@ -456,6 +521,8 @@ function ChatPanel({
   const [mentionIndex, setMentionIndex] = useState(0)
   const [dragging, setDragging] = useState(false)
   const [viewerImage, setViewerImage] = useState(null)
+  // Text attachment open in the file viewer (a feed attachment entry), or null.
+  const [viewerFile, setViewerFile] = useState(null)
   // Id of the message currently being edited inline (only one at a time).
   const [editingId, setEditingId] = useState(null)
   // Id of the message pending a delete confirmation (drives the in-app dialog).
@@ -705,11 +772,20 @@ function ChatPanel({
     inputRef.current?.focus()
   }
 
-  const handleFiles = (e) => {
-    const files = Array.from(e.target.files || [])
+  // Queue files on the composer (picker, paste, or drop). Anything over the
+  // server's upload limits is turned away here with a toast, before any bytes
+  // are sent.
+  const addFiles = (files) => {
+    const { accepted, rejected } = fitAttachments(attachments, files)
+    if (rejected.length === 1) {
+      onError?.(`Couldn't attach file: ${rejected[0].reason}`)
+    } else if (rejected.length > 1) {
+      onError?.(`${rejected.length} files weren't attached. ${rejected[0].reason}`)
+    }
+    if (!accepted.length) return
     setAttachments((prev) => [
       ...prev,
-      ...files.map((file) => ({
+      ...accepted.map((file) => ({
         id: crypto.randomUUID(),
         file,
         name: file.name,
@@ -717,7 +793,21 @@ function ChatPanel({
         url: URL.createObjectURL(file)
       }))
     ])
+  }
+
+  const handleFiles = (e) => {
+    addFiles(Array.from(e.target.files || []))
     e.target.value = ''
+  }
+
+  // Save a message attachment through the main process's save dialog.
+  const downloadAttachment = async (a) => {
+    const result = await window.electron.ipcRenderer
+      .invoke('download-file', { url: a.url, filename: a.name })
+      .catch((err) => ({ ok: false, error: err.message }))
+    if (!result?.ok && !result?.canceled) {
+      onError?.(`Failed to download ${a.name}: ${result?.error || 'unknown error'}`)
+    }
   }
 
   const removeAttachment = (id) => {
@@ -779,16 +869,7 @@ function ChatPanel({
       const ext = blob.type.split('/')[1] || 'png'
       return new File([blob], `pasted-image-${Date.now()}.${ext}`, { type: blob.type })
     })
-    setAttachments((prev) => [
-      ...prev,
-      ...files.map((file) => ({
-        id: crypto.randomUUID(),
-        file,
-        name: file.name,
-        kind: 'image',
-        url: URL.createObjectURL(file)
-      }))
-    ])
+    addFiles(files)
   }
 
   const handleSend = () => {
@@ -873,16 +954,7 @@ function ChatPanel({
     if (disabled) return
     const files = Array.from(e.dataTransfer.files)
     if (!files.length) return
-    setAttachments((prev) => [
-      ...prev,
-      ...files.map((file) => ({
-        id: crypto.randomUUID(),
-        file,
-        name: file.name,
-        kind: attachmentKind(file),
-        url: URL.createObjectURL(file)
-      }))
-    ])
+    addFiles(files)
   }
 
   const resolveName = (entry) =>
@@ -1255,10 +1327,11 @@ function ChatPanel({
                           ) : a.kind === 'video' ? (
                             <video src={a.url} controls />
                           ) : (
-                            <div className="chat-attachment-file">
-                              <IconFileText size={18} />
-                              <span>{a.name}</span>
-                            </div>
+                            <FileAttachment
+                              attachment={a}
+                              onPreview={setViewerFile}
+                              onDownload={downloadAttachment}
+                            />
                           )}
                         </div>
                       ))}
@@ -1613,6 +1686,20 @@ function ChatPanel({
           onClose={() => setViewerImage(null)}
         />
       )}
+
+      <AnimatePresence>
+        {viewerFile && (
+          <FileViewer
+            key={viewerFile.url}
+            src={viewerFile.url}
+            name={viewerFile.name}
+            size={viewerFile.size}
+            kind={previewKind(viewerFile.name, viewerFile.contentType)}
+            onClose={() => setViewerFile(null)}
+            onDownload={() => downloadAttachment(viewerFile)}
+          />
+        )}
+      </AnimatePresence>
 
       <AnimatePresence>
         {pendingDeleteId != null && (

@@ -101,6 +101,8 @@ function messageFromApi(msg) {
       id: a.id,
       name: a.filename,
       kind: kindFromContentType(a.content_type),
+      contentType: a.content_type,
+      size: a.size,
       url: cdnUrl(a.url)
     })),
     // Link-preview / rich cards. URLs (incl. attachment://) are resolved
@@ -2717,7 +2719,14 @@ function Main() {
       playUiSound('chat_message_outbound')
       // The server broadcasts MessageCreated back to us too, which appends it to the feed
     } catch (err) {
-      showError(`Failed to send message: ${err.message}`, err)
+      // fetch rejects with a TypeError when the connection drops. Mid-upload
+      // that is usually the server (or a proxy in front of it) refusing the
+      // body and closing the socket before its error response could be read.
+      const reason =
+        err instanceof TypeError && attachments.length
+          ? 'the server closed the connection during the upload. The attachment may be larger than it accepts.'
+          : err.message
+      showError(`Failed to send message: ${reason}`, err)
     }
   }
 
@@ -3302,6 +3311,7 @@ function Main() {
                   onDeleteMessage={handleDeleteMessage}
                   onReactMessage={handleReactMessage}
                   onTyping={handleTyping}
+                  onError={showError}
                   typingUsers={typingUsers}
                   disabled={activeChatChannelId == null}
                   channelKey={activeChatChannelId}

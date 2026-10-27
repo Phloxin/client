@@ -110,7 +110,9 @@ const parser = SimpleMarkdown.parserFor(rules)
 
 // Highlighting runs inside MessageText's memoized render, so a separate React
 // component and hook would add work without avoiding any repeated parsing.
-function highlightCode(code, lang) {
+// Also used by the file viewer. Returns escaped HTML, or null for a language
+// that isn't registered.
+export function highlightCode(code, lang) {
   if (!lang || !hljs.getLanguage(lang)) return null
   try {
     return hljs.highlight(code, { language: lang, ignoreIllegals: true }).value

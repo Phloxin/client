@@ -764,12 +764,82 @@
   display: flex;
   align-items: center;
   gap: var(--spacing-sm);
-  padding: 10px 14px;
+  width: 380px;
+  max-width: 100%;
+  padding: 10px 8px 10px 12px;
   background: var(--color-background-mute);
   border: 1px solid var(--hairline);
   border-radius: var(--radius-md);
   color: var(--color-text-secondary);
   font-size: var(--font-size-sm);
+}
+
+.chat-attachment-file-icon {
+  flex-shrink: 0;
+  color: var(--color-text-tertiary);
+}
+
+.chat-attachment-file-info {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.chat-attachment-file-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--color-text);
+}
+
+.chat-attachment-file-link {
+  align-self: flex-start;
+  max-width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  text-align: left;
+  color: var(--color-primary);
+  cursor: pointer;
+}
+
+.chat-attachment-file-link:hover {
+  text-decoration: underline;
+}
+
+.chat-attachment-file-size {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+
+.chat-attachment-file-action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
+}
+
+.chat-attachment-file-action:hover:not(:disabled) {
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.chat-attachment-file-action:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 /* ── Link/media embeds: card with an accent signal bar. ────────────────── */
