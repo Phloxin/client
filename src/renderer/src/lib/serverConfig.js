@@ -94,11 +94,12 @@ export async function throwIfError(res) {
   throw err
 }
 
-// Resolve a server-relative asset path (e.g. /cdn/foo.png) against the active
-// host. The server no longer ties file paths to an IP, so it sends bare /cdn/…
-// paths that we anchor to the current host at use time. data:/blob:/absolute
-// URLs (self-set avatars, pending uploads) pass through untouched.
-export function cdnUrl(path) {
+// Resolve a server-relative media URL (/files/<key>, /shared/<token>) against
+// the active host. The server sends every stored object as a root-relative
+// path that we anchor to the current host at use time; the main process
+// attaches the session to requests for that host. data:/blob:/absolute URLs
+// (self-set avatars, pending uploads, external embeds) pass through untouched.
+export function assetUrl(path) {
   if (!path || !path.startsWith('/')) return path
   // Do not turn stale server data into a request to `https://null/...` while a
   // connection attempt is being torn down or switched to another host.

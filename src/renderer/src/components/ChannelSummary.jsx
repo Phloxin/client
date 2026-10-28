@@ -3,7 +3,7 @@ import './ClientSummary.css'
 import { IconVolume, IconPencil, IconTrash, IconPhotoUp, IconZoomIn } from '@tabler/icons-react'
 import ChannelPermissions from './ChannelPermissions'
 import ImageViewer from './ImageViewer'
-import { cdnUrl } from '../lib/serverConfig'
+import { assetUrl } from '../lib/serverConfig'
 import { fileToAvatarDataUrl } from '../lib/avatarFile'
 import { useImageColors, bannerGradient } from '../lib/imageColors'
 import { useMenuPosition } from '../lib/menuPosition'
@@ -97,7 +97,7 @@ function ChannelSummary({
   const hasIcon = !!channel?.channel_icon
   // Banner colors sampled from the icon ({ average, vibrant } or null). Null
   // (no icon / unreadable image) renders the plain card with no banner.
-  const bannerColors = useImageColors(hasIcon ? cdnUrl(channel.channel_icon) : null)
+  const bannerColors = useImageColors(hasIcon ? assetUrl(channel.channel_icon) : null)
 
   // Close the icon context menu on an outside click.
   useEffect(() => {
@@ -163,7 +163,11 @@ function ChannelSummary({
           onContextMenu={handleIconContextMenu}
         >
           {hasIcon ? (
-            <img className="client-summary-avatar-img" src={cdnUrl(channel.channel_icon)} alt="" />
+            <img
+              className="client-summary-avatar-img"
+              src={assetUrl(channel.channel_icon)}
+              alt=""
+            />
           ) : (
             <IconVolume size={28} stroke={2} />
           )}
@@ -229,7 +233,7 @@ function ChannelSummary({
 
       {viewerOpen && hasIcon && (
         <ImageViewer
-          src={cdnUrl(channel.channel_icon)}
+          src={assetUrl(channel.channel_icon)}
           name={`${channel?.name ?? 'Channel'} icon`}
           onClose={() => setViewerOpen(false)}
         />

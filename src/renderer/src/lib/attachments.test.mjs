@@ -1,16 +1,21 @@
 import assert from 'node:assert/strict'
-import test from 'node:test'
+import test, { beforeEach } from 'node:test'
 
-import {
-  MAX_ATTACHMENT_BYTES,
-  MAX_ATTACHMENTS_PER_MESSAGE,
-  MAX_MESSAGE_UPLOAD_BYTES,
-  fitAttachments,
-  formatBytes,
-  previewKind
-} from './attachments.js'
+import { fitAttachments, formatBytes, previewKind, setServerLimits } from './attachments.js'
 
 const MB = 1024 * 1024
+// Today's advertised values (GET /server `limits`).
+const MAX_ATTACHMENT_BYTES = 25 * MB
+const MAX_MESSAGE_UPLOAD_BYTES = 100 * MB
+const MAX_ATTACHMENTS_PER_MESSAGE = 10
+
+beforeEach(() =>
+  setServerLimits({
+    attachment_bytes: MAX_ATTACHMENT_BYTES,
+    message_upload_bytes: MAX_MESSAGE_UPLOAD_BYTES,
+    attachments_per_message: MAX_ATTACHMENTS_PER_MESSAGE
+  })
+)
 const file = (name, size) => ({ name, size })
 const pending = (...sizes) => sizes.map((size, i) => ({ file: file(`p${i}`, size) }))
 

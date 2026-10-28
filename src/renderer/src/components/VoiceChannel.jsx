@@ -25,7 +25,7 @@ import { motion, AnimatePresence } from 'motion/react'
 import { useSettings, useAnimationCategory } from '../context/SettingsContext'
 import { useAnimatedPresence } from '../lib/animation'
 import { collapseSection, avatarStack, avatarStackItem, spring } from '../lib/motionPresets'
-import { cdnUrl } from '../lib/serverConfig'
+import { assetUrl } from '../lib/serverConfig'
 import { useMenuPosition } from '../lib/menuPosition'
 import ClientIndicator from './ClientIndicator'
 import ScreenSourcePicker from './ScreenSourcePicker'
@@ -38,7 +38,8 @@ import {
   IconTrash,
   IconPointFilled,
   IconInfoCircle,
-  IconChevronDown
+  IconChevronDown,
+  IconFiles
 } from '@tabler/icons-react'
 
 const STACK_MAX = 3
@@ -108,6 +109,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     onDeleteChannel,
     onRequestCreateChannel,
     onShowChannelSummary,
+    onOpenFiles,
     onMoveClient,
     onPreviewChannel,
     onOpenDm,
@@ -993,7 +995,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
         onContextMenu={handleContextMenu}
       >
         {channel.channel_icon ? (
-          <img className="channel-icon-img" src={cdnUrl(channel.channel_icon)} alt="" />
+          <img className="channel-icon-img" src={assetUrl(channel.channel_icon)} alt="" />
         ) : (
           <IconDiamondsFilled className="channel-icon-placeholder" size={25} />
         )}
@@ -1111,6 +1113,16 @@ const VoiceChannel = forwardRef(function VoiceChannel(
             }}
           >
             <IconInfoCircle size={16} /> Channel Details
+          </button>
+          <button
+            type="button"
+            className="channel-context-item"
+            onClick={() => {
+              setMenuPos(null)
+              onOpenFiles?.(channel.id)
+            }}
+          >
+            <IconFiles size={16} /> Files
           </button>
           <button
             type="button"

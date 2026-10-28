@@ -1,12 +1,19 @@
 // Chat attachment helpers: the server's upload limits, size formatting, and
 // which files the in-app viewer can show as text.
 
-// Mirrors server/backend/src/limits.rs. The server enforces these too, but it
-// rejects an oversized upload mid-stream and drops the connection, so the
-// client usually sees a reset instead of the error — check before sending.
-export const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
-export const MAX_MESSAGE_UPLOAD_BYTES = 100 * 1024 * 1024
-export const MAX_ATTACHMENTS_PER_MESSAGE = 10
+// The `limits` the connected server advertises in GET /server, read at connect
+// (null while disconnected). The server enforces these too, but it rejects an
+// oversized upload mid-stream and drops the connection, so the client usually
+// sees a reset instead of the error — check before sending.
+let serverLimits = null
+
+export function setServerLimits(limits) {
+  serverLimits = limits ?? null
+}
+
+export function getServerLimits() {
+  return serverLimits
+}
 
 export function formatBytes(bytes) {
   if (bytes == null || !Number.isFinite(bytes)) return ''
@@ -25,25 +32,31 @@ export function formatBytes(bytes) {
 // attachments ({ file } entries) and the ones that would break a server limit.
 // Returns { accepted: File[], rejected: [{ file, reason }] }.
 export function fitAttachments(pending, files) {
+  if (!serverLimits) throw new Error('No server limits: not connected')
+  const {
+    attachment_bytes: maxAttachmentBytes,
+    message_upload_bytes: maxMessageUploadBytes,
+    attachments_per_message: maxAttachmentsPerMessage
+  } = serverLimits
   let count = pending.length
   let total = pending.reduce((sum, a) => sum + a.file.size, 0)
   const accepted = []
   const rejected = []
   for (const file of files) {
-    if (file.size > MAX_ATTACHMENT_BYTES) {
+    if (file.size > maxAttachmentBytes) {
       rejected.push({
         file,
-        reason: `${file.name} is ${formatBytes(file.size)}; files can be at most ${formatBytes(MAX_ATTACHMENT_BYTES)}.`
+        reason: `${file.name} is ${formatBytes(file.size)}; files can be at most ${formatBytes(maxAttachmentBytes)}.`
       })
-    } else if (count >= MAX_ATTACHMENTS_PER_MESSAGE) {
+    } else if (count >= maxAttachmentsPerMessage) {
       rejected.push({
         file,
-        reason: `A message can carry at most ${MAX_ATTACHMENTS_PER_MESSAGE} files.`
+        reason: `A message can carry at most ${maxAttachmentsPerMessage} files.`
       })
-    } else if (total + file.size > MAX_MESSAGE_UPLOAD_BYTES) {
+    } else if (total + file.size > maxMessageUploadBytes) {
       rejected.push({
         file,
-        reason: `${file.name} would take this message past the ${formatBytes(MAX_MESSAGE_UPLOAD_BYTES)} upload limit.`
+        reason: `${file.name} would take this message past the ${formatBytes(maxMessageUploadBytes)} upload limit.`
       })
     } else {
       accepted.push(file)

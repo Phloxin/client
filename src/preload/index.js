@@ -53,6 +53,18 @@ const api = {
       return () => ipcRenderer.removeListener('audiocapture:error', handler)
     }
   },
+  // The session lives in main (src/main/session.js); see renderer/src/lib/auth.js.
+  session: {
+    set: (payload) => ipcRenderer.invoke('session:set', payload),
+    clear: () => ipcRenderer.invoke('session:clear'),
+    getToken: (opts) => ipcRenderer.invoke('session:get-token', opts),
+    refresh: () => ipcRenderer.invoke('session:refresh'),
+    onExpired: (cb) => {
+      const handler = () => cb()
+      ipcRenderer.on('session:expired', handler)
+      return () => ipcRenderer.removeListener('session:expired', handler)
+    }
+  },
   diagnostics: {
     isAvailable: () => ipcRenderer.invoke('diagnostics:is-available'),
     exportLogs: () => ipcRenderer.invoke('diagnostics:export'),

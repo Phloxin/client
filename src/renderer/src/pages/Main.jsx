@@ -20,6 +20,9 @@ import UpdatePrompt from '../components/UpdatePrompt'
 import StreamDebugPanel from '../components/StreamDebugPanel'
 import RolesGroupsMenu from '../components/RolesGroupsMenu'
 import BanListMenu from '../components/BanListMenu'
+import FileBrowser from '../components/FileBrowser'
+import ImageViewer from '../components/ImageViewer'
+import FileViewer from '../components/FileViewer'
 import IdleAnimation from '../components/IdleAnimation'
 import Settings from './Settings'
 import {
@@ -41,7 +44,7 @@ import {
   setTalkingWhileMutedHandler
 } from '../lib/soup'
 import { playUiSound, isToastEnabled } from '../lib/sounds'
-import { setServerHost, apiBase, wsBase, cdnUrl, throwIfError } from '../lib/serverConfig'
+import { setServerHost, apiBase, wsBase, assetUrl, throwIfError } from '../lib/serverConfig'
 import { validateMessage, statusOf } from '../lib/presence'
 import { useAutoIdle } from '../lib/useAutoIdle'
 import { authFetch, getFreshToken, setOnSessionExpired } from '../lib/auth'
@@ -52,6 +55,7 @@ import {
   classifyClose
 } from '../lib/soup/protocol'
 import { httpFetch } from '../lib/http'
+import { setServerLimits, previewKind } from '../lib/attachments'
 import {
   isVoiceRecoveryReady,
   nextVoiceRebuildKind,
@@ -92,6 +96,7 @@ const STREAM_BASELINE_MS = 2000
 const PERM_MUTE_MEMBERS = 1n << 9n
 const PERM_KICK_MEMBERS = 1n << 10n
 const PERM_BAN_MEMBERS = 1n << 11n
+const PERM_MANAGE_MESSAGES = 1n << 3n
 const PERM_MANAGE_CHANNELS = 1n << 5n
 const PERM_MANAGE_ROLES = 1n << 12n
 const PERM_ADMINISTRATOR = 1n << 62n
@@ -121,11 +126,12 @@ function messageFromApi(msg) {
       kind: kindFromContentType(a.content_type),
       contentType: a.content_type,
       size: a.size,
-      url: cdnUrl(a.url)
+      url: assetUrl(a.url),
+      // Root-relative /shared/<token> while the file is public, else null.
+      publicUrl: a.public_url ?? null
     })),
-    // Link-preview / rich cards. URLs (incl. attachment://) are resolved
-    // server-side, so they're render-ready. May arrive later via MessageUpdated.
-    embeds: msg.embeds || [],
+    // Link-preview / rich cards. May arrive later via MessageUpdated.
+    embeds: embedsFromApi(msg.embeds),
     // Aggregated reactions, flattened to what ChatPanel renders. Custom emoji
     // are skipped — the server marks them NOT YET IMPLEMENTED.
     reactions: (msg.reactions || [])
@@ -212,6 +218,19 @@ async function fetchChannelMessages(channelId, params) {
   return res.json()
 }
 
+// Embeds with their media resolved for rendering. A file uploaded with the
+// message comes back as its root-relative /files/... URL, resolved here like
+// attachment URLs so ChatPanel can match the two; external URLs pass through.
+function embedsFromApi(embeds) {
+  return (embeds || []).map((embed) => {
+    const resolved = { ...embed }
+    for (const field of ['thumbnail', 'image', 'video']) {
+      if (embed[field]?.url) resolved[field] = { ...embed[field], url: assetUrl(embed[field].url) }
+    }
+    return resolved
+  })
+}
+
 function kindFromContentType(type) {
   if (type?.startsWith('image/')) return 'image'
   if (type?.startsWith('video/')) return 'video'
@@ -255,7 +274,7 @@ function voiceFields(state) {
 function normalizeClientVoice(c, voiceState = null) {
   return {
     ...c,
-    avatar: cdnUrl(c.avatar),
+    avatar: assetUrl(c.avatar),
     // The server sends assigned vanity as full VanityItems; we only keep the
     // ids and resolve names/icons against the global vanity list, so icon/name
     // edits propagate from one place.
@@ -343,6 +362,14 @@ function Main() {
   // 'Ban List' popup, opened from the server header's right-click menu.
   const [banListOpen, setBanListOpen] = useState(false)
   const [bans, setBans] = useState([])
+  // Channel whose file browser is open (right-click a channel → Files), or null.
+  // `filesRevision` ticks on every MessageUpdated/MessageDeleted in that channel
+  // so the browser refetches its first page.
+  const [filesChannelId, setFilesChannelId] = useState(null)
+  const [filesRevision, setFilesRevision] = useState(0)
+  // Image / text preview opened from the file browser (ChatPanel owns its own).
+  const [filesViewerImage, setFilesViewerImage] = useState(null)
+  const [filesViewerFile, setFilesViewerFile] = useState(null)
   const [connectedServer, setConnectedServer] = useState(null)
   // The server's own name (GET /server), distinct from the list entry's local
   // nickname. Shown in the title bar and lurking header once connected.
@@ -645,6 +672,7 @@ function Main() {
     [failRecovery]
   )
   const activeChatChannelIdRef = useRef(null)
+  const filesChannelIdRef = useRef(null)
   const chatVisibleRef = useRef(true)
   const feedRef = useRef([])
   const loadingOlderRef = useRef(false)
@@ -900,6 +928,22 @@ function Main() {
   // peeking, otherwise the joined channel.
   const activeChatChannelId = previewChannelId ?? selfChannelId
 
+  // Whether chat offers Delete on other people's messages: MANAGE_MESSAGES (or
+  // admin) outside DMs, where only the author may delete. The server is
+  // authoritative; this only gates the control.
+  // ponytail: from our roles only, the channel's overwrites aren't applied
+  // (lib/permissions only resolves VIEW_CHANNEL from them), so an overwrite that
+  // grants or denies MANAGE_MESSAGES here isn't reflected.
+  // canModerateIn(id) answers the same for any channel (the file browser asks
+  // it for the channel it is showing, not the active chat).
+  const canModerateIn = (channelId) => {
+    const type = channels.find((c) => c.id === channelId)?.type
+    return (
+      type != null && type !== 'dm' && (isAdmin || (myPermissions & PERM_MANAGE_MESSAGES) !== 0n)
+    )
+  }
+  const canModerateChat = canModerateIn(activeChatChannelId)
+
   // Chat is on screen when peeking a channel or when the joined channel's Chat
   // tab is selected (mirrors the render condition below).
   const chatVisible = previewChannelId != null || viewMode === 'log'
@@ -951,6 +995,9 @@ function Main() {
   useEffect(() => {
     activeChatChannelIdRef.current = activeChatChannelId
   }, [activeChatChannelId])
+  useEffect(() => {
+    filesChannelIdRef.current = filesChannelId
+  }, [filesChannelId])
   useEffect(() => {
     chatVisibleRef.current = chatVisible
   }, [chatVisible])
@@ -1134,6 +1181,19 @@ function Main() {
     }
   }, [summaryChannelId, visibleChannels])
 
+  // Same for the file browser.
+  useEffect(() => {
+    if (filesChannelId != null && !visibleChannels.some((c) => c.id === filesChannelId)) {
+      setFilesChannelId(null)
+    }
+  }, [filesChannelId, visibleChannels])
+  // A preview opened from the browser goes with it.
+  useEffect(() => {
+    if (filesChannelId != null) return
+    setFilesViewerImage(null)
+    setFilesViewerFile(null)
+  }, [filesChannelId])
+
   // Get-or-create the 1:1 DM channel with another user and make it known to
   // `channels`, returning its id. Shared by handleOpenDm (peek) and handlePoke
   // (fire a message without necessarily switching views). Idempotent server-side.
@@ -1251,7 +1311,7 @@ function Main() {
 
   // Load the server's vanity groups once per connection; VanityCreated/
   // VanityDeleted events keep the list current afterwards. Icons come back as
-  // /cdn/… paths, resolved against the active host like avatars.
+  // /files/… paths, resolved against the active host like avatars.
   useEffect(() => {
     if (!token) {
       setVanity([])
@@ -1260,7 +1320,9 @@ function Main() {
     authFetch(`${apiBase()}/server/vanity`)
       .then((res) => res.json())
       .then((data) =>
-        setVanity(Array.isArray(data) ? data.map((v) => ({ ...v, avatar: cdnUrl(v.avatar) })) : [])
+        setVanity(
+          Array.isArray(data) ? data.map((v) => ({ ...v, avatar: assetUrl(v.avatar) })) : []
+        )
       )
       .catch((err) => console.error('Failed to load vanity groups:', err))
   }, [token])
@@ -1293,9 +1355,10 @@ function Main() {
     refreshBans()
   }, [refreshBans])
 
-  // Bans with each user's avatar resolved to a CDN URL, for the Ban List popup.
+  // Bans with each user's avatar resolved against the active host, for the Ban
+  // List popup.
   const resolvedBans = useMemo(
-    () => bans.map((b) => ({ ...b, user: { ...b.user, avatar: cdnUrl(b.user.avatar) } })),
+    () => bans.map((b) => ({ ...b, user: { ...b.user, avatar: assetUrl(b.user.avatar) } })),
     [bans]
   )
 
@@ -1810,6 +1873,16 @@ function Main() {
       }).then(async (res) => ({ response: res, data: await res.json().catch(() => ({})) }))
 
     try {
+      // The server's name and the limits it enforces. Unauthenticated, so it
+      // comes first: a server that can't answer this can't be connected to.
+      // Also lets the header/title show the real name from the first render
+      // instead of flashing the nickname first.
+      const info = await httpFetch(`${apiBase()}/server`).then((res) => {
+        if (!res.ok) throw new Error(`Server responded ${res.status}`)
+        return res.json()
+      })
+      setServerLimits(info.limits)
+
       let result = await login()
       let data = result.data
       // Preserve the existing first-connect experience: an unauthorized login
@@ -1827,25 +1900,18 @@ function Main() {
       }
 
       if (result.response.ok && data.access_token) {
-        // Fetch the server's real name before revealing the connected UI, so the
-        // header/title show it from the first render instead of flashing the
-        // nickname first. Uses the fresh access token directly (auth state isn't
-        // applied yet). Falls back to the nickname if this fails.
-        const info = await httpFetch(`${apiBase()}/server`, {
-          headers: { Authorization: `Bearer ${data.access_token}` }
-        })
-          .then((res) => (res.ok ? res.json() : null))
-          .catch(() => null)
-        applyAuthResponse(data)
+        await applyAuthResponse(data)
         setConnectedServer(server)
-        setServerName(info?.name ?? null)
+        setServerName(info.name ?? null)
         playUiSound('connected')
       } else {
         setServerHost(null)
+        setServerLimits(null)
         showError(`Failed to connect to ${server.nickname}: ${data.error || 'login failed'}`)
       }
     } catch {
       setServerHost(null)
+      setServerLimits(null)
       showError(`Failed to connect to ${server.nickname}: could not reach server`)
     } finally {
       setConnecting(false)
@@ -1895,6 +1961,7 @@ function Main() {
       setConnectedServer(null)
       setServerName(null)
       setServerHost(null)
+      setServerLimits(null)
       setPreviewChannelId(null)
       setSummaryClientId(null)
       setReadStates({})
@@ -2405,7 +2472,7 @@ function Main() {
             const next = { ...c }
             if ('role_ids' in data) next.role_ids = data.role_ids
             if ('vanity' in data) next.vanity_ids = (data.vanity || []).map((v) => v.id)
-            if ('avatar' in data) next.avatar = cdnUrl(data.avatar)
+            if ('avatar' in data) next.avatar = assetUrl(data.avatar)
             if (data.nickname != null) next.name = data.nickname
             if (data.name != null) next.name = data.name
             return next
@@ -2413,6 +2480,10 @@ function Main() {
         )
       } else if (ev === 'MessageCreated') {
         setFeed((prev) => appendFeed(prev, messageFromApi(data)))
+        // New files: refresh the open file browser if it's showing this channel.
+        if (data.attachments?.length && data.channel_id === filesChannelIdRef.current) {
+          setFilesRevision((r) => r + 1)
+        }
         // Advance the channel's newest-message pointer — unread is derived from
         // this vs. our read cursor. (The server does not auto-ack the sender, so
         // our own sends rely on the view→ack effect to mark them read.)
@@ -2508,9 +2579,14 @@ function Main() {
         setFeed((prev) =>
           prev.map((e) => {
             if (e.type !== 'message' || e.id !== targetId) return e
-            return isFull ? messageFromApi(data) : { ...e, embeds: data.embeds || [] }
+            return isFull ? messageFromApi(data) : { ...e, embeds: embedsFromApi(data.embeds) }
           })
         )
+        // A file made public/private or deleted lands here too: refresh the
+        // open file browser if it's showing this channel.
+        if (data.channel_id != null && data.channel_id === filesChannelIdRef.current) {
+          setFilesRevision((r) => r + 1)
+        }
       } else if (ev === 'MessageDeleted') {
         // Tolerate either a full message object or a bare { message_id } / id.
         const removedId =
@@ -2524,6 +2600,9 @@ function Main() {
               c.id === data.channel_id ? { ...c, last_message_id: data.last_message_id } : c
             )
           )
+        }
+        if (data?.channel_id != null && data.channel_id === filesChannelIdRef.current) {
+          setFilesRevision((r) => r + 1)
         }
       } else if (ev === 'ChannelCreated' || ev === 'ChannelUpdated') {
         queueChannelUpsert(data)
@@ -2612,7 +2691,7 @@ function Main() {
       } else if (ev === 'VanityCreated') {
         // data is the VanityItem ({ id, type: 'group', name, avatar }). Upsert
         // by id — our own POST gets this broadcast echoed back too.
-        const item = { ...data, avatar: cdnUrl(data.avatar) }
+        const item = { ...data, avatar: assetUrl(data.avatar) }
         setVanity((prev) =>
           prev.some((v) => v.id === item.id)
             ? prev.map((v) => (v.id === item.id ? item : v))
@@ -2885,13 +2964,20 @@ function Main() {
     }).catch((err) => console.error('Failed to send typing:', err))
   }
 
-  // Send a chat message (with any attachments) to the channel we're currently in
-  const handleSendMessage = async (text, attachments, replyToId) => {
+  // Send a chat message (with any attachments) to the channel we're currently in.
+  // `options.public` (the composer's "Create public link") mints a share token
+  // for every attachment at upload; the field is left off otherwise.
+  const handleSendMessage = async (text, attachments, replyToId, options = {}) => {
     if (activeChatChannelId == null) return
 
     const payload = {
       content: text || undefined,
-      attachments: attachments.map((a, i) => ({ id: i, filename: a.file.name, description: null })),
+      attachments: attachments.map((a, i) => ({
+        ref: i,
+        filename: a.file.name,
+        description: null,
+        ...(options.public ? { public: true } : {})
+      })),
       // Replies are same-channel only, so `channel_id` is left off (the server
       // rejects it when it names another channel). `fail_if_not_exists` keeps
       // its default: replying to a message that's since been deleted fails
@@ -3030,9 +3116,10 @@ function Main() {
     }
   }
 
-  // Delete one of our own messages. The server validates ownership and broadcasts
-  // MessageDeleted; we also drop it locally on success so it disappears
-  // immediately even if the broadcast is delayed (the broadcast is idempotent).
+  // Delete a message: ours, or anyone's as a moderator (see canModerateChat). The
+  // server validates the permission and broadcasts MessageDeleted; we also drop
+  // it locally on success so it disappears immediately even if the broadcast is
+  // delayed (the broadcast is idempotent).
   const handleDeleteMessage = async (messageId) => {
     if (activeChatChannelId == null) return
 
@@ -3045,6 +3132,84 @@ function Main() {
       setFeed((prev) => prev.filter((e) => !(e.type === 'message' && e.id === messageId)))
     } catch (err) {
       showError(`Failed to delete message: ${err.message}`, err)
+    }
+  }
+
+  // Right-click a channel → Files: open that channel's file browser.
+  const handleOpenFiles = (channelId) => setFilesChannelId(channelId)
+
+  // One page of a channel's files (FileApiObject[], newest first). Unset
+  // filters are left out of the query. Rethrows after the toast so the browser
+  // can show its inline error line too.
+  const handleListFiles = async (channelId, { before, q, type, limit = 50 } = {}) => {
+    const query = new URLSearchParams({ limit: String(limit) })
+    if (before != null) query.set('before', before)
+    if (q) query.set('q', q)
+    if (type) query.set('type', type)
+    try {
+      const res = await authFetch(`${apiBase()}/channels/${channelId}/files?${query}`)
+      await throwIfError(res)
+      const data = await res.json()
+      return Array.isArray(data) ? data : []
+    } catch (err) {
+      showError(`Failed to load files: ${err.message}`, err)
+      throw err
+    }
+  }
+
+  // Make a file public (mint a share link) or private (revoke it). The server
+  // broadcasts MessageUpdated when something changed, which updates the feed
+  // and the file browser; nothing is patched locally. Returns the updated
+  // FileApiObject, or null on failure.
+  const handleSetFilePublic = async (channelId, fileId, isPublic) => {
+    try {
+      const res = await authFetch(`${apiBase()}/channels/${channelId}/files/${fileId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ public: isPublic })
+      })
+      await throwIfError(res)
+      return await res.json()
+    } catch (err) {
+      showError(`Failed to make file ${isPublic ? 'public' : 'private'}: ${err.message}`, err)
+      return null
+    }
+  }
+
+  // Delete a file. Its message stays (ChatPanel shows "File removed" once it is
+  // empty); the MessageUpdated broadcast carries the change. Returns success.
+  const handleDeleteFile = async (channelId, fileId) => {
+    try {
+      const res = await authFetch(`${apiBase()}/channels/${channelId}/files/${fileId}`, {
+        method: 'DELETE'
+      })
+      await throwIfError(res)
+      return true
+    } catch (err) {
+      showError(`Failed to delete file: ${err.message}`, err)
+      return false
+    }
+  }
+
+  // Copy a file's share link: the absolute URL, which is what someone without
+  // a session needs.
+  const handleCopyLink = (publicUrl) => {
+    const url = assetUrl(publicUrl)
+    if (!url) return
+    navigator.clipboard.writeText(url).then(
+      () => showSuccess('Link copied'),
+      (err) => console.error('Copy link failed:', err)
+    )
+  }
+
+  // Save a file from the browser through the main process's save dialog (same
+  // path as ChatPanel's attachment download).
+  const handleDownloadFile = async ({ url, name }) => {
+    const result = await window.electron.ipcRenderer
+      .invoke('download-file', { url, filename: name })
+      .catch((err) => ({ ok: false, error: err.message }))
+    if (!result?.ok && !result?.canceled) {
+      showError(`Failed to download ${name}: ${result?.error || 'unknown error'}`)
     }
   }
 
@@ -3224,6 +3389,10 @@ function Main() {
       if (showSettings) setShowSettings(false)
       else if (rolesGroupsOpen) setRolesGroupsOpen(false)
       else if (banListOpen) setBanListOpen(false)
+      // ImageViewer closes itself on Escape without claiming the key, so its
+      // layer is listed here to keep the browser under it open.
+      else if (filesViewerImage) setFilesViewerImage(null)
+      else if (filesChannelId != null) setFilesChannelId(null)
       else if (summaryChannelId != null) setSummaryChannelId(null)
       else if (summaryClientId != null) setSummaryClientId(null)
       else if (previewChannelId != null) setPreviewChannelId(null)
@@ -3238,6 +3407,8 @@ function Main() {
     showSettings,
     rolesGroupsOpen,
     banListOpen,
+    filesViewerImage,
+    filesChannelId,
     summaryChannelId,
     summaryClientId,
     previewChannelId,
@@ -3286,7 +3457,7 @@ function Main() {
     previewChannelName = previewChannel?.name ?? 'Channel'
   }
   const previewChannelIcon =
-    previewChannel?.type === 'dm' ? previewDmAvatar : cdnUrl(previewChannel?.channel_icon)
+    previewChannel?.type === 'dm' ? previewDmAvatar : assetUrl(previewChannel?.channel_icon)
 
   // The client whose summary is open (single-click), or null.
   const summaryClient =
@@ -3298,6 +3469,10 @@ function Main() {
     summaryChannelId != null ? channels.find((c) => c.id === summaryChannelId) : null
   const summaryChannelMemberCount =
     summaryChannel != null ? clients.filter((c) => c.channel_id === summaryChannel.id).length : 0
+
+  // The channel whose file browser is open, or null.
+  const filesChannel =
+    filesChannelId != null ? visibleChannels.find((c) => c.id === filesChannelId) : null
 
   // Handed to ClientActionsProvider so a client context menu can be opened from
   // anywhere (currently the sidebar roster and chat message authors).
@@ -3361,6 +3536,46 @@ function Main() {
             onClose={() => setBanListOpen(false)}
           />
         )}
+        {filesChannel && connected && (
+          <FileBrowser
+            key={filesChannel.id}
+            channel={filesChannel}
+            clients={clients}
+            selfId={client?.id}
+            canModerate={canModerateIn(filesChannel.id)}
+            revision={filesRevision}
+            onList={(opts) => handleListFiles(filesChannel.id, opts)}
+            onSetPublic={(fileId, isPublic) =>
+              handleSetFilePublic(filesChannel.id, fileId, isPublic)
+            }
+            onDelete={(fileId) => handleDeleteFile(filesChannel.id, fileId)}
+            onCopyLink={handleCopyLink}
+            onOpenImage={setFilesViewerImage}
+            onPreviewFile={setFilesViewerFile}
+            onDownload={handleDownloadFile}
+            onClose={() => setFilesChannelId(null)}
+          />
+        )}
+        {filesViewerImage && (
+          <ImageViewer
+            src={filesViewerImage.url}
+            name={filesViewerImage.name}
+            onClose={() => setFilesViewerImage(null)}
+          />
+        )}
+        <AnimatePresence>
+          {filesViewerFile && (
+            <FileViewer
+              key={filesViewerFile.url}
+              src={filesViewerFile.url}
+              name={filesViewerFile.name}
+              size={filesViewerFile.size}
+              kind={previewKind(filesViewerFile.name, filesViewerFile.contentType)}
+              onClose={() => setFilesViewerFile(null)}
+              onDownload={() => handleDownloadFile(filesViewerFile)}
+            />
+          )}
+        </AnimatePresence>
         <TitleBar
           title={titleText}
           icon={IconUsersGroup}
@@ -3420,6 +3635,7 @@ function Main() {
             onMoveClient={handleMoveClientToChannel}
             onPreviewChannel={handlePreviewChannel}
             onShowChannelSummary={handleShowChannelSummary}
+            onOpenFiles={handleOpenFiles}
             onOpenDm={handleOpenDm}
             onPoke={handlePoke}
             onKick={handleKickUser}
@@ -3489,7 +3705,7 @@ function Main() {
                           {joinedChannel.channel_icon ? (
                             <img
                               className="chat-title-icon-img"
-                              src={cdnUrl(joinedChannel.channel_icon)}
+                              src={assetUrl(joinedChannel.channel_icon)}
                               alt=""
                             />
                           ) : (
@@ -3595,12 +3811,20 @@ function Main() {
                   onSend={handleSendMessage}
                   onEditMessage={handleEditMessage}
                   onDeleteMessage={handleDeleteMessage}
+                  onSetFilePublic={(_messageId, fileId, isPublic) =>
+                    handleSetFilePublic(activeChatChannelId, fileId, isPublic)
+                  }
+                  onDeleteFile={(_messageId, fileId) =>
+                    handleDeleteFile(activeChatChannelId, fileId)
+                  }
+                  onCopyLink={handleCopyLink}
                   onReactMessage={handleReactMessage}
                   onLoadReactors={handleLoadReactors}
                   onTyping={handleTyping}
                   onError={showError}
                   typingUsers={typingUsers}
                   disabled={activeChatChannelId == null}
+                  canModerate={canModerateChat}
                   channelKey={activeChatChannelId}
                   onLoadOlder={loadOlderMessages}
                   hasMoreOlder={
