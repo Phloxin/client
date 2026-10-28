@@ -59,6 +59,7 @@ function Sidebar({
   onNotify,
   onViewServerTraffic,
   onViewServerSummary,
+  onOpenBanList,
   onCreateChannel,
   onDeleteChannel,
   onReorderChannel,
@@ -507,6 +508,8 @@ function Sidebar({
           onNotify={onNotify}
           onViewServerTraffic={onViewServerTraffic}
           onViewServerSummary={onViewServerSummary}
+          canBanMembers={canBanMembers}
+          onOpenBanList={onOpenBanList}
         />
       </div>
 

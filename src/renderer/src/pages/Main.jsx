@@ -19,6 +19,7 @@ import Toast from '../components/Toast'
 import UpdatePrompt from '../components/UpdatePrompt'
 import StreamDebugPanel from '../components/StreamDebugPanel'
 import RolesGroupsMenu from '../components/RolesGroupsMenu'
+import BanListMenu from '../components/BanListMenu'
 import IdleAnimation from '../components/IdleAnimation'
 import Settings from './Settings'
 import {
@@ -339,6 +340,8 @@ function Main() {
   }, [channels, isAdmin, clients, client])
   // 'Roles and Groups' popup, opened from a client context menu.
   const [rolesGroupsOpen, setRolesGroupsOpen] = useState(false)
+  // 'Ban List' popup, opened from the server header's right-click menu.
+  const [banListOpen, setBanListOpen] = useState(false)
   const [bans, setBans] = useState([])
   const [connectedServer, setConnectedServer] = useState(null)
   // The server's own name (GET /server), distinct from the list entry's local
@@ -1290,12 +1293,22 @@ function Main() {
     refreshBans()
   }, [refreshBans])
 
-  // Banned users, shaped like roster clients (resolved avatar) so ClientIndicator
-  // can render them. Marked via the returned id set below.
-  const bannedUsers = useMemo(
-    () => bans.map((b) => ({ ...b.user, avatar: cdnUrl(b.user.avatar) })),
+  // Bans with each user's avatar resolved to a CDN URL, for the Ban List popup.
+  const resolvedBans = useMemo(
+    () => bans.map((b) => ({ ...b, user: { ...b.user, avatar: cdnUrl(b.user.avatar) } })),
     [bans]
   )
+
+  // Banned users, shaped like roster clients (resolved avatar) so ClientIndicator
+  // can render them. Marked via the returned id set below.
+  const bannedUsers = useMemo(() => resolvedBans.map((b) => b.user), [resolvedBans])
+
+  // Open the Ban List, refetching so it reflects bans made by other moderators
+  // (only our own ban/unban actions and ClientBanned events update it otherwise).
+  const handleOpenBanList = useCallback(() => {
+    refreshBans()
+    setBanListOpen(true)
+  }, [refreshBans])
 
   // Assign / remove a role. role_ids is updated on success (not optimistically),
   // so a server rejection — e.g. missing MANAGE_ROLES — doesn't leave a stale
@@ -3201,14 +3214,16 @@ function Main() {
   const overlayAnim = useAnimationCategory('overlays')
 
   // Focused Escape closes the topmost open menu/view, one layer per press, in
-  // stacking order (settings overlay → roles/groups menu → canvas summary/peek
-  // views). Skips when a nested control already handled the key (defaultPrevented,
-  // e.g. an open picker) so it never yanks a layer out from under one.
+  // stacking order (settings overlay → roles/groups menu → ban list → canvas
+  // summary/peek views). Skips when a nested control already handled the key
+  // (defaultPrevented, e.g. an open picker) so it never yanks a layer out from
+  // under one.
   useEffect(() => {
     const onKeyDown = (e) => {
       if (e.key !== 'Escape' || e.defaultPrevented) return
       if (showSettings) setShowSettings(false)
       else if (rolesGroupsOpen) setRolesGroupsOpen(false)
+      else if (banListOpen) setBanListOpen(false)
       else if (summaryChannelId != null) setSummaryChannelId(null)
       else if (summaryClientId != null) setSummaryClientId(null)
       else if (previewChannelId != null) setPreviewChannelId(null)
@@ -3222,6 +3237,7 @@ function Main() {
   }, [
     showSettings,
     rolesGroupsOpen,
+    banListOpen,
     summaryChannelId,
     summaryClientId,
     previewChannelId,
@@ -3336,6 +3352,15 @@ function Main() {
             onClose={() => setRolesGroupsOpen(false)}
           />
         )}
+        {/* Gated on connected + BAN_MEMBERS too, so it drops away on disconnect
+            or if our roles lose the permission while it's open. */}
+        {banListOpen && connected && canBanMembers && (
+          <BanListMenu
+            bans={resolvedBans}
+            onUnban={handleUnbanUser}
+            onClose={() => setBanListOpen(false)}
+          />
+        )}
         <TitleBar
           title={titleText}
           icon={IconUsersGroup}
@@ -3378,6 +3403,7 @@ function Main() {
             }}
             onViewServerTraffic={handleViewServerTraffic}
             onViewServerSummary={handleViewServerSummary}
+            onOpenBanList={handleOpenBanList}
             // provide a renderer-level openSettings hook
             onOpenSettings={openSettings}
             servers={servers}

@@ -17,7 +17,8 @@ import {
   IconEyeOff,
   IconActivity,
   IconInfoCircle,
-  IconServer
+  IconServer,
+  IconBan
 } from '@tabler/icons-react'
 
 // Initial state for the add-server form
@@ -45,7 +46,9 @@ function ServerMenu({
   onRemoveServer,
   onNotify,
   onViewServerTraffic,
-  onViewServerSummary
+  onViewServerSummary,
+  canBanMembers,
+  onOpenBanList
 }) {
   // Right-click context menu on the trigger (connected only): { x, y } or null.
   const [ctxPos, setCtxPos] = useState(null)
@@ -329,6 +332,18 @@ function ServerMenu({
           >
             <IconInfoCircle size={16} /> View server summary
           </button>
+          {canBanMembers && (
+            <button
+              type="button"
+              className="channel-context-item"
+              onClick={() => {
+                setCtxPos(null)
+                onOpenBanList?.()
+              }}
+            >
+              <IconBan size={16} /> Ban list
+            </button>
+          )}
           <button
             type="button"
             className="channel-context-item danger"
