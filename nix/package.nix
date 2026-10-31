@@ -16,11 +16,31 @@
   libxtst,
   libxrandr,
   libxt,
+  preferScreenshareCodec ? null,
+  # disableHardwareEncode: true turns VA-API video encoding off entirely
+  disableHardwareEncode ? false,
 }:
 
 let
   # Keep in sync with the electron version in package.json
   electron = electron_43;
+
+  screenshareCodecs = [
+    "H264"
+    "AV1"
+    "VP9"
+  ];
+  wrapperEnv =
+    lib.optionals (preferScreenshareCodec != null) [
+      "--set-default"
+      "PREFER_SCREENSHARE_CODEC"
+      preferScreenshareCodec
+    ]
+    ++ lib.optionals disableHardwareEncode [
+      "--set-default"
+      "VOIP_NO_HW_ENCODE"
+      "1"
+    ];
 
   packageJson = lib.importJSON ../package.json;
 
@@ -51,6 +71,9 @@ let
     doCheck = false;
   };
 in
+assert lib.assertMsg
+  (preferScreenshareCodec == null || builtins.elem preferScreenshareCodec screenshareCodecs)
+  "pylon: preferScreenshareCodec must be one of ${lib.concatStringsSep ", " screenshareCodecs} or null, got \"${toString preferScreenshareCodec}\"";
 buildNpmPackage {
   pname = "pylon";
   inherit (packageJson) version;
@@ -123,11 +146,13 @@ buildNpmPackage {
 
     install -Dm644 resources/icon.png $out/share/icons/hicolor/512x512/apps/pylon.png
 
-    # Add libva for hardware video and mark the app as packaged
+    # Add libva for hardware video, mark the app as packaged, and bake in the
+    # screen-share switches chosen at build time
     makeWrapper ${lib.getExe electron} $out/bin/pylon \
       --add-flags $appDir \
       --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath [ libva ]} \
-      --set-default ELECTRON_FORCE_IS_PACKAGED 1
+      --set-default ELECTRON_FORCE_IS_PACKAGED 1 \
+      ${lib.escapeShellArgs wrapperEnv}
 
     runHook postInstall
   '';
