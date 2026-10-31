@@ -1,5 +1,6 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import { createPortal } from 'react-dom'
+import { motion } from 'motion/react'
 import './VideoGrid.css'
 import {
   IconVideoMinus,
@@ -17,22 +18,21 @@ import {
   IconPlayerPlayFilled,
   IconPlayerStopFilled,
   IconScreenShare,
-  IconScreenShareOff,
   IconEye,
-  IconEyeOff,
   IconMovie,
   IconMicrophone,
   IconMicrophoneOff,
   IconHeadphones,
-  IconHeadphonesOff,
-  IconDeviceDesktop
+  IconHeadphonesOff
 } from '@tabler/icons-react'
-import { RESOLUTIONS } from '../lib/captureOptions'
-import { setFocusedScreenAudio, setVideoStreamRoles, subscribeStreamViewers } from '../lib/soup'
+import { setVideoStreamRoles, subscribeStreamViewers } from '../lib/soup'
 import { useImageColors } from '../lib/imageColors'
 import { useWheelSlider } from '../lib/useWheelSlider'
 import { shouldPauseSelfPreview, syncSelfPreviewPlayback } from '../lib/selfPreviewPlayback'
-import { useSettings } from '../context/SettingsContext'
+import { resolveStreamFocus } from '../lib/streamView'
+import { spring } from '../lib/motionPresets'
+import { useAnimationCategory, useSettings } from '../context/SettingsContext'
+import StreamContextMenu from './StreamContextMenu'
 
 // Stable empty default so the role effect doesn't churn when no watched set is
 // passed (e.g. the popout's first render before the bridge data arrives).
@@ -40,8 +40,12 @@ const EMPTY_WATCHED = new Set()
 // Same idea for the theatre-mode props the popout window never supplies.
 const EMPTY_LIST = []
 const EMPTY_SPEAKING = {}
+// ...and for the per-stream audio map before the bridge data arrives.
+const EMPTY_AUDIO = {}
+// A stream with no audio override plays at 100%, unmuted.
+const DEFAULT_STREAM_AUDIO = { volume: 1, muted: false }
 
-// Gap (px) between grid tiles — must match the `gap` in .video-grid-layout.
+// Gap (px) between grid tiles — must match the `gap` in .video-stage.grid.
 const GRID_GAP = 12
 const TILE_AR = 16 / 9
 
@@ -51,8 +55,21 @@ const CHROME_IDLE_MS = 4000
 // Scroll-to-zoom bounds/step for the focused stream.
 const ZOOM_MAX = 8
 const ZOOM_STEP = 1.25
+const NO_ZOOM = { z: 1, x: 0, y: 0 }
+
+// Focus/unfocus tween for the tiles (and their media wrappers): the shared snappy
+// spring, which settles in roughly 180ms.
+const TILE_TRANSITION = { layout: spring }
 
 const clamp = (v, min, max) => Math.min(max, Math.max(min, v))
+
+// Volume glyph for a 0..200 percentage (already 0 while muted).
+function volumeGlyph(percent, size) {
+  if (percent === 0) return <IconVolumeOff size={size} />
+  if (percent < 10) return <IconVolume4 size={size} />
+  if (percent <= 50) return <IconVolume2 size={size} />
+  return <IconVolume size={size} />
+}
 
 // Largest uniform 16:9 tile width that fits `n` tiles inside a W×H area without
 // scrolling. Tries every column count and, for each, takes the tile size capped
@@ -93,6 +110,24 @@ function StreamPlaceholder({ avatar, initial }) {
         {avatar ? <img src={avatar} alt="" /> : initial}
       </span>
     </div>
+  )
+}
+
+// A small round avatar beside a name (tile labels, the viewer list): the
+// image when there is one, otherwise the name's initial on the theme tint, as
+// StreamPlaceholder falls back. Decorative — the name is always next to it.
+// eslint-disable-next-line react/prop-types -- The renderer does not use runtime PropTypes.
+function StreamAvatar({ avatar, name, small = false }) {
+  return (
+    <span className={`stream-avatar${small ? ' small' : ''}`} aria-hidden="true">
+      {avatar ? (
+        <img src={avatar} alt="" />
+      ) : (
+        String(name || '?')
+          .charAt(0)
+          .toUpperCase()
+      )}
+    </span>
   )
 }
 
@@ -178,27 +213,38 @@ function StreamPausedOverlay({ compact = false, isSelf = false }) {
   )
 }
 
+// The stream view. Every stream is one always-mounted tile (keyed by the
+// publishing client) inside a single stage, so moving a stream into or out of
+// focus restyles and re-places its tile rather than remounting it — no <video>
+// ever restarts, and Motion tweens the tile between its old and new boxes. The
+// stage is either a grid (no focus: uniform tiles spread over the area) or a
+// focus layout (the focused tile fills the top, the rest wrap underneath as
+// thumbnails). A sole stream is always focused and can't be unfocused; see
+// resolveStreamFocus. Per-stream actions live in the right-click menu
+// (StreamContextMenu); the bottom bar keeps the focused stream's volume and the
+// view controls.
 function VideoGrid({
   streams,
   clients,
   selectedStreamClientId,
   onSelect,
   onPopout,
-  onFocusAudio,
   onSetStreamRoles,
   watchedStreamClientIds = EMPTY_WATCHED,
   onSetStreamWatched,
   // Ends our own screen share (owned by the sidebar's VoiceChannel). Absent in
-  // windows that can't reach it, which hides the stop button on our own stream.
+  // windows that can't reach it, which hides the stop action on our own stream.
   onStopSharing,
-  // Drives the capture settings menu on our own stream: read the live options,
-  // restart with new ones, or reopen the source picker.
+  // Drives our own stream's menu entries: read the live options, restart with
+  // new ones, pause, or reopen the source picker.
   shareControl,
   streamViewers: streamViewersProp,
-  volume,
-  muted,
-  onVolumeChange,
-  onMutedChange,
+  // Per-stream screen-share audio, { [clientId]: { volume (gain, 1 = 100%),
+  // muted } }; a client without an entry is at 100%. Every watched stream is
+  // audible at once, each at its own level. onSetStreamAudio(clientId, patch)
+  // changes one (routed to the opener's soup when popped out).
+  streamAudio = EMPTY_AUDIO,
+  onSetStreamAudio,
   // Theatre mode: fills the window with participant icons + voice controls
   // overlaid. Only the main window supplies these (the popout omits them, so
   // its theatre button is hidden and the overlays never render).
@@ -214,16 +260,27 @@ function VideoGrid({
 }) {
   const { appearanceSettings } = useSettings()
   const showCodecBadge = appearanceSettings.showCodecBadge !== false
+  // Focus/unfocus tweens the tiles between layouts (Motion layout animation),
+  // gated by the Stream Focus animation setting and reduced motion.
+  const animateFocus = useAnimationCategory('streamFocus')
   const selfPreviewPaused = useSelfPreviewPaused()
   const viewerRef = useRef(null)
-  const gridRef = useRef(null)
-  const focusRef = useRef(null)
+  const stageRef = useRef(null)
+  // Each tile's element, by client id; zoom/pan measure against the focused
+  // one. Looked up rather than held in a ref that moves between tiles, because
+  // Motion only forwards a ref on mount/unmount, so moving one onto an
+  // already-mounted tile when focus changes would never take.
+  const tileElsRef = useRef(new Map())
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [carouselCollapsed, setCarouselCollapsed] = useState(false)
-  // Capture-settings popover on our own stream's stop button. Its contents are
-  // snapshotted from shareControl when opened — the options live in the sidebar.
-  const [shareMenuOpen, setShareMenuOpen] = useState(false)
-  const [shareOptions, setShareOptions] = useState(null)
+  // The right-click menu: { clientId, pos: { x, y } } while open.
+  const [menu, setMenu] = useState(null)
+  const closeMenu = useCallback(() => setMenu(null), [])
+  const menuOpen = menu != null
+  // Set on a tile's primary-button mousedown while the menu is open. That click
+  // is the one dismissing the menu (it closes on outside mousedown), so the tile
+  // must not also act on it.
+  const swallowClickRef = useRef(false)
   // Overlay chrome (control bar, stream name, viewer count) rides the pointer:
   // shown while it's over the viewer and moving, gone once it's been still for
   // IDLE_MS or has left entirely.
@@ -242,7 +299,7 @@ function VideoGrid({
   // Scroll-to-zoom on the focused stream: scale + pan offset (px, container
   // coords, translate-then-scale from the top-left). z=1 is the normal fit view.
   // Deliberately ephemeral — reset whenever the focused stream changes.
-  const [view, setView] = useState({ z: 1, x: 0, y: 0 })
+  const [view, setView] = useState(NO_ZOOM)
   // In-progress drag-pan bookkeeping; `moved` suppresses the click-to-unfocus
   // that would otherwise fire when the drag ends.
   const dragRef = useRef(null)
@@ -270,11 +327,14 @@ function VideoGrid({
 
   // Esc leaves theatre mode. Captured so it beats the app-level Esc handlers,
   // but deferred to the browser while OS-fullscreen is active (Esc exits that
-  // first, then a second press leaves theatre).
+  // first, then a second press leaves theatre). An open stream menu is the top
+  // layer, so it's left to close itself first; the next press leaves theatre.
+  // (Unfocusing a stream on Esc is Main's cascade / the popout's job, below
+  // every other layer.)
   useEffect(() => {
     if (!theatre) return
     const onKey = (e) => {
-      if (e.key === 'Escape' && !document.fullscreenElement) {
+      if (e.key === 'Escape' && !document.fullscreenElement && !menuOpen) {
         e.preventDefault()
         e.stopPropagation()
         onToggleTheatre?.(false)
@@ -282,7 +342,7 @@ function VideoGrid({
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
-  }, [theatre, onToggleTheatre])
+  }, [theatre, onToggleTheatre, menuOpen])
 
   // Resolve the display label from the live clients list so a stream's
   // name stays correct even if it arrived before the clients list caught
@@ -308,49 +368,60 @@ function VideoGrid({
     return 0
   })
 
-  // No fallback: when nothing is selected, selectedStream is null and we render
-  // the spread-out grid view instead of the single-focus view.
   // Focus/watch intent is keyed by the publishing client, not by the transient
   // mediasoup consumer id. Codec fallback re-produces the same logical stream
-  // with a new consumer id, and must not stop playback or mute its audio.
-  const selectedStream = sortedStreams.find((s) => s.clientId === selectedStreamClientId) || null
+  // with a new consumer id, and must not stop playback, drop focus, or remount
+  // its tile. A sole stream is always the focused one; with more, nothing
+  // selected means the grid.
+  const { focusedClientId, canToggleFocus } = resolveStreamFocus({
+    streams: sortedStreams,
+    selectedStreamClientId
+  })
+  const focusedStream =
+    focusedClientId == null ? null : sortedStreams.find((s) => s.clientId === focusedClientId)
 
   // The sharer isn't watching their own stream, so drop them if the server
-  // happens to report them; everyone else resolves to a name.
-  const focusedViewers = (streamViewers.get(selectedStream?.producerId) ?? [])
-    .filter((id) => id !== selectedStream?.clientId)
-    .map((id) => clients?.find((c) => c.id === id)?.name || 'Unknown')
-    .sort((a, b) => a.localeCompare(b))
+  // happens to report them; everyone else resolves to a name and avatar (an
+  // id we don't know yet reads as 'Unknown' with the initial fallback).
+  const focusedViewers = (streamViewers.get(focusedStream?.producerId) ?? [])
+    .filter((id) => id !== focusedStream?.clientId)
+    .map((id) => {
+      const viewer = clients?.find((c) => c.id === id)
+      return { id, name: viewer?.name || 'Unknown', avatar: viewer?.avatar }
+    })
+    .sort((a, b) => a.name.localeCompare(b.name))
 
   const watchedStreams = sortedStreams.filter((s) => watchedStreamClientIds.has(s.clientId))
-  const soleWatchedClientId =
-    watchedStreamClientIds.size === 1 ? watchedStreamClientIds.values().next().value : null
-  // Audio follows viewer intent, not the momentary set of live video consumers.
-  // A codec replacement closes the old video before its successor arrives while
-  // the independent ScreenShareAudio producer remains live.
-  const audibleClientId = selectedStreamClientId ?? soleWatchedClientId
+  const isStopped = (s) => !watchedStreamClientIds.has(s.clientId)
+
+  // Zoom needs a picture: a sole stream we aren't watching is still the focused
+  // view, but shows its placeholder, so there's nothing to zoom into.
+  const zoomable = !!focusedStream && !isStopped(focusedStream) && !!focusedStream.stream
+  const zoom = zoomable ? view : NO_ZOOM
+
+  // The menu's stream went away (its sharer stopped, or every stream did): drop
+  // the menu rather than leave it pointing at nothing. Adjusted during render
+  // so a menu for a missing tile never paints.
+  const menuStream = menu ? (sortedStreams.find((s) => s.clientId === menu.clientId) ?? null) : null
+  if (menu && !menuStream) setMenu(null)
 
   // Reset the zoom whenever focus moves (or clears) so returning to a stream
   // always starts at the normal fit view — zoom is never persisted. The viewer
-  // list is per-stream, so it closes here too rather than carrying over.
+  // list is per-stream, so it closes here too rather than carrying over, and so
+  // does the right-click menu.
   useEffect(() => {
-    setView({ z: 1, x: 0, y: 0 })
+    setView(NO_ZOOM)
     setViewersOpen(false)
-    setShareMenuOpen(false)
-  }, [selectedStream?.consumerId])
-
-  // The capture options live in the sidebar's voice channel; take a snapshot
-  // whenever the menu opens so the segments show what's actually live.
-  useEffect(() => {
-    if (shareMenuOpen) setShareOptions(shareControl?.getOptions() ?? null)
-  }, [shareMenuOpen])
+    setMenu(null)
+  }, [focusedClientId])
 
   // Scroll-to-zoom on the focused stream, anchored at the cursor. Native
   // listener (not React onWheel) because it must preventDefault, and wheel
-  // events are passive by default.
+  // events are passive by default. `theatre` is a dep because entering/leaving
+  // it portals the viewer, which remounts the focused tile's element.
   useEffect(() => {
-    const el = focusRef.current
-    if (!el) return
+    const el = tileElsRef.current.get(focusedClientId)
+    if (!zoomable || !el) return
     const onWheel = (e) => {
       e.preventDefault()
       const rect = el.getBoundingClientRect()
@@ -358,7 +429,7 @@ function VideoGrid({
       const cy = e.clientY - rect.top
       setView((v) => {
         const z = clamp(v.z * (e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP), 1, ZOOM_MAX)
-        if (z === 1) return { z: 1, x: 0, y: 0 }
+        if (z === 1) return NO_ZOOM
         // Keep the point under the cursor fixed while the scale changes, then
         // clamp so the frame's edges never pull inside the container.
         const s = z / v.z
@@ -371,17 +442,17 @@ function VideoGrid({
     }
     el.addEventListener('wheel', onWheel, { passive: false })
     return () => el.removeEventListener('wheel', onWheel)
-  }, [selectedStream?.consumerId])
+  }, [focusedClientId, zoomable, theatre])
 
   // Drag to pan while zoomed. A real drag (moved past a click threshold) sets
   // suppressClickRef so the mouseup's click doesn't unfocus the stream.
   const handlePanStart = (e) => {
-    if (view.z === 1 || e.button !== 0) return
-    dragRef.current = { sx: e.clientX, sy: e.clientY, x: view.x, y: view.y, moved: false }
+    if (zoom.z === 1 || e.button !== 0) return
+    dragRef.current = { sx: e.clientX, sy: e.clientY, x: zoom.x, y: zoom.y, moved: false }
   }
   const handlePanMove = (e) => {
     const d = dragRef.current
-    const el = focusRef.current
+    const el = tileElsRef.current.get(focusedClientId)
     if (!d || !el) return
     const dx = e.clientX - d.sx
     const dy = e.clientY - d.sy
@@ -407,7 +478,7 @@ function VideoGrid({
   const handleMapPanStart = (e) => {
     e.stopPropagation() // don't start a video-pan drag underneath
     if (e.button !== 0) return
-    const el = focusRef.current
+    const el = tileElsRef.current.get(focusedClientId)
     const map = e.currentTarget.getBoundingClientRect()
     if (!el || !map.width) return
     const rect = el.getBoundingClientRect()
@@ -415,8 +486,8 @@ function VideoGrid({
     // let the drag (if any) continue from there.
     const fx = (e.clientX - map.left) / map.width
     const fy = (e.clientY - map.top) / map.height
-    const jx = clamp(-(fx - 0.5 / view.z) * rect.width * view.z, rect.width * (1 - view.z), 0)
-    const jy = clamp(-(fy - 0.5 / view.z) * rect.height * view.z, rect.height * (1 - view.z), 0)
+    const jx = clamp(-(fx - 0.5 / zoom.z) * rect.width * zoom.z, rect.width * (1 - zoom.z), 0)
+    const jy = clamp(-(fy - 0.5 / zoom.z) * rect.height * zoom.z, rect.height * (1 - zoom.z), 0)
     setView((v) => ({ z: v.z, x: jx, y: jy }))
     const start = { sx: e.clientX, sy: e.clientY, x: jx, y: jy }
     const onMove = (ev) => {
@@ -436,34 +507,22 @@ function VideoGrid({
     window.addEventListener('mouseup', onUp)
   }
 
-  // Only one screen-share audio track should be audible. Visual focus wins; in
-  // grid view a sole watched stream is also audible so clicking the play button
-  // cannot result in perfectly good video with hard-muted audio.
-  // When popped out, onFocusAudio routes this to the opener window's soup
-  // instance (which owns the actual audio playback); otherwise apply locally.
-  useEffect(() => {
-    const applyFocusAudio = onFocusAudio || setFocusedScreenAudio
-    applyFocusAudio(audibleClientId, { volume: volume / 100, muted })
-  }, [audibleClientId, volume, muted])
-
-  // Ration video bandwidth: the focused stream gets full quality, the rest get
-  // a cheaper layer (medium in grid view, tiny in the carousel), and a collapsed
-  // carousel pauses them entirely. Grid tiles are always visible regardless of
-  // the (focus-only) carousel-collapsed state. When popped out, onSetStreamRoles
-  // routes this to the opener window's soup instance; otherwise apply locally.
-  // Only streams the user has chosen to watch are visible (consumed); everything
-  // else stays paused. The carousel-collapsed state additionally hides the
-  // non-focused streams in focus view.
-  const allVisible = !selectedStream || !carouselCollapsed
+  // Ration video bandwidth: the focused stream (a sole stream included) gets
+  // full quality, the rest get a cheaper layer (medium in grid view, tiny as
+  // thumbnails), and a collapsed thumbnail strip pauses them entirely. When
+  // popped out, onSetStreamRoles routes this to the opener window's soup
+  // instance; otherwise apply locally. Only streams the user has chosen to
+  // watch are visible (consumed); everything else stays paused.
+  const allVisible = !focusedStream || !carouselCollapsed
   const visibleIds = allVisible ? watchedStreams.map((s) => s.consumerId) : []
   const visibleStreamKey = visibleIds.join(',')
   useEffect(() => {
     const applyRoles = onSetStreamRoles || setVideoStreamRoles
     applyRoles({
-      focusedConsumerId: selectedStream?.consumerId ?? null,
+      focusedConsumerId: focusedStream?.consumerId ?? null,
       visibleConsumerIds: visibleIds
     })
-  }, [selectedStream?.consumerId, visibleStreamKey])
+  }, [focusedStream?.consumerId, visibleStreamKey])
 
   // When the grid goes away entirely (switch to chat view, or the popout
   // closes) nobody is watching any stream, so pause every video consumer. The
@@ -474,15 +533,15 @@ function VideoGrid({
     return () => applyRoles({ focusedConsumerId: null, visibleConsumerIds: [] })
   }, [])
 
-  // Recompute the uniform grid tile size whenever the grid is shown, its tile
-  // count changes, or the area resizes (window/sidebar/fullscreen). A
-  // ResizeObserver on the grid container keeps it in sync without polling.
-  // `theatre` is a dep because entering/leaving it portals the grid to a new
+  // Recompute the uniform grid tile size whenever the stage switches to grid
+  // mode, its tile count changes, or the area resizes (window/sidebar/
+  // fullscreen). A ResizeObserver on the stage keeps it in sync without polling.
+  // `theatre` is a dep because entering/leaving it portals the stage to a new
   // parent, which remounts the node — the observer must follow to the new one.
-  const gridShown = !selectedStream
+  const gridShown = !focusedStream
   const gridTileCount = sortedStreams.length
   useEffect(() => {
-    const el = gridRef.current
+    const el = stageRef.current
     if (!gridShown || !el) return
     const recompute = () =>
       setGridTileWidth(bestUniformTileWidth(el.clientWidth, el.clientHeight, gridTileCount))
@@ -492,17 +551,30 @@ function VideoGrid({
     return () => ro.disconnect()
   }, [gridShown, gridTileCount, theatre])
 
-  const handleVolumeChange = (e) => {
-    const next = Number(e.target.value)
-    onVolumeChange(next)
-    if (next > 0 && muted) onMutedChange(false)
-    if (next === 0 && !muted) onMutedChange(true)
+  // Per-stream audio, shared by the bottom bar (focused stream) and the menu.
+  // The sliders run 0..200 (%), showing 0 while muted; dragging to 0 mutes and
+  // dragging up from it unmutes.
+  const audioOf = (clientId) => streamAudio[clientId] ?? DEFAULT_STREAM_AUDIO
+  const audioPercent = (a) => (a.muted ? 0 : Math.round(a.volume * 100))
+  const setStreamVolume = (clientId, e) => {
+    const v = Number(e.target.value)
+    onSetStreamAudio?.(clientId, { volume: v / 100, muted: v === 0 })
+  }
+  const toggleStreamMute = (clientId) =>
+    onSetStreamAudio?.(clientId, { muted: !audioOf(clientId).muted })
+  const resetStreamVolume = (clientId) => onSetStreamAudio?.(clientId, { volume: 1, muted: false })
+
+  // The bar's volume belongs to the focused stream, and only to someone else's
+  // (we never hear our own).
+  const barAudioClientId = focusedStream && !focusedStream.isSelf ? focusedStream.clientId : null
+  const handleBarVolumeChange = (e) => {
+    if (barAudioClientId != null) setStreamVolume(barAudioClientId, e)
   }
 
   // Keep this hook above the empty-state return. A remote stream ending changes
   // `streams` from non-empty to empty, and skipping this hook on that render
   // would change VideoGrid's hook order.
-  const volumeWheelRef = useWheelSlider(handleVolumeChange)
+  const volumeWheelRef = useWheelSlider(handleBarVolumeChange)
 
   if (!streams.length)
     return (
@@ -524,141 +596,249 @@ function VideoGrid({
       </div>
     )
 
-  const toggleMute = () => onMutedChange(!muted)
-
-  const resetVolume = () => {
-    onVolumeChange(100)
-    if (muted) onMutedChange(false)
-  }
-
-  const VolumeIcon =
-    muted || volume === 0
-      ? IconVolumeOff
-      : volume < 10
-        ? IconVolume4
-        : volume <= 50
-          ? IconVolume2
-          : IconVolume
-
-  const isStopped = (s) => !watchedStreamClientIds.has(s.clientId)
-
-  // The top-right watch/close button: stop consuming a stream, or resume it.
-  const toggleStopped = (s, e) => {
-    e.stopPropagation()
-    const watch = isStopped(s) // currently stopped → play it; currently playing → stop it
-    onSetStreamWatched?.(s.clientId, watch)
-    // Can't watch a stream big once it's stopped — drop focus if it was focused.
-    if (!watch && selectedStream?.clientId === s.clientId) onSelect?.(null)
-  }
-
-  // The focused stream's stop action: end our own share, or stop watching
-  // someone else's. Either way we drop focus and fall back to the grid.
-  const stopFocused = () => {
-    if (selectedStream.isSelf) onStopSharing?.()
-    else onSetStreamWatched?.(selectedStream.clientId, false)
-    onSelect?.(null)
-  }
-
-  // Retune the live share. Nothing can be changed in place, so this restarts the
-  // stream; the segments update optimistically, then resync to whatever the
-  // restart actually settled on ('on' is a placeholder until it reports back).
-  const applyShareOptions = async (patch) => {
-    const { audio, ...rest } = patch
-    setShareOptions((prev) => ({
-      ...prev,
-      ...rest,
-      ...(audio == null ? {} : { audioMode: audio ? 'on' : 'none' })
-    }))
-    await shareControl?.restart(patch)
-    // Only resync if the restart left us sharing — mid-restart the sidebar's
-    // handle is briefly gone, and blanking the menu then would look broken.
-    const settled = shareControl?.getOptions()
-    if (settled) setShareOptions(settled)
-  }
-
-  // Pause or resume our live share in place (no restart). Optimistic, then
-  // resynced to what the sidebar's handle reports.
-  const toggleSharePaused = async () => {
-    const paused = !shareOptions?.paused
-    setShareOptions((prev) => (prev ? { ...prev, paused } : prev))
-    await shareControl?.setPaused(paused)
-    const settled = shareControl?.getOptions()
-    if (settled) setShareOptions(settled)
-  }
-
   // Clicking a tile body focuses it (resuming it first if it was closed).
   const focusStream = (s) => {
     if (isStopped(s)) onSetStreamWatched?.(s.clientId, true)
     onSelect?.(s.clientId)
   }
 
-  // A carousel thumbnail or grid tile. Shows live video (or a "stopped"
-  // placeholder), the watch/close toggle, and the label.
-  const renderTile = (s, variant) => {
+  // Start or stop consuming a stream. Can't watch a stream big once it's
+  // stopped, so stopping the focused one drops focus — unless it's the only
+  // stream, which is always the focused view (it shows its placeholder).
+  const setWatched = (s, watch) => {
+    onSetStreamWatched?.(s.clientId, watch)
+    if (!watch && s.clientId === focusedClientId && canToggleFocus) onSelect?.(null)
+  }
+
+  // The top-right watch/close button: stop consuming a stream, or resume it.
+  const toggleStopped = (s, e) => {
+    e.stopPropagation()
+    setWatched(s, isStopped(s)) // currently stopped → play it; currently playing → stop it
+  }
+
+  // Focus toggling only exists with two or more streams: a grid tile or
+  // thumbnail focuses, the focused tile goes back to the grid. A click that
+  // ends a drag-pan, or that dismissed the menu, does neither.
+  const handleTileMouseDown = (s, e) => {
+    if (e.button === 0) swallowClickRef.current = menuOpen
+    if (s.clientId === focusedClientId) handlePanStart(e)
+  }
+  const handleTileClick = (s) => {
+    const dismissedMenu = swallowClickRef.current
+    swallowClickRef.current = false
+    if (s.clientId === focusedClientId) {
+      if (suppressClickRef.current) {
+        suppressClickRef.current = false
+        return
+      }
+      if (!dismissedMenu && canToggleFocus) onSelect?.(null)
+      return
+    }
+    if (!dismissedMenu && canToggleFocus) focusStream(s)
+  }
+
+  const openMenu = (s, e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setMenu({ clientId: s.clientId, pos: { x: e.clientX, y: e.clientY } })
+  }
+
+  // Speaker-off pill beside the name plate of a stream whose audio we muted.
+  const muteBadge = (
+    <span className="stream-mute-badge" aria-label="Stream audio muted">
+      <IconVolumeOff size={13} />
+    </span>
+  )
+
+  // One stream's tile, in whichever role the layout gives it: `focused` (fills
+  // the top of the focus layout, with zoom/pan, minimap, codec badge and viewer
+  // count), `thumb` (the others while something is focused) or `grid` (everyone
+  // when nothing is). The element is the same in every role — only its class
+  // changes — so the <video> inside survives focus changes. Both the tile and
+  // its media wrapper are Motion layout nodes, so the tween moves the wrapper
+  // with the tile instead of leaving the media behind.
+  const renderTile = (s) => {
+    const isFocused = s.clientId === focusedClientId
+    const role = isFocused ? 'focused' : focusedStream ? 'thumb' : 'grid'
+    const compact = role === 'thumb'
     // Watching is intent; the stream arrives a moment later once the consumer is
     // created. Keep showing the placeholder until it does, rather than a blank
     // <video>.
     const stopped = isStopped(s) || !s.stream
-    const selected = variant === 'thumbnail' && selectedStream?.producerId === s.producerId
-    const tileClass = variant === 'thumbnail' ? 'video-thumbnail' : 'video-grid-tile'
-    const labelClass = variant === 'thumbnail' ? 'thumb-label' : 'tile-label'
     const client = clients?.find((c) => c.id === s.clientId)
+    const label = resolveLabel(s)
+    // Our own stream is never played back to us, so it never carries the badge.
+    const audioMuted = !s.isSelf && !!streamAudio[s.clientId]?.muted
+    const zoomed = isFocused && zoom.z > 1
+    // The frame the minimap's outline is measured against.
+    const zoomedEl = zoomed ? tileElsRef.current.get(s.clientId) : null
     return (
-      <div
-        key={s.producerId ?? s.consumerId}
-        className={`${tileClass}${selected ? ' selected' : ''}${stopped ? ' stopped' : ''}`}
+      <motion.div
+        key={s.clientId}
+        layout={animateFocus}
+        transition={TILE_TRANSITION}
+        ref={(el) => {
+          if (el) tileElsRef.current.set(s.clientId, el)
+          else tileElsRef.current.delete(s.clientId)
+        }}
+        className={`stream-tile ${role}${stopped ? ' stopped' : ''}${
+          canToggleFocus ? ' focusable' : ''
+        }${zoomed ? ' zoomed' : ''}`}
         role="button"
         tabIndex={0}
-        onClick={() => focusStream(s)}
+        onClick={() => handleTileClick(s)}
+        onMouseDown={(e) => handleTileMouseDown(s, e)}
+        onMouseMove={isFocused ? handlePanMove : undefined}
+        onMouseUp={isFocused ? handlePanEnd : undefined}
+        onMouseLeave={isFocused ? handlePanEnd : undefined}
+        onContextMenu={(e) => openMenu(s, e)}
       >
-        {/* Not watching, or watching but the consumer hasn't produced a track
-            yet — either way hold the sharer's avatar rather than a blank
-            <video>. */}
-        {stopped ? (
-          <StreamPlaceholder
-            avatar={client?.avatar}
-            initial={client?.name?.charAt(0).toUpperCase() ?? '?'}
-          />
-        ) : (
-          <StreamVideo
-            stream={s.stream}
-            isSelf={s.isSelf}
-            selfPreviewPaused={s.isSelf && selfPreviewPaused}
-          />
-        )}
+        <motion.div layout={animateFocus} transition={TILE_TRANSITION} className="stream-media">
+          {/* Not watching, or watching but the consumer hasn't produced a track
+              yet — either way hold the sharer's avatar rather than a blank
+              <video>. */}
+          {stopped ? (
+            <StreamPlaceholder
+              avatar={client?.avatar}
+              initial={client?.name?.charAt(0).toUpperCase() ?? '?'}
+            />
+          ) : (
+            <StreamVideo
+              stream={s.stream}
+              isSelf={s.isSelf}
+              selfPreviewPaused={s.isSelf && selfPreviewPaused}
+              style={
+                zoomed
+                  ? {
+                      transform: `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.z})`,
+                      transformOrigin: '0 0'
+                    }
+                  : undefined
+              }
+            />
+          )}
+        </motion.div>
         {s.paused ? (
-          <StreamPausedOverlay compact={variant === 'thumbnail'} isSelf={s.isSelf} />
+          <StreamPausedOverlay compact={compact} isSelf={s.isSelf} />
         ) : (
-          s.isSelf &&
-          selfPreviewPaused && <SelfPreviewPausedOverlay compact={variant === 'thumbnail'} />
+          s.isSelf && selfPreviewPaused && <SelfPreviewPausedOverlay compact={compact} />
         )}
-        {/* Top-right: start watching, or close the stream once we are. */}
-        {isStopped(s) ? (
-          <button
-            type="button"
-            className="stream-watch-cta"
-            title="Play stream"
-            onClick={(e) => {
-              e.stopPropagation()
-              onSetStreamWatched?.(s.clientId, true)
-            }}
+        {/* Zoom minimap: the full frame with the visible region outlined.
+            Shown only while zoomed and hovering (same hover gate as the
+            other controls, via CSS). */}
+        {zoomed && (
+          <div
+            className="zoom-minimap"
+            onClick={(e) => e.stopPropagation()}
+            onMouseDown={handleMapPanStart}
           >
-            <IconPlayerPlayFilled size={variant === 'thumbnail' ? 13 : 15} />
-            {variant !== 'thumbnail' && <span>Play</span>}
-          </button>
+            <StreamVideo
+              stream={s.stream}
+              isSelf={s.isSelf}
+              selfPreviewPaused={s.isSelf && selfPreviewPaused}
+            />
+            <div
+              className="zoom-minimap-rect"
+              style={{
+                left: `${(-zoom.x / ((zoomedEl?.clientWidth || 1) * zoom.z)) * 100}%`,
+                top: `${(-zoom.y / ((zoomedEl?.clientHeight || 1) * zoom.z)) * 100}%`,
+                width: `${100 / zoom.z}%`,
+                height: `${100 / zoom.z}%`
+              }}
+            />
+          </div>
+        )}
+        {isFocused && showCodecBadge && s.codec && (
+          <div className="focus-codec-badge" title="Video codec / encoder">
+            {s.codec}
+            {s.hardware != null && (
+              <span className={s.hardware ? 'enc-hw' : 'enc-sw'}>{s.hardware ? 'HW' : 'SW'}</span>
+            )}
+          </div>
+        )}
+        {/* Top-right: the focused stream's viewer count (with the chrome), then
+            start watching, or close the stream once we are (on hover). */}
+        <div className="stream-tile-actions" onClick={(e) => e.stopPropagation()}>
+          {isFocused && (
+            <div className="focus-viewers">
+              <button
+                type="button"
+                className="vid-btn focus-viewers-btn"
+                onClick={() => setViewersOpen((v) => !v)}
+                title={
+                  focusedViewers.length === 0
+                    ? 'Nobody is watching this stream'
+                    : `${focusedViewers.length} watching`
+                }
+                aria-expanded={viewersOpen}
+              >
+                <IconEye size={18} />
+                <span className="focus-viewers-count">{focusedViewers.length}</span>
+              </button>
+              {viewersOpen && (
+                <div className="focus-viewers-list">
+                  {focusedViewers.length === 0 ? (
+                    <div className="focus-viewers-empty">Nobody is watching</div>
+                  ) : (
+                    focusedViewers.map((viewer) => (
+                      <div key={viewer.id} className="focus-viewers-row">
+                        <StreamAvatar avatar={viewer.avatar} name={viewer.name} />
+                        <span className="stream-label-text">{viewer.name}</span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+          {/* On our own share, watching only means previewing it locally (the
+              stream stays live either way), so it's worded as a preview. */}
+          {isStopped(s) ? (
+            <button
+              type="button"
+              className="stream-watch-cta"
+              title={s.isSelf ? 'Preview your stream' : 'Play stream'}
+              onClick={(e) => {
+                e.stopPropagation()
+                onSetStreamWatched?.(s.clientId, true)
+              }}
+            >
+              <IconPlayerPlayFilled size={compact ? 13 : 15} />
+              {!compact && <span>{s.isSelf ? 'Preview' : 'Play'}</span>}
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="stream-toggle-btn stop"
+              title={s.isSelf ? 'Stop previewing' : 'Close stream'}
+              onClick={(e) => toggleStopped(s, e)}
+            >
+              <IconPlayerStopFilled size={compact ? 13 : 15} />
+              {!compact && <span>{s.isSelf ? 'Stop Preview' : 'Stop'}</span>}
+            </button>
+          )}
+        </div>
+        {/* Name plate (the owner's avatar, then their name), plus a speaker-off
+            badge when we've muted this stream's audio. The focused stream's
+            fades with the chrome. */}
+        {isFocused ? (
+          <div className="focus-label">
+            <span className="focus-label-name">
+              <StreamAvatar avatar={client?.avatar} name={label} />
+              <span className="stream-label-text">{label}</span>
+            </span>
+            {audioMuted && muteBadge}
+          </div>
         ) : (
-          <button
-            type="button"
-            className="stream-toggle-btn stop"
-            title="Close stream"
-            onClick={(e) => toggleStopped(s, e)}
-          >
-            <IconPlayerStopFilled size={variant === 'thumbnail' ? 13 : 15} />
-            {variant !== 'thumbnail' && <span>Stop</span>}
-          </button>
+          <div className="stream-tile-label-row">
+            <div className={compact ? 'thumb-label' : 'tile-label'}>
+              <StreamAvatar avatar={client?.avatar} name={label} small={compact} />
+              <span className="stream-label-text">{label}</span>
+            </div>
+            {audioMuted && muteBadge}
+          </div>
         )}
-        <div className={labelClass}>{resolveLabel(s)}</div>
-      </div>
+      </motion.div>
     )
   }
 
@@ -720,7 +900,7 @@ function VideoGrid({
   }
 
   // The theatre-only overlays: the participant rail (left) and the mic/deafen
-  // voice controls (bottom-left). Layered over whichever video view is active.
+  // voice controls (bottom-left). Layered over the stage in either layout.
   const theatreOverlays = theatre ? (
     <>
       {voiceClients.length > 0 && (
@@ -757,129 +937,20 @@ function VideoGrid({
     </>
   ) : null
 
-  // An open popover pins the chrome — otherwise reading the settings or viewer
-  // list without moving the mouse would fade the thing you're reading.
-  const chromeShown = chromeAwake || shareMenuOpen || viewersOpen
-  // Our own tile is present exactly while we're sharing.
-  const sharingSelf = streams.some((s) => s.isSelf)
+  // An open popover pins the chrome — otherwise reading the menu or viewer list
+  // without moving the mouse would fade the thing you're reading.
+  const chromeShown = chromeAwake || viewersOpen || menuOpen
+  // Thumbnails show (and need the room above the control bar) while a stream is
+  // focused, there are others, and the strip isn't collapsed.
+  const thumbsShown = !!focusedStream && !carouselCollapsed && sortedStreams.length > 1
 
-  // Capture settings for our own live share, opened by the split button's arrow.
-  // Shared by the focus and grid docks — whichever one is showing hosts it.
-  const shareSettingsMenu =
-    shareMenuOpen && shareOptions ? (
-      <div className="stream-settings-menu">
-        {!shareOptions.isCamera && (
-          <>
-            <div className="stream-settings-row">
-              <span>FPS</span>
-              <div className="picker-segment">
-                {[30, 60].map((val) => (
-                  <button
-                    key={val}
-                    type="button"
-                    className={`picker-segment-btn${shareOptions.fps === val ? ' active' : ''}`}
-                    onClick={() => applyShareOptions({ fps: val })}
-                  >
-                    {val}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div className="stream-settings-row">
-              <span>Resolution</span>
-              <div className="picker-segment">
-                {RESOLUTIONS.map(({ label, width, height }) => (
-                  <button
-                    key={label}
-                    type="button"
-                    className={`picker-segment-btn${shareOptions.height === height ? ' active' : ''}`}
-                    onClick={() => applyShareOptions({ width, height })}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div className="stream-settings-row">
-              <span>Optimize</span>
-              <div className="picker-segment">
-                {[
-                  { value: 'detail', label: 'Detail' },
-                  { value: 'motion', label: 'Motion' }
-                ].map(({ value, label }) => (
-                  <button
-                    key={value}
-                    type="button"
-                    className={`picker-segment-btn${shareOptions.optimizeFor === value ? ' active' : ''}`}
-                    onClick={() => applyShareOptions({ optimizeFor: value })}
-                    title={value === 'motion' ? 'Best for games and video' : 'Best for text and UI'}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div className="stream-settings-row">
-              <span>Audio</span>
-              <div className="picker-segment">
-                {[
-                  { on: true, label: 'On' },
-                  { on: false, label: 'Off' }
-                ].map(({ on, label }) => (
-                  <button
-                    key={label}
-                    type="button"
-                    className={`picker-segment-btn${(shareOptions.audioMode !== 'none' && shareOptions.audioMode != null) === on ? ' active' : ''}`}
-                    onClick={() => applyShareOptions({ audio: on })}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </>
-        )}
-        {/* Pausing restarts nothing: viewers keep the stream and see it paused
-            until it resumes. */}
-        <button type="button" className="stream-settings-action" onClick={toggleSharePaused}>
-          {shareOptions.paused ? (
-            <IconPlayerPlayFilled size={16} />
-          ) : (
-            <IconPlayerPauseFilled size={16} />
-          )}
-          {shareOptions.paused ? 'Resume Stream' : 'Pause Stream'}
-        </button>
-        <button
-          type="button"
-          className="stream-settings-action"
-          onClick={() => {
-            setShareMenuOpen(false)
-            shareControl.pickSource()
-          }}
-        >
-          <IconDeviceDesktop size={16} />
-          Change Source
-        </button>
-        <div className="stream-settings-note">Other changes restart your stream.</div>
-      </div>
-    ) : null
-
-  // The settings arrow that hangs off a stop/share button.
-  const shareSettingsBtn = (
-    <button
-      type="button"
-      className="vid-btn success vid-split-more"
-      title="Stream settings"
-      aria-expanded={shareMenuOpen}
-      onClick={() => setShareMenuOpen((v) => !v)}
-    >
-      <IconChevronUp size={14} />
-    </button>
-  )
+  const barAudio = barAudioClientId != null ? audioOf(barAudioClientId) : null
+  const barPercent = barAudio ? audioPercent(barAudio) : 0
 
   // The control bar, anchored to the viewer rather than the video frame, so it
   // stays put whatever the stream's aspect ratio is (and shows in grid view too).
-  // Everything in it fades together with the rest of the chrome.
+  // Everything in it fades together with the rest of the chrome. Per-stream
+  // actions (stop, our own share's controls) live in the right-click menu.
   const viewerControls = (
     <div
       className="viewer-controls"
@@ -891,7 +962,7 @@ function VideoGrid({
       }}
       onMouseLeave={wakeChrome}
     >
-      {selectedStream && (
+      {focusedStream && canToggleFocus && (
         <button
           type="button"
           className="carousel-toggle"
@@ -901,80 +972,34 @@ function VideoGrid({
           {carouselCollapsed ? <IconChevronUp size={18} /> : <IconChevronDown size={18} />}
         </button>
       )}
-      {/* Centre dock, styled like the sidebar's control panel. Mic is hidden in
-          theatre mode, which has its own voice controls bottom-left. */}
-      <div className="focus-stream-controls">
-        {!theatre && onToggleMic && (
-          <button
-            type="button"
-            className={`vid-btn${micMuted ? ' danger' : ''}`}
-            onClick={() => onToggleMic()}
-            title={micMuted ? 'Unmute microphone' : 'Mute microphone'}
-          >
-            {micMuted ? <IconMicrophoneOff size={18} /> : <IconMicrophone size={18} />}
-          </button>
-        )}
-        {/* Grid view has no focused stream to act on, so the dock carries our own
-            share toggle instead — start (opening the source picker) or stop. */}
-        {!selectedStream && shareControl && (
-          <div className="vid-split">
-            <button
-              type="button"
-              className={`vid-btn${sharingSelf ? ' success' : ''}`}
-              title={sharingSelf ? 'Stop streaming' : 'Start a stream'}
-              onClick={() => (sharingSelf ? onStopSharing?.() : shareControl.pickSource())}
-            >
-              {sharingSelf ? <IconScreenShareOff size={18} /> : <IconScreenShare size={18} />}
-            </button>
-            {/* Nothing to retune until a share is live. */}
-            {sharingSelf && shareSettingsBtn}
-            {sharingSelf && shareSettingsMenu}
-          </div>
-        )}
-        {/* Mirrors the sidebar dock toggles: green (sharing) for our own stream,
-            red (muted-style) for someone else's. On our own stream it's a split
-            button — the arrow opens the capture settings. */}
-        {selectedStream && (!selectedStream.isSelf || onStopSharing) && (
-          <div className="vid-split">
-            <button
-              type="button"
-              className={`vid-btn ${selectedStream.isSelf ? 'success' : 'danger'}`}
-              title={selectedStream.isSelf ? 'Stop streaming' : 'Stop watching'}
-              onClick={stopFocused}
-            >
-              {selectedStream.isSelf ? <IconScreenShareOff size={18} /> : <IconEyeOff size={18} />}
-            </button>
-            {selectedStream.isSelf && shareControl && shareSettingsBtn}
-            {selectedStream.isSelf && shareSettingsMenu}
-          </div>
-        )}
-      </div>
       <div className="video-controls">
-        <div className="volume-control">
-          <div className="volume-slider-wrap">
-            <span className="volume-center-tick" aria-hidden="true" />
-            <input
-              ref={volumeWheelRef}
-              type="range"
-              className="volume-slider"
-              min={0}
-              max={200}
-              value={muted ? 0 : volume}
-              onChange={handleVolumeChange}
-              onDoubleClick={resetVolume}
-              title="Volume — 100% is normal, drag right to boost (double-click to reset)"
-            />
+        {barAudio && (
+          <div className="volume-control">
+            <div className="volume-slider-wrap">
+              <span className="volume-center-tick" aria-hidden="true" />
+              <input
+                ref={volumeWheelRef}
+                type="range"
+                className="volume-slider"
+                min={0}
+                max={200}
+                value={barPercent}
+                onChange={handleBarVolumeChange}
+                onDoubleClick={() => resetStreamVolume(barAudioClientId)}
+                title="Volume — 100% is normal, drag right to boost (double-click to reset)"
+              />
+            </div>
+            <span className="volume-value">{barPercent}%</span>
+            <button
+              type="button"
+              className="vid-btn"
+              onClick={() => toggleStreamMute(barAudioClientId)}
+              title={barAudio.muted ? 'Unmute' : 'Mute'}
+            >
+              {volumeGlyph(barPercent, 18)}
+            </button>
           </div>
-          <span className="volume-value">{muted ? 0 : volume}%</span>
-          <button
-            type="button"
-            className="vid-btn"
-            onClick={toggleMute}
-            title={muted ? 'Unmute' : 'Mute'}
-          >
-            <VolumeIcon size={18} />
-          </button>
-        </div>
+        )}
         {onPopout && (
           <button type="button" className="vid-btn" onClick={onPopout} title="Pop out to window">
             <IconExternalLink size={18} />
@@ -993,6 +1018,66 @@ function VideoGrid({
     </div>
   )
 
+  // The right-click menu for the stream it was opened on. Rendered inside the
+  // viewer (not portalled to the body) so it shows while the viewer is
+  // OS-fullscreen. Keyed per open so its flyout and settings snapshot reset.
+  const renderStreamMenu = () => {
+    const s = menuStream
+    const focused = s.clientId === focusedClientId
+    let audio = null
+    if (!s.isSelf) {
+      const a = audioOf(s.clientId)
+      const value = audioPercent(a)
+      audio = {
+        value,
+        muted: a.muted,
+        icon: volumeGlyph(value, 16),
+        onChange: (e) => setStreamVolume(s.clientId, e),
+        onToggleMute: () => toggleStreamMute(s.clientId),
+        onReset: () => resetStreamVolume(s.clientId)
+      }
+    }
+    return (
+      <StreamContextMenu
+        key={`${menu.clientId}:${menu.pos.x},${menu.pos.y}`}
+        label={resolveLabel(s)}
+        pos={menu.pos}
+        onClose={closeMenu}
+        isSelf={!!s.isSelf}
+        audio={audio}
+        focused={focused}
+        canToggleFocus={canToggleFocus}
+        onToggleFocus={() => (focused ? onSelect?.(null) : focusStream(s))}
+        watched={!isStopped(s)}
+        onSetWatched={(watch) => setWatched(s, watch)}
+        onStopSharing={
+          s.isSelf && onStopSharing
+            ? () => {
+                onStopSharing()
+                if (focused && canToggleFocus) onSelect?.(null)
+              }
+            : undefined
+        }
+        shareControl={s.isSelf ? shareControl : undefined}
+        onPopout={onPopout}
+        theatre={theatre}
+        onToggleTheatre={onToggleTheatre}
+        isFullscreen={isFullscreen}
+        onToggleFullscreen={() => {
+          if (document.fullscreenElement) {
+            document.exitFullscreen()
+            return
+          }
+          // Fullscreen shows the focused view, so a tile asking for it is
+          // focused first; requestFullscreen stays inside this click (it needs
+          // the user gesture).
+          if (!focused && canToggleFocus) focusStream(s)
+          viewerRef.current?.requestFullscreen()
+        }}
+      />
+    )
+  }
+
   const viewer = (
     <div
       className={`video-viewer${isFullscreen ? ' fullscreen' : ''}${theatre ? ' theatre' : ''}${
@@ -1002,143 +1087,26 @@ function VideoGrid({
       onMouseMove={wakeChrome}
       onMouseLeave={sleepChrome}
     >
-      {selectedStream ? (
-        <>
-          {/* Clicking the focused video (anywhere but the controls) unfocuses it.
-              Scrolling zooms toward the cursor; dragging pans while zoomed (and
-              suppresses the unfocus click). */}
-          <div
-            className={`video-focus focusable${view.z > 1 ? ' zoomed' : ''}`}
-            ref={focusRef}
-            onClick={() => {
-              if (suppressClickRef.current) {
-                suppressClickRef.current = false
-                return
-              }
-              // An open settings popover swallows the first outside click, so
-              // dismissing it doesn't also drop you back to the grid.
-              if (shareMenuOpen) {
-                setShareMenuOpen(false)
-                return
-              }
-              onSelect?.(null)
-            }}
-            onMouseDown={handlePanStart}
-            onMouseMove={handlePanMove}
-            onMouseUp={handlePanEnd}
-            onMouseLeave={handlePanEnd}
-          >
-            <StreamVideo
-              stream={selectedStream.stream}
-              isSelf={selectedStream.isSelf}
-              selfPreviewPaused={selectedStream.isSelf && selfPreviewPaused}
-              style={
-                view.z > 1
-                  ? {
-                      transform: `translate(${view.x}px, ${view.y}px) scale(${view.z})`,
-                      transformOrigin: '0 0'
-                    }
-                  : undefined
-              }
-            />
-            {selectedStream.paused ? (
-              <StreamPausedOverlay isSelf={selectedStream.isSelf} />
-            ) : (
-              selectedStream.isSelf && selfPreviewPaused && <SelfPreviewPausedOverlay />
-            )}
-            {/* Zoom minimap: the full frame with the visible region outlined.
-                Shown only while zoomed and hovering (same hover gate as the
-                other controls, via CSS). */}
-            {view.z > 1 && (
-              <div
-                className="zoom-minimap"
-                onClick={(e) => e.stopPropagation()}
-                onMouseDown={handleMapPanStart}
-              >
-                <StreamVideo
-                  stream={selectedStream.stream}
-                  isSelf={selectedStream.isSelf}
-                  selfPreviewPaused={selectedStream.isSelf && selfPreviewPaused}
-                />
-                <div
-                  className="zoom-minimap-rect"
-                  style={{
-                    left: `${(-view.x / ((focusRef.current?.clientWidth || 1) * view.z)) * 100}%`,
-                    top: `${(-view.y / ((focusRef.current?.clientHeight || 1) * view.z)) * 100}%`,
-                    width: `${100 / view.z}%`,
-                    height: `${100 / view.z}%`
-                  }}
-                />
-              </div>
-            )}
-            {showCodecBadge && selectedStream.codec && (
-              <div className="focus-codec-badge" title="Video codec / encoder">
-                {selectedStream.codec}
-                {selectedStream.hardware != null && (
-                  <span className={selectedStream.hardware ? 'enc-hw' : 'enc-sw'}>
-                    {selectedStream.hardware ? 'HW' : 'SW'}
-                  </span>
-                )}
-              </div>
-            )}
-            {/* Viewer count, top-right corner. Same hover gate as
-                .video-controls. */}
-            <div className="focus-viewers" onClick={(e) => e.stopPropagation()}>
-              <button
-                type="button"
-                className="vid-btn focus-viewers-btn"
-                onClick={() => setViewersOpen((v) => !v)}
-                title={
-                  focusedViewers.length === 0
-                    ? 'Nobody is watching this stream'
-                    : `${focusedViewers.length} watching`
-                }
-                aria-expanded={viewersOpen}
-              >
-                <IconEye size={18} />
-                <span className="focus-viewers-count">{focusedViewers.length}</span>
-              </button>
-              {viewersOpen && (
-                <div className="focus-viewers-list">
-                  {focusedViewers.length === 0 ? (
-                    <div className="focus-viewers-empty">Nobody is watching</div>
-                  ) : (
-                    focusedViewers.map((name) => (
-                      <div key={name} className="focus-viewers-row">
-                        {name}
-                      </div>
-                    ))
-                  )}
-                </div>
-              )}
-            </div>
-            <div className="focus-label">
-              <span>{resolveLabel(selectedStream)}</span>
-            </div>
-            {theatreOverlays}
-          </div>
-
-          {!carouselCollapsed && (
-            <div className="video-carousel">
-              {sortedStreams
-                .filter((s) => s.clientId !== selectedStream.clientId)
-                .map((s) => renderTile(s, 'thumbnail'))}
-            </div>
-          )}
-        </>
-      ) : (
-        /* No stream focused: spread every stream across the whole grid area.
-           Click a tile to focus it. */
-        <div
-          className="video-grid-layout"
-          ref={gridRef}
-          style={gridTileWidth ? { '--grid-tile-width': `${gridTileWidth}px` } : undefined}
-        >
-          {sortedStreams.map((s) => renderTile(s, 'grid'))}
-          {theatreOverlays}
-        </div>
-      )}
+      {/* One stage, one tile per stream. Grid mode spreads uniform tiles over
+          the area; focus mode is a grid whose first row (held by the spacer)
+          belongs to the focused tile, with the thumbnails wrapping below. */}
+      <div
+        className={`video-stage ${focusedStream ? 'focus' : 'grid'}${
+          thumbsShown ? ' has-thumbs' : ''
+        }${carouselCollapsed ? ' collapsed' : ''}`}
+        ref={stageRef}
+        style={
+          !focusedStream && gridTileWidth
+            ? { '--grid-tile-width': `${gridTileWidth}px` }
+            : undefined
+        }
+      >
+        {focusedStream && <div className="video-stage-focus-slot" aria-hidden="true" />}
+        {sortedStreams.map(renderTile)}
+        {theatreOverlays}
+      </div>
       {viewerControls}
+      {menuStream && renderStreamMenu()}
     </div>
   )
 

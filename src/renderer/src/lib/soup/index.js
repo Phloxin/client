@@ -33,7 +33,6 @@ import {
   configurePlayback,
   getPlaybackContext,
   playbackDiagnostics,
-  resetFocusedScreenAudio,
   teardownAudioGraph
 } from './playback'
 import {
@@ -96,12 +95,15 @@ export {
   setVolumeGateThreshold
 } from './localAudio'
 export {
+  getAllStreamAudioState,
   getClientAudioState,
+  getStreamAudioState,
   setClientAudioState,
-  setFocusedScreenAudio,
   setMasterVolume,
   setOutputDevice,
-  setSoundMuted
+  setSoundMuted,
+  setStreamAudioState,
+  subscribeStreamAudio
 } from './playback'
 export {
   resetCameraCodecPreference,
@@ -4044,7 +4046,6 @@ function resetMediaState() {
   stopAudioHealthMonitor()
   audioHealHistory.clear()
   for (const id of [...remoteConsumers.keys()]) removeRemoteConsumer(id)
-  resetFocusedScreenAudio()
   // No tiles are left to hang viewers on.
   publishStreamViewers()
   console.log('[Soup] Media state reset')

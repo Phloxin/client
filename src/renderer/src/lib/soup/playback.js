@@ -16,22 +16,25 @@ let masterVolume = 1
 // runs through its own GainNode into this context, so a client's volume can be
 // boosted above 100% (an HTMLAudioElement's volume is capped at 1.0).
 let playbackContext = null
-// Only the focused stream's screen-share audio should be audible - the
-// client whose ScreenShareAudio should currently be unmuted, plus the
-// volume/mute settings to apply to it.
-let focusedClientId = null
-let focusedVolume = 1
-let focusedMuted = false
 
-// Per-client local volume/mute overrides for mic audio (right-click controls
-// in the sidebar) - keyed by clientId. Persisted to localStorage per server
-// host (user ids are only unique per server) so a client's volume/mute survives
-// app restarts. The in-memory Map mirrors the currently-connected host's slice
-// of that store; ensureOverridesForCurrentHost() reloads it whenever the host
-// changes (connect, disconnect, or switching servers).
+// Local volume/mute overrides, keyed by clientId, in two independent maps: one
+// for a client's mic audio (the sidebar's right-click controls) and one for
+// their screen-share audio (the stream view's controls). Every watched stream
+// is audible at once, so each stream carries its own volume/mute rather than
+// sharing one "focused stream" level. Both are persisted to localStorage per
+// server host (user ids are only unique per server) so a level survives app
+// restarts; see createAudioOverrideStore.
 const CLIENT_AUDIO_OVERRIDES_KEY = 'clientAudioOverrides'
-let clientAudioOverrides = new Map()
-let clientAudioOverridesHost
+const STREAM_AUDIO_OVERRIDES_KEY = 'streamAudioOverrides'
+const DEFAULT_AUDIO_STATE = { volume: 1, muted: false }
+// Stream-audio state is shown in the UI (the stream view's sliders and mute
+// badges), so changes and per-host reloads are broadcast to subscribers.
+const streamAudioListeners = new Set()
+const clientAudioOverrides = createAudioOverrideStore(CLIENT_AUDIO_OVERRIDES_KEY)
+const streamAudioOverrides = createAudioOverrideStore(
+  STREAM_AUDIO_OVERRIDES_KEY,
+  notifyStreamAudioListeners
+)
 
 // ─── Rebuildable remote-audio Web Audio graph ────────────────────
 // Given an audio entry (carries stream / clientId / producedType), build the
@@ -262,8 +265,8 @@ export function setOutputDevice(deviceId) {
   applyOutputDeviceToContext()
 }
 
-// Sets the master output volume (0..1) applied on top of per-client/focus
-// volumes for every remote stream.
+// Sets the master output volume (0..1) applied on top of the per-client mic
+// and per-stream screen-audio volumes for every remote stream.
 export function setMasterVolume(volume) {
   masterVolume = Math.max(0, Math.min(1, volume))
   applyAllAudioState()
@@ -277,8 +280,8 @@ export function setSoundMuted(muted) {
 
 // Volume changes on live audio are ramped rather than stepped. A direct
 // `gain.value =` is a discontinuity in the signal, which is audible as a click —
-// on every volume drag frame, mute, deafen, and focus switch. ~15ms is fast
-// enough to feel instant and slow enough to be inaudible.
+// on every volume drag frame, mute, and deafen. ~15ms is fast enough to feel
+// instant and slow enough to be inaudible.
 const GAIN_RAMP_TIME_CONSTANT = 0.015
 
 function rampGainTo(gainNode, target) {
@@ -293,19 +296,23 @@ function rampGainTo(gainNode, target) {
   param.setTargetAtTime(target, now, GAIN_RAMP_TIME_CONSTANT)
 }
 
-// Applies the focus-driven ScreenShareAudio state and the per-client mic
-// volume/mute overrides to every remote stream's gain node. A per-client
-// override volume above 1 boosts that client louder than their natural level.
+// Applies the per-stream ScreenShareAudio overrides and the per-client mic
+// volume/mute overrides to every remote stream's gain node. An override volume
+// above 1 boosts that client louder than their natural level. Every consumed
+// screen-share audio is audible: consumers only exist for watched streams
+// (watchIntent), so watching already decides what can be heard, and the level
+// is the user's to set per stream. Deafen (soundMuted) covers mic audio only,
+// as it always has.
 export function applyAllAudioState() {
-  ensureOverridesForCurrentHost()
+  clientAudioOverrides.ensure()
+  streamAudioOverrides.ensure()
   for (const entry of getRemoteConsumers().values()) {
     if (entry.kind !== 'audio' || !entry.gain) continue
 
     let gain
     if (entry.producedType === 'ScreenShareAudio') {
-      // Only the focused stream's screen-share audio should be audible.
-      const audible = entry.clientId === focusedClientId && !focusedMuted
-      gain = audible ? focusedVolume * masterVolume : 0
+      const override = streamAudioOverrides.get(entry.clientId)
+      gain = override?.muted ? 0 : (override?.volume ?? 1) * masterVolume
     } else {
       const override = clientAudioOverrides.get(entry.clientId)
       const muted = soundMuted || !!override?.muted
@@ -315,62 +322,79 @@ export function applyAllAudioState() {
   }
 }
 
-// Called by the UI when the focused stream or its volume/mute state changes.
-export function setFocusedScreenAudio(clientId, { volume, muted } = {}) {
-  focusedClientId = clientId
-  if (volume != null) focusedVolume = volume
-  if (muted != null) focusedMuted = muted
-  if (clientId != null && playbackContext?.state === 'suspended') {
-    playbackContext.resume().catch(() => {})
-  }
-  applyAllAudioState()
-}
+// A per-host override map persisted to localStorage under `storageKey` as
+// { [host]: { [clientId]: { volume, muted } } }. The in-memory Map mirrors the
+// currently-connected host's slice of that blob; ensure() reloads it whenever
+// the connected host changes (connect, disconnect, or switching servers), so it
+// never leaks one server's overrides onto another (user ids are only unique per
+// server), then calls `onReload`. Every accessor ensures first.
+function createAudioOverrideStore(storageKey, onReload) {
+  let overrides = new Map()
+  // Undefined (not null) until the first ensure(), so that one always loads.
+  let loadedHost
 
-// Read the full persisted { [host]: { [clientId]: { volume, muted } } } blob.
-function readPersistedAudioOverrides() {
-  try {
-    return JSON.parse(localStorage.getItem(CLIENT_AUDIO_OVERRIDES_KEY) || '{}') || {}
-  } catch {
-    return {}
+  // Read the full persisted blob.
+  function readPersisted() {
+    try {
+      return JSON.parse(localStorage.getItem(storageKey) || '{}') || {}
+    } catch {
+      return {}
+    }
   }
-}
 
-// Write the current host's in-memory overrides back to localStorage, pruning
-// no-op entries (100% volume, unmuted) so resetting a client truly forgets it
-// rather than leaving dead entries behind.
-function persistCurrentHostOverrides() {
-  const host = getServerHost()
-  if (!host) return
-  const all = readPersistedAudioOverrides()
-  const slice = {}
-  for (const [clientId, state] of clientAudioOverrides) {
-    if (state.volume !== 1 || state.muted) slice[clientId] = state
+  // Write the current host's in-memory overrides back to localStorage, pruning
+  // no-op entries (100% volume, unmuted) so resetting a client truly forgets it
+  // rather than leaving dead entries behind.
+  function persist() {
+    const host = getServerHost()
+    if (!host) return
+    const all = readPersisted()
+    const slice = {}
+    for (const [clientId, state] of overrides) {
+      if (state.volume !== 1 || state.muted) slice[clientId] = state
+    }
+    if (Object.keys(slice).length) all[host] = slice
+    else delete all[host]
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(all))
+    } catch {
+      // localStorage is unavailable only in unusual renderer contexts; overrides
+      // still work for this session, they just won't survive a restart.
+    }
   }
-  if (Object.keys(slice).length) all[host] = slice
-  else delete all[host]
-  try {
-    localStorage.setItem(CLIENT_AUDIO_OVERRIDES_KEY, JSON.stringify(all))
-  } catch {
-    // localStorage is unavailable only in unusual renderer contexts; overrides
-    // still work for this session, they just won't survive a restart.
-  }
-}
 
-// Reload clientAudioOverrides from storage whenever the connected host changes,
-// so the Map always reflects the current server's saved volumes and never leaks
-// one server's overrides onto another (user ids are only unique per server).
-function ensureOverridesForCurrentHost() {
-  const host = getServerHost()
-  if (host === clientAudioOverridesHost) return
-  clientAudioOverridesHost = host
-  clientAudioOverrides = new Map()
-  if (!host) return
-  const slice = readPersistedAudioOverrides()[host] || {}
-  for (const [clientId, state] of Object.entries(slice)) {
-    clientAudioOverrides.set(clientId, {
-      volume: typeof state.volume === 'number' ? state.volume : 1,
-      muted: !!state.muted
-    })
+  function ensure() {
+    const host = getServerHost()
+    if (host === loadedHost) return
+    loadedHost = host
+    overrides = new Map()
+    if (host) {
+      const slice = readPersisted()[host] || {}
+      for (const [clientId, state] of Object.entries(slice)) {
+        overrides.set(clientId, {
+          volume: typeof state.volume === 'number' ? state.volume : 1,
+          muted: !!state.muted
+        })
+      }
+    }
+    onReload?.()
+  }
+
+  return {
+    ensure,
+    get(clientId) {
+      ensure()
+      return overrides.get(clientId)
+    },
+    set(clientId, state) {
+      ensure()
+      overrides.set(clientId, state)
+      persist()
+    },
+    entries() {
+      ensure()
+      return overrides.entries()
+    }
   }
 }
 
@@ -378,21 +402,70 @@ function ensureOverridesForCurrentHost() {
 // lower the volume of, or fully mute, a specific client's mic audio. The new
 // value is persisted per server so it survives app restarts.
 export function setClientAudioState(clientId, { volume, muted } = {}) {
-  ensureOverridesForCurrentHost()
-  const current = clientAudioOverrides.get(clientId) || { volume: 1, muted: false }
+  const current = clientAudioOverrides.get(clientId) || DEFAULT_AUDIO_STATE
   clientAudioOverrides.set(clientId, {
     volume: volume != null ? volume : current.volume,
     muted: muted != null ? muted : current.muted
   })
-  persistCurrentHostOverrides()
   applyAllAudioState()
 }
 
 export function getClientAudioState(clientId) {
-  ensureOverridesForCurrentHost()
   return clientAudioOverrides.get(clientId) || { volume: 1, muted: false }
 }
 
-export function resetFocusedScreenAudio() {
-  focusedClientId = null
+// Called by the stream view's per-stream controls (the bottom bar's volume and
+// the right-click menu) to set one client's screen-share audio level. `volume`
+// is a gain (1 = 100%, range 0..2); either field may be omitted to keep its
+// current value. Persisted per server like the mic overrides.
+export function setStreamAudioState(clientId, { volume, muted } = {}) {
+  const current = streamAudioOverrides.get(clientId) || DEFAULT_AUDIO_STATE
+  const next = {
+    volume: volume != null ? Math.max(0, Math.min(2, volume)) : current.volume,
+    muted: muted != null ? muted : current.muted
+  }
+  streamAudioOverrides.set(clientId, next)
+  // Unmuting or raising a stream is the user asking to hear it now, so wake a
+  // suspended playback context. (Building an audio graph resumes the context
+  // too, via getPlaybackContext; this covers one that has suspended since.)
+  const raised = muted === false || (volume != null && volume > 0)
+  if (raised && !next.muted && next.volume > 0 && playbackContext?.state === 'suspended') {
+    playbackContext.resume().catch(() => {})
+  }
+  applyAllAudioState()
+  notifyStreamAudioListeners()
+}
+
+export function getStreamAudioState(clientId) {
+  return { ...(streamAudioOverrides.get(clientId) || DEFAULT_AUDIO_STATE) }
+}
+
+// Plain-object snapshot of the current host's stream-audio overrides,
+// { [clientId]: { volume, muted } }. A client without an entry is at the
+// default (100%, unmuted).
+export function getAllStreamAudioState() {
+  const snapshot = {}
+  for (const [clientId, state] of streamAudioOverrides.entries()) {
+    snapshot[clientId] = { ...state }
+  }
+  return snapshot
+}
+
+// `cb()` runs after any stream-audio change and after the overrides reload for
+// a new server host. Returns the unsubscribe function.
+export function subscribeStreamAudio(cb) {
+  streamAudioListeners.add(cb)
+  return () => {
+    streamAudioListeners.delete(cb)
+  }
+}
+
+function notifyStreamAudioListeners() {
+  for (const cb of streamAudioListeners) {
+    try {
+      cb()
+    } catch (err) {
+      console.error('[Soup] stream audio listener failed:', err)
+    }
+  }
 }

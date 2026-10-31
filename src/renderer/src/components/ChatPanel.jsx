@@ -21,13 +21,17 @@ import {
   IconEye,
   IconLink,
   IconWorld,
-  IconLock
+  IconLock,
+  IconPhoneCall,
+  IconPhoneEnd,
+  IconHandFinger
 } from '@tabler/icons-react'
 import { motion, AnimatePresence } from 'motion/react'
 import ImageViewer from './ImageViewer'
 import FileViewer from './FileViewer'
 import EmojiPicker from './EmojiPicker'
 import { renderMarkdown } from '../lib/markdown'
+import { callMessageLabel, isCallMessage } from '../lib/callMessages'
 import { fitAttachments, formatBytes, previewKind } from '../lib/attachments'
 import { useClientMenu } from './ClientContextMenu'
 import { useClientActions } from '../context/ClientActionsContext'
@@ -441,12 +445,15 @@ function composerMentionNodes(text, clients) {
 // One-line summary of a message for a reply preview. Markdown is left as-is
 // (a preview isn't the place to render it), but `<@id>` tokens are resolved the
 // same way the message body resolves them, and newlines collapse so a
-// multi-line quote can't push the preview open — CSS truncates the rest.
-function previewText(msg, resolveMention) {
+// multi-line quote can't push the preview open — CSS truncates the rest. Call
+// messages and pokes read as their label, a poke's note after it.
+function previewText(msg, resolveMention, label) {
+  if (isCallMessage(msg)) return label
   const text = (msg.text || '')
     .replace(/<@(\d+)>/g, (raw, id) => `@${resolveMention(id) ?? 'unknown'}`)
     .replace(/\s+/g, ' ')
     .trim()
+  if (msg.kind === 'poke') return text ? `${label}: ${text}` : label
   if (text) return text
   const count = msg.attachments?.length || 0
   if (count) return `${count} attachment${count === 1 ? '' : 's'}`
@@ -480,7 +487,9 @@ function ChatPanel({
   canModerate = false,
   channelKey,
   onLoadOlder,
-  hasMoreOlder = false
+  hasMoreOlder = false,
+  // Who our own pokes went to: the other participants of this DM.
+  pokeTargetName
 }) {
   const [text, setText] = useState(() => drafts.get(channelKey) || '')
   const [attachments, setAttachments] = useState([])
@@ -935,7 +944,7 @@ function ChatPanel({
     // in the feed is ours, so we never steal caret navigation from a draft.
     if (e.key === 'ArrowUp' && !text && !attachments.length && !disabled) {
       const last = [...feed].reverse().find((entry) => entry.type === 'message')
-      if (last && selfId != null && last.authorId === selfId) {
+      if (last && selfId != null && last.authorId === selfId && last.kind === 'default') {
         e.preventDefault()
         setEditingId(last.id)
         return
@@ -987,6 +996,16 @@ function ChatPanel({
   )
 
   const resolveAvatar = (entry) => clients?.find((c) => c.id === entry.authorId)?.avatar
+
+  // The sentence a call message or a poke reads as, from the viewer's side.
+  const kindLabel = (entry) => {
+    if (isCallMessage(entry)) return callMessageLabel(entry, resolveName(entry))
+    if (entry.kind !== 'poke') return null
+    if (selfId != null && entry.authorId === selfId) {
+      return pokeTargetName ? `You poked ${pokeTargetName}` : 'You poked'
+    }
+    return `${resolveName(entry)} poked you`
+  }
 
   // Start replying to a message; the composer takes focus so typing can carry on
   // from wherever the user was reading.
@@ -1163,12 +1182,17 @@ function ChatPanel({
           // first shows the avatar + author + time; the rest are bare lines.
           // A reply always starts its own group: its preview line needs the
           // header above it to make sense.
+          // Call messages are real messages (reactions, replies) drawn as a
+          // system line, so they neither join nor start a group.
+          const callEntry = isCallMessage(entry)
           const grouped =
             !compact &&
             !dayDivider &&
             !entry.replyTo &&
+            !callEntry &&
             prev &&
             prev.type === 'message' &&
+            !isCallMessage(prev) &&
             prev.authorId === entry.authorId &&
             entry.ts - prev.ts < GROUP_WINDOW_MS
           // An uploaded file referenced by an embed resolves to the same URL, so
@@ -1181,12 +1205,13 @@ function ChatPanel({
           }
           const visibleAttachments = (entry.attachments || []).filter((a) => !embedUrls.has(a.url))
           const isEditing = editingId === entry.id
-          // Only the author may edit; the author or a moderator (canModerate:
-          // MANAGE_MESSAGES outside DMs) may delete. The server enforces both;
+          // Only the author may edit, and only a plain message; the author or a
+          // moderator (canModerate: MANAGE_MESSAGES outside DMs) may delete,
+          // except a call message, which nobody can. The server enforces both;
           // hide the controls while that row is in edit mode.
           const isOwn = selfId != null && entry.authorId === selfId
-          const canEdit = isOwn && !disabled && !isEditing
-          const canDelete = (isOwn || canModerate) && !disabled && !isEditing
+          const canEdit = isOwn && entry.kind === 'default' && !disabled && !isEditing
+          const canDelete = !callEntry && (isOwn || canModerate) && !disabled && !isEditing
           const edited = !!entry.editedTs && !isEditing
           // First image in the message (attachment, else embed image) for Copy Image.
           const imageUrl =
@@ -1221,7 +1246,11 @@ function ChatPanel({
           }
           // Nothing left to show: the message's only file was deleted.
           const removed =
-            !isEditing && !entry.text && !visibleAttachments.length && !entry.embeds?.length
+            entry.kind === 'default' &&
+            !isEditing &&
+            !entry.text &&
+            !visibleAttachments.length &&
+            !entry.embeds?.length
           // Accent wash on messages that mention us (directly or @everyone).
           const mentionsMe =
             entry.mentionEveryone || (selfId != null && (entry.mentions || []).includes(selfId))
@@ -1229,7 +1258,7 @@ function ChatPanel({
             <div key={entry.id} data-mid={entry.id} data-anim-status={status}>
               {dayDivider}
               <div
-                className={`chat-message${grouped ? ' grouped' : ''}${mentionsMe ? ' mentioned' : ''}${entry.id === currentMatch ? ' search-match' : ''}`}
+                className={`chat-message${grouped ? ' grouped' : ''}${callEntry ? ' chat-call-message' : ''}${mentionsMe ? ' mentioned' : ''}${entry.id === currentMatch ? ' search-match' : ''}`}
                 onContextMenu={hasMenu ? (e) => openMessageMenu(e) : undefined}
               >
                 {!disabled && !isEditing && (
@@ -1266,7 +1295,7 @@ function ChatPanel({
                     </button>
                   </div>
                 )}
-                {grouped ? (
+                {callEntry ? null : grouped ? (
                   <span className="chat-avatar-spacer" aria-hidden="true" />
                 ) : (
                   // aria-hidden: the avatar duplicates the author name beside it,
@@ -1297,7 +1326,11 @@ function ChatPanel({
                           {resolveName(entry.replyTo.message)}
                         </span>
                         <span className="chat-reply-text">
-                          {previewText(entry.replyTo.message, resolveMention)}
+                          {previewText(
+                            entry.replyTo.message,
+                            resolveMention,
+                            kindLabel(entry.replyTo.message)
+                          )}
                         </span>
                       </button>
                     ) : (
@@ -1306,7 +1339,7 @@ function ChatPanel({
                         <span className="chat-reply-text">Original message was deleted</span>
                       </div>
                     ))}
-                  {!grouped && (
+                  {!grouped && !callEntry && (
                     <div className="chat-message-header">
                       {resolveClient(entry) ? (
                         <span
@@ -1342,8 +1375,36 @@ function ChatPanel({
                     />
                   ) : removed ? (
                     <div className="chat-message-removed">File removed</div>
+                  ) : callEntry ? (
+                    <div className="chat-system-entry chat-call-entry">
+                      {entry.kind === 'call_ended' ? (
+                        <IconPhoneEnd size={14} stroke={2} />
+                      ) : (
+                        <IconPhoneCall size={14} stroke={2} />
+                      )}
+                      <span>{kindLabel(entry)}</span>
+                      <span className="chat-call-time">{formatTime(entry.ts)}</span>
+                    </div>
                   ) : (
-                    entry.text && <MessageText text={entry.text} resolveMention={resolveMention} />
+                    <>
+                      {entry.kind === 'poke' && (
+                        <div className="chat-poke">
+                          <IconHandFinger size={15} stroke={2} />
+                          {isOwn ? (
+                            <span>
+                              <strong>You</strong> poked{pokeTargetName ? ` ${pokeTargetName}` : ''}
+                            </span>
+                          ) : (
+                            <span>
+                              <strong>{resolveName(entry)}</strong> poked you
+                            </span>
+                          )}
+                        </div>
+                      )}
+                      {entry.text && (
+                        <MessageText text={entry.text} resolveMention={resolveMention} />
+                      )}
+                    </>
                   )}
                   {grouped && edited && (
                     <span className="chat-message-edited chat-message-edited-inline">(edited)</span>

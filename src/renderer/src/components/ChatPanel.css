@@ -154,6 +154,39 @@
   padding: 4px 24px;
 }
 
+/* A call message: a real message (reactions, replies) drawn as a system line. */
+.chat-message.chat-call-message {
+  margin-top: 4px;
+}
+
+.chat-call-entry {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex-basis: 100%;
+}
+
+.chat-call-time {
+  opacity: 0.7;
+}
+
+.chat-call-message .chat-reactions {
+  justify-content: center;
+}
+
+/* "X poked you" above a poke's note. */
+.chat-poke {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-text-muted);
+}
+
+.chat-poke strong {
+  color: var(--color-text);
+}
+
 /* Day divider: centered date chip between hairlines. */
 .chat-day-divider {
   display: flex;

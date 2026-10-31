@@ -5,9 +5,10 @@ import VoiceChannel from './VoiceChannel'
 import ClientIndicator from './ClientIndicator'
 import ServerMenu from './ServerMenu'
 import VoiceConnectionBar from './VoiceConnectionBar'
-import { setMicMuted, setSoundMuted, subscribeLiveStreams } from '../lib/soup'
-import { setSoundsDeafened } from '../lib/sounds'
+import { subscribeLiveStreams } from '../lib/soup'
 import { useAnimationCategory, useSettings } from '../context/SettingsContext'
+import { useVoiceSession } from '../context/VoiceSessionContext'
+import { dmDisplayName } from '../lib/dm'
 import { useAnimatedPresence, useBlockShift } from '../lib/animation'
 import { keyboardEventToAccelerator, normalizeAccelerator } from '../../../shared/keybinds'
 import SegmentedTabs from './SegmentedTabs'
@@ -33,22 +34,14 @@ import { RoleIcon } from '../lib/roleIcon'
 const MIN_WIDTH = 180
 const MAX_WIDTH = 550
 const DEFAULT_WIDTH = 240
-// Voice cleanup and the authoritative ClientModified(null) travel over separate
-// sockets, so the roster update can win by a task or two. Give soup's onclose a
-// bounded chance to classify the loss before converting it to an intentional
-// leave (which would cancel recovery).
-const VOICE_NULL_RECONCILE_GRACE_MS = 3000
+const EMPTY = {}
+const EMPTY_SET = new Set()
 
 function Sidebar({
   channels,
   clients,
   self,
-  onStreamsUpdate,
-  isReconnectRecovering,
-  recoveryEpoch,
   onOpenSettings,
-  onStatusChange,
-  onSelfChannelChange,
   servers,
   connectedServer,
   onConnect,
@@ -74,7 +67,6 @@ function Sidebar({
   onGag,
   onBan,
   onUnban,
-  onError,
   onSetAvatar,
   onShowClientSummary,
   roles,
@@ -91,56 +83,42 @@ function Sidebar({
   summaryChannelId,
   unreadChannelIds,
   // Voice self-state lives in Main so the stream view's theatre mode can share
-  // it; the sidebar drives the toggles and mirrors the state into soup/tray.
+  // it; the sidebar drives the toggles and Main mirrors the state into soup/tray.
   micMuted,
   deafened,
   onToggleMic,
   onToggleDeafen,
-  onSpeakingClientsChange,
-  onVoiceMediaState,
   // Main's latest voice media state ({ channelId, state }) for the dock's
   // connection indicator, plus the Connection Info panel toggle it hosts.
   voiceMediaState,
   connectionInfoOpen,
-  onToggleConnectionInfo,
-  // Filled with the sharing channel's imperative handle (or null when we aren't
-  // sharing) so the stream view can stop/restart our share without owning the
-  // voice-channel refs.
-  shareControlRef
+  onToggleConnectionInfo
 }) {
   const { keybindSettings, appearanceSettings } = useSettings()
+  const voice = useVoiceSession()
   const [width, setWidth] = useState(() => {
     const saved = localStorage.getItem('sidebar-width')
     return saved ? parseInt(saved) : DEFAULT_WIDTH
   })
 
-  const [joinedChannelId, setJoinedChannelId] = useState(null)
-  const [sharing, setSharing] = useState(false)
-  // You can't be sharing without a joined channel. When the joined channel clears
-  // — leave, kick, or a server disconnect that unmounts the VoiceChannel without
-  // routing through onSharingChange — force sharing off so the dock button
-  // reverts from "End Stream" to "Start Stream".
-  useEffect(() => {
-    if (!joinedChannelId) {
-      setSharing(false)
-      setSelfSpeaking(false)
-    }
-  }, [joinedChannelId])
-  // Our own speaking state, reported up from the active VoiceChannel — drives the system tray icons
-  const [selfSpeaking, setSelfSpeaking] = useState(false)
   // Who is screen streaming in each channel (channel id -> owner ids). The
   // backend announces streams in every channel we can see, in voice or not.
   const [liveStreams, setLiveStreams] = useState(() => new Map())
   useEffect(() => subscribeLiveStreams(setLiveStreams), [])
-  const channelRefs = useRef({})
 
-  // The joined channel's handle, sharing or not — the stream view starts shares
-  // through it as well as stopping them. `sharing` stays in the deps so the
-  // (mutable) ref is re-read after a share begins.
-  useEffect(() => {
-    if (!shareControlRef) return
-    shareControlRef.current = channelRefs.current[joinedChannelId] ?? null
-  }, [shareControlRef, sharing, joinedChannelId])
+  // Clients with a video tile in the session's channel (only while joined;
+  // webcams included). Their streaming icon can be clicked through to the tile.
+  const tileIds = useMemo(
+    () => new Set(voice.videoStreams.filter((s) => s.kind === 'video').map((s) => s.clientId)),
+    [voice.videoStreams]
+  )
+
+  // A DM call is named after the DM's other participants.
+  const sessionChannel = channels.find((c) => c.id === voice.channelId)
+  const sessionChannelName =
+    sessionChannel?.type === 'dm'
+      ? dmDisplayName(sessionChannel, self?.id, (id) => clients.find((c) => c.id === id)?.name)
+      : (sessionChannel?.name ?? 'Voice')
 
   // Which list the sidebar body shows: the channel tree or a flat roster of every
   // connected client. Toggled by the segmented control in the section header.
@@ -353,64 +331,6 @@ function Sidebar({
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [keybindSettings, runKeybindAction])
 
-  // Apply mute state to soup whenever it changes. Deafening (deafened)
-  // also silences the mic, regardless of the independent mic-mute toggle.
-  useEffect(() => {
-    setMicMuted(micMuted || deafened)
-  }, [micMuted, deafened])
-
-  useEffect(() => {
-    setSoundMuted(deafened)
-    // Deafening also silences notification sounds (message/channel/stream); the
-    // sounds module gates on this the way soup.js gates remote audio.
-    setSoundsDeafened(deafened)
-  }, [deafened])
-
-  // Let other clients know our mic-mute / deafen status
-  useEffect(() => {
-    onStatusChange?.(micMuted, deafened)
-  }, [micMuted, deafened])
-
-  // Drive the Windows system-tray mic indicator. Deafen outranks mute outranks
-  // talking; mute/deafen show even when not in a channel (they're global toggles),
-  // matching TeamSpeak. No-op off Windows (main ignores the message).
-  useEffect(() => {
-    const state = deafened ? 'deafened' : micMuted ? 'muted' : selfSpeaking ? 'talking' : 'idle'
-    window.electron?.ipcRenderer?.send('tray:voice-state', state)
-  }, [micMuted, deafened, selfSpeaking])
-
-  // The channel the server says we're in (authoritative roster) can diverge from
-  // the channel our live voice session is joined to when a moderator moves us
-  // (PATCH /client). When that happens, adopt the new channel so our session and
-  // the joined/active UI follow the move. Self-initiated joins/switches route
-  // joinedChannelId through null first, so this never fires for those.
-  const selfServerChannelId = clients.find((c) => c.id === self?.id)?.channel_id ?? null
-  useEffect(() => {
-    if (joinedChannelId == null || selfServerChannelId === joinedChannelId) return
-    if (selfServerChannelId == null) {
-      // Right after a reconnect the server briefly reports us channel-less (it
-      // dropped us from voice during the outage). Don't leave — soup is already
-      // reconnecting and re-asserting membership, and leaving would tear that
-      // down and yank us out for good. It restores selfServerChannelId when it
-      // lands, re-running this effect to a consistent state.
-      //
-      // recoveryEpoch is what makes the *other* outcome work: when the rejoin
-      // never lands and the recovery times out, the bump re-runs this effect,
-      // and we now take the leave path instead of showing a phantom joined state.
-      if (isReconnectRecovering?.()) return
-      const timer = setTimeout(() => {
-        // Re-check the live recovery ref: the voice socket's close notification
-        // may have arrived after this effect observed the roster null.
-        if (!isReconnectRecovering?.()) {
-          channelRefs.current[joinedChannelId]?.leave()
-        }
-      }, VOICE_NULL_RECONCILE_GRACE_MS)
-      return () => clearTimeout(timer)
-    }
-    channelRefs.current[joinedChannelId]?.deactivate()
-    channelRefs.current[selfServerChannelId]?.adopt()
-  }, [selfServerChannelId, joinedChannelId, isReconnectRecovering, recoveryEpoch])
-
   const isDragging = useRef(false)
   const sidebarRef = useRef(null)
 
@@ -614,16 +534,13 @@ function Sidebar({
       )}
 
       {/* Keep the channel list mounted across view switches. Unmounting it would
-          run VoiceChannel's unmount cleanup, which calls disconnect() and tears
-          down the live voice session. display:contents keeps the channels as
-          direct flex children of the sidebar when shown; .hidden collapses them. */}
+          reset each row's local state (collapsed user lists, presence
+          animations). display:contents keeps the channels as direct flex
+          children of the sidebar when shown; .hidden collapses them. */}
       <div className={`sidebar-channel-list${sidebarView === 'channels' ? '' : ' hidden'}`}>
         {channelPresence.map(({ key, item: ch, status }) => (
           <VoiceChannel
             key={key}
-            ref={(el) => {
-              channelRefs.current[ch.id] = el
-            }}
             animStatus={movedChannelId === ch.id ? 'entering' : status}
             channel={ch}
             draggable
@@ -640,10 +557,11 @@ function Sidebar({
             liveStreamers={liveStreams.get(ch.id)}
             micMuted={micMuted}
             deafened={deafened}
-            onSelfSpeaking={setSelfSpeaking}
-            onSpeakingClientsChange={onSpeakingClientsChange}
-            onVoiceMediaState={onVoiceMediaState}
-            onSelfChannelChange={onSelfChannelChange}
+            joined={voice.joined && voice.channelId === ch.id}
+            error={voice.errorChannelId === ch.id ? voice.error : null}
+            speakingClients={voice.channelId === ch.id ? voice.speakingClients : EMPTY}
+            tileClientIds={voice.channelId === ch.id ? tileIds : EMPTY_SET}
+            onJoin={voice.join}
             onDeleteChannel={onDeleteChannel}
             onRequestCreateChannel={openCreateChannel}
             onShowChannelSummary={onShowChannelSummary}
@@ -670,39 +588,6 @@ function Sidebar({
             canMuteMembers={canMuteMembers}
             previewing={previewChannelId === ch.id || summaryChannelId === ch.id}
             unread={!!unreadChannelIds?.has(ch.id)}
-            onError={onError}
-            onStreamsUpdate={(streams) => {
-              onStreamsUpdate(ch.id, streams)
-            }}
-            onJoinedChange={(channelId, joined) => {
-              setJoinedChannelId((prev) => {
-                if (joined) return channelId
-                return prev === channelId ? null : prev
-              })
-            }}
-            onSharingChange={(channelId, isSharing) => {
-              if (channelId === joinedChannelId || isSharing) setSharing(isSharing)
-            }}
-            onRequestJoin={async (doJoin, doSwitch) => {
-              if (joinedChannelId && joinedChannelId !== ch.id) {
-                const previousChannel = channelRefs.current[joinedChannelId]
-                try {
-                  await doSwitch()
-                  previousChannel?.deactivate()
-                } catch {
-                  // switchTo rebinds soup before declaring the move so it cannot
-                  // miss an immediate transport reset. Restore the old owner if
-                  // the declaration never left this client.
-                  try {
-                    await previousChannel?.restoreAfterFailedSwitch()
-                  } catch (error) {
-                    onError?.(`Failed to restore the previous voice channel: ${error.message}`)
-                  }
-                }
-              } else {
-                await doJoin()
-              }
-            }}
           />
         ))}
       </div>
@@ -789,13 +674,13 @@ function Sidebar({
       )}
 
       <div className="control-dock">
-        {joinedChannelId != null && (
+        {voice.joined && (
           <VoiceConnectionBar
-            channelName={channels.find((c) => c.id === joinedChannelId)?.name ?? 'Voice'}
+            channelName={sessionChannelName}
             clients={clients}
             selfId={self?.id}
             mediaState={
-              voiceMediaState?.channelId === joinedChannelId ? voiceMediaState.state : undefined
+              voiceMediaState?.channelId === voice.channelId ? voiceMediaState.state : undefined
             }
             connectionInfoOpen={connectionInfoOpen}
             onToggleConnectionInfo={onToggleConnectionInfo}
@@ -825,12 +710,12 @@ function Sidebar({
             )}
           </button>
           <button
-            className={`control-btn${sharing ? ' streaming' : ''}`}
-            title={sharing ? 'End Stream' : 'Start Stream'}
-            disabled={!joinedChannelId}
-            onClick={() => channelRefs.current[joinedChannelId]?.toggleShare()}
+            className={`control-btn${voice.sharing ? ' streaming' : ''}`}
+            title={voice.sharing ? 'End Stream' : 'Start Stream'}
+            disabled={!voice.joined}
+            onClick={voice.toggleShare}
           >
-            {sharing ? (
+            {voice.sharing ? (
               <IconScreenShareOff className="control-icon" size={18} />
             ) : (
               <IconScreenShare className="control-icon" size={18} />
@@ -839,8 +724,8 @@ function Sidebar({
           <button
             className="control-btn"
             title="Leave Channel"
-            disabled={!joinedChannelId}
-            onClick={() => channelRefs.current[joinedChannelId]?.leave()}
+            disabled={!voice.joined}
+            onClick={voice.leave}
           >
             <IconDoorExit size={18} />
           </button>

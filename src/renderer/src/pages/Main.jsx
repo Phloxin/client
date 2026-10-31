@@ -6,6 +6,8 @@ import './Main.css'
 import '../App.css'
 import { useAuth } from '../context/AuthContext'
 import { ClientActionsProvider } from '../context/ClientActionsContext'
+import { VoiceSessionProvider } from '../context/VoiceSessionContext'
+import { useVoiceSessionOwner } from '../lib/useVoiceSessionOwner'
 import SideBar from '../components/SideBar'
 import VideoGrid from '../components/VideoGrid'
 import ChatPanel from '../components/ChatPanel'
@@ -23,27 +25,35 @@ import BanListMenu from '../components/BanListMenu'
 import FileBrowser from '../components/FileBrowser'
 import ImageViewer from '../components/ImageViewer'
 import FileViewer from '../components/FileViewer'
+import ScreenSourcePicker from '../components/ScreenSourcePicker'
 import IdleAnimation from '../components/IdleAnimation'
+import { DmCallControls, DmMemberStrip } from '../components/DmCallHeader'
+import IncomingCallOverlay from '../components/IncomingCallOverlay'
 import Settings from './Settings'
 import {
   applyReadyStreams,
   applyStreamEvent,
-  disconnect as disconnectVoice,
   eventSocketClosed,
+  getAllStreamAudioState,
   notifyEventsSessionRestored,
   receiveEventSocketError,
   receiveStreamReply,
   receiveVoiceTicket,
   restartVoiceSession,
   setEventSocketSender,
+  setMicMuted,
+  setSoundMuted,
   setVoiceServerHooks,
-  setFocusedScreenAudio,
+  setStreamAudioState,
   setVideoStreamRoles,
   setWatchedProducers,
+  subscribeLiveStreams,
+  subscribeStreamAudio,
   subscribeStreamViewers,
   setTalkingWhileMutedHandler
 } from '../lib/soup'
-import { playUiSound, isToastEnabled } from '../lib/sounds'
+import { resolveStreamFocus } from '../lib/streamView'
+import { playUiSound, isToastEnabled, setSoundsDeafened } from '../lib/sounds'
 import { setServerHost, apiBase, wsBase, assetUrl, throwIfError } from '../lib/serverConfig'
 import { validateMessage, statusOf } from '../lib/presence'
 import { useAutoIdle } from '../lib/useAutoIdle'
@@ -56,6 +66,17 @@ import {
 } from '../lib/soup/protocol'
 import { httpFetch } from '../lib/http'
 import { setServerLimits, previewKind } from '../lib/attachments'
+import { isCallMessage } from '../lib/callMessages'
+import { dmDisplayName, dmOthers } from '../lib/dm'
+import {
+  applyReady,
+  applyRingEnded,
+  applyRinging,
+  expire,
+  isMissedRing,
+  settleOutgoing,
+  startOutgoing
+} from '../lib/rings'
 import {
   isVoiceRecoveryReady,
   nextVoiceRebuildKind,
@@ -101,6 +122,8 @@ const PERM_MANAGE_CHANNELS = 1n << 5n
 const PERM_MANAGE_ROLES = 1n << 12n
 const PERM_ADMINISTRATOR = 1n << 62n
 
+const NO_OUTGOING_RINGS = { channelId: null, rings: new Map() }
+
 // Append an entry to the feed, dropping the oldest entries once the cap is hit.
 function appendFeed(prev, entry) {
   const next = [...prev, entry]
@@ -119,6 +142,9 @@ function messageFromApi(msg) {
     type: 'message',
     channelId: msg.channel_id,
     authorId: msg.author,
+    // 'default' | 'poke' | 'call_started' | 'call_ended'; `call` only on call_ended.
+    kind: msg.kind ?? 'default',
+    call: msg.call ?? null,
     text: msg.content,
     attachments: (msg.attachments || []).map((a) => ({
       id: a.id,
@@ -242,14 +268,10 @@ function byChronology(a, b) {
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
 }
 
-// The other party in a DM channel, given our own id. Reads `participant_ids`
-// (server) or `recipients` (local), which may be plain ids or { id, name }.
+// The other party in a 1:1 DM channel, given our own id (the first of them in
+// a group DM).
 function dmOther(channel, selfId) {
-  for (const r of channel?.participant_ids || channel?.recipients || []) {
-    const id = r && typeof r === 'object' ? r.id : r
-    if (id !== selfId) return { id, name: r && typeof r === 'object' ? r.name : undefined }
-  }
-  return { id: undefined, name: undefined }
+  return dmOthers(channel, selfId)[0] ?? { id: undefined, name: undefined }
 }
 
 // The roster's voice fields, from a VoiceStateApiObject (null: not in voice).
@@ -424,21 +446,22 @@ function Main() {
   const dismissToast = useCallback(() => setToast(null), [])
 
   //Client UI Hooks
-  const [allVideoStreams, setAllVideoStreams] = useState([])
   // Logical stream intent is keyed by client id. A codec downgrade creates a
   // new producer/consumer id for the same client's stream; using that transient
   // id here used to clear focus, stop watching, and hard-mute stream audio.
   const [selectedStreamClientId, setSelectedStreamClientId] = useState(null)
   const [poppedOut, setPoppedOut] = useState(false)
-  const [streamVolume, setStreamVolume] = useState(100)
-  const [streamMuted, setStreamMuted] = useState(false)
+  // Per-stream screen-share audio ({ [clientId]: { volume, muted } }), owned and
+  // persisted per server by playback; this mirrors it for the stream view and
+  // the popout bridge (see the subscribeStreamAudio effect below).
+  const [streamAudio, setStreamAudioSnapshot] = useState(() => getAllStreamAudioState())
   const [watchedStreamClientIds, setWatchedStreamClientIds] = useState(() => new Set())
 
   // Voice self-state (mic mute / deafen). Owned here rather than in SideBar so
-  // the stream view's theatre mode can read and toggle it alongside the sidebar
-  // (which mirrors it into soup, the tray, and our broadcast status). Refs hold
-  // the latest value so the globally-bound keybind listener never reads stale
-  // state; the chime plays here since this is the single toggle path.
+  // the stream view's theatre mode can read and toggle it alongside the sidebar;
+  // the effects below mirror it into soup, the tray, and our broadcast status.
+  // Refs hold the latest value so the globally-bound keybind listener never
+  // reads stale state; the chime plays here since this is the single toggle path.
   const [micMuted, setMicMutedState] = useState(false)
   const [deafened, setDeafenedState] = useState(false)
   const micMutedRef = useRef(false)
@@ -462,24 +485,18 @@ function Main() {
     playUiSound(next ? 'sound-mute' : 'sound-unmute')
   }, [])
 
-  // Live per-client speaking map from the joined voice channel, surfaced by the
-  // active VoiceChannel for the theatre participant rail's speaking rings.
-  const [speakingClients, setSpeakingClients] = useState({})
-  const handleSpeakingClientsChange = useCallback((map) => setSpeakingClients(map || {}), [])
-
-  // Theatre mode: the stream view fills the window with the voice-channel
-  // participant icons and mic/deafen controls overlaid. It's a property of the
-  // stream view, so the effect below clears it whenever that view goes away
-  // (chat tab, popout, or no streams left).
-  const [theatre, setTheatre] = useState(false)
-  const toggleTheatre = useCallback((next) => {
-    setTheatre((v) => (typeof next === 'boolean' ? next : !v))
-  }, [])
+  // Apply mute state to soup whenever it changes. Deafening (deafened)
+  // also silences the mic, regardless of the independent mic-mute toggle.
   useEffect(() => {
-    if (theatre && (viewMode !== 'video' || poppedOut || allVideoStreams.length === 0)) {
-      setTheatre(false)
-    }
-  }, [theatre, viewMode, poppedOut, allVideoStreams])
+    setMicMuted(micMuted || deafened)
+  }, [micMuted, deafened])
+
+  useEffect(() => {
+    setSoundMuted(deafened)
+    // Deafening also silences notification sounds (message/channel/stream); the
+    // sounds module gates on this the way soup.js gates remote audio.
+    setSoundsDeafened(deafened)
+  }, [deafened])
 
   const [notifications, setNotifications] = useState([])
   const [dmNotifications, setDmNotifications] = useState([])
@@ -499,21 +516,9 @@ function Main() {
   //Stream Ref Hooks
   const popoutWindowRef = useRef(null)
   const popoutListenersRef = useRef(new Set())
-  // Set by the sidebar to the sharing channel's handle while we're sharing; lets
-  // the stream view stop or retune our own share.
-  const shareControlRef = useRef(null)
-  // Stable object so both windows can drive the share through the ref above.
-  const shareControl = useRef({
-    stop: () => shareControlRef.current?.stopShare(),
-    restart: (patch) => shareControlRef.current?.restartShare(patch),
-    setPaused: (paused) => shareControlRef.current?.pauseShare(paused),
-    pickSource: () => shareControlRef.current?.openSourcePicker(),
-    getOptions: () => shareControlRef.current?.getShareOptions() ?? null
-  }).current
   const allVideoStreamsRef = useRef([])
   const selectedStreamClientIdRef = useRef(null)
-  const streamVolumeRef = useRef(100)
-  const streamMutedRef = useRef(false)
+  const streamAudioRef = useRef({})
   // The soup socket (and thus the viewer map) lives only in this window; the
   // popout runs in a separate JS realm with an empty soup instance, so mirror
   // the snapshot here and hand it over the bridge instead of letting the popout
@@ -551,7 +556,7 @@ function Main() {
   const preDropChannelRef = useRef(null)
   // The channel we're waiting to land back in after a reconnect (null when not
   // awaiting). While set: connectionStatus stays 'reconnecting', self channel chimes are
-  // suppressed, and the sidebar won't leave voice on the transient drop-to-null.
+  // suppressed, and the voice session won't leave on the transient drop-to-null.
   const awaitingRejoinRef = useRef(null)
   // What kind of voice rebuild is happening: 'outage' when the connection
   // actually dropped, or 'intentional' when we asked for it, such as a
@@ -573,7 +578,7 @@ function Main() {
     []
   )
   // Bumped whenever a recovery ends. The ref alone is invisible to React, so
-  // consumers that *defer* work while recovering (SideBar's adopt/leave effect)
+  // consumers that *defer* work while recovering (the voice session's reconcile effect)
   // would never re-evaluate when the rejoin times out — leaving the UI claiming
   // we're in a channel the server says we left. This is that wake-up signal.
   const [recoveryEpoch, setRecoveryEpoch] = useState(0)
@@ -623,9 +628,9 @@ function Main() {
       setVoiceMediaRecovery(next)
 
       if (stateName === 'reconnecting' && channelId != null) {
-        // Ownership can legitimately move to another channel while recovery is
-        // already active (moderator move racing the transport-reset event).
-        // Follow the callback owner that will publish the replacement media.
+        // The session can legitimately move to another channel while recovery
+        // is already active (moderator move racing the transport-reset event).
+        // Follow the channel that will publish the replacement media.
         awaitingRejoinRef.current = channelId
         requiredVoiceMediaUpdateRef.current = Math.max(
           requiredVoiceMediaUpdateRef.current ?? -1,
@@ -653,9 +658,9 @@ function Main() {
           }
         }, VOICE_REJOIN_TIMEOUT_MS)
       } else if (stateName === 'authenticated' && awaitingRejoinRef.current != null) {
-        // The active VoiceChannel callback is authoritative after auth. This
-        // also resolves a moderator move that raced an earlier reset callback
-        // from the channel we previously owned.
+        // The session's channel is authoritative after auth. This also
+        // resolves a moderator move that raced an earlier reset reported for
+        // the channel we were in before.
         awaitingRejoinRef.current = channelId
       } else if (stateName === 'idle' && awaitingRejoinRef.current === channelId) {
         awaitingRejoinRef.current = null
@@ -665,8 +670,9 @@ function Main() {
         if (!eventsRecoveringRef.current) setConnectionStatus('connected')
       }
 
-      // Voice state is stored in refs so SideBar needs an explicit wake-up when
-      // an authoritative null arrived before the browser reported socket close.
+      // Voice state is stored in refs so the voice session's reconcile effect
+      // needs an explicit wake-up when an authoritative null arrived before
+      // the browser reported socket close.
       setRecoveryEpoch((epoch) => epoch + 1)
     },
     [failRecovery]
@@ -679,6 +685,205 @@ function Main() {
   const [exhaustedChannels, setExhaustedChannels] = useState(() => new Set())
   const prevStreamIdsRef = useRef(new Set())
   const streamSoundsArmedRef = useRef(false)
+
+  // Explicitly viewing the server-traffic log (server menu → View server
+  // traffic), forced on top of the in-channel chat/streams view. Another canvas
+  // override, mutually exclusive with the preview/summary views below; cleared
+  // by Esc or navigating elsewhere. When lurking, traffic is the default view
+  // anyway, so this only matters while in a voice channel.
+  const [showTraffic, setShowTraffic] = useState(false)
+  // Forced server-summary view (server menu). Same canvas-override rules as
+  // showTraffic: mutually exclusive with the preview/summary views, cleared by
+  // Esc or navigating elsewhere.
+  const [showServerSummary, setShowServerSummary] = useState(false)
+
+  // Single source of truth for our outbound voice state. The server's
+  // VoiceStateUpdate (op 1) is partial: an omitted field is left unchanged and
+  // `channel_id: null` leaves voice. So we send only the fields that changed,
+  // except that a join also carries our mute/deafen, so a server that lost them
+  // (a fresh session) learns them with the membership. The ref holds our
+  // intent, merged optimistically, for re-declaring after a reconnect.
+  //
+  // Returns whether the declaration actually reached the server. A dropped send
+  // still updates the ref (that's our intent, re-declared on the next handshake),
+  // but callers that depend on the server acting on it — voice join / rejoin,
+  // which is what mints a voice ticket — must be able to fail and retry rather
+  // than proceed as if membership had been asserted.
+  const sendVoiceState = useCallback(
+    (patch) => {
+      const channelChanged =
+        'channel_id' in patch && patch.channel_id !== voiceStateRef.current.channel_id
+      const next = { ...voiceStateRef.current, ...patch }
+      voiceStateRef.current = next
+      // A channel change (join/leave/switch) tears down and rebuilds media, so the
+      // streams that vanish/appear are the transition — not real stops/starts.
+      // Disarm the stream chimes now, synchronously, before handleLeave's teardown
+      // empties allVideoStreams and the diff effect mistakes it for a stream ending.
+      // The baseline effect re-arms once we've settled in the new channel (or none).
+      if ('channel_id' in patch) streamSoundsArmedRef.current = false
+      if (channelChanged && !isReconnectRecovering()) {
+        setWatchedStreamClientIds(new Set())
+        setSelectedStreamClientId(null)
+      }
+      if (eventsWsRef.current?.readyState !== WebSocket.OPEN) return false
+      const data =
+        patch.channel_id != null
+          ? { ...patch, self_mute: next.self_mute, self_deaf: next.self_deaf }
+          : patch
+      eventsWsRef.current.send(JSON.stringify({ op: 1, data }))
+      return true
+    },
+    [isReconnectRecovering]
+  )
+
+  // The voice session's own channel declarations (join / switch / leave).
+  const declareChannel = useCallback(
+    (channelId) => {
+      // Joining/leaving a voice channel is a navigation — drop the
+      // forced traffic view so we land on that channel's chat.
+      setShowTraffic(false)
+      setShowServerSummary(false)
+      // Pass the sent/dropped result through: the session turns a dropped
+      // declaration into a failed join so a reconnect retries instead of
+      // connecting voice with no channel membership.
+      return sendVoiceState({ channel_id: channelId })
+    },
+    [sendVoiceState]
+  )
+
+  const voice = useVoiceSessionOwner({
+    selfId: client?.id,
+    clients,
+    channels: visibleChannels,
+    declareChannel,
+    isReconnectRecovering,
+    recoveryEpoch,
+    onMediaState: handleVoiceMediaState,
+    onError: showError
+  })
+  const allVideoStreams = voice.videoStreams
+  // Live per-client speaking map for the theatre participant rail's rings.
+  const speakingClients = voice.speakingClients
+  const resetVoice = voice.reset
+
+  // Theatre mode: the stream view fills the window with the voice-channel
+  // participant icons and mic/deafen controls overlaid. It's a property of the
+  // stream view, so the effect below clears it whenever that view goes away
+  // (chat tab, popout, or no streams left).
+  const [theatre, setTheatre] = useState(false)
+  const toggleTheatre = useCallback((next) => {
+    setTheatre((v) => (typeof next === 'boolean' ? next : !v))
+  }, [])
+  useEffect(() => {
+    if (theatre && (viewMode !== 'video' || poppedOut || allVideoStreams.length === 0)) {
+      setTheatre(false)
+    }
+  }, [theatre, viewMode, poppedOut, allVideoStreams])
+
+  // Stable object so both windows can stop or retune our own share.
+  const shareControl = useRef({
+    stop: voice.stopShare,
+    restart: voice.restartShare,
+    setPaused: voice.pauseShare,
+    pickSource: voice.openSourcePicker,
+    getOptions: voice.getShareOptions
+  }).current
+
+  // Drive the Windows system-tray mic indicator. Deafen outranks mute outranks
+  // talking; mute/deafen show even when not in a channel (they're global toggles),
+  // matching TeamSpeak. No-op off Windows (main ignores the message).
+  useEffect(() => {
+    const state = deafened
+      ? 'deafened'
+      : micMuted
+        ? 'muted'
+        : voice.selfSpeaking
+          ? 'talking'
+          : 'idle'
+    window.electron?.ipcRenderer?.send('tray:voice-state', state)
+  }, [micMuted, deafened, voice.selfSpeaking])
+
+  // Who is screen streaming in each channel (channel id -> owner ids), for the
+  // DM call's member strip. SideBar keeps its own copy for its rows.
+  const [liveStreams, setLiveStreams] = useState(() => new Map())
+  useEffect(() => subscribeLiveStreams(setLiveStreams), [])
+
+  // The caller's local "Ringing…" ({ channelId, rings: recipient id -> deadline }):
+  // the server doesn't say who it rang when a call starts. Only the session's DM
+  // keeps entries.
+  const [outgoingRings, setOutgoingRings] = useState(NO_OUTGOING_RINGS)
+  useEffect(() => {
+    setOutgoingRings((prev) =>
+      prev.channelId === voice.channelId || !prev.rings.size ? prev : NO_OUTGOING_RINGS
+    )
+  }, [voice.channelId])
+  const settleOutgoingRings = useCallback((roster) => {
+    setOutgoingRings((prev) => {
+      if (!prev.rings.size) return prev
+      const inCall = roster.filter((c) => c.channel_id === prev.channelId).map((c) => c.id)
+      const rings = settleOutgoing(prev.rings, inCall, Date.now())
+      return rings === prev.rings ? prev : { ...prev, rings }
+    })
+  }, [])
+  useEffect(() => {
+    settleOutgoingRings(clients)
+  }, [clients, settleOutgoingRings])
+
+  // DM calls ringing us: channel id -> { callerId, deadline }. The event handler
+  // and the tick work on the ref; the state renders the overlay.
+  const [rings, setRings] = useState(() => new Map())
+  const ringsRef = useRef(rings)
+  // Escape hides the overlay until the rings change.
+  const [ringsHidden, setRingsHidden] = useState(false)
+  const commitRings = useCallback((next) => {
+    if (next === ringsRef.current) return
+    ringsRef.current = next
+    setRings(next)
+    setRingsHidden(false)
+  }, [])
+  // A ring that ran out, or whose call ended without us: an inbox alert, a cue
+  // (not under DND), and the DM's latest call_started reads as missed (this
+  // session only).
+  const noteMissedCall = useCallback(({ channelId, callerId }) => {
+    const name = clientsRef.current.find((c) => c.id === callerId)?.name || 'Someone'
+    setDmNotifications((prev) => [
+      {
+        id: `missed-${channelId}-${Date.now()}`,
+        channelId,
+        authorId: callerId,
+        message: `Missed call from ${name}`,
+        timestamp: Date.now()
+      },
+      ...prev.filter((n) => n.channelId !== channelId)
+    ])
+    if (!dndRef.current) playUiSound('you_were_poked')
+    setFeed((prev) => {
+      for (let i = prev.length - 1; i >= 0; i--) {
+        const e = prev[i]
+        if (e.type !== 'message' || e.channelId !== channelId || e.kind !== 'call_started') {
+          continue
+        }
+        if (e.missed) return prev
+        const next = prev.slice()
+        next[i] = { ...e, missed: true }
+        return next
+      }
+      return prev
+    })
+  }, [])
+  // One clock for both ring maps while either has entries: incoming rings run
+  // out (missed), outgoing ones settle.
+  const ringsTicking = rings.size > 0 || outgoingRings.rings.size > 0
+  useEffect(() => {
+    if (!ringsTicking) return undefined
+    const timer = setInterval(() => {
+      const { rings: next, expired } = expire(ringsRef.current, Date.now())
+      commitRings(next)
+      for (const ring of expired) noteMissedCall(ring)
+      settleOutgoingRings(clientsRef.current)
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [ringsTicking, commitRings, noteMissedCall, settleOutgoingRings])
 
   // Keep refs to the latest channels/clients so the events websocket handler
   // (created once in the effect below) can look them up without stale closures.
@@ -708,14 +913,23 @@ function Main() {
     selectedStreamClientIdRef.current = selectedStreamClientId
   }, [selectedStreamClientId])
   useEffect(() => {
-    streamVolumeRef.current = streamVolume
-  }, [streamVolume])
-  useEffect(() => {
-    streamMutedRef.current = streamMuted
-  }, [streamMuted])
+    streamAudioRef.current = streamAudio
+  }, [streamAudio])
   useEffect(() => {
     watchedStreamClientIdsRef.current = watchedStreamClientIds
   }, [watchedStreamClientIds])
+
+  // Mirror playback's per-stream audio state. The callback fires after every
+  // change (from either window) and whenever the overrides reload for a new
+  // server host.
+  useEffect(() => subscribeStreamAudio(() => setStreamAudioSnapshot(getAllStreamAudioState())), [])
+  // Playback reloads its per-host overrides lazily, on the next read, so read
+  // once when the connected server changes; that reload is what notifies the
+  // subscription above with the new server's levels.
+  const connectedHost = connectedServer?.host ?? null
+  useEffect(() => {
+    getAllStreamAudioState()
+  }, [connectedHost])
 
   // Mirror the live viewer map for the popout bridge. subscribeStreamViewers
   // fires immediately with the current snapshot, and again on every change, so
@@ -732,14 +946,7 @@ function Main() {
   // Notify the popout window whenever the data it mirrors changes.
   useEffect(() => {
     popoutListenersRef.current.forEach((cb) => cb())
-  }, [
-    allVideoStreams,
-    clients,
-    selectedStreamClientId,
-    streamVolume,
-    streamMuted,
-    watchedStreamClientIds
-  ])
+  }, [allVideoStreams, clients, selectedStreamClientId, streamAudio, watchedStreamClientIds])
 
   // Consumer lifetime follows the watch set: watching a stream subscribes to it,
   // stopping unsubscribes. Driven here rather than in VideoGrid because the
@@ -824,6 +1031,17 @@ function Main() {
     )
   }, [allVideoStreams, recoveryEpoch, isReconnectRecovering])
 
+  // A sole stream is always the focused one (the stream view has no focus
+  // toggle until a second appears), so selection follows it: when the count
+  // becomes 1, from 0 or from 2+, that stream is selected, and a second stream
+  // arriving later leaves it selected. Skipped while recovering, like the prune
+  // above: the SFU replays producers one at a time, and selecting the first
+  // replayed one would override the focus the recovery is preserving.
+  useEffect(() => {
+    if (isReconnectRecovering()) return
+    if (allVideoStreams.length === 1) setSelectedStreamClientId(allVideoStreams[0].clientId)
+  }, [allVideoStreams, recoveryEpoch, isReconnectRecovering])
+
   // Clear notification + unread history on connect/disconnect only — switching
   // channels shouldn't wipe what you've already been notified of.
   useEffect(() => {
@@ -843,17 +1061,16 @@ function Main() {
         streams: allVideoStreamsRef.current,
         clients: clientsRef.current,
         selectedStreamClientId: selectedStreamClientIdRef.current,
-        volume: streamVolumeRef.current,
-        muted: streamMutedRef.current,
+        streamAudio: streamAudioRef.current,
         watchedStreamClientIds: watchedStreamClientIdsRef.current,
         streamViewers: streamViewersRef.current
       }),
       select: (id) => setSelectedStreamClientId(id),
-      setVolume: (v) => setStreamVolume(v),
-      setMuted: (m) => setStreamMuted(m),
       setStreamWatched: (id, watched) => handleSetStreamWatched(id, watched),
       shareControl,
-      setFocusedAudio: (clientId, opts) => setFocusedScreenAudio(clientId, opts),
+      // Per-stream audio plays in this window's soup, so the popout's volume and
+      // mute controls write here; the change comes back via streamAudio.
+      setStreamAudio: (clientId, patch) => setStreamAudioState(clientId, patch),
       setStreamRoles: (payload) => setVideoStreamRoles(payload),
       subscribe: (cb) => {
         popoutListenersRef.current.add(cb)
@@ -909,17 +1126,6 @@ function Main() {
   // A channel whose details we're viewing in the main area (right-click → Channel
   // Details). Mutually exclusive with the chat preview and client summary.
   const [summaryChannelId, setSummaryChannelId] = useState(null)
-
-  // Explicitly viewing the server-traffic log (server menu → View server
-  // traffic), forced on top of the in-channel chat/streams view. Another canvas
-  // override, mutually exclusive with the preview/summary views above; cleared
-  // by Esc or navigating elsewhere. When lurking, traffic is the default view
-  // anyway, so this only matters while in a voice channel.
-  const [showTraffic, setShowTraffic] = useState(false)
-  // Forced server-summary view (server menu). Same canvas-override rules as
-  // showTraffic: mutually exclusive with the preview/summary views, cleared by
-  // Esc or navigating elsewhere.
-  const [showServerSummary, setShowServerSummary] = useState(false)
 
   // The channel the local client currently has joined (chat is scoped to it)
   const selfChannelId = clients.find((c) => c.id === client?.id)?.channel_id ?? null
@@ -1145,15 +1351,18 @@ function Main() {
     setShowServerSummary(true)
   }
 
-  // Open the DM an inbox alert points at: by sender id when known (resolves the
-  // header), else peek the channel by id. Viewing clears the alert.
+  // Open the DM an inbox alert points at: the channel itself when we know it
+  // (so a group DM's alert opens the group), else the 1:1 with its sender.
+  // Viewing clears the alert.
   const handleOpenDmNotification = (n) => {
-    if (n.authorId != null) {
-      handleOpenDm(n.authorId)
-    } else if (n.channelId != null) {
+    if (n.channelId != null && channels.some((c) => c.id === n.channelId && c.type === 'dm')) {
       setSummaryClientId(null)
       setSummaryChannelId(null)
+      setShowTraffic(false)
+      setShowServerSummary(false)
       setPreviewChannelId(n.channelId)
+    } else if (n.authorId != null) {
+      handleOpenDm(n.authorId)
     }
   }
 
@@ -1195,15 +1404,15 @@ function Main() {
   }, [filesChannelId])
 
   // Get-or-create the 1:1 DM channel with another user and make it known to
-  // `channels`, returning its id. Shared by handleOpenDm (peek) and handlePoke
-  // (fire a message without necessarily switching views). Idempotent server-side.
+  // `channels`, returning its id. Used by handleOpenDm (peek). Idempotent
+  // server-side.
   const ensureDmChannel = useCallback(
     async (userId) => {
       const res = await authFetch(`${apiBase()}/channels/dm`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        // Array so the same endpoint creates a group chat later; today both entry
-        // points (double-click, poke) only ever send one recipient.
+        // Array so the same endpoint creates a group chat later; today opening a
+        // DM only ever sends one recipient.
         body: JSON.stringify({ recipient_ids: [userId] })
       })
       await throwIfError(res)
@@ -1244,37 +1453,95 @@ function Main() {
     [client, ensureDmChannel]
   )
 
-  // Poke a client: fire off a DM message (the attached note, or a wave if none)
-  // without leaving the current view. For now it's just a normal DM under the
-  // hood; the dedicated poke notification can come later.
+  // Poke a client: a poke message (with the note, if any) in our 1:1 DM with
+  // them, which the server creates on first use, then open that DM. The poke
+  // reaches the feed through its MessageCreated, as a sent message does.
   const handlePoke = useCallback(
     async (userId, message) => {
       if (!userId || userId === client?.id) return
-      const text = (message || '').trim() || '👋'
-
       try {
-        const id = await ensureDmChannel(userId)
-        if (id == null) return
-        // Mirror handleSendMessage's multipart shape (text-only, no files) so the
-        // server sees an ordinary DM message and broadcasts MessageCreated back.
-        const formData = new FormData()
-        formData.append(
-          'payload_json',
-          new Blob([JSON.stringify({ content: text, attachments: [] })], {
-            type: 'application/json'
-          })
-        )
-        const res = await authFetch(`${apiBase()}/channels/${id}/messages`, {
+        const res = await authFetch(`${apiBase()}/clients/${userId}/poke`, {
           method: 'POST',
-          body: formData
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content: (message || '').trim() || null })
         })
         await throwIfError(res)
+        const poke = await res.json()
+        if (poke?.channel_id == null) return
+        // A DM this poke created may not be merged from its ChannelCreated yet;
+        // registering it keeps the preview from being dropped as unknown.
+        const dm = { id: poke.channel_id, type: 'dm', recipients: [client?.id, userId] }
+        setChannels((prev) => (prev.some((c) => c.id === dm.id) ? prev : [...prev, dm]))
+        setSummaryClientId(null)
+        setShowTraffic(false)
+        setShowServerSummary(false)
+        setPreviewChannelId(dm.id)
       } catch (err) {
-        showError(`Failed to poke: ${err.message}`, err)
+        if (err.status === 429) showWarning(err.message)
+        else showError(`Failed to poke: ${err.message}`, err)
       }
     },
-    [client, token, ensureDmChannel]
+    [client, showError, showWarning]
   )
+
+  // Start or join a DM's call. Starting one rings every online participant,
+  // which only shows here as the local "Ringing…".
+  const handleJoinDmCall = (dm) => {
+    if (!clients.some((c) => c.channel_id === dm.id)) {
+      const online = dmOthers(dm, client?.id)
+        .map((o) => o.id)
+        .filter((id) => statusOf(presences[id]) !== 'offline')
+      setOutgoingRings({ channelId: dm.id, rings: startOutgoing(new Map(), online, Date.now()) })
+    }
+    voice.join(dm.id)
+  }
+
+  // Ring one participant who isn't in the DM's call (the member strip's Ring).
+  const handleRingParticipant = async (dmId, userId) => {
+    const name = clients.find((c) => c.id === userId)?.name || 'Someone'
+    try {
+      const res = await authFetch(`${apiBase()}/channels/${dmId}/call/ring`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ recipient_ids: [userId] })
+      })
+      await throwIfError(res)
+      const rung = (await res.json())?.rung || []
+      if (rung.length) {
+        setOutgoingRings((prev) => ({
+          channelId: dmId,
+          rings: startOutgoing(prev.channelId === dmId ? prev.rings : new Map(), rung, Date.now())
+        }))
+      }
+      if (!rung.includes(userId)) showToast(`${name} is not available`)
+    } catch (err) {
+      if (err.status === 429) showWarning(err.message)
+      else showError(`Failed to ring ${name}: ${err.message}`, err)
+    }
+  }
+
+  // Answer a ring: join its call (leaving any other) and open the DM. The
+  // preview turns into the joined view once the roster lands.
+  const handleAnswerCall = (channelId) => {
+    voice.join(channelId)
+    setSummaryClientId(null)
+    setSummaryChannelId(null)
+    setPreviewChannelId(channelId)
+  }
+
+  const handleDeclineCall = async (channelId) => {
+    commitRings(
+      applyRingEnded(ringsRef.current, { channel_id: channelId, reason: 'declined' }).rings
+    )
+    try {
+      const res = await authFetch(`${apiBase()}/channels/${channelId}/call/decline`, {
+        method: 'POST'
+      })
+      await throwIfError(res)
+    } catch (err) {
+      showError(`Failed to decline the call: ${err.message}`, err)
+    }
+  }
 
   // Admin moderation. The backend designates the first user to enter a server as
   // admin and enforces these; non-admins just get an error toast. The kicked/
@@ -1949,13 +2216,13 @@ function Main() {
         self_deaf: deafenedRef.current,
         channel_id: null
       }
-      disconnectVoice()
+      resetVoice()
+      commitRings(new Map())
       clearAuth()
       setChannels([])
       setClients([])
       setPresences({})
       setFeed([])
-      setAllVideoStreams([])
       setSelectedStreamClientId(null)
       setWatchedStreamClientIds(new Set())
       setConnectedServer(null)
@@ -1970,7 +2237,7 @@ function Main() {
       // Kick/ban paths play their own specific cue and pass skipSound.
       if (!opts?.skipSound) playUiSound('disconnected')
     },
-    [clearAuth]
+    [clearAuth, resetVoice, commitRings]
   )
 
   // A refresh the server rejects means the device session is revoked or
@@ -2279,6 +2546,8 @@ function Main() {
         setReadStates(reads)
         // Surface DMs that went unread while we were away in the inbox.
         seedUnreadDms(data.channels || [], reads, data.clients || [])
+        // DM calls ringing us right now.
+        commitRings(applyReady(ringsRef.current, data.rings, Date.now()))
         // Live screen streams and their viewers. Soup keeps these: it needs
         // them to watch a stream and to say who is watching ours.
         applyReadyStreams(data.streams || [])
@@ -2331,6 +2600,13 @@ function Main() {
           }
           serverVoiceChannelRef.current = newChannelId
           if (newChannelId != null) rejoinAfterReadyRef.current = false
+          // Landing in a DM's call answers its ring (the server says so too).
+          if (newChannelId != null) {
+            commitRings(
+              applyRingEnded(ringsRef.current, { channel_id: newChannelId, reason: 'answered' })
+                .rings
+            )
+          }
         }
         setClients((prev) =>
           prev.map((c) => (c.id === clientId ? { ...c, ...voiceFields(data) } : c))
@@ -2479,6 +2755,10 @@ function Main() {
           })
         )
       } else if (ev === 'MessageCreated') {
+        const kind = data.kind ?? 'default'
+        // Written by the server when a DM call starts or ends: unread like any
+        // message, but not chat (no chime, and the author isn't done typing).
+        const callKind = isCallMessage(data)
         setFeed((prev) => appendFeed(prev, messageFromApi(data)))
         // New files: refresh the open file browser if it's showing this channel.
         if (data.attachments?.length && data.channel_id === filesChannelIdRef.current) {
@@ -2492,15 +2772,28 @@ function Main() {
         )
         // Sending a message ends that author's typing indicator immediately,
         // leaving anyone else still typing untouched.
-        setTypingEntries((prev) => prev.filter((t) => t.clientId !== data.author))
+        if (!callKind) setTypingEntries((prev) => prev.filter((t) => t.clientId !== data.author))
         // Chime for messages arriving in the channel we're viewing, from anyone
         // but ourselves — regardless of whether we're on the chat or video tab.
+        // A poke has its own cue below.
         if (
+          !callKind &&
+          kind !== 'poke' &&
           data.author !== selfIdRef.current &&
           data.channel_id === activeChatChannelIdRef.current &&
           !dndRef.current
         ) {
           playUiSound('new-message')
+        }
+        // Someone poked us. A resume replaying an older poke stays quiet, and so
+        // does DND.
+        if (
+          kind === 'poke' &&
+          data.author !== selfIdRef.current &&
+          Math.abs(Date.now() - data.timestamp) <= 5000 &&
+          !dndRef.current
+        ) {
+          playUiSound('you_were_poked')
         }
         // A DM message from someone else, while we're not reading it, raises a
         // clickable inbox alert (deduped to the latest message per DM channel).
@@ -2527,7 +2820,13 @@ function Main() {
             ].slice(0, 50)
           )
         }
-        if (data.author !== selfIdRef.current && !readingHere) {
+        // A call that ended raises nothing, and one that started only while
+        // we're not in it.
+        const alerts =
+          kind === 'call_started'
+            ? data.channel_id !== serverVoiceChannelRef.current
+            : kind !== 'call_ended'
+        if (data.author !== selfIdRef.current && !readingHere && alerts) {
           const dmChannel = channelsRef.current.find((c) => c.id === data.channel_id)
           if (dmChannel?.type === 'dm') {
             const name = clientsRef.current.find((c) => c.id === data.author)?.name || 'Someone'
@@ -2536,13 +2835,33 @@ function Main() {
                 id: data.id ?? `${data.channel_id}-${Date.now()}`,
                 channelId: data.channel_id,
                 authorId: data.author,
-                message: `${name} sent you a direct message`,
+                message:
+                  kind === 'call_started'
+                    ? `${name} started a call`
+                    : kind === 'poke'
+                      ? `${name} poked you`
+                      : `${name} sent you a direct message`,
                 timestamp: Date.now()
               },
               ...prev.filter((n) => n.channelId !== data.channel_id)
             ])
           }
         }
+      } else if (ev === 'CallRinging') {
+        const now = Date.now()
+        const { rings: next, added } = applyRinging(
+          ringsRef.current,
+          data,
+          now,
+          serverVoiceChannelRef.current
+        )
+        commitRings(next)
+        // A ring this close to its deadline is a resume replaying it.
+        if (added && data.deadline - now > 5000 && !dndRef.current) playUiSound('new-message')
+      } else if (ev === 'CallRingEnded') {
+        const { rings: next, ended } = applyRingEnded(ringsRef.current, data)
+        commitRings(next)
+        if (ended && isMissedRing(ended.reason)) noteMissedCall(ended)
       } else if (ev === 'ReadStateUpdated') {
         // Private to us: another session (or our own ack) moved a read cursor.
         setReadStates((prev) => ({
@@ -2935,7 +3254,16 @@ function Main() {
       if (ws) ws.close()
       eventsWsRef.current = null
     }
-  }, [token, loadChannelHistory, handleDisconnect, logTraffic, failRecovery, isReconnectRecovering])
+  }, [
+    token,
+    loadChannelHistory,
+    handleDisconnect,
+    logTraffic,
+    failRecovery,
+    isReconnectRecovering,
+    commitRings,
+    noteMissedCall
+  ])
 
   // Drop typing entries as they expire. Re-scheduled to the soonest expiry each
   // time the set changes (no always-on interval); a fresh TypingStarted bumps an
@@ -3213,48 +3541,14 @@ function Main() {
     }
   }
 
-  // Single source of truth for our outbound voice state. The server's
-  // VoiceStateUpdate (op 1) is partial: an omitted field is left unchanged and
-  // `channel_id: null` leaves voice. So we send only the fields that changed,
-  // except that a join also carries our mute/deafen, so a server that lost them
-  // (a fresh session) learns them with the membership. The ref holds our
-  // intent, merged optimistically, for re-declaring after a reconnect.
-  //
-  // Returns whether the declaration actually reached the server. A dropped send
-  // still updates the ref (that's our intent, re-declared on the next handshake),
-  // but callers that depend on the server acting on it — voice join / rejoin,
-  // which is what mints a voice ticket — must be able to fail and retry rather
-  // than proceed as if membership had been asserted.
-  const sendVoiceState = useCallback(
-    (patch) => {
-      const channelChanged =
-        'channel_id' in patch && patch.channel_id !== voiceStateRef.current.channel_id
-      const next = { ...voiceStateRef.current, ...patch }
-      voiceStateRef.current = next
-      // A channel change (join/leave/switch) tears down and rebuilds media, so the
-      // streams that vanish/appear are the transition — not real stops/starts.
-      // Disarm the stream chimes now, synchronously, before handleLeave's teardown
-      // empties allVideoStreams and the diff effect mistakes it for a stream ending.
-      // The baseline effect re-arms once we've settled in the new channel (or none).
-      if ('channel_id' in patch) streamSoundsArmedRef.current = false
-      if (channelChanged && !isReconnectRecovering()) {
-        setWatchedStreamClientIds(new Set())
-        setSelectedStreamClientId(null)
-      }
-      if (eventsWsRef.current?.readyState !== WebSocket.OPEN) return false
-      const data =
-        patch.channel_id != null
-          ? { ...patch, self_mute: next.self_mute, self_deaf: next.self_deaf }
-          : patch
-      eventsWsRef.current.send(JSON.stringify({ op: 1, data }))
-      return true
-    },
-    [isReconnectRecovering]
-  )
-
   // Broadcast our mic-mute / deafen status, keeping our current channel.
   const sendStatus = (selfMute, selfDeaf) =>
     sendVoiceState({ self_mute: selfMute, self_deaf: selfDeaf })
+
+  // Let other clients know our mic-mute / deafen status
+  useEffect(() => {
+    sendStatus(micMuted, deafened)
+  }, [micMuted, deafened])
 
   // Soup asks for, watches and ends screen streams (ops 7-10) on this socket.
   // Registered once: the ref always names the live socket.
@@ -3362,14 +3656,6 @@ function Main() {
     refreshPresencesRef.current = refreshPresences
   }, [refreshPresences])
 
-  // Merge stream updates from a specific channel into the global streams list
-  const handleStreamsUpdate = (channelId, streams) => {
-    setAllVideoStreams((prev) => {
-      const filtered = prev.filter((s) => s.channelId !== channelId)
-      return [...filtered, ...streams.map((s) => ({ ...s, channelId }))]
-    })
-  }
-
   const [showSettings, setShowSettings] = useState(false)
   const [streamDebugOpen, setStreamDebugOpen] = useState(false)
   // Exit animation is handled by AnimatePresence in the JSX below, so open/
@@ -3378,15 +3664,30 @@ function Main() {
   const closeSettings = () => setShowSettings(false)
   const overlayAnim = useAnimationCategory('overlays')
 
+  const ringOverlayOpen = !!token && rings.size > 0 && !ringsHidden
+
   // Focused Escape closes the topmost open menu/view, one layer per press, in
-  // stacking order (settings overlay → roles/groups menu → ban list → canvas
-  // summary/peek views). Skips when a nested control already handled the key
-  // (defaultPrevented, e.g. an open picker) so it never yanks a layer out from
-  // under one.
+  // stacking order (incoming calls → settings overlay → roles/groups menu → ban
+  // list → canvas summary/peek views → a focused stream). Skips when a nested
+  // control already handled the key (defaultPrevented, e.g. an open picker or
+  // the stream's right-click menu) so it never yanks a layer out from under one.
+  // Incoming calls are only hidden, never declined. The stream layer is last:
+  // with 2+ streams it drops back to the grid (a sole stream is always focused),
+  // never while OS-fullscreen, where Escape belongs to the browser, and theatre
+  // mode's own captured Escape runs before this ever sees the key.
   useEffect(() => {
+    const streamFocusEscapable = () => {
+      if (viewMode !== 'video' || poppedOut || document.fullscreenElement) return false
+      const { focusedClientId, canToggleFocus } = resolveStreamFocus({
+        streams: allVideoStreamsRef.current,
+        selectedStreamClientId: selectedStreamClientIdRef.current
+      })
+      return focusedClientId != null && canToggleFocus
+    }
     const onKeyDown = (e) => {
       if (e.key !== 'Escape' || e.defaultPrevented) return
-      if (showSettings) setShowSettings(false)
+      if (ringOverlayOpen) setRingsHidden(true)
+      else if (showSettings) setShowSettings(false)
       else if (rolesGroupsOpen) setRolesGroupsOpen(false)
       else if (banListOpen) setBanListOpen(false)
       // ImageViewer closes itself on Escape without claiming the key, so its
@@ -3398,12 +3699,14 @@ function Main() {
       else if (previewChannelId != null) setPreviewChannelId(null)
       else if (showTraffic) setShowTraffic(false)
       else if (showServerSummary) setShowServerSummary(false)
+      else if (streamFocusEscapable()) setSelectedStreamClientId(null)
       else return
       e.preventDefault()
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [
+    ringOverlayOpen,
     showSettings,
     rolesGroupsOpen,
     banListOpen,
@@ -3413,7 +3716,9 @@ function Main() {
     summaryClientId,
     previewChannelId,
     showTraffic,
-    showServerSummary
+    showServerSummary,
+    viewMode,
+    poppedOut
   ])
 
   const connected = !!token
@@ -3445,19 +3750,89 @@ function Main() {
     .map((t) => clients.find((c) => c.id === t.clientId)?.name)
     .filter(Boolean)
 
-  const previewChannel = channels.find((c) => c.id === previewChannelId)
-  let previewChannelName
-  let previewDmAvatar
-  if (previewChannel?.type === 'dm') {
-    const o = dmOther(previewChannel, client?.id)
-    const recipient = clients.find((c) => c.id === o.id)
-    previewChannelName = o.name || recipient?.name || previewChannel.name || 'Direct Message'
-    previewDmAvatar = recipient?.avatar
-  } else {
-    previewChannelName = previewChannel?.name ?? 'Channel'
+  const nameOf = (id) => clients.find((c) => c.id === id)?.name
+  // A DM's header icon: the other participant's avatar in a 1:1, a group glyph
+  // (isGroupDm) otherwise.
+  const dmAvatarOf = (dm) => {
+    const others = dmOthers(dm, client?.id)
+    return others.length === 1 ? clients.find((c) => c.id === others[0].id)?.avatar : undefined
   }
-  const previewChannelIcon =
-    previewChannel?.type === 'dm' ? previewDmAvatar : assetUrl(previewChannel?.channel_icon)
+  const isGroupDm = (dm) => dmOthers(dm, client?.id).length > 1
+
+  const previewChannel = channels.find((c) => c.id === previewChannelId)
+  const previewDm = previewChannel?.type === 'dm' ? previewChannel : null
+  const previewChannelName = previewDm
+    ? dmDisplayName(previewDm, client?.id, nameOf)
+    : (previewChannel?.name ?? 'Channel')
+  const previewChannelIcon = previewDm
+    ? dmAvatarOf(previewDm)
+    : assetUrl(previewChannel?.channel_icon)
+  // Who is already in the previewed DM's call (we aren't: being in it drops the
+  // preview).
+  const previewCallMembers = previewDm
+    ? clients.filter((c) => c.channel_id === previewDm.id && c.id !== client?.id)
+    : []
+
+  // The DM whose call we're in, for the joined header: one strip entry per
+  // participant, us first.
+  const joinedDm = joinedChannel?.type === 'dm' ? joinedChannel : null
+  const dmStripEntries = (() => {
+    if (!joinedDm) return []
+    const tileOwners = new Set(
+      allVideoStreams.filter((s) => s.kind === 'video').map((s) => s.clientId)
+    )
+    const streamers = new Set(liveStreams.get(joinedDm.id) ?? [])
+    const others = dmOthers(joinedDm, client?.id)
+    return [{ id: client?.id }, ...others].map((p) => {
+      const c = clients.find((x) => x.id === p.id) ?? {}
+      const isSelf = p.id === client?.id
+      const inCall = c.channel_id === joinedDm.id
+      const ringing = outgoingRings.channelId === joinedDm.id && outgoingRings.rings.has(p.id)
+      return {
+        id: p.id,
+        name: c.name || p.name || 'Unknown',
+        avatar: c.avatar,
+        inCall,
+        speaking: inCall && !!speakingClients[p.id],
+        // Our own toggles beat the roster echo, as in the theatre rail.
+        muted: isSelf ? micMuted : !!c.self_mute || !!c.server_mute,
+        deafened: isSelf ? deafened : !!c.self_deaf,
+        streaming: streamers.has(p.id) || tileOwners.has(p.id),
+        watchable: tileOwners.has(p.id),
+        status: ringing ? 'ringing' : statusOf(presences[p.id]) === 'offline' ? 'offline' : 'ring'
+      }
+    })
+  })()
+
+  // The session's error has no sidebar row in a DM call, so it shows under the
+  // header of the DM it belongs to.
+  const headerDmId =
+    showTraffic || summaryChannelId != null || summaryClientId != null || showServerSummary
+      ? null
+      : previewChannelId != null
+        ? (previewDm?.id ?? null)
+        : (joinedDm?.id ?? null)
+  const dmCallError =
+    voice.error && headerDmId != null && voice.errorChannelId === headerDmId ? voice.error : null
+
+  // One card per DM call ringing us; a group DM's card also names the group.
+  const incomingCalls = [...rings].map(([channelId, ring]) => {
+    const dm = channels.find((c) => c.id === channelId)
+    const caller = clients.find((c) => c.id === ring.callerId)
+    return {
+      channelId,
+      deadline: ring.deadline,
+      callerName: caller?.name || 'Someone',
+      callerAvatar: caller?.avatar,
+      groupName: dm && isGroupDm(dm) ? dmDisplayName(dm, client?.id, nameOf) : null
+    }
+  })
+
+  const activeChatChannel = channels.find((c) => c.id === activeChatChannelId)
+  const activeChatDmName =
+    activeChatChannel?.type === 'dm'
+      ? dmDisplayName(activeChatChannel, client?.id, nameOf)
+      : undefined
 
   // The client whose summary is open (single-click), or null.
   const summaryClient =
@@ -3507,389 +3882,432 @@ function Main() {
 
   return (
     <ClientActionsProvider value={clientActions}>
-      <div className="app-shell">
-        <Toast toast={toast} onDismiss={dismissToast} />
-        <UpdatePrompt />
-        {/* Non-modal, so intentionally left out of the Escape-key cascade below —
-            it should survive Escape while flipping through views mid-debug. */}
-        {streamDebugOpen && (
-          <StreamDebugPanel
-            clients={clients}
-            selfId={client?.id}
-            onClose={() => setStreamDebugOpen(false)}
-          />
-        )}
-        {rolesGroupsOpen && (
-          <RolesGroupsMenu
-            roles={roles}
-            vanity={vanity}
-            onCreateVanity={handleCreateVanityGroup}
-            onClose={() => setRolesGroupsOpen(false)}
-          />
-        )}
-        {/* Gated on connected + BAN_MEMBERS too, so it drops away on disconnect
-            or if our roles lose the permission while it's open. */}
-        {banListOpen && connected && canBanMembers && (
-          <BanListMenu
-            bans={resolvedBans}
-            onUnban={handleUnbanUser}
-            onClose={() => setBanListOpen(false)}
-          />
-        )}
-        {filesChannel && connected && (
-          <FileBrowser
-            key={filesChannel.id}
-            channel={filesChannel}
-            clients={clients}
-            selfId={client?.id}
-            canModerate={canModerateIn(filesChannel.id)}
-            revision={filesRevision}
-            onList={(opts) => handleListFiles(filesChannel.id, opts)}
-            onSetPublic={(fileId, isPublic) =>
-              handleSetFilePublic(filesChannel.id, fileId, isPublic)
-            }
-            onDelete={(fileId) => handleDeleteFile(filesChannel.id, fileId)}
-            onCopyLink={handleCopyLink}
-            onOpenImage={setFilesViewerImage}
-            onPreviewFile={setFilesViewerFile}
-            onDownload={handleDownloadFile}
-            onClose={() => setFilesChannelId(null)}
-          />
-        )}
-        {filesViewerImage && (
-          <ImageViewer
-            src={filesViewerImage.url}
-            name={filesViewerImage.name}
-            onClose={() => setFilesViewerImage(null)}
-          />
-        )}
-        <AnimatePresence>
-          {filesViewerFile && (
-            <FileViewer
-              key={filesViewerFile.url}
-              src={filesViewerFile.url}
-              name={filesViewerFile.name}
-              size={filesViewerFile.size}
-              kind={previewKind(filesViewerFile.name, filesViewerFile.contentType)}
-              onClose={() => setFilesViewerFile(null)}
-              onDownload={() => handleDownloadFile(filesViewerFile)}
+      <VoiceSessionProvider value={voice}>
+        <div className="app-shell">
+          <Toast toast={toast} onDismiss={dismissToast} />
+          <UpdatePrompt />
+          {/* Non-modal, so intentionally left out of the Escape-key cascade below —
+              it should survive Escape while flipping through views mid-debug. */}
+          {streamDebugOpen && (
+            <StreamDebugPanel
+              clients={clients}
+              selfId={client?.id}
+              onClose={() => setStreamDebugOpen(false)}
             />
           )}
-        </AnimatePresence>
-        <TitleBar
-          title={titleText}
-          icon={IconUsersGroup}
-          notifications={notifications}
-          onClearNotifications={() => setNotifications([])}
-          onOpenNotification={handleOpenNotification}
-          silentNotifications={dnd}
-          dmNotifications={dmNotifications}
-          onOpenDmNotification={handleOpenDmNotification}
-          onClearDmNotifications={() => setDmNotifications([])}
-        />
-        <div className="layout">
-          <SideBar
-            channels={visibleChannels}
-            clients={clients}
-            self={client}
-            onStreamsUpdate={handleStreamsUpdate}
-            isReconnectRecovering={isReconnectRecovering}
-            recoveryEpoch={recoveryEpoch}
-            micMuted={micMuted}
-            deafened={deafened}
-            onToggleMic={toggleMic}
-            onToggleDeafen={toggleDeafen}
-            onSpeakingClientsChange={handleSpeakingClientsChange}
-            onVoiceMediaState={handleVoiceMediaState}
-            voiceMediaState={voiceMediaRecovery}
-            connectionInfoOpen={streamDebugOpen}
-            onToggleConnectionInfo={() => setStreamDebugOpen((open) => !open)}
-            shareControlRef={shareControlRef}
-            onStatusChange={sendStatus}
-            onSelfChannelChange={(channelId) => {
-              // Joining/leaving a voice channel is a navigation — drop the
-              // forced traffic view so we land on that channel's chat.
-              setShowTraffic(false)
-              setShowServerSummary(false)
-              // Pass the sent/dropped result through: VoiceChannel turns a
-              // dropped declaration into a rejected patchChannel so a reconnect
-              // retries instead of connecting voice with no channel membership.
-              return sendVoiceState({ channel_id: channelId })
-            }}
-            onViewServerTraffic={handleViewServerTraffic}
-            onViewServerSummary={handleViewServerSummary}
-            onOpenBanList={handleOpenBanList}
-            // provide a renderer-level openSettings hook
-            onOpenSettings={openSettings}
-            servers={servers}
-            connectedServer={connectedServer}
-            onConnect={handleConnect}
-            onDisconnect={handleDisconnect}
-            onAddServer={handleAddServer}
-            onEditServer={handleEditServer}
-            onRemoveServer={handleRemoveServer}
-            onNotify={showSuccess}
-            onCreateChannel={handleCreateChannel}
-            onDeleteChannel={handleDeleteChannel}
-            onReorderChannel={handleReorderChannel}
-            onMoveClient={handleMoveClientToChannel}
-            onPreviewChannel={handlePreviewChannel}
-            onShowChannelSummary={handleShowChannelSummary}
-            onOpenFiles={handleOpenFiles}
-            onOpenDm={handleOpenDm}
-            onPoke={handlePoke}
-            onKick={handleKickUser}
-            onKickFromChannel={handleKickFromChannel}
-            onGag={handleGagUser}
-            onBan={handleBanUser}
-            onError={showError}
-            onUnban={handleUnbanUser}
-            onSetAvatar={handleSetAvatar}
-            onShowClientSummary={handleShowClientSummary}
-            roles={roles}
-            onAssignRole={handleAssignRole}
-            onRemoveRole={handleRemoveRole}
-            vanity={vanity}
-            onToggleVanity={handleToggleVanity}
-            onOpenRolesGroups={() => setRolesGroupsOpen(true)}
-            bannedUsers={bannedUsers}
-            canKickMembers={canKickMembers}
-            canBanMembers={canBanMembers}
-            canMuteMembers={canMuteMembers}
-            previewChannelId={previewChannelId}
-            summaryChannelId={summaryChannelId}
-            unreadChannelIds={unreadChannelIds}
-          />
-
-          <main className="chat-area">
-            {/* Summary views have no header bar: their banner card acts as the header.
-              Leaving a view = clicking back to your joined channel in the sidebar. */}
-            {summaryChannelId == null && summaryClientId == null && !showServerSummary && (
-              <div className="chat-header">
-                <div className="header-content">
-                  {showTraffic ? (
-                    // Forced traffic view (server menu). Same server-name header
-                    // as the lurking view below — Esc or navigating elsewhere
-                    // returns to the channel.
-                    serverHeaderTitle
-                  ) : previewChannelId != null ? (
-                    // Peeking into another channel's chat: no view tabs (no streams),
-                    // just the channel name.
-                    <span className="view-preview-title">
-                      <button
-                        type="button"
-                        className={`chat-title-icon${previewChannel?.type === 'dm' ? ' chat-title-icon-avatar' : ''}`}
-                        onClick={() => handleShowChannelSummary(previewChannelId)}
-                        title="Channel details"
-                      >
-                        {previewChannelIcon ? (
-                          <img className="chat-title-icon-img" src={previewChannelIcon} alt="" />
-                        ) : previewChannel?.type === 'dm' ? (
-                          <IconUser size={18} stroke={2} />
-                        ) : (
-                          <IconMessage size={18} stroke={2} />
-                        )}
-                      </button>
-                      <span className="view-preview-name">{previewChannelName}</span>
-                    </span>
-                  ) : connected && joinedChannel ? (
-                    // In a voice channel: channel name + member count + Chat/Streams tabs.
-                    <>
-                      <div className="chat-title">
-                        <button
-                          type="button"
-                          className="chat-title-icon"
-                          onClick={() => handleShowChannelSummary(joinedChannel.id)}
-                          title="Channel details"
-                        >
-                          {joinedChannel.channel_icon ? (
-                            <img
-                              className="chat-title-icon-img"
-                              src={assetUrl(joinedChannel.channel_icon)}
-                              alt=""
-                            />
-                          ) : (
-                            <IconVolume size={17} stroke={2} />
-                          )}
-                        </button>
-                        <span className="chat-title-text">
-                          <span className="chat-title-name">{joinedChannel.name}</span>
-                          <span className="chat-title-sub">{joinedChannelUserCount} in voice</span>
-                        </span>
-                      </div>
-                      <SegmentedTabs
-                        ariaLabel="Main view"
-                        active={viewMode}
-                        onChange={setViewMode}
-                        tabs={[
-                          {
-                            id: 'log',
-                            label: 'Chat',
-                            icon: <IconMessage size={15} stroke={2} />
-                          },
-                          {
-                            id: 'video',
-                            label: 'Streams',
-                            icon: <IconVideo size={15} stroke={2} />,
-                            disabled: poppedOut,
-                            title: poppedOut ? 'Video is open in a separate window' : undefined
-                          }
-                        ]}
-                      />
-                    </>
-                  ) : connected ? (
-                    // Lurking (not in a voice channel): just the server name — the
-                    // canvas below shows server traffic, so no tabs or subtext.
-                    serverHeaderTitle
-                  ) : (
-                    <span aria-hidden="true" />
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* Keyed so switching channel/tab remounts and replays the switch
-                animation. The key mirrors the render branches below and keys the
-                channel views by *content identity* (which channel + chat-vs-grid),
-                not by peek-vs-joined: peeking channel X shows `chat-X` and joining
-                that same channel (landing on the log tab) is still `chat-X`, so the
-                fade doesn't redundantly replay when only the titlebar gains its
-                voice counter. Switching channel or chat↔video still changes the key. */}
-            <div
-              className="chat-switch-region"
-              key={
-                !connected
-                  ? 'disconnected'
-                  : summaryChannelId != null
-                    ? `channel-summary-${summaryChannelId}`
-                    : summaryClientId != null
-                      ? `summary-${summaryClientId}`
-                      : showServerSummary
-                        ? 'server-summary'
-                        : showTraffic || (previewChannelId == null && !joinedChannel)
-                          ? 'lobby'
-                          : previewChannelId != null || viewMode === 'log'
-                            ? `chat-${activeChatChannelId}`
-                            : `grid-${selfChannelId}`
+          {rolesGroupsOpen && (
+            <RolesGroupsMenu
+              roles={roles}
+              vanity={vanity}
+              onCreateVanity={handleCreateVanityGroup}
+              onClose={() => setRolesGroupsOpen(false)}
+            />
+          )}
+          {/* Gated on connected + BAN_MEMBERS too, so it drops away on disconnect
+              or if our roles lose the permission while it's open. */}
+          {banListOpen && connected && canBanMembers && (
+            <BanListMenu
+              bans={resolvedBans}
+              onUnban={handleUnbanUser}
+              onClose={() => setBanListOpen(false)}
+            />
+          )}
+          {filesChannel && connected && (
+            <FileBrowser
+              key={filesChannel.id}
+              channel={filesChannel}
+              clients={clients}
+              selfId={client?.id}
+              canModerate={canModerateIn(filesChannel.id)}
+              revision={filesRevision}
+              onList={(opts) => handleListFiles(filesChannel.id, opts)}
+              onSetPublic={(fileId, isPublic) =>
+                handleSetFilePublic(filesChannel.id, fileId, isPublic)
               }
-            >
-              {!connected ? (
-                <IdleAnimation connecting={connecting} />
-              ) : summaryChannelId != null ? (
-                <ChannelSummary
-                  channel={summaryChannel}
-                  memberCount={summaryChannelMemberCount}
-                  onSaveDescription={handleSetChannelDescription}
-                  onSetIcon={handleSetChannelIcon}
-                  roles={roles}
-                  clients={clients}
-                  canManagePermissions={canManageChannels}
-                  onSetOverwrite={handleSetChannelOverwrite}
-                  onDeleteOverwrite={handleDeleteChannelOverwrite}
-                />
-              ) : summaryClientId != null ? (
-                <ClientSummary
-                  client={summaryClient}
-                  roles={roles}
-                  vanity={vanity}
-                  isSelf={summaryClient?.id === client?.id}
-                  onSetAvatar={handleSetAvatar}
-                />
-              ) : showServerSummary ? (
-                <ServerSummary />
-              ) : showTraffic || (previewChannelId == null && !joinedChannel) ? (
-                // Server-traffic log: shown on demand (server menu) or as the
-                // default when lurking (not in a voice channel, not peeking).
-                <ServerTraffic entries={traffic} clients={clients} />
-              ) : previewChannelId != null || viewMode === 'log' ? (
-                <ChatPanel
-                  feed={feed.filter(
-                    (e) => e.type === 'system' || e.channelId === activeChatChannelId
-                  )}
-                  clients={clients}
-                  selfId={client?.id}
-                  onSend={handleSendMessage}
-                  onEditMessage={handleEditMessage}
-                  onDeleteMessage={handleDeleteMessage}
-                  onSetFilePublic={(_messageId, fileId, isPublic) =>
-                    handleSetFilePublic(activeChatChannelId, fileId, isPublic)
-                  }
-                  onDeleteFile={(_messageId, fileId) =>
-                    handleDeleteFile(activeChatChannelId, fileId)
-                  }
-                  onCopyLink={handleCopyLink}
-                  onReactMessage={handleReactMessage}
-                  onLoadReactors={handleLoadReactors}
-                  onTyping={handleTyping}
-                  onError={showError}
-                  typingUsers={typingUsers}
-                  disabled={activeChatChannelId == null}
-                  canModerate={canModerateChat}
-                  channelKey={activeChatChannelId}
-                  onLoadOlder={loadOlderMessages}
-                  hasMoreOlder={
-                    activeChatChannelId != null && !exhaustedChannels.has(activeChatChannelId)
-                  }
-                />
-              ) : (
-                <VideoGrid
-                  streams={allVideoStreams}
-                  clients={clients}
-                  selectedStreamClientId={selectedStreamClientId}
-                  onSelect={setSelectedStreamClientId}
-                  onPopout={handlePopout}
-                  watchedStreamClientIds={watchedStreamClientIds}
-                  onSetStreamWatched={handleSetStreamWatched}
-                  onStopSharing={shareControl.stop}
-                  shareControl={shareControl}
-                  volume={streamVolume}
-                  muted={streamMuted}
-                  onVolumeChange={setStreamVolume}
-                  onMutedChange={setStreamMuted}
-                  theatre={theatre}
-                  onToggleTheatre={toggleTheatre}
-                  voiceClients={clients
-                    .filter((c) => c.channel_id === selfChannelId)
-                    .sort((a, b) => (a.name || '').localeCompare(b.name || ''))}
-                  speakingClients={speakingClients}
-                  selfId={client?.id}
-                  micMuted={micMuted}
-                  deafened={deafened}
-                  onToggleMic={toggleMic}
-                  onToggleDeafen={toggleDeafen}
-                />
-              )}
-            </div>
-          </main>
+              onDelete={(fileId) => handleDeleteFile(filesChannel.id, fileId)}
+              onCopyLink={handleCopyLink}
+              onOpenImage={setFilesViewerImage}
+              onPreviewFile={setFilesViewerFile}
+              onDownload={handleDownloadFile}
+              onClose={() => setFilesChannelId(null)}
+            />
+          )}
+          {filesViewerImage && (
+            <ImageViewer
+              src={filesViewerImage.url}
+              name={filesViewerImage.name}
+              onClose={() => setFilesViewerImage(null)}
+            />
+          )}
           <AnimatePresence>
-            {showSettings && (
-              <motion.div
-                className="settings-overlay"
-                onClick={closeSettings}
-                {...scrimFade(overlayAnim)}
-              >
-                <motion.div
-                  className="settings-modal"
-                  onClick={(e) => e.stopPropagation()}
-                  {...overlayPop(overlayAnim)}
-                >
-                  <button
-                    className="settings-close-btn"
-                    onClick={closeSettings}
-                    title="Close settings"
-                  >
-                    <IconX size={18} />
-                  </button>
-                  <Settings />
-                </motion.div>
-              </motion.div>
+            {filesViewerFile && (
+              <FileViewer
+                key={filesViewerFile.url}
+                src={filesViewerFile.url}
+                name={filesViewerFile.name}
+                size={filesViewerFile.size}
+                kind={previewKind(filesViewerFile.name, filesViewerFile.contentType)}
+                onClose={() => setFilesViewerFile(null)}
+                onDownload={() => handleDownloadFile(filesViewerFile)}
+              />
             )}
           </AnimatePresence>
+          {voice.sourcePickerOpen && (
+            <ScreenSourcePicker
+              onSelect={voice.startShareWithSource}
+              onCancel={voice.closeSourcePicker}
+            />
+          )}
+          {ringOverlayOpen && (
+            <IncomingCallOverlay
+              calls={incomingCalls}
+              onAnswer={handleAnswerCall}
+              onDecline={handleDeclineCall}
+              onClose={() => setRingsHidden(true)}
+            />
+          )}
+          <TitleBar
+            title={titleText}
+            icon={IconUsersGroup}
+            notifications={notifications}
+            onClearNotifications={() => setNotifications([])}
+            onOpenNotification={handleOpenNotification}
+            silentNotifications={dnd}
+            dmNotifications={dmNotifications}
+            onOpenDmNotification={handleOpenDmNotification}
+            onClearDmNotifications={() => setDmNotifications([])}
+          />
+          <div className="layout">
+            <SideBar
+              channels={visibleChannels}
+              clients={clients}
+              self={client}
+              micMuted={micMuted}
+              deafened={deafened}
+              onToggleMic={toggleMic}
+              onToggleDeafen={toggleDeafen}
+              voiceMediaState={voiceMediaRecovery}
+              connectionInfoOpen={streamDebugOpen}
+              onToggleConnectionInfo={() => setStreamDebugOpen((open) => !open)}
+              onViewServerTraffic={handleViewServerTraffic}
+              onViewServerSummary={handleViewServerSummary}
+              onOpenBanList={handleOpenBanList}
+              // provide a renderer-level openSettings hook
+              onOpenSettings={openSettings}
+              servers={servers}
+              connectedServer={connectedServer}
+              onConnect={handleConnect}
+              onDisconnect={handleDisconnect}
+              onAddServer={handleAddServer}
+              onEditServer={handleEditServer}
+              onRemoveServer={handleRemoveServer}
+              onNotify={showSuccess}
+              onCreateChannel={handleCreateChannel}
+              onDeleteChannel={handleDeleteChannel}
+              onReorderChannel={handleReorderChannel}
+              onMoveClient={handleMoveClientToChannel}
+              onPreviewChannel={handlePreviewChannel}
+              onShowChannelSummary={handleShowChannelSummary}
+              onOpenFiles={handleOpenFiles}
+              onOpenDm={handleOpenDm}
+              onPoke={handlePoke}
+              onKick={handleKickUser}
+              onKickFromChannel={handleKickFromChannel}
+              onGag={handleGagUser}
+              onBan={handleBanUser}
+              onUnban={handleUnbanUser}
+              onSetAvatar={handleSetAvatar}
+              onShowClientSummary={handleShowClientSummary}
+              roles={roles}
+              onAssignRole={handleAssignRole}
+              onRemoveRole={handleRemoveRole}
+              vanity={vanity}
+              onToggleVanity={handleToggleVanity}
+              onOpenRolesGroups={() => setRolesGroupsOpen(true)}
+              bannedUsers={bannedUsers}
+              canKickMembers={canKickMembers}
+              canBanMembers={canBanMembers}
+              canMuteMembers={canMuteMembers}
+              previewChannelId={previewChannelId}
+              summaryChannelId={summaryChannelId}
+              unreadChannelIds={unreadChannelIds}
+            />
+
+            <main className="chat-area">
+              {/* Summary views have no header bar: their banner card acts as the header.
+                Leaving a view = clicking back to your joined channel in the sidebar. */}
+              {summaryChannelId == null && summaryClientId == null && !showServerSummary && (
+                <div className="chat-header">
+                  <div className="header-content">
+                    {showTraffic ? (
+                      // Forced traffic view (server menu). Same server-name header
+                      // as the lurking view below — Esc or navigating elsewhere
+                      // returns to the channel.
+                      serverHeaderTitle
+                    ) : previewChannelId != null ? (
+                      // Peeking into another channel's chat: no view tabs (no streams),
+                      // just the channel name. A DM also offers its call.
+                      <>
+                        <span className="view-preview-title">
+                          <button
+                            type="button"
+                            className={`chat-title-icon${previewDm ? ' chat-title-icon-avatar' : ''}`}
+                            onClick={() => handleShowChannelSummary(previewChannelId)}
+                            title="Channel details"
+                          >
+                            {previewChannelIcon ? (
+                              <img
+                                className="chat-title-icon-img"
+                                src={previewChannelIcon}
+                                alt=""
+                              />
+                            ) : previewDm && isGroupDm(previewDm) ? (
+                              <IconUsersGroup size={18} stroke={2} />
+                            ) : previewDm ? (
+                              <IconUser size={18} stroke={2} />
+                            ) : (
+                              <IconMessage size={18} stroke={2} />
+                            )}
+                          </button>
+                          <span className="view-preview-name">{previewChannelName}</span>
+                        </span>
+                        {previewDm && (
+                          <DmCallControls
+                            members={previewCallMembers}
+                            joining={
+                              voice.channelId === previewDm.id ||
+                              voice.pendingChannelId === previewDm.id
+                            }
+                            onJoinCall={() => handleJoinDmCall(previewDm)}
+                          />
+                        )}
+                      </>
+                    ) : connected && joinedChannel ? (
+                      // In a voice channel or a DM call: its name, who is in it, and
+                      // the Chat/Streams tabs.
+                      <>
+                        <div className="chat-title">
+                          <button
+                            type="button"
+                            className={`chat-title-icon${joinedDm ? ' chat-title-icon-avatar' : ''}`}
+                            onClick={() => handleShowChannelSummary(joinedChannel.id)}
+                            title="Channel details"
+                          >
+                            {joinedDm ? (
+                              dmAvatarOf(joinedDm) ? (
+                                <img
+                                  className="chat-title-icon-img"
+                                  src={dmAvatarOf(joinedDm)}
+                                  alt=""
+                                />
+                              ) : isGroupDm(joinedDm) ? (
+                                <IconUsersGroup size={18} stroke={2} />
+                              ) : (
+                                <IconUser size={18} stroke={2} />
+                              )
+                            ) : joinedChannel.channel_icon ? (
+                              <img
+                                className="chat-title-icon-img"
+                                src={assetUrl(joinedChannel.channel_icon)}
+                                alt=""
+                              />
+                            ) : (
+                              <IconVolume size={17} stroke={2} />
+                            )}
+                          </button>
+                          <span className="chat-title-text">
+                            <span className="chat-title-name">
+                              {joinedDm
+                                ? dmDisplayName(joinedDm, client?.id, nameOf)
+                                : joinedChannel.name}
+                            </span>
+                            {joinedDm ? (
+                              <DmMemberStrip
+                                entries={dmStripEntries}
+                                onRing={(userId) => handleRingParticipant(joinedDm.id, userId)}
+                                onWatchStream={handleWatchStream}
+                              />
+                            ) : (
+                              <span className="chat-title-sub">
+                                {joinedChannelUserCount} in voice
+                              </span>
+                            )}
+                          </span>
+                        </div>
+                        <SegmentedTabs
+                          ariaLabel="Main view"
+                          active={viewMode}
+                          onChange={setViewMode}
+                          tabs={[
+                            {
+                              id: 'log',
+                              label: 'Chat',
+                              icon: <IconMessage size={15} stroke={2} />
+                            },
+                            {
+                              id: 'video',
+                              label: 'Streams',
+                              icon: <IconVideo size={15} stroke={2} />,
+                              disabled: poppedOut,
+                              title: poppedOut ? 'Video is open in a separate window' : undefined
+                            }
+                          ]}
+                        />
+                      </>
+                    ) : connected ? (
+                      // Lurking (not in a voice channel): just the server name — the
+                      // canvas below shows server traffic, so no tabs or subtext.
+                      serverHeaderTitle
+                    ) : (
+                      <span aria-hidden="true" />
+                    )}
+                  </div>
+                </div>
+              )}
+              {dmCallError && <div className="channel-error dm-call-error">{dmCallError}</div>}
+
+              {/* Keyed so switching channel/tab remounts and replays the switch
+                  animation. The key mirrors the render branches below and keys the
+                  channel views by *content identity* (which channel + chat-vs-grid),
+                  not by peek-vs-joined: peeking channel X shows `chat-X` and joining
+                  that same channel (landing on the log tab) is still `chat-X`, so the
+                  fade doesn't redundantly replay when only the titlebar gains its
+                  voice counter. Switching channel or chat↔video still changes the key. */}
+              <div
+                className="chat-switch-region"
+                key={
+                  !connected
+                    ? 'disconnected'
+                    : summaryChannelId != null
+                      ? `channel-summary-${summaryChannelId}`
+                      : summaryClientId != null
+                        ? `summary-${summaryClientId}`
+                        : showServerSummary
+                          ? 'server-summary'
+                          : showTraffic || (previewChannelId == null && !joinedChannel)
+                            ? 'lobby'
+                            : previewChannelId != null || viewMode === 'log'
+                              ? `chat-${activeChatChannelId}`
+                              : `grid-${selfChannelId}`
+                }
+              >
+                {!connected ? (
+                  <IdleAnimation connecting={connecting} />
+                ) : summaryChannelId != null ? (
+                  <ChannelSummary
+                    channel={summaryChannel}
+                    memberCount={summaryChannelMemberCount}
+                    onSaveDescription={handleSetChannelDescription}
+                    onSetIcon={handleSetChannelIcon}
+                    roles={roles}
+                    clients={clients}
+                    canManagePermissions={canManageChannels}
+                    onSetOverwrite={handleSetChannelOverwrite}
+                    onDeleteOverwrite={handleDeleteChannelOverwrite}
+                  />
+                ) : summaryClientId != null ? (
+                  <ClientSummary
+                    client={summaryClient}
+                    roles={roles}
+                    vanity={vanity}
+                    isSelf={summaryClient?.id === client?.id}
+                    onSetAvatar={handleSetAvatar}
+                  />
+                ) : showServerSummary ? (
+                  <ServerSummary />
+                ) : showTraffic || (previewChannelId == null && !joinedChannel) ? (
+                  // Server-traffic log: shown on demand (server menu) or as the
+                  // default when lurking (not in a voice channel, not peeking).
+                  <ServerTraffic entries={traffic} clients={clients} />
+                ) : previewChannelId != null || viewMode === 'log' ? (
+                  <ChatPanel
+                    feed={feed.filter(
+                      (e) => e.type === 'system' || e.channelId === activeChatChannelId
+                    )}
+                    clients={clients}
+                    selfId={client?.id}
+                    onSend={handleSendMessage}
+                    onEditMessage={handleEditMessage}
+                    onDeleteMessage={handleDeleteMessage}
+                    onSetFilePublic={(_messageId, fileId, isPublic) =>
+                      handleSetFilePublic(activeChatChannelId, fileId, isPublic)
+                    }
+                    onDeleteFile={(_messageId, fileId) =>
+                      handleDeleteFile(activeChatChannelId, fileId)
+                    }
+                    onCopyLink={handleCopyLink}
+                    onReactMessage={handleReactMessage}
+                    onLoadReactors={handleLoadReactors}
+                    onTyping={handleTyping}
+                    onError={showError}
+                    typingUsers={typingUsers}
+                    disabled={activeChatChannelId == null}
+                    canModerate={canModerateChat}
+                    channelKey={activeChatChannelId}
+                    onLoadOlder={loadOlderMessages}
+                    hasMoreOlder={
+                      activeChatChannelId != null && !exhaustedChannels.has(activeChatChannelId)
+                    }
+                    pokeTargetName={activeChatDmName}
+                  />
+                ) : (
+                  <VideoGrid
+                    streams={allVideoStreams}
+                    clients={clients}
+                    selectedStreamClientId={selectedStreamClientId}
+                    onSelect={setSelectedStreamClientId}
+                    onPopout={handlePopout}
+                    watchedStreamClientIds={watchedStreamClientIds}
+                    onSetStreamWatched={handleSetStreamWatched}
+                    onStopSharing={shareControl.stop}
+                    shareControl={shareControl}
+                    streamAudio={streamAudio}
+                    onSetStreamAudio={setStreamAudioState}
+                    theatre={theatre}
+                    onToggleTheatre={toggleTheatre}
+                    voiceClients={clients
+                      .filter((c) => c.channel_id === selfChannelId)
+                      .sort((a, b) => (a.name || '').localeCompare(b.name || ''))}
+                    speakingClients={speakingClients}
+                    selfId={client?.id}
+                    micMuted={micMuted}
+                    deafened={deafened}
+                    onToggleMic={toggleMic}
+                    onToggleDeafen={toggleDeafen}
+                  />
+                )}
+              </div>
+            </main>
+            <AnimatePresence>
+              {showSettings && (
+                <motion.div
+                  className="settings-overlay"
+                  onClick={closeSettings}
+                  {...scrimFade(overlayAnim)}
+                >
+                  <motion.div
+                    className="settings-modal"
+                    onClick={(e) => e.stopPropagation()}
+                    {...overlayPop(overlayAnim)}
+                  >
+                    <button
+                      className="settings-close-btn"
+                      onClick={closeSettings}
+                      title="Close settings"
+                    >
+                      <IconX size={18} />
+                    </button>
+                    <Settings />
+                  </motion.div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+          {connected && eventsStatus === 'reconnecting' && (
+            <ConnectionOverlay onAbort={handleDisconnect} />
+          )}
         </div>
-        {connected && eventsStatus === 'reconnecting' && (
-          <ConnectionOverlay onAbort={handleDisconnect} />
-        )}
-      </div>
+      </VoiceSessionProvider>
     </ClientActionsProvider>
   )
 }

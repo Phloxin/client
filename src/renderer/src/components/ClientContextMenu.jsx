@@ -110,7 +110,7 @@ function capabilities(client, o) {
 // A picker that flies out to the right of its parent item instead of pushing the
 // rest of the menu down. Measured once at mount and flipped to the left / bottom-
 // aligned when the window edge is closer than the panel is wide/tall.
-function Submenu({ children }) {
+export function Submenu({ children }) {
   const ref = useRef(null)
   const [place, setPlace] = useState('')
   useLayoutEffect(() => {
