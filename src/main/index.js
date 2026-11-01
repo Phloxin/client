@@ -9,7 +9,8 @@ import {
   dialog,
   screen,
   powerMonitor,
-  powerSaveBlocker
+  powerSaveBlocker,
+  Menu
 } from 'electron'
 import { basename, join } from 'path'
 import { createRequire } from 'node:module'
@@ -485,9 +486,37 @@ function createWindow() {
 // This method will be called when Electron has finished
 // initialization and is ready to create browser windows.
 // Some APIs can only be used after this event occurs.
+// Electron's default application menu owns Ctrl+W (close window), which the
+// renderer uses to close a tab. Rebuild the menu without the close role. The
+// windows are frameless so the bar never shows; the Edit roles keep the
+// clipboard shortcuts on macOS, and reload / DevTools in development come from
+// optimizer.watchWindowShortcuts.
+function setupAppMenu() {
+  Menu.setApplicationMenu(
+    Menu.buildFromTemplate([
+      process.platform === 'darwin'
+        ? { role: 'appMenu' }
+        : { label: 'File', submenu: [{ role: 'quit' }] },
+      { role: 'editMenu' },
+      {
+        label: 'View',
+        submenu: [
+          { role: 'resetZoom' },
+          { role: 'zoomIn' },
+          { role: 'zoomOut' },
+          { type: 'separator' },
+          { role: 'togglefullscreen' }
+        ]
+      },
+      { label: 'Window', submenu: [{ role: 'minimize' }, { role: 'zoom' }] }
+    ])
+  )
+}
+
 app.whenReady().then(() => {
   // Set app user model id for windows
   electronApp.setAppUserModelId(APP_ID)
+  setupAppMenu()
 
   // Renderer error forwarding + native diagnostics export dialog.
   registerDiagnosticsIpc()

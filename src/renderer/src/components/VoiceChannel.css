@@ -92,7 +92,7 @@
   box-shadow: 0 0 8px color-mix(in srgb, var(--color-primary) 70%, transparent);
 }
 
-/* Peeking uses the mention hue (falls back to primary) to distinguish it from
+/* An open tab uses the mention hue (falls back to primary) to distinguish it from
    the joined channel's amber rail. */
 .channel-item.previewing .channel-row::before {
   background: var(--color-mention, var(--color-primary));
@@ -104,7 +104,8 @@
   color: var(--color-primary);
 }
 
-/* Channel whose chat is being peeked into (single-clicked, not joined). */
+/* Channel with a chat, Channel Details or Files tab open (other than the
+   joined channel's own chat). */
 .channel-item.previewing .channel-row {
   background: color-mix(in srgb, var(--color-surface) 65%, transparent);
   color: var(--color-text);

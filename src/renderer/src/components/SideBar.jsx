@@ -79,8 +79,7 @@ function Sidebar({
   canKickMembers,
   canBanMembers,
   canMuteMembers,
-  previewChannelId,
-  summaryChannelId,
+  previewingChannelIds,
   unreadChannelIds,
   // Voice self-state lives in Main so the stream view's theatre mode can share
   // it; the sidebar drives the toggles and Main mirrors the state into soup/tray.
@@ -89,9 +88,11 @@ function Sidebar({
   onToggleMic,
   onToggleDeafen,
   // Main's latest voice media state ({ channelId, state }) for the dock's
-  // connection indicator, plus the Connection Info panel toggle it hosts.
+  // connection indicator, plus the Connection Info tab buttons it hosts
+  // (see VoiceConnectionBar).
   voiceMediaState,
   connectionInfoOpen,
+  connectionInfoActive,
   onToggleConnectionInfo
 }) {
   const { keybindSettings, appearanceSettings } = useSettings()
@@ -586,7 +587,7 @@ function Sidebar({
             canKickMembers={canKickMembers}
             canBanMembers={canBanMembers}
             canMuteMembers={canMuteMembers}
-            previewing={previewChannelId === ch.id || summaryChannelId === ch.id}
+            previewing={!!previewingChannelIds?.has(ch.id)}
             unread={!!unreadChannelIds?.has(ch.id)}
           />
         ))}
@@ -683,6 +684,7 @@ function Sidebar({
               voiceMediaState?.channelId === voice.channelId ? voiceMediaState.state : undefined
             }
             connectionInfoOpen={connectionInfoOpen}
+            connectionInfoActive={connectionInfoActive}
             onToggleConnectionInfo={onToggleConnectionInfo}
           />
         )}

@@ -1,73 +1,16 @@
 /* ============================================================================
-   STREAM DEBUG PANEL — floating, draggable, non-modal WebRTC stats overlay.
-   Opened/closed by the parent; polls stats via a soup.js subscription while
-   mounted. position:fixed so it floats over the app; the header is the only
-   drag surface (chart cursor + body scroll must never start a drag).
+   STREAM DEBUG PANEL — the Connection Info tab's body: WebRTC stats per stream
+   and the call's encryption state. Fills the pane under its header; the filter
+   chips stay put while the body scrolls.
    ============================================================================ */
 
 .stream-debug-panel {
-  position: fixed;
-  z-index: 900;
-  width: 380px; /* fallback — the component always sets an inline width */
-  min-width: 300px;
-  min-height: 220px;
-  max-height: 75vh;
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  background: var(--color-background-soft);
-  border: 1px solid var(--hairline-strong);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-3);
   color: var(--color-text);
   font-size: var(--font-size-sm);
-  overflow: hidden;
-}
-
-/* ── Header (drag handle) ─────────────────────────────────────────────────── */
-.sdp-header {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-sm);
-  padding: 8px 8px 8px 10px;
-  border-bottom: 1px solid var(--hairline);
-  background: color-mix(in srgb, var(--color-background-mute) 55%, transparent);
-  cursor: grab;
-  user-select: none;
-  touch-action: none;
-  flex-shrink: 0;
-}
-
-.sdp-dragging .sdp-header {
-  cursor: grabbing;
-}
-
-.sdp-grip {
-  color: var(--color-text-tertiary);
-  flex-shrink: 0;
-}
-
-.sdp-header-title {
-  flex: 1;
-  font-weight: var(--font-weight-semibold);
-  color: var(--color-text);
-  letter-spacing: 0.01em;
-}
-
-.sdp-close {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--color-text-secondary);
-}
-
-.sdp-close:hover {
-  background: var(--color-surface);
-  color: var(--color-text);
 }
 
 /* ── Filter chips (All / You / per-user) ──────────────────────────────────── */
@@ -335,29 +278,4 @@
 .sdp-listener-unknown {
   color: var(--color-danger);
   font-weight: var(--font-weight-semibold);
-}
-
-/* ── Resize grip (bottom-right corner) ────────────────────────────────────── */
-.sdp-resize {
-  position: absolute;
-  right: 0;
-  bottom: 0;
-  width: 16px;
-  height: 16px;
-  cursor: nwse-resize;
-  touch-action: none;
-  /* Two diagonal grip lines. */
-  background: linear-gradient(
-    135deg,
-    transparent 0 50%,
-    var(--color-text-tertiary) 50% 57%,
-    transparent 57% 68%,
-    var(--color-text-tertiary) 68% 75%,
-    transparent 75%
-  );
-  opacity: 0.55;
-}
-
-.sdp-resize:hover {
-  opacity: 1;
 }

@@ -303,3 +303,40 @@ html[data-transparency='true'] .chat-area {
   color: var(--color-text-muted);
   max-width: 320px;
 }
+
+/* ============================================================================
+   STREAMS TAB, POPPED OUT — the tab stays open while the video grid lives in
+   its own window.
+   ============================================================================ */
+
+.streams-popped-out {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-lg);
+  color: var(--color-text-tertiary);
+  text-align: center;
+}
+
+.streams-popped-out p {
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-secondary);
+}
+
+.streams-popped-out-btn {
+  margin-top: var(--spacing-xs);
+  padding: 7px 14px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--color-background-mute);
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+}
+
+.streams-popped-out-btn:hover {
+  border-color: var(--color-primary);
+}

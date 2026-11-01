@@ -402,7 +402,8 @@ function Settings() {
                     { key: 'channelList', label: 'Channel List', on: 'pop' },
                     { key: 'messages', label: 'New Messages', on: 'slide' },
                     { key: 'overlays', label: 'Menus & Dialogs', on: 'on' },
-                    { key: 'streamFocus', label: 'Stream Focus', on: 'on' }
+                    { key: 'streamFocus', label: 'Stream Focus', on: 'on' },
+                    { key: 'tabs', label: 'Tab Dragging', on: 'on' }
                   ].map(({ key, label, on }) => (
                     <div key={key} className="settings-section settings-toggle-row">
                       <div className="settings-toggle-copy">
