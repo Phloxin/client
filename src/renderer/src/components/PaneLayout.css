@@ -44,7 +44,7 @@
   border-bottom: 1px solid var(--hairline);
 }
 
-/* The view's extras — call controls, who's in voice, a count — at the bar's
+/* The view's extras — only a DM call's participant strip — at the bar's
    trailing edge; the active tab already names the view. */
 .pane-bar-actions {
   display: flex;
@@ -53,14 +53,6 @@
   min-width: 0;
   padding-right: var(--spacing-md);
   user-select: none;
-}
-
-.pane-bar-meta {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  font-size: var(--font-size-xs);
-  color: var(--color-text-tertiary);
 }
 
 /* Header, view and the body drop zone over them. */

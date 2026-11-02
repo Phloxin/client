@@ -14,7 +14,7 @@ import {
   isGroupTab,
   isHomeTab,
   moveOrder,
-  openChannelRefs,
+  visibleChannelRefs,
   paneOf,
   splitFits,
   tabAtIndex,
@@ -107,15 +107,16 @@ test('the next open replaces the preview in place, keeping its id and slot', () 
   s = run(s, { type: 'activate', tabId: idOf(s, 'chat', 'a') }, chat('c'))
   const previewId = idOf(s, 'chat', 'c')
   assert.deepEqual(view(s), [['chat:a^', 'chat:c~*', 'chat:b^']])
-  s = run(s, { type: 'activate', tabId: idOf(s, 'chat', 'b') }, open('client', 'u1'))
+  s = run(s, open('client', 'u1'))
   assert.deepEqual(view(s), [['chat:a^', 'client:u1~*', 'chat:b^']])
   assert.equal(idOf(s, 'client', 'u1'), previewId)
 })
 
 test('opening content the pane already holds activates that tab instead', () => {
   let s = pinned(createLayout(), 'a')
+  // Switching back to the pinned tab closes the peek.
   s = run(s, chat('b'), chat('a'))
-  assert.deepEqual(view(s), [['chat:a^*', 'chat:b~']])
+  assert.deepEqual(view(s), [['chat:a^*']])
   s = run(s, chat('b'))
   assert.deepEqual(view(s), [['chat:a^', 'chat:b~*']])
   // Already active: nothing changes.
@@ -356,8 +357,9 @@ test('canReopen says whether some closed entry still exists', () => {
 test('reopening content that is open again activates it where it is', () => {
   let s = pinned(createLayout(), 'a', 'b')
   s = run(s, { type: 'close', tabId: idOf(s, 'chat', 'a') }, chat('a'))
+  // Switching to b closed the peek of a, so reopen brings it back pinned.
   s = run(s, { type: 'activate', tabId: idOf(s, 'chat', 'b') }, { type: 'reopen' })
-  assert.deepEqual(view(s), [['chat:b^', 'chat:a~*']])
+  assert.deepEqual(view(s), [['chat:a^*', 'chat:b^']])
   assert.deepEqual(s.closed, [])
   // Open in the other pane: activated there, and that pane becomes active.
   let t = pinned(createLayout(), 'a', 'b', 'c')
@@ -672,6 +674,19 @@ test('joining from the home tab lands on Chat, and the home tab goes', () => {
   assert.deepEqual(view(connect(createLayout(), 'v')), [['chat:v^*', 'streams:v^']])
 })
 
+test('a peek closes when another tab in its pane takes the focus', () => {
+  let s = connect(pinned(createLayout(), 'a'), 'v')
+  s = run(s, chat('b'))
+  assert.deepEqual(view(s), [['chat:v^', 'streams:v^', 'chat:a^', 'chat:b~*']])
+  s = run(s, { type: 'activate', tabId: s.connected.chatTabId })
+  assert.deepEqual(view(s), [['chat:v^*', 'streams:v^', 'chat:a^']])
+  // A pinned peek stays.
+  s = run(s, chat('b'))
+  s = run(s, { type: 'pin', tabId: idOf(s, 'chat', 'b') })
+  s = run(s, { type: 'activate', tabId: s.connected.chatTabId })
+  assert.deepEqual(view(s), [['chat:v^*', 'streams:v^', 'chat:b^', 'chat:a^']])
+})
+
 test('joining folds the active preview of the same channel and lands on Chat', () => {
   let s = pinned(createLayout(), 'a')
   s = run(s, chat('v'))
@@ -928,20 +943,26 @@ test('activePane and paneOf find panes; a closed-out pane falls back to home', (
   assert.equal(activeTab(closed).kind, 'server-traffic')
 })
 
-test('openChannelRefs lists channels with a tab open, minus the joined channel chat', () => {
+test('visibleChannelRefs lists only what the panes have in front', () => {
   let s = connect(createLayout(), 'v')
-  s = pinned(s, 'a')
-  s = run(s, open('channel-details', 'b'))
-  s = run(s, { type: 'pin', tabId: idOf(s, 'channel-details', 'b') }, open('files', 'c'))
-  s = run(s, { type: 'pin', tabId: idOf(s, 'files', 'c') })
-  s = run(s, open('client', 'u1'), open('server-summary'), open('connection-info'))
-  assert.deepEqual([...openChannelRefs(s)].sort(), ['a', 'b', 'c', 'v'])
-  assert.deepEqual([...openChannelRefs(s, 'v')].sort(), ['a', 'b', 'c'])
-  // Details or files of the joined channel still count.
-  s = run(s, open('channel-details', 'v'))
-  assert.deepEqual([...openChannelRefs(s, 'v')].sort(), ['a', 'b', 'c', 'v'])
-  s = run(s, open('files', 'v'))
-  assert.deepEqual([...openChannelRefs(s, 'v')].sort(), ['a', 'b', 'c', 'v'])
+  s = pinned(s, 'a', 'b')
+  // Background tabs of a and the joined channel do not count; b is in front.
+  assert.deepEqual([...visibleChannelRefs(s, 'v')], ['b'])
+  s = run(s, { type: 'activate', tabId: idOf(s, 'chat', 'a') })
+  assert.deepEqual([...visibleChannelRefs(s, 'v')], ['a'])
+  // Chat of the joined channel counts only when it is not the joined one.
+  s = run(s, { type: 'activate', tabId: s.connected.chatTabId })
+  assert.deepEqual([...visibleChannelRefs(s, 'v')], [])
+  assert.deepEqual([...visibleChannelRefs(s)], ['v'])
+  // Non-channel tabs light nothing; details and files of any channel count.
+  s = run(s, open('client', 'u1'))
+  assert.deepEqual([...visibleChannelRefs(s, 'v')], [])
+  assert.deepEqual([...visibleChannelRefs(run(s, open('channel-details', 'v')), 'v')], ['v'])
+  assert.deepEqual([...visibleChannelRefs(run(s, open('files', 'c')), 'v')], ['c'])
+  // One per pane: a split lights both.
+  s = pinned(s, 'd')
+  s = run(s, { type: 'splitWith', tabId: idOf(s, 'chat', 'd'), side: 'right' })
+  assert.deepEqual([...visibleChannelRefs(s, 'v')].sort(), ['a', 'd'])
 })
 
 test('cycleTarget wraps within the active pane', () => {

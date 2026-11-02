@@ -122,11 +122,15 @@ export function activeTab(state) {
   return pane.activeTabId != null ? state.tabs[pane.activeTabId] : null
 }
 
-// Channel ids with a chat, channel-details or files tab open in any pane,
-// not counting chat tabs of `joinedChannelId`.
-export function openChannelRefs(state, joinedChannelId = null) {
+// Channel ids the panes are showing right now: each pane's active chat,
+// channel-details or files tab, not counting chat tabs of `joinedChannelId`.
+// A tab merely open in the background does not count — the sidebar lights the
+// row being looked at, not every row with a tab somewhere.
+export function visibleChannelRefs(state, joinedChannelId = null) {
   const refs = new Set()
-  for (const tab of Object.values(state.tabs)) {
+  for (const pane of state.panes) {
+    const tab = state.tabs[pane.activeTabId]
+    if (!tab) continue
     const counts =
       tab.kind === 'chat'
         ? tab.ref !== joinedChannelId
@@ -207,8 +211,14 @@ const groupCount = (state, tabIds) => {
   return n
 }
 
+// Switching to another tab in a pane closes that pane's preview: a peek lasts
+// only as long as it is in front. `tabId` is always in `paneId`, so the pane
+// never empties here.
 function activateIn(state, paneId, tabId) {
   const pane = state.panes.find((p) => p.id === paneId)
+  if (pane.previewTabId != null && pane.previewTabId !== tabId) {
+    return activateIn(removeTabs(state, [pane.previewTabId]), paneId, tabId)
+  }
   if (pane.activeTabId === tabId && state.activePaneId === paneId) return state
   return { ...withPane(state, { ...pane, activeTabId: tabId }), activePaneId: paneId }
 }

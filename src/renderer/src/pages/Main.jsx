@@ -27,7 +27,7 @@ import ImageViewer from '../components/ImageViewer'
 import FileViewer from '../components/FileViewer'
 import ScreenSourcePicker from '../components/ScreenSourcePicker'
 import IdleAnimation from '../components/IdleAnimation'
-import { DmCallControls, DmMemberStrip } from '../components/DmCallHeader'
+import { DmMemberStrip } from '../components/DmCallHeader'
 import IncomingCallOverlay from '../components/IncomingCallOverlay'
 import PaneLayout from '../components/PaneLayout'
 import Settings from './Settings'
@@ -93,7 +93,7 @@ import {
   cycleTarget,
   isGroupTab,
   isHomeTab,
-  openChannelRefs,
+  visibleChannelRefs,
   splitFits,
   tabAtIndex,
   tabKey,
@@ -485,11 +485,8 @@ function Main() {
   const [bans, setBans] = useState([])
   // Files tabs. `filesRevisions` (channel id -> n) ticks on every new file and
   // every MessageUpdated/MessageDeleted in a channel whose Files tab is on
-  // screen, so its browser refetches the first page; `filesCounts` (tab id ->
-  // n) is each browser's loaded row count, for its header.
+  // screen, so its browser refetches the first page.
   const [filesRevisions, setFilesRevisions] = useState({})
-  const [filesCounts, setFilesCounts] = useState({})
-  const filesCountSettersRef = useRef(new Map())
   // The content canvas, measured when a tab menu asks whether a split fits.
   const canvasRef = useRef(null)
   // Image / text preview opened from a Files tab, with that tab's `source`
@@ -1528,21 +1525,6 @@ function Main() {
     },
     [client, showError, showWarning]
   )
-
-  // Start or join a DM's call. Starting one rings every online participant,
-  // which only shows here as the local "Ringing…".
-  // `tab`: the DM's chat tab the call was started from.
-  const handleJoinDmCall = (dm, tab) => {
-    // Starting or joining a call from a preview tab pins it.
-    if (tab && !tab.pinned) dispatchTabs({ type: 'pin', tabId: tab.id })
-    if (!clients.some((c) => c.channel_id === dm.id)) {
-      const online = dmOthers(dm, client?.id)
-        .map((o) => o.id)
-        .filter((id) => statusOf(presences[id]) !== 'offline')
-      setOutgoingRings({ channelId: dm.id, rings: startOutgoing(new Map(), online, Date.now()) })
-    }
-    voice.join(dm.id)
-  }
 
   // Ring one participant who isn't in the DM's call (the member strip's Ring).
   const handleRingParticipant = async (dmId, userId) => {
@@ -3933,21 +3915,10 @@ function Main() {
     return ch?.type === 'dm' ? dmDisplayName(ch, client?.id, nameOf) : undefined
   }
 
-  // One stable onCount per Files tab, so its browser's report effect doesn't
-  // rerun on every render.
-  const filesCountSetter = (tabId) => {
-    let set = filesCountSettersRef.current.get(tabId)
-    if (!set) {
-      set = (n) => setFilesCounts((prev) => (prev[tabId] === n ? prev : { ...prev, [tabId]: n }))
-      filesCountSettersRef.current.set(tabId, set)
-    }
-    return set
-  }
-
-  // Sidebar rows lit as open in a tab: any chat, Channel Details or Files tab,
-  // except the joined channel's own chat.
+  // Sidebar rows lit as being looked at: the chat, Channel Details or Files
+  // tab each pane has in front, except the joined channel's own chat.
   const previewingChannelIds = useMemo(
-    () => openChannelRefs(layout, selfChannelId),
+    () => visibleChannelRefs(layout, selfChannelId),
     [layout, selfChannelId]
   )
 
@@ -3964,34 +3935,13 @@ function Main() {
     if (dm) return <IconUser size={17} stroke={2} />
     return fallback
   }
-  const countOf = (n, noun) => (n > 0 ? `${n} ${noun}${n === 1 ? '' : 's'}` : null)
 
-  // A bit of trailing text in a pane's header bar (a count, who's in voice).
-  const barMeta = (text) => (text ? <span className="pane-bar-meta">{text}</span> : null)
-
-  // A DM chat outside the call offers to join it; a channel's chat adds
-  // nothing to its bar.
-  const chatCallControls = (tab) => {
-    const dm = channelOf(tab.ref)
-    if (dm?.type !== 'dm') return null
-    // Who is already in the DM's call (we aren't: being in it makes this tab
-    // the connected group's Chat).
-    const callMembers = clients.filter((c) => c.channel_id === dm.id && c.id !== client?.id)
-    return (
-      <DmCallControls
-        members={callMembers}
-        joining={voice.channelId === dm.id || voice.pendingChannelId === dm.id}
-        onJoinCall={() => handleJoinDmCall(dm, tab)}
-      />
-    )
-  }
-
-  // Who is in the connected group: the DM call's participant strip, or the
-  // voice channel's head count.
+  // Who is in the connected group: the DM call's participant strip. A voice
+  // channel adds nothing — a head count here would resize the tabs as you
+  // switch into the tab.
   const joinedStatus = (channelId) => {
     const dm = channelOf(channelId)?.type === 'dm' ? channelId : null
-    if (dm == null)
-      return barMeta(`${clients.filter((c) => c.channel_id === channelId).length} in voice`)
+    if (dm == null) return null
     return (
       <DmMemberStrip
         entries={dmStripEntries}
@@ -4001,14 +3951,12 @@ function Main() {
     )
   }
 
-  // What rides a pane's header bar beside its tabs: only the active tab's
-  // extras, trailing in the bar's empty track, the tab itself naming the view.
+  // What rides a pane's header bar beside its tabs: nothing but a DM call's
+  // participant strip. Counts and other per-view meta are deliberately absent
+  // — anything here resizes the tabs as you switch between views.
   const renderTabHeader = (tab) => {
     if (!tab) return null
     if (tab.kind === 'streams' || isGroupTab(layout, tab.id)) return joinedStatus(tab.ref)
-    if (tab.kind === 'chat') return chatCallControls(tab)
-    if (tab.kind === 'files') return barMeta(countOf(filesCounts[tab.id] ?? 0, 'file'))
-    if (tab.kind === 'bans') return barMeta(countOf(resolvedBans.length, 'ban'))
     return null
   }
 
@@ -4123,7 +4071,6 @@ function Main() {
             selfId={client?.id}
             canModerate={canModerateIn(filesChannel.id)}
             revision={filesRevisions[filesChannel.id] ?? 0}
-            onCount={filesCountSetter(tab.id)}
             onList={(opts) => handleListFiles(filesChannel.id, opts)}
             onSetPublic={(fileId, isPublic) =>
               handleSetFilePublic(filesChannel.id, fileId, isPublic)

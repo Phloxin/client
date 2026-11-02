@@ -51,8 +51,7 @@ const formatDate = (ms) =>
 
 // 'Files' tab body, opened from a channel's right-click menu: the channel's
 // attachments (FileApiObject[]), newest first, with search, type filter, and
-// paging. Main renders the tab's header; `onCount` reports the loaded row
-// count for it. Uploaders and moderators can make a file public/private or
+// paging. Uploaders and moderators can make a file public/private or
 // delete it; the server stays authoritative. Nothing is edited locally: every
 // change arrives as a MessageUpdated broadcast, which bumps `revision` and
 // refetches the first page.
@@ -67,8 +66,7 @@ function FileBrowser({
   onCopyLink,
   onOpenImage,
   onPreviewFile,
-  onDownload,
-  onCount
+  onDownload
 }) {
   // Raw search box text, and the debounced, trimmed query actually sent.
   const [query, setQuery] = useState('')
@@ -186,10 +184,6 @@ function FileBrowser({
 
   const rows = listing.rows
   const filtered = !!q || type != null
-
-  useEffect(() => {
-    onCount?.(rows.length)
-  }, [onCount, rows.length])
 
   return (
     <div className="bl-pane">
