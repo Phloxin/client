@@ -30,6 +30,7 @@ import {
   clearSession,
   getFreshToken,
   onExpired,
+  onUpdateRequired,
   refresh,
   setSession
 } from './session'
@@ -973,6 +974,11 @@ app.whenReady().then(() => {
   })
   onExpired(() => {
     for (const win of BrowserWindow.getAllWindows()) win.webContents.send('session:expired')
+  })
+  onUpdateRequired(() => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send('session:update-required')
+    }
   })
 
   ipcMain.on('theme-changed-ipc', (_, themeId) => {

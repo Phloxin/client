@@ -47,7 +47,7 @@ export function shouldFallBackToDefaultInput({
 }
 
 // A new voice session is hard-blocked on the events socket. The ticket request
-// (op 13) can't leave the client while it's down, so every attempt made during
+// (op 14) can't leave the client while it's down, so every attempt made during
 // an events outage fails for a reason the voice backoff knows nothing about.
 // (A resume needs no ticket and isn't blocked.) Its 30s cap outlives the UI's rejoin timeout, so a
 // restore that lands mid-backoff would otherwise be declared a failed recovery

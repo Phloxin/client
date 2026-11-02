@@ -28,7 +28,10 @@ const MIN_REFRESH_INTERVAL_MS = 30_000
 
 // Credential endpoints carry no session of their own; the header hook leaves
 // them alone even on the session's origin.
-const CREDENTIAL_PATHS = new Set(['/login', '/register', '/auth/refresh'])
+const CREDENTIAL_PATHS = new Set(['/auth/login', '/auth/register', '/auth/refresh'])
+
+// Same value as API_VERSION in renderer/src/lib/serverConfig.js.
+const API_VERSION = 1
 
 // *_expires_at are local-clock milliseconds since the Unix epoch; received_at
 // is the local Date.now() when the pair arrived.
@@ -38,6 +41,7 @@ let tokenGeneration = 0
 let refreshPromise = null
 let refreshTimer = null
 const expiredListeners = new Set()
+const updateRequiredListeners = new Set()
 
 // Called when the server rejects our refresh token (session revoked/expired):
 // the app must drop to the disconnected state and require a fresh login.
@@ -53,6 +57,23 @@ function sessionExpired() {
       cb()
     } catch (err) {
       console.error('[Session] Expiry listener failed:', err)
+    }
+  }
+}
+
+// Called when the server answers 426: it no longer accepts this client's API
+// version. Returns an unsubscribe.
+export function onUpdateRequired(cb) {
+  updateRequiredListeners.add(cb)
+  return () => updateRequiredListeners.delete(cb)
+}
+
+function updateRequired() {
+  for (const cb of [...updateRequiredListeners]) {
+    try {
+      cb()
+    } catch (err) {
+      console.error('[Session] Update-required listener failed:', err)
     }
   }
 }
@@ -164,7 +185,7 @@ async function doRefresh() {
   try {
     res = await fetch(`${origin}/auth/refresh`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'Pylon-Api-Version': String(API_VERSION) },
       body: JSON.stringify({ refresh_token: refreshToken }),
       signal: AbortSignal.timeout(REFRESH_REQUEST_TIMEOUT_MS)
     })
@@ -184,13 +205,18 @@ async function doRefresh() {
     if (tokens) return tokens
     throw new Error('Not authenticated')
   }
+  if (res.status === 426) {
+    // Not transient, so the proactive timer does not retry it.
+    updateRequired()
+    throw new Error(data.message || 'Update required')
+  }
   if (res.status === 401 || res.status === 403) {
     // Only an explicit authentication rejection proves the device session is
     // gone (expired, revoked, reused, or banned). A proxy/server failure must
     // not turn a temporary outage into a local logout.
     clearSession()
     sessionExpired()
-    throw new Error(data.error || `Refresh failed (${res.status})`)
+    throw new Error(data.message || `Refresh failed (${res.status})`)
   }
   if (
     !res.ok ||
@@ -199,7 +225,7 @@ async function doRefresh() {
     !Number.isFinite(data.access_expires_at) ||
     !Number.isFinite(data.refresh_expires_at)
   ) {
-    throw Object.assign(new Error(data.error || `Refresh failed (${res.status})`), {
+    throw Object.assign(new Error(data.message || `Refresh failed (${res.status})`), {
       transient: true
     })
   }

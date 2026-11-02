@@ -54,10 +54,10 @@ import {
 } from '../lib/soup'
 import { resolveStreamFocus } from '../lib/streamView'
 import { playUiSound, isToastEnabled, setSoundsDeafened } from '../lib/sounds'
-import { setServerHost, apiBase, wsBase, assetUrl, throwIfError } from '../lib/serverConfig'
+import { setServerHost, apiBase, eventSocketUrl, assetUrl, throwIfError } from '../lib/serverConfig'
 import { validateMessage, statusOf } from '../lib/presence'
 import { useAutoIdle } from '../lib/useAutoIdle'
-import { authFetch, getFreshToken, setOnSessionExpired } from '../lib/auth'
+import { authFetch, getFreshToken, setOnSessionExpired, setOnUpdateRequired } from '../lib/auth'
 import {
   CloseAction,
   CloseCode,
@@ -98,9 +98,16 @@ const APP_TITLE = 'Pylon'
 //Various Timing Definitions
 const MAX_LOG_ENTRIES = 500
 const HISTORY_LIMIT = 50
-const HEARTBEAT_INTERVAL_MS = 10000
+// Used until op 15 names the server's interval.
+const DEFAULT_HEARTBEAT_INTERVAL_MS = 10000
 const RECONNECT_BASE_DELAY_MS = 1000
 const RECONNECT_MAX_DELAY_MS = 30000
+// Nonces for event-socket requests. The server echoes one on the reply or op 0
+// error for that request, so an error names what it answers. Soup's stream
+// requests use their own prefix.
+let eventNonceCounter = 0
+const nextNonce = () => `c-${++eventNonceCounter}`
+
 // Event-socket 4002 (AuthFailed) closes in a row, each answered by a token
 // refresh, before we give up on the session.
 const MAX_EVENT_AUTH_FAILURES = 2
@@ -128,11 +135,6 @@ const NO_OUTGOING_RINGS = { channelId: null, rings: new Map() }
 function appendFeed(prev, entry) {
   const next = [...prev, entry]
   return next.length > MAX_LOG_ENTRIES ? next.slice(next.length - MAX_LOG_ENTRIES) : next
-}
-
-// Build a system (non-chat) feed entry, e.g. join/leave notices
-function systemEntry(text) {
-  return { id: crypto.randomUUID(), type: 'system', text, ts: Date.now() }
 }
 
 // Build a chat-feed entry from a MessageApiObject (POST response or MessageCreated event)
@@ -512,6 +514,8 @@ function Main() {
   // a stale closure (mirrors the channels/clients ref pattern above).
   const presencesRef = useRef({})
   const dndRef = useRef(false)
+  // Set once the update-required signal is handled, until the next connect.
+  const updateRequiredRef = useRef(false)
 
   //Stream Ref Hooks
   const popoutWindowRef = useRef(null)
@@ -534,10 +538,10 @@ function Main() {
   const voiceStateRef = useRef({ self_mute: false, self_deaf: false, channel_id: null })
   // The voice channel the backend lists us in (Ready.voice_states and our own
   // VoiceStateUpdates), as opposed to voiceStateRef's intent. Soup asks it how
-  // to get a ticket (op 13 while listed) and what a 4008 means.
+  // to get a ticket (op 14 while listed) and what a 4008 means.
   const serverVoiceChannelRef = useRef(null)
   // A fresh Ready didn't list us in the channel we mean to be in (the backend
-  // lost us). Set until we're listed again; soup rejoins with op 1.
+  // lost us). Set until we're listed again; soup rejoins with op 5.
   const rejoinAfterReadyRef = useRef(false)
   // Timestamp of our last own channel action (create/edit/move/etc). The server
   // echoes ChannelUpdated back to us, and a reorder also reindexes sibling
@@ -698,7 +702,7 @@ function Main() {
   const [showServerSummary, setShowServerSummary] = useState(false)
 
   // Single source of truth for our outbound voice state. The server's
-  // VoiceStateUpdate (op 1) is partial: an omitted field is left unchanged and
+  // VoiceStateUpdate (op 5) is partial: an omitted field is left unchanged and
   // `channel_id: null` leaves voice. So we send only the fields that changed,
   // except that a join also carries our mute/deafen, so a server that lost them
   // (a fresh session) learns them with the membership. The ref holds our
@@ -730,7 +734,7 @@ function Main() {
         patch.channel_id != null
           ? { ...patch, self_mute: next.self_mute, self_deaf: next.self_deaf }
           : patch
-      eventsWsRef.current.send(JSON.stringify({ op: 1, data }))
+      eventsWsRef.current.send(JSON.stringify({ op: 5, data, nonce: nextNonce() }))
       return true
     },
     [isReconnectRecovering]
@@ -1550,7 +1554,7 @@ function Main() {
     async (userId, reason) => {
       if (!userId || userId === client?.id) return
       try {
-        const res = await authFetch(`${apiBase()}/server/clients/${userId}/kick`, {
+        const res = await authFetch(`${apiBase()}/clients/${userId}/kick`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(reason ? { reason } : {})
@@ -1570,7 +1574,7 @@ function Main() {
       setRoles([])
       return
     }
-    authFetch(`${apiBase()}/server/roles`)
+    authFetch(`${apiBase()}/roles`)
       .then((res) => res.json())
       .then((data) => setRoles(Array.isArray(data) ? data : []))
       .catch((err) => console.error('Failed to load roles:', err))
@@ -1584,7 +1588,7 @@ function Main() {
       setVanity([])
       return
     }
-    authFetch(`${apiBase()}/server/vanity`)
+    authFetch(`${apiBase()}/vanity`)
       .then((res) => res.json())
       .then((data) =>
         setVanity(
@@ -1612,7 +1616,7 @@ function Main() {
       setBans([])
       return
     }
-    authFetch(`${apiBase()}/server/bans`)
+    authFetch(`${apiBase()}/bans`)
       .then((res) => res.json())
       .then((data) => setBans(Array.isArray(data) ? data : []))
       .catch((err) => console.error('Failed to load bans:', err))
@@ -1659,7 +1663,7 @@ function Main() {
         showSuccess(`Assigned "${roleName}" to ${clientName}`)
       }
       try {
-        const res = await authFetch(`${apiBase()}/server/clients/${clientId}/roles/${roleId}`, {
+        const res = await authFetch(`${apiBase()}/clients/${clientId}/roles/${roleId}`, {
           method: 'PUT'
         })
         await throwIfError(res)
@@ -1688,7 +1692,7 @@ function Main() {
         showSuccess(`Revoked "${roleName}" from ${clientName}`)
       }
       try {
-        const res = await authFetch(`${apiBase()}/server/clients/${clientId}/roles/${roleId}`, {
+        const res = await authFetch(`${apiBase()}/clients/${clientId}/roles/${roleId}`, {
           method: 'DELETE'
         })
         await throwIfError(res)
@@ -1706,7 +1710,7 @@ function Main() {
   const handleCreateVanityGroup = useCallback(
     async (name, avatar) => {
       try {
-        const res = await authFetch(`${apiBase()}/server/vanity`, {
+        const res = await authFetch(`${apiBase()}/vanity`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ type: 'group', name, ...(avatar ? { avatar } : {}) })
@@ -1729,7 +1733,7 @@ function Main() {
       const groupName = vanity.find((v) => v.id === vanityId)?.name ?? 'group'
       const clientName = clients.find((c) => c.id === clientId)?.name ?? 'user'
       try {
-        const res = await authFetch(`${apiBase()}/server/clients/${clientId}/vanity/${vanityId}`, {
+        const res = await authFetch(`${apiBase()}/clients/${clientId}/vanity/${vanityId}`, {
           method: assign ? 'PUT' : 'DELETE'
         })
         await throwIfError(res)
@@ -1759,8 +1763,8 @@ function Main() {
       try {
         const body = { duration_ms: durationSeconds * 1000 }
         if (reason) body.reason = reason
-        const res = await authFetch(`${apiBase()}/server/clients/${userId}/ban`, {
-          method: 'POST',
+        const res = await authFetch(`${apiBase()}/bans/${userId}`, {
+          method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body)
         })
@@ -1780,7 +1784,7 @@ function Main() {
     async (userId) => {
       if (!userId) return
       try {
-        const res = await authFetch(`${apiBase()}/server/clients/${userId}/ban`, {
+        const res = await authFetch(`${apiBase()}/bans/${userId}`, {
           method: 'DELETE'
         })
         await throwIfError(res)
@@ -1792,7 +1796,7 @@ function Main() {
     [token, showError, refreshBans]
   )
 
-  // Edit our own profile: PATCH /client/self //Update locally -> Server broadcasts ClientModified to others.
+  // Edit our own profile: PATCH /clients/self //Update locally -> Server broadcasts ClientModified to others.
   // `patch` is { avatar } and/or { nickname }; `local` is how it maps onto our
   // client row (the server calls it nickname, the roster renders it as `name`).
   const patchSelf = useCallback(
@@ -1800,7 +1804,7 @@ function Main() {
       const selfId = client?.id
       setClients((prev) => prev.map((c) => (c.id === selfId ? { ...c, ...local } : c)))
       try {
-        const res = await authFetch(`${apiBase()}/client/self`, {
+        const res = await authFetch(`${apiBase()}/clients/self`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(patch)
@@ -1938,7 +1942,7 @@ function Main() {
     if (!trimmed) return
 
     try {
-      const res = await authFetch(`${apiBase()}/server/channel`, {
+      const res = await authFetch(`${apiBase()}/channels`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: trimmed, user_limit, after })
@@ -2072,7 +2076,7 @@ function Main() {
       if (current && current.channel_id === channelId) return
 
       try {
-        const res = await authFetch(`${apiBase()}/client/${userId}`, {
+        const res = await authFetch(`${apiBase()}/voice-states/${userId}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ channel_id: channelId })
@@ -2104,7 +2108,7 @@ function Main() {
   const handleGagUser = useCallback(
     async (userId, gag) => {
       try {
-        const res = await authFetch(`${apiBase()}/client/${userId}`, {
+        const res = await authFetch(`${apiBase()}/voice-states/${userId}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ server_mute: gag })
@@ -2124,6 +2128,7 @@ function Main() {
     // the previous session before changing it, otherwise old channel data and
     // reconnect callbacks can issue requests against the new host (or null).
     if (token || connectedServer) handleDisconnect()
+    updateRequiredRef.current = false
     setServerHost(server.host)
     setConnecting(true)
 
@@ -2133,7 +2138,7 @@ function Main() {
       device_name: 'Pylon Desktop'
     }
     const login = () =>
-      httpFetch(`${apiBase()}/login`, {
+      httpFetch(`${apiBase()}/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(credentials)
@@ -2155,7 +2160,7 @@ function Main() {
       // Preserve the existing first-connect experience: an unauthorized login
       // may be a first-time account, so try registration and then retry login.
       if (result.response.status === 401) {
-        const registerResponse = await httpFetch(`${apiBase()}/register`, {
+        const registerResponse = await httpFetch(`${apiBase()}/auth/register`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(credentials)
@@ -2174,7 +2179,10 @@ function Main() {
       } else {
         setServerHost(null)
         setServerLimits(null)
-        showError(`Failed to connect to ${server.nickname}: ${data.error || 'login failed'}`)
+        // The update-required handler has already said why.
+        if (result.response.status !== 426) {
+          showError(`Failed to connect to ${server.nickname}: ${data.message || 'login failed'}`)
+        }
       }
     } catch {
       setServerHost(null)
@@ -2201,7 +2209,7 @@ function Main() {
         voiceStateRef.current.channel_id != null &&
         eventsWsRef.current?.readyState === WebSocket.OPEN
       ) {
-        eventsWsRef.current.send(JSON.stringify({ op: 1, data: { channel_id: null } }))
+        eventsWsRef.current.send(JSON.stringify({ op: 5, data: { channel_id: null } }))
       }
       serverVoiceChannelRef.current = null
       rejoinAfterReadyRef.current = false
@@ -2248,6 +2256,17 @@ function Main() {
       handleDisconnect()
     })
     return () => setOnSessionExpired(null)
+  }, [handleDisconnect, showError])
+
+  // A 426 from any request: handled like the event socket's 4000 close.
+  useEffect(() => {
+    setOnUpdateRequired(() => {
+      if (updateRequiredRef.current) return
+      updateRequiredRef.current = true
+      showError('This version of Pylon is no longer supported by the server; update to continue')
+      handleDisconnect()
+    })
+    return () => setOnUpdateRequired(null)
   }, [handleDisconnect, showError])
 
   // Warn when we speak while our mic is muted. soup detects this downstream of
@@ -2366,18 +2385,10 @@ function Main() {
       }, jittered)
     }
 
-    // The server's one-shot reply to IDENTIFY (op 0) is an internally-tagged
-    // enum: { type: 'Authenticated' | 'Resumed' | 'InvalidSession', ...payload }.
-    // Returns it (renaming `type` → `kind`) or null for anything else (heartbeat
-    // acks, dispatches). A refused token closes the socket with 4002 instead.
-    const IDENTIFY_KINDS = ['Authenticated', 'Resumed', 'InvalidSession']
-    const readIdentifyReply = (msg) => {
-      if (typeof msg?.type === 'string' && IDENTIFY_KINDS.includes(msg.type)) {
-        return { kind: msg.type, ...msg }
-      }
-      return null
-    }
-
+    // The server's one-shot reply to IDENTIFY (op 1) is op 15:
+    // { session_id, resumed, heartbeat_interval_ms }. `resumed: false` is a fresh
+    // session, including a resume the server refused, and Ready follows it. A
+    // refused token closes the socket with 4002 instead.
     const handleIdentifyReply = (reply) => {
       // A completed handshake (fresh or resumed) means we're healthy again.
       // An announced drop means this handshake is a recovery, not the first
@@ -2385,63 +2396,62 @@ function Main() {
       // announcement rather than the attempt counter, which the OS `online`
       // signal resets mid-outage to shorten the backoff.
       const wasReconnecting = dropAnnounced
-      if (reply.kind === 'Authenticated' || reply.kind === 'Resumed') {
-        if (wasReconnecting) {
-          // Warn level deliberately: the renderer log bridge drops anything
-          // below it, so without this an export shows only the failures and
-          // never says whether the link came back.
-          console.warn(`[Events] Reconnected after ${reconnectAttempts} attempt(s) (${reply.kind})`)
-        }
-        reconnectAttempts = 0
-        authFailures = 0
-        dropAnnounced = false
-        eventsRecoveringRef.current = false
-        // The events link is back, so the overlay comes down even if voice is
-        // still rebuilding below (the voice connection bar shows that).
-        setEventsStatus('connected')
-        if (!wasReconnecting) {
-          // Initial connect — handleConnect already chimed.
-          setConnectionStatus('connected')
-        } else if (preDropChannelRef.current == null) {
-          // Recovered, and we weren't in a voice channel — fully back now.
-          requiredVoiceMediaUpdateRef.current = null
-          setConnectionStatus('connected')
-          playUiSound('connected')
-        } else {
-          // The events link is back. Voice may have carried on through the outage
-          // (the backend keeps our membership for its event-socket grace), or the
-          // backend may have dropped us. Stay "reconnecting" until soup reports
-          // media ready in our channel — completeRecovery fires from the
-          // selfChannelId effect then.
-          // Keep waiting if media is still missing. Soup's bounded media
-          // watchdog performs one full voice reconnect; this timer only records
-          // why we are still waiting and must never turn a failed recovery into
-          // a false "connected" success.
-          awaitingRejoinRef.current ??= preDropChannelRef.current
-          // The ref assignment itself is invisible to React. Wake the readiness
-          // effect, which now requires a media update newer than the outage so a
-          // cached ready state cannot complete recovery before voice is rebuilt.
-          setRecoveryEpoch((epoch) => epoch + 1)
-          clearTimeout(rejoinTimeoutRef.current)
-          rejoinTimeoutRef.current = setTimeout(() => {
-            if (awaitingRejoinRef.current != null) {
-              console.warn(
-                '[Events] Voice membership/media recovery is still pending after timeout'
-              )
-              failRecovery(
-                'Server connection recovered, but voice audio did not. Leave and rejoin the channel to retry.'
-              )
-            }
-          }, VOICE_REJOIN_TIMEOUT_MS)
-        }
+      const resumed = reply?.resumed === true
+      if (wasReconnecting) {
+        // Warn level deliberately: the renderer log bridge drops anything
+        // below it, so without this an export shows only the failures and
+        // never says whether the link came back.
+        console.warn(
+          `[Events] Reconnected after ${reconnectAttempts} attempt(s) (${resumed ? 'resumed' : 'fresh'})`
+        )
       }
-      if (reply.kind === 'Authenticated') {
+      reconnectAttempts = 0
+      authFailures = 0
+      dropAnnounced = false
+      eventsRecoveringRef.current = false
+      // The events link is back, so the overlay comes down even if voice is
+      // still rebuilding below (the voice connection bar shows that).
+      setEventsStatus('connected')
+      if (!wasReconnecting) {
+        // Initial connect — handleConnect already chimed.
+        setConnectionStatus('connected')
+      } else if (preDropChannelRef.current == null) {
+        // Recovered, and we weren't in a voice channel — fully back now.
+        requiredVoiceMediaUpdateRef.current = null
+        setConnectionStatus('connected')
+        playUiSound('connected')
+      } else {
+        // The events link is back. Voice may have carried on through the outage
+        // (the backend keeps our membership for its event-socket grace), or the
+        // backend may have dropped us. Stay "reconnecting" until soup reports
+        // media ready in our channel — completeRecovery fires from the
+        // selfChannelId effect then.
+        // Keep waiting if media is still missing. Soup's bounded media
+        // watchdog performs one full voice reconnect; this timer only records
+        // why we are still waiting and must never turn a failed recovery into
+        // a false "connected" success.
+        awaitingRejoinRef.current ??= preDropChannelRef.current
+        // The ref assignment itself is invisible to React. Wake the readiness
+        // effect, which now requires a media update newer than the outage so a
+        // cached ready state cannot complete recovery before voice is rebuilt.
+        setRecoveryEpoch((epoch) => epoch + 1)
+        clearTimeout(rejoinTimeoutRef.current)
+        rejoinTimeoutRef.current = setTimeout(() => {
+          if (awaitingRejoinRef.current != null) {
+            console.warn('[Events] Voice membership/media recovery is still pending after timeout')
+            failRecovery(
+              'Server connection recovered, but voice audio did not. Leave and rejoin the channel to retry.'
+            )
+          }
+        }, VOICE_REJOIN_TIMEOUT_MS)
+      }
+      if (!resumed) {
         // Fresh session: store its id and reset our position (we've processed no
         // events yet). If we were holding a session before, our resume was
-        // effectively declined — resync so we don't trust state that may have
-        // drifted during the outage.
+        // refused — resync so we don't trust state that may have drifted during
+        // the outage.
         const hadSession = sessionIdRef.current != null
-        sessionIdRef.current = reply.session_id ?? null
+        sessionIdRef.current = reply?.session_id ?? null
         lastEventSeqRef.current = null
         if (hadSession) reloadHistory()
         // Ready follows and carries a presence snapshot, so no resync needed here.
@@ -2454,7 +2464,7 @@ function Main() {
         if (awaitingRejoinRef.current == null && (selfMute || selfDeaf)) {
           sendVoiceState({ self_mute: selfMute, self_deaf: selfDeaf })
         }
-      } else if (reply.kind === 'Resumed') {
+      } else {
         // Replay should redeliver the PresenceUpdates we missed, but a resume that
         // outlived the server's buffer would silently leave stale dots on screen.
         // A resync is one small request — cheap insurance on a rare path.
@@ -2462,16 +2472,6 @@ function Main() {
         // Resume accepted: the events we missed replay next as ordered, dup-free
         // dispatches, then live events continue. Keep our position; refresh id.
         if (reply.session_id != null) sessionIdRef.current = reply.session_id
-      } else if (reply.kind === 'InvalidSession') {
-        // Resume refused (server restarted or we were away too long): drop the
-        // session, full resync, and reconnect fresh. Clearing the refs makes the
-        // next connect identify without a resume object.
-        sessionIdRef.current = null
-        lastEventSeqRef.current = null
-        reconnectAttempts = 0
-        reloadHistory()
-        closedByUs = false
-        ws.close()
       }
 
       // Last, so the recovery refs above are settled before soup can declare a
@@ -2479,9 +2479,7 @@ function Main() {
       // (its rejoin declaration can't be sent while the events link is down),
       // so a voice reconnect sitting in backoff is waiting on something
       // that's already fixed, and that backoff outlasts the rejoin timeout.
-      if (reply.kind === 'Authenticated' || reply.kind === 'Resumed') {
-        notifyEventsSessionRestored()
-      }
+      notifyEventsSessionRestored()
     }
 
     // A create/reorder makes the server broadcast one ChannelCreated/Updated per
@@ -2530,7 +2528,7 @@ function Main() {
         // A fresh Ready is the truth about our voice state. If it
         // doesn't list us in the channel we mean to be in, the backend lost us
         // (its event-socket grace ran out, or it restarted): the voice session
-        // is over, and soup gets back in with op 1.
+        // is over, and soup gets back in with op 5.
         const selfVoiceChannel = voiceStates.get(selfIdRef.current)?.channel_id ?? null
         serverVoiceChannelRef.current = selfVoiceChannel
         rejoinAfterReadyRef.current = false
@@ -2622,7 +2620,7 @@ function Main() {
         // us sending a VoiceStateUpdate, so sync the voice-state intent. Otherwise
         // a rejoin after a reconnect would take us back to the channel we were
         // moved out of. A reconnect no longer leaves and rejoins (it resumes, or
-        // asks for a ticket with op 13), so a null here is always a real removal.
+        // asks for a ticket with op 14), so a null here is always a real removal.
         if (isSelf) {
           voiceStateRef.current = { ...voiceStateRef.current, channel_id: newChannelId }
         }
@@ -2983,7 +2981,7 @@ function Main() {
       } else if (ev === 'ClientBanned') {
         // { client, expires_at, reason }. Drop from the roster and record
         // the ban so they surface in the Users tab (where they can be unbanned).
-        // The event carries the full client, so no /server/bans refetch is needed.
+        // The event carries the full client, so no /bans refetch is needed.
         if (
           data.client?.id !== selfIdRef.current &&
           selfChannelIdRef.current != null &&
@@ -3027,7 +3025,7 @@ function Main() {
           )
         )
       } else {
-        setFeed((prev) => appendFeed(prev, systemEntry(`Unknown event: ${ev}`)))
+        console.warn('[Events] Ignoring unknown event:', ev)
       }
     }
 
@@ -3053,7 +3051,7 @@ function Main() {
         ?.invoke('get-app-version')
         .catch(() => null)
       if (closedByUs) return
-      ws = new WebSocket(`${wsBase()}/ws`)
+      ws = new WebSocket(eventSocketUrl())
       eventsWsRef.current = ws
       // True between sending a heartbeat (op 2) and receiving its ack (op 4). If a
       // beat is still unacknowledged when the next is due, the connection is dead.
@@ -3071,11 +3069,17 @@ function Main() {
               resume: { session_id: sessionIdRef.current, seq: lastEventSeqRef.current }
             }
           : { token: accessToken, version: appVersion }
-        ws.send(JSON.stringify({ op: 0, data }))
-        // Heartbeat: prove we're still alive every interval, reporting the last
-        // event sequence we've processed. If these stop arriving the server
-        // evicts us, so clients that crash or are force-killed (Ctrl+C) stop
-        // appearing in the channel.
+        ws.send(JSON.stringify({ op: 1, data }))
+      }
+
+      // Heartbeat: prove we're still alive every interval, reporting the last
+      // event sequence we've processed. If these stop arriving the server
+      // evicts us, so clients that crash or are force-killed (Ctrl+C) stop
+      // appearing in the channel. Started by op 15, which names the interval;
+      // the server's heartbeat deadline starts there too.
+      const startHeartbeat = (intervalMs) => {
+        clearHeartbeat()
+        awaitingAck = false
         heartbeatTimer = setInterval(() => {
           if (ws.readyState !== WebSocket.OPEN) return
           if (awaitingAck) {
@@ -3087,7 +3091,7 @@ function Main() {
           }
           awaitingAck = true
           ws.send(JSON.stringify({ op: 2, data: lastEventSeqRef.current }))
-        }, HEARTBEAT_INTERVAL_MS)
+        }, intervalMs)
       }
 
       ws.onmessage = (event) => {
@@ -3101,49 +3105,62 @@ function Main() {
           return
         }
 
-        // One-shot reply to our IDENTIFY (op 0). Checked first since it carries
-        // connection-control state, not a dispatchable event.
-        const reply = readIdentifyReply(msg)
-        if (reply) {
-          handleIdentifyReply(reply)
-          return
+        // Every frame is { op, data, nonce? }; route by op alone.
+        switch (msg?.op) {
+          // One-shot reply to our IDENTIFY (op 1): the session and the heartbeat
+          // interval the server expects.
+          case 15: {
+            const interval = msg.data?.heartbeat_interval_ms
+            startHeartbeat(
+              Number.isFinite(interval) && interval > 0 ? interval : DEFAULT_HEARTBEAT_INTERVAL_MS
+            )
+            handleIdentifyReply(msg.data)
+            return
+          }
+
+          // Heartbeat acknowledgement — clears the outstanding beat; no event body.
+          case 4:
+            awaitingAck = false
+            return
+
+          // Voice ticket (op 7): the server's reply to a VoiceStateUpdate that
+          // moved us from no channel into a voice one, or to op 14. Hand it to
+          // soup, which is opening (or about to open) the voice socket that needs
+          // it. The optional voice_endpoint says which host that ticket is good
+          // for, and has to travel with it.
+          case 7:
+            receiveVoiceTicket(msg.data?.ticket, msg.data?.voice_endpoint, msg.nonce)
+            return
+
+          // Stream replies (op 12 StreamCreated, op 13 StreamWatching): the
+          // answers to soup's CreateStream and WatchStream, matched by nonce.
+          case 12:
+          case 13:
+            receiveStreamReply(msg)
+            return
+
+          // A refused request or frame (e.g. an invalid presence update). This is
+          // a reply to one message, not a connection fault: surface it and keep
+          // the socket. It may answer one of soup's stream or ticket requests; a
+          // failed share start or ticket wait is reported by its owner, so it
+          // isn't shown twice.
+          case 0:
+            console.warn('[Events] Request refused:', msg.data)
+            if (!receiveEventSocketError(msg.data, msg.nonce)) {
+              showError(msg.data?.message || 'Request refused by the server')
+            }
+            return
+
+          // Dispatch: { op: 3, seq, event, data }. Remember the latest sequence
+          // so the heartbeat and any resume can report our position.
+          case 3:
+            if (typeof msg.seq === 'number') lastEventSeqRef.current = msg.seq
+            handleEvent(msg.event, msg.data)
+            return
+
+          default:
+            console.warn('[Events] Dropping frame with unknown op:', msg?.op)
         }
-
-        // Heartbeat acknowledgement — clears the outstanding beat; no event body.
-        if (msg.op === 4) {
-          awaitingAck = false
-          return
-        }
-
-        // Voice ticket (op 6): the server's reply to a VoiceStateUpdate that
-        // moved us from no channel into a voice one. Hand it to soup, which is
-        // opening (or about to open) the voice socket that needs it. The
-        // optional voice_endpoint says which host that ticket is good for, and
-        // has to travel with it.
-        if (msg.op === 6) {
-          receiveVoiceTicket(msg.ticket, msg.voice_endpoint)
-          return
-        }
-
-        // Stream replies (op 11 StreamCreated, op 12 StreamWatching): the answers
-        // to soup's CreateStream and WatchStream. Flat and unsequenced, like op 6.
-        if (receiveStreamReply(msg)) return
-
-        // Rejected command (e.g. an invalid presence update). This is a reply to
-        // one message, not a connection fault — surface it and keep the socket.
-        // It may answer one of soup's stream requests; a failed share start is
-        // reported by the share itself, so it isn't shown twice.
-        if (typeof msg.err === 'string') {
-          if (!receiveEventSocketError(msg.err)) showError(msg.err)
-          return
-        }
-
-        // Events are wrapped as { op: 3, data: <event>, seq }, or arrive bare as
-        // { ev, data }. Support both, and remember the latest sequence so the
-        // heartbeat and any resume can report our position.
-        if (typeof msg.seq === 'number') lastEventSeqRef.current = msg.seq
-        const { ev, data } = msg.op === 3 ? msg.data : msg
-        handleEvent(ev, data)
       }
 
       ws.onclose = (event) => {
@@ -3550,7 +3567,7 @@ function Main() {
     sendStatus(micMuted, deafened)
   }, [micMuted, deafened])
 
-  // Soup asks for, watches and ends screen streams (ops 7-10) on this socket.
+  // Soup asks for, watches and ends screen streams (ops 8-11) on this socket.
   // Registered once: the ref always names the live socket.
   useEffect(() => {
     setEventSocketSender((frame) => {
@@ -3562,7 +3579,7 @@ function Main() {
   }, [])
 
   // Soup gets its voice tickets through this socket (see setVoiceServerHooks):
-  // op 13 while the backend lists us in voice, or an op 1 back into our
+  // op 14 while the backend lists us in voice, or an op 5 back into our
   // channel when a fresh Ready showed the backend lost us.
   useEffect(() => {
     setVoiceServerHooks({
@@ -3570,7 +3587,9 @@ function Main() {
         const socket = eventsWsRef.current
         if (socket?.readyState !== WebSocket.OPEN) return 'offline'
         if (serverVoiceChannelRef.current != null) {
-          socket.send(JSON.stringify({ op: REQUEST_VOICE_TICKET_OP, data: null }))
+          socket.send(
+            JSON.stringify({ op: REQUEST_VOICE_TICKET_OP, data: null, nonce: nextNonce() })
+          )
           return 'sent'
         }
         const channelId = voiceStateRef.current.channel_id
@@ -3589,7 +3608,7 @@ function Main() {
     const leaveVoice = () => {
       const socket = eventsWsRef.current
       if (voiceStateRef.current.channel_id == null || socket?.readyState !== WebSocket.OPEN) return
-      socket.send(JSON.stringify({ op: 1, data: { channel_id: null } }))
+      socket.send(JSON.stringify({ op: 5, data: { channel_id: null } }))
     }
     window.addEventListener('pagehide', leaveVoice)
     return () => window.removeEventListener('pagehide', leaveVoice)
@@ -3599,7 +3618,7 @@ function Main() {
   // disconnected. The hook tracks which Away transitions belong to auto idle.
   const sendAutoPresence = useCallback((patch) => {
     if (!sessionIdRef.current || eventsWsRef.current?.readyState !== WebSocket.OPEN) return false
-    eventsWsRef.current.send(JSON.stringify({ op: 5, data: patch }))
+    eventsWsRef.current.send(JSON.stringify({ op: 6, data: patch, nonce: nextNonce() }))
     return true
   }, [])
 
@@ -3610,7 +3629,7 @@ function Main() {
     send: sendAutoPresence
   })
 
-  // Manual presence (op 5) is a patch: omitted fields are preserved server-side.
+  // Manual presence (op 6) is a patch: omitted fields are preserved server-side.
   // `status_message: null` clears the message and must survive the trip.
   const sendPresence = useCallback(
     (patch) => {
@@ -3627,7 +3646,7 @@ function Main() {
         showError('Not connected — presence not updated')
         return
       }
-      eventsWsRef.current.send(JSON.stringify({ op: 5, data: patch }))
+      eventsWsRef.current.send(JSON.stringify({ op: 6, data: patch, nonce: nextNonce() }))
       if (patch.status != null) manualStatusSelected()
       // No optimistic update: the server echoes PresenceUpdate to us too, and it
       // arbitrates between our devices (last write wins). Guessing here would
@@ -3641,7 +3660,7 @@ function Main() {
   const refreshPresences = useCallback(async () => {
     if (!token) return
     try {
-      const res = await authFetch(`${apiBase()}/server/presences`)
+      const res = await authFetch(`${apiBase()}/presences`)
       const list = await (await throwIfError(res)).json()
       setPresences(Object.fromEntries((list || []).map((p) => [p.client_id, p])))
     } catch (err) {

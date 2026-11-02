@@ -63,6 +63,11 @@ const api = {
       const handler = () => cb()
       ipcRenderer.on('session:expired', handler)
       return () => ipcRenderer.removeListener('session:expired', handler)
+    },
+    onUpdateRequired: (cb) => {
+      const handler = () => cb()
+      ipcRenderer.on('session:update-required', handler)
+      return () => ipcRenderer.removeListener('session:update-required', handler)
     }
   },
   diagnostics: {

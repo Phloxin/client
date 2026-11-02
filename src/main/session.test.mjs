@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test, { mock } from 'node:test'
 
-import { clearSession, getFreshToken, onExpired, setSession } from './session.js'
+import { clearSession, getFreshToken, onExpired, onUpdateRequired, setSession } from './session.js'
 
 // Ported from the renderer's auth.test.mjs when the token store moved here.
 // These shims keep the case bodies as they were: the session is for the
@@ -81,10 +81,13 @@ test('a transient refresh response preserves the session for a later retry', asy
   globalThis.fetch = async () => {
     calls++
     if (calls === 1) {
-      return new Response(JSON.stringify({ error: 'temporarily unavailable' }), {
-        status: 503,
-        headers: { 'Content-Type': 'application/json' }
-      })
+      return new Response(
+        JSON.stringify({ code: 'unavailable', message: 'temporarily unavailable' }),
+        {
+          status: 503,
+          headers: { 'Content-Type': 'application/json' }
+        }
+      )
     }
     return new Response(JSON.stringify(tokenPair('rotated')), {
       status: 200,
@@ -109,7 +112,7 @@ test('an explicit refresh rejection expires the local session', async () => {
   const originalFetch = globalThis.fetch
   let expirations = 0
   globalThis.fetch = async () =>
-    new Response(JSON.stringify({ error: 'invalid refresh token' }), {
+    new Response(JSON.stringify({ code: 'invalid_token', message: 'invalid refresh token' }), {
       status: 401,
       headers: { 'Content-Type': 'application/json' }
     })
@@ -301,5 +304,39 @@ test('a pair capped near absolute expiry is not refreshed again within the inter
     assert.equal(server.calls, 1)
   } finally {
     server.restore()
+  }
+})
+
+test('a 426 on refresh raises update required and is not retried', async () => {
+  const originalFetch = globalThis.fetch
+  const requests = []
+  let raised = 0
+  let expirations = 0
+  mock.timers.enable({ apis: ['Date', 'setTimeout'], now: FAKE_NOW })
+  globalThis.fetch = async (_url, options) => {
+    requests.push(new Headers(options.headers))
+    return jsonResponse({ code: 'update_required', message: 'update required' }, 426)
+  }
+  const unsubscribe = onUpdateRequired(() => raised++)
+  setOnSessionExpired(() => expirations++)
+
+  try {
+    setAuthTokens(serverPair('old', Date.now()))
+    mock.timers.tick(ACCESS_TTL_MS - REFRESH_EARLY_MS)
+    await settle()
+    assert.equal(requests.length, 1)
+    assert.equal(requests[0].get('Pylon-Api-Version'), '1')
+    assert.equal(raised, 1)
+    assert.equal(expirations, 0)
+
+    mock.timers.tick(10 * MINUTE)
+    await settle()
+    assert.equal(requests.length, 1)
+  } finally {
+    unsubscribe()
+    setOnSessionExpired(null)
+    clearAuthTokens()
+    mock.timers.reset()
+    globalThis.fetch = originalFetch
   }
 })

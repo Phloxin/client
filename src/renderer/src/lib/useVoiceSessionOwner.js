@@ -373,13 +373,13 @@ export function useVoiceSessionOwner({
 
   // Set our own channel on the server (join / switch) by sending a
   // VoiceStateUpdate over the event websocket instead of PATCHing
-  // /server/client. sendVoiceState adds our current mute/deafen to a join.
+  // /voice-states. sendVoiceState adds our current mute/deafen to a join.
   //
   // A declaration that never left the client must reject: the server only mints
   // the join's voice ticket in response to it, so connecting anyway would
   // dead-end on a ticket that never arrives. Reconnects don't come through
   // here: soup resumes the session, or asks for a ticket while we stay in the
-  // channel (op 13, through Main's setVoiceServerHooks).
+  // channel (op 14, through Main's setVoiceServerHooks).
   const patchChannel = async (channelId) => {
     const sent = await declareChannelRef.current(channelId)
     if (sent === false) throw new Error('Not connected to server')
@@ -430,7 +430,7 @@ export function useVoiceSessionOwner({
 
   // Fired when soup has to build a new session (a resume of the old one wasn't
   // possible): tear down local media UI but stay "joined". Soup asks for a
-  // ticket while we stay in the channel (op 13), remote tiles come back with
+  // ticket while we stay in the channel (op 14), remote tiles come back with
   // the new session's Channel snapshot, and the mic re-publishes. Screen share
   // is NOT auto-restored (re-capturing the screen requires a fresh user
   // gesture). A resumed session never gets here: its media carries on.

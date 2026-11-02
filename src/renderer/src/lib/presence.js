@@ -1,6 +1,6 @@
 // Presence is user-level (not per-connection): one status per client_id, shared
 // across that user's devices, last-write-wins. The server is authoritative — we
-// seed from Ready, patch on PresenceUpdate, and can resync via GET /server/presences.
+// seed from Ready, patch on PresenceUpdate, and can resync via GET /presences.
 
 export const STATUSES = ['online', 'away', 'do_not_disturb', 'offline']
 const STATUS_SET = new Set(STATUSES)

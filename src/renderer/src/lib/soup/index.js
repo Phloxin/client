@@ -62,12 +62,14 @@ import {
   CloseCode,
   Direction,
   EVENT_TYPES,
+  REQUEST_VOICE_TICKET_OP,
   Request,
   SourceType,
   SpeakingFlags,
   StreamDirectory,
   StreamOp,
   StreamRequest,
+  VOICE_STATE_UPDATE_OP,
   VoiceChannelState,
   classifyClose,
   createEventCursor,
@@ -576,17 +578,9 @@ function closeServerNode(node) {
 // ─── Screen streams (event socket) ──────────────────────────────
 // The backend authorizes every Stream / StreamAudio source and every sink on
 // one, by stream key (protocol.js, "Event socket: screen streams"). Main owns
-// the event socket: it gives us a sender (setEventSocketSender) and routes op 11
-// and 12, { err } frames, Ready.streams and the stream dispatch events here.
+// the event socket: it gives us a sender (setEventSocketSender) and routes op 12
+// and 13, op 0 errors, Ready.streams and the stream dispatch events here.
 const STREAM_REQUEST_TIMEOUT_MS = 10_000
-// How long a watch waits for the backend to announce a stream (StreamStarted).
-// The voice socket shows a new stream's sources before the backend hears from
-// the voice node that it's live, and the backend refuses to watch it until then.
-const STREAM_ANNOUNCE_WAIT_MS = 10_000
-// How long a new share waits for our previous stream to end. The backend allows
-// one stream per client, and lets go of one that had sources only once the
-// voice node reports the last of them closed.
-const OWN_STREAM_END_WAIT_MS = 5_000
 
 let eventSocketSend = () => false
 // Every live stream in the channels we can see, with its viewers.
@@ -597,34 +591,43 @@ const streamRequests = createStreamRequests({
   onOrphan: releaseOrphanStreamReply
 })
 
-// `send(frame)` writes one { op, data } frame to the event socket and returns
-// false when it isn't open.
+// `send(frame)` writes one { op, data, nonce? } frame to the event socket and
+// returns false when it isn't open.
 export function setEventSocketSender(send) {
   eventSocketSend = typeof send === 'function' ? send : () => false
 }
 
-// Op 11 or 12 from the event socket. Returns whether it was one of them.
+// Op 12 or 13 from the event socket. Returns whether it was one of them.
 export function receiveStreamReply(msg) {
   return streamRequests.handle(msg)
 }
 
-// An { err } frame from the event socket. It may answer a stream request (see
+// The ops whose refusal can answer a connect waiting on its ticket: op 14 and
+// the join's op 5.
+const TICKET_REQUEST_OPS = new Set([REQUEST_VOICE_TICKET_OP, VOICE_STATE_UPDATE_OP])
+
+// An op 0 error from the event socket: its data ({ op, code, message }) and
+// the nonce it echoed. It may answer a ticket request or a stream request (see
 // createStreamRequests). Returns true when it failed a share start, whose
-// caller reports the error itself; any other err is still the caller's to show.
-export function receiveEventSocketError(message) {
-  // A refused ticket request (op 13, or the join's op 1) for a connect that is
-  // waiting on its ticket.
-  const ticketError = voiceTicketError(message)
+// caller reports the error itself, or a ticket wait, whose connect reports it;
+// any other error is still the caller's to show.
+export function receiveEventSocketError(error, nonce) {
+  // A refused ticket request (op 14, or the join's op 5) for a connect that is
+  // waiting on its ticket. Told apart by the request op and the code, so a
+  // stream request refused as voice_unavailable does not end the wait.
+  const ticketError = TICKET_REQUEST_OPS.has(error?.op) ? voiceTicketError(error?.code) : null
   if (ticketError != null && failTicketWait(ticketError)) {
-    console.warn(`[Soup] Voice ticket refused: ${message}`)
+    console.warn(`[Soup] Voice ticket refused (${error.code}): ${error.message}`)
     return true
   }
-  const op = streamRequests.fail(message)
-  if (op != null) console.warn(`[Soup] Stream request (op ${op}) failed: ${message}`)
+  const op = streamRequests.fail(error, nonce)
+  if (op != null) {
+    console.warn(`[Soup] Stream request (op ${op}) failed (${error?.code}): ${error?.message}`)
+  }
   return op === StreamOp.CREATE_STREAM
 }
 
-// The event socket closed. The op 6, 11 and 12 still owed to us won't come: a
+// The event socket closed. The op 7, 12 and 13 still owed to us won't come: a
 // resume doesn't replay them.
 export function eventSocketClosed() {
   streamRequests.reset()
@@ -635,8 +638,7 @@ export function eventSocketClosed() {
 
 // Ready.streams: every live stream in the channels we can see.
 export function applyReadyStreams(streams) {
-  const { started, ended } = streamDirectory.applyReady(streams)
-  for (const key of started) streamAnnounced(key)
+  const { ended } = streamDirectory.applyReady(streams)
   for (const key of ended) streamGone(key)
   publishStreamViewers()
   publishLiveStreams()
@@ -649,7 +651,6 @@ export function applyStreamEvent(ev, data) {
     case 'StreamStarted':
       if (streamDirectory.started(data)) {
         console.log(`[Soup] Stream ${data.stream_key} started by ${data.owner}`)
-        streamAnnounced(data.stream_key)
       }
       break
     case 'StreamViewersUpdated':
@@ -668,24 +669,14 @@ export function applyStreamEvent(ev, data) {
 }
 
 // ─── Our own stream ─────────────────────────────────────────────
-// `claimed` once a source was created with its key. A claimed stream ends only
-// when its last source closes, and until the backend hears that it refuses
-// another CreateStream from us. So stopping a share closes its sources (the
-// stream then ends by itself), and the next share waits for that StreamEnded.
-// A stream that never got a source has nothing to close, and is handed back
-// with op 10 instead (EndStream), or the backend would hold it for 30s.
-let ownStream = null // { key, claimed, ending }
-const ownStreamEndWaiters = new Set()
+// One stream at a time. Every stop hands it back with op 11 (EndStream) and
+// forgets it at once, so the next share's op 8 is never refused for it.
+let ownStream = null // { key }
 
 // The screen share's createStream: ask for a stream in our current channel and
 // resolve with its key.
 async function createOwnStream() {
-  if (ownStream?.claimed) {
-    console.log(`[Soup] Waiting for stream ${ownStream.key} to end before starting another`)
-    await waitForOwnStreamEnd()
-  } else if (ownStream) {
-    releaseOwnStream(ownStream.key)
-  }
+  if (ownStream) releaseOwnStream(ownStream.key)
   const channelId = channelState.channelId
   if (!signal?.ready || channelId == null) throw new Error('Not connected to voice')
   const generation = mediaStateGeneration
@@ -696,7 +687,7 @@ async function createOwnStream() {
     if (!intentionalClose) streamRequests.notify(StreamRequest.end(key))
     throw mediaResetError()
   }
-  ownStream = { key, claimed: false, ending: false }
+  ownStream = { key }
   console.log(`[Soup] Stream ${key} created`)
   return key
 }
@@ -704,31 +695,9 @@ async function createOwnStream() {
 // The screen share's releaseStream, called when a share stops (see above).
 function releaseOwnStream(key) {
   if (!ownStream || ownStream.key !== key) return
-  if (ownStream.claimed) {
-    ownStream.ending = true
-    return
-  }
   ownStream = null
-  console.log(`[Soup] Ending stream ${key}, which never got a source`)
+  console.log(`[Soup] Ending stream ${key}`)
   streamRequests.notify(StreamRequest.end(key))
-}
-
-function waitForOwnStreamEnd() {
-  if (!ownStream?.claimed) return Promise.resolve()
-  return new Promise((resolve) => {
-    const done = () => {
-      clearTimeout(timer)
-      ownStreamEndWaiters.delete(done)
-      resolve()
-    }
-    const timer = setTimeout(() => {
-      // Ask anyway. The worst case is the backend's "already streaming".
-      console.warn(`[Soup] Stream ${ownStream?.key} has not ended; starting the next one anyway`)
-      ownStream = null
-      done()
-    }, OWN_STREAM_END_WAIT_MS)
-    ownStreamEndWaiters.add(done)
-  })
 }
 
 // The screen share's setSourcePaused: the owner's pause of one of our Stream,
@@ -752,56 +721,23 @@ async function setServerSourcePaused(producerId, paused) {
 }
 
 // ─── Watching streams ───────────────────────────────────────────
-// A sink on a stream's source needs a watch on the stream (op 8, answered by
-// op 12). Watches belong to our current channel: the backend revokes them when
-// we leave or switch, and a stream that ends takes its watch with it. We give
-// one back (op 9) once nothing of its stream is received or wanted.
+// A sink needs a watch on its stream (op 9, answered by op 13), asked for as
+// soon as the source shows. Leaving the channel or the stream ending revokes it,
+// and we give it back (op 10) once nothing of its stream is received or wanted.
 const grantedWatches = new Set() // stream keys
-const announceWaiters = new Map() // stream key -> Set of resolvers
-
-// The backend now knows the stream is live, so it can be watched.
-function streamAnnounced(key) {
-  for (const done of [...(announceWaiters.get(key) ?? [])]) done(true)
-}
 
 // A stream we knew of is over: StreamEnded, or missing from a new Ready.
 function streamGone(key) {
   if (key == null) return
   grantedWatches.delete(key)
-  if (ownStream?.key === key) {
-    ownStream = null
-    for (const done of [...ownStreamEndWaiters]) done()
-  }
-}
-
-// Resolves true once the stream is announced (StreamStarted or Ready), or
-// false if it isn't within STREAM_ANNOUNCE_WAIT_MS.
-function waitForStreamAnnounced(key) {
-  if (streamDirectory.has(key)) return Promise.resolve(true)
-  return new Promise((resolve) => {
-    let waiters = announceWaiters.get(key)
-    if (!waiters) announceWaiters.set(key, (waiters = new Set()))
-    const done = (announced) => {
-      clearTimeout(timer)
-      waiters.delete(done)
-      if (waiters.size === 0 && announceWaiters.get(key) === waiters) announceWaiters.delete(key)
-      resolve(announced)
-    }
-    const timer = setTimeout(() => done(false), STREAM_ANNOUNCE_WAIT_MS)
-    waiters.add(done)
-  })
+  if (ownStream?.key === key) ownStream = null
 }
 
 // Make sure we hold a watch on a stream before sinking its sources. Concurrent
-// callers share one op 8 (createStreamRequests coalesces by key).
+// callers share one op 9 (createStreamRequests coalesces by key).
 async function ensureStreamWatch(key) {
   if (grantedWatches.has(key)) return
   const generation = mediaStateGeneration
-  if (!(await waitForStreamAnnounced(key))) {
-    throw new Error(`Stream ${key} was never announced by the server`)
-  }
-  if (generation !== mediaStateGeneration) throw mediaResetError()
-  if (grantedWatches.has(key)) return
   await streamRequests.watch(key)
   // A watch granted to a session that has since ended was revoked with it.
   if (generation !== mediaStateGeneration) throw mediaResetError()
@@ -809,7 +745,7 @@ async function ensureStreamWatch(key) {
   grantedWatches.add(key)
 }
 
-// Give back (op 9) every watch whose stream we no longer receive or want
+// Give back (op 10) every watch whose stream we no longer receive or want
 // anything from. Runs after the watch set shrinks and after an abandoned sink
 // lands, so a sink still being set up keeps its watch until then.
 function releaseUnusedStreamWatches() {
@@ -824,7 +760,7 @@ function releaseUnusedStreamWatches() {
   }
 }
 
-// An op 11 or 12 nothing was waiting for: it timed out, or an { err } meant
+// An op 12 or 13 nothing was waiting for: it timed out, or an { err } meant
 // for another request failed it. Give back what it granted.
 function releaseOrphanStreamReply({ op, streamKey }) {
   if (op === StreamOp.STREAM_CREATED) {
@@ -1237,7 +1173,7 @@ function addRemoteSources(sources) {
       paused
     })
     // Only a replacement arrives already watched (see replaceRemoteSource).
-    // Its stream's watch carries over, so this needs no new op 8.
+    // Its stream's watch carries over, so this needs no new op 9.
     if (watchedProducerIds.has(id) && !isConsumingSource(id)) {
       consumeSource(id).catch((err) =>
         console.error(`[Soup] Failed to receive replacement source ${id}:`, err)
@@ -1391,7 +1327,7 @@ function closeNodes(nodes) {
     // whose source is going away (SourcesRemoved ends the tile, and
     // SourceReplaced hands it to the successor), on a channel switch (the old
     // channel's tiles go with it), or when the backend revokes our watch of
-    // its stream, which it does for op 9 (we had let go already) or a move.
+    // its stream, which it does for op 10 (we had let go already) or a move.
     removeRemoteConsumer(id)
   }
   scheduleMediaReadyCheck()
@@ -1435,7 +1371,7 @@ function closeLocalSource(node) {
 // connect and every reconnect; publishes the mic, a no-op while it's live),
 // onDisconnect (deliberate leave, or { failed: true, reason, leave } when voice
 // gave up; `leave: false` means the backend already has us out of voice, or
-// another device took it over, so op 1 must not be sent), onReconnecting (a
+// another device took it over, so op 5 must not be sent), onReconnecting (a
 // new session is starting: remote media is gone, but we stay "joined"),
 // onMediaState, onVideoStream, onStreamEnded, onClientSpeaking (driven by the
 // server's Speakers), onScreenAudioError. Tickets come through the event
@@ -1479,10 +1415,10 @@ export async function connect(callbacks = {}) {
   window.addEventListener('online', handleOnline)
 
   const isStale = () => intentionalClose || connectionGeneration !== voiceConnectionGeneration
-  // The first attempt presents the ticket the join's op 1 minted; a retry asks
-  // for a new one (op 13) while staying in the channel. A join while the backend
+  // The first attempt presents the ticket the join's op 5 minted; a retry asks
+  // for a new one (op 14) while staying in the channel. A join while the backend
   // already had us in voice (say, through another device) mints nothing, so
-  // that one asks with op 13 straight away.
+  // that one asks with op 14 straight away.
   let needTicket = voiceServerHooks.inVoice?.() === true
   for (let attempt = 1; ; attempt++) {
     try {
@@ -1494,8 +1430,8 @@ export async function connect(callbacks = {}) {
       return
     } catch (err) {
       if (isStale()) throw mediaResetError()
-      // The join's op 1 itself was refused for want of a voice node, which
-      // leaves us out of the channel: op 13 can't help.
+      // The join's op 5 itself was refused for want of a voice node, which
+      // leaves us out of the channel: op 14 can't help.
       const joinRefused = !needTicket && err?.voiceUnavailable === true
       if (err?.retryable === false || joinRefused || attempt >= INITIAL_CONNECT_ATTEMPTS) {
         console.error(`[Soup] Voice connect failed at ${voiceConnectStep ?? 'unknown'} step:`, err)
@@ -1516,13 +1452,13 @@ export async function connect(callbacks = {}) {
 // ─── Voice tickets ───────────────────────────────────────────────
 // A ticket is single-use, expires 30s after the server mints it, and is bound
 // to this client, its login session and the voice node; not to a channel. It
-// only ever arrives as an op 6 push on the event socket: after an op 1 that
-// moves us from no channel into one, or in answer to op 13, which asks for one
+// only ever arrives as an op 7 push on the event socket: after an op 5 that
+// moves us from no channel into one, or in answer to op 14, which asks for one
 // while we stay in the channel. Main routes the push here. Minting a ticket
 // revokes this login session's older unused ones, so only the newest push is
 // ever good.
 //
-// The push often lands before openSocket() asks for it (op 1 goes out first),
+// The push often lands before openSocket() asks for it (op 5 goes out first),
 // so it's stashed rather than awaited-only. It also names the voice node it is
 // good for (voice_endpoint), so the two are stashed and used together.
 const VOICE_TICKET_PUSH_WAIT_MS = 10_000
@@ -1531,8 +1467,8 @@ let pushedTicket = null // { ticket, voiceEndpoint, receivedAt } — unconsumed 
 let ticketWaiter = null // resolver for an acquireTicket() currently waiting
 
 // What the event socket can do for voice, set by Main:
-//   requestTicket()  ask for a ticket: op 13 while the backend lists us in a
-//                    voice channel, otherwise op 1 back into the channel we
+//   requestTicket()  ask for a ticket: op 14 while the backend lists us in a
+//                    voice channel, otherwise op 5 back into the channel we
 //                    mean to be in (the backend lost us: a fresh Ready without
 //                    us). Returns 'sent', 'offline' (the event socket
 //                    is down: retry later) or 'not-in-voice' (we don't mean to
@@ -1556,7 +1492,7 @@ export function receiveVoiceTicket(ticket, voiceEndpoint) {
   waiter?.()
 }
 
-// A ticket refusal ({ err } after op 13 or the join's op 1) for the connect
+// A ticket refusal (op 0 after op 14 or the join's op 5) for the connect
 // waiting on a ticket. False when nothing is waiting.
 function failTicketWait(code) {
   const waiter = ticketWaiter
@@ -2022,7 +1958,7 @@ function afterResume(current) {
   const pauses = [...unsentSourcePauses]
   unsentSourcePauses.clear()
   for (const node of pauses) {
-    // A microphone's pause is voice state (op 1), never sent here.
+    // A microphone's pause is voice state (op 5), never sent here.
     if (!localSources.has(node)) continue
     void setServerSourcePaused(ownId(node), localSourcePaused.get(node) === true)
   }
@@ -2066,7 +2002,7 @@ function handleSessionDrop(current, action, close, error, { immediate = false } 
       return
     default:
       // Replaced: another of our devices took voice over. Kicked: the backend
-      // already took us out. Either way an op 1 leave would be wrong.
+      // already took us out. Either way an op 5 leave would be wrong.
       failVoice(
         close.name === 'Replaced'
           ? 'Voice was taken over by another device'
@@ -2190,7 +2126,7 @@ function scheduleVoiceReconnect({ immediate = false } = {}) {
 }
 
 // One reconnect attempt: Resume a detached session, or else ask for a ticket
-// (op 13) and identify into a new session.
+// (op 14) and identify into a new session.
 async function attemptReconnect() {
   if (intentionalClose || reconnectInFlight) return
   const connectionGeneration = voiceConnectionGeneration
@@ -2248,7 +2184,7 @@ function startNewSessionNow(current, error) {
 }
 
 // ─── Give-up deadline ────────────────────────────────────────────
-// A session that stays lost this long is given up: op 1 leave and "voice
+// A session that stays lost this long is given up: op 5 leave and "voice
 // disconnected". Below the backend's VOICE_CONNECT_GRACE (45 s), so our own
 // leave usually beats its reaper.
 const VOICE_GIVE_UP_MS = 40_000
@@ -2270,7 +2206,7 @@ function clearGiveUpTimer() {
 }
 
 // Give up on voice. onDisconnect gets { failed: true, reason, leave } so the
-// UI can say why, and leaves the channel (op 1) unless `leave` is false.
+// UI can say why, and leaves the channel (op 5) unless `leave` is false.
 // `quiet` reports a plain disconnect instead (we're out of voice already, and
 // the event socket has said so).
 function failVoice(reason, { leave = true, quiet = false } = {}) {
@@ -2337,7 +2273,7 @@ export function restartVoiceSession(reason) {
   forceVoiceReconnect(reason, CloseAction.Fresh)
 }
 
-// The events socket finished a handshake. A ticket request (op 13) can't leave
+// The events socket finished a handshake. A ticket request (op 14) can't leave
 // the client while it's down, so a new session sitting in backoff is waiting
 // on something that's already fixed; kick it instead of waiting out a backoff
 // that can outlive the UI's rejoin timeout. A session the event-socket outage
@@ -2458,7 +2394,7 @@ function clearIceRestart(direction) {
 }
 
 // ─── Disconnect ──────────────────────────────────────────────────
-// Leaving voice. The caller also sends op 1 with channel_id null; the node
+// Leaving voice. The caller also sends op 5 with channel_id null; the node
 // would close the socket with 4008 then, but we close it first.
 export function disconnect() {
   voiceConnectionGeneration++
@@ -2591,8 +2527,6 @@ async function createSource(rtpParameters, appData, isCurrentTransport) {
   if (!isCurrentTransport()) throw mediaResetError()
   const { node } = created
   localSources.set(node, type)
-  // From here the stream ends only when its sources close.
-  if (streamKey != null && ownStream?.key === streamKey) ownStream.claimed = true
   console.log(
     `[Soup] Source ${node} created (${type})` +
       (replaces != null ? `, replacing ${replaces}` : '') +
@@ -4019,17 +3953,11 @@ function resetMediaState() {
   // bookkeeping clean.
   pendingSinks.clear()
   sinkSources.clear()
-  // A new session asks for its watches again (op 8). A stream of ours that got a
-  // source ends as its sources close with the session; a new share still waits
-  // for its StreamEnded. One that never got a source is handed back (op 10)
-  // unless we're leaving voice, which revokes it anyway: a new session in the
-  // same channel would otherwise find it still held.
+  // A new session asks for its watches again (op 9). A stream of ours is handed
+  // back (op 11) unless we're leaving voice, which revokes it anyway.
   grantedWatches.clear()
-  if (ownStream?.claimed) ownStream.ending = true
-  else {
-    if (ownStream && !intentionalClose) streamRequests.notify(StreamRequest.end(ownStream.key))
-    ownStream = null
-  }
+  if (ownStream && !intentionalClose) streamRequests.notify(StreamRequest.end(ownStream.key))
+  ownStream = null
   device = null
   stopAudioProcessor()
   // Release the raw mic capture — the producers above are closed, so no live
@@ -4058,7 +3986,7 @@ export function rebindCallbacks(newCallbacks) {
 
 // ─── Mute controls ────────────────────────────────────────────────
 // Local pause for instant feedback. The server enforces mute/deafen itself from
-// the op 1 voice state (there is no voice-socket request for it).
+// the op 5 voice state (there is no voice-socket request for it).
 export function setMicMuted(muted) {
   micMuted = muted
   syncSpeaking()

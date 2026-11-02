@@ -123,7 +123,7 @@ function ServerMenu({
 
   // Editing only persists the change. Adding an existing login also starts the
   // connection immediately; otherwise the Login tab deceptively only saves the
-  // server and no /login request is made until the user clicks it again.
+  // server and no /auth/login request is made until the user clicks it again.
   const handleSave = () => {
     const nickname = form.nickname.trim()
     const host = form.host.trim()
@@ -148,7 +148,7 @@ function ServerMenu({
   }
 
   // Register: validate locally (passwords match + length limits), then POST to
-  // the server's /register. Each failure point sets a specific inline error:
+  // the server's /auth/register. Each failure point sets a specific inline error:
   //   • unreachable host            → the fetch throws
   //   • username already registered → the server rejects the POST
   //   • passwords mismatch          → caught locally before any request
@@ -180,7 +180,7 @@ function ServerMenu({
     setRegistering(true)
     let res
     try {
-      res = await httpFetch(`${apiBaseForHost(host)}/register`, {
+      res = await httpFetch(`${apiBaseForHost(host)}/auth/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password, device_name: DEVICE_NAME })
@@ -196,7 +196,7 @@ function ServerMenu({
       const body = await res.json().catch(() => null)
       // Valid input the server still rejects means the name is taken; prefer the
       // server's own message when it sends one.
-      setFormError(body?.error || `Username "${username}" is already taken on this server.`)
+      setFormError(body?.message || `Username "${username}" is already taken on this server.`)
       return
     }
 

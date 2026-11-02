@@ -34,13 +34,13 @@ test('authFetch refreshes a young pair once on token_expired and retries once', 
   globalThis.fetch = async () => {
     calls.push('fetch')
     if (token === 'young-access') {
-      return jsonResponse({ code: 'token_expired', error: 'Token expired' }, 401)
+      return jsonResponse({ code: 'token_expired', message: 'Token expired' }, 401)
     }
     return jsonResponse({ ok: true })
   }
 
   try {
-    const res = await authFetch('https://example.test/server/roles')
+    const res = await authFetch('https://example.test/roles')
     assert.equal(res.status, 200)
     assert.equal(refreshes, 1)
     assert.deepEqual(calls, ['fetch', 'refresh', 'fetch'])

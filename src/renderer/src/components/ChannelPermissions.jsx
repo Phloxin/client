@@ -91,7 +91,7 @@ function ChannelPermissions({ channel, roles = [], clients = [], canManage, onSe
   // Targets that don't yet have an overwrite, for the "Add override" picker.
   // @everyone is listed first and synthesised rather than taken from `roles` —
   // it's the server's implicit default role, so it may not come back from
-  // /server/roles at all, and it's the one you deny to gate a channel.
+  // /roles at all, and it's the one you deny to gate a channel.
   const addable = useMemo(() => {
     const taken = new Set(overwrites.map((o) => `${o.type}:${o.id}`))
     const roleOpts = [

@@ -859,16 +859,18 @@ test('one close-code table for both sockets, by action', () => {
       CloseCode.Banned,
       CloseCode.VoiceEnded,
       CloseCode.E2eeFailed,
-      CloseCode.InternalError
+      CloseCode.InternalError,
+      CloseCode.RateLimited
     ],
-    [1001, 4000, 4001, 4002, 4003, 4004, 4005, 4006, 4007, 4008, 4009, 4010]
+    [1001, 4000, 4001, 4002, 4003, 4004, 4005, 4006, 4007, 4008, 4009, 4010, 4011]
   )
   const action = (code) => classifyClose(code).action
-  // A dropped connection resumes: /ws its event stream, /voice its session.
-  for (const code of [1001, 4005, 4010, 1006, 1005, 1000, undefined, null]) {
+  // A dropped connection resumes: /ws its event stream, /voice its session. A
+  // rate limit close backs off like any drop.
+  for (const code of [1001, 4005, 4010, 4011, 1006, 1005, 1000, undefined, null]) {
     assert.equal(action(code), CloseAction.Resume, `code ${code}`)
   }
-  // A new session (op 13, then Identify): a refused ticket or resume, a frame
+  // A new session (op 14, then Identify): a refused ticket or resume, a frame
   // the server couldn't read, the node's E2EE failing.
   assert.equal(action(4003), CloseAction.Fresh)
   assert.equal(action(4001), CloseAction.Fresh)
@@ -884,13 +886,12 @@ test('one close-code table for both sockets, by action', () => {
   assert.equal(classifyClose(4999).name, null)
 })
 
-test('ticket refusals are told apart by their text', () => {
-  assert.equal(
-    voiceTicketError('Client must join a voice channel before requesting a voice ticket'),
-    VoiceTicketError.NotInVoice
-  )
-  assert.equal(voiceTicketError('Voice media is unavailable'), VoiceTicketError.VoiceUnavailable)
-  assert.equal(voiceTicketError('Client is already streaming'), null)
+test('ticket refusals are told apart by their code', () => {
+  assert.equal(voiceTicketError('not_in_voice'), VoiceTicketError.NotInVoice)
+  assert.equal(voiceTicketError('voice_unavailable'), VoiceTicketError.VoiceUnavailable)
+  assert.equal(voiceTicketError('already_streaming'), null)
+  // The old message text is not a code.
+  assert.equal(voiceTicketError('Voice media is unavailable'), null)
   assert.equal(voiceTicketError(undefined), null)
 })
 
@@ -1209,6 +1210,7 @@ function streamHarness(options = {}) {
   const orphans = []
   const timers = []
   let open = true
+  let nonces = 0
   const requests = createStreamRequests({
     transmit: (frame) => {
       if (!open) return false
@@ -1216,6 +1218,7 @@ function streamHarness(options = {}) {
       return true
     },
     onOrphan: (orphan) => orphans.push(orphan),
+    nextNonce: () => `n-${++nonces}`,
     setTimer: (fn, ms) => {
       const timer = { fn, ms, cleared: false }
       timers.push(timer)
@@ -1229,36 +1232,57 @@ function streamHarness(options = {}) {
   const setOpen = (value) => {
     open = value
   }
-  return { requests, sent, orphans, timers, setOpen }
+  // The reply the server sends to the request `frame`.
+  const answer = (frame, op, streamKey) => ({
+    op,
+    data: { stream_key: streamKey },
+    nonce: frame.nonce
+  })
+  // The op 0 the server sends when the request `frame` fails.
+  const error = (frame, code, message) => ({
+    data: { op: frame.op, code, message },
+    nonce: frame.nonce
+  })
+  return { requests, sent, orphans, timers, setOpen, answer, error }
 }
 
 test('stream requests encode as event-socket ops with string ids', () => {
-  assert.deepEqual(StreamRequest.create(123), { op: 7, data: { channel_id: '123' } })
-  assert.deepEqual(StreamRequest.create('123'), { op: 7, data: { channel_id: '123' } })
-  assert.deepEqual(StreamRequest.watch('1:2:abc'), { op: 8, data: { stream_key: '1:2:abc' } })
+  assert.deepEqual(StreamRequest.create(123), { op: 8, data: { channel_id: '123' } })
+  assert.deepEqual(StreamRequest.create('123'), { op: 8, data: { channel_id: '123' } })
+  assert.deepEqual(StreamRequest.watch('1:2:abc'), { op: 9, data: { stream_key: '1:2:abc' } })
   assert.deepEqual(StreamRequest.stopWatching('1:2:abc'), {
-    op: 9,
+    op: 10,
     data: { stream_key: '1:2:abc' }
   })
-  assert.deepEqual(StreamRequest.end('1:2:abc'), { op: 10, data: { stream_key: '1:2:abc' } })
-  assert.equal(StreamOp.STREAM_CREATED, 11)
-  assert.equal(StreamOp.STREAM_WATCHING, 12)
+  assert.deepEqual(StreamRequest.end('1:2:abc'), { op: 11, data: { stream_key: '1:2:abc' } })
+  assert.equal(StreamOp.STREAM_CREATED, 12)
+  assert.equal(StreamOp.STREAM_WATCHING, 13)
 })
 
-test('op 11 answers the oldest create, op 12 the watch of its key', async () => {
-  const { requests, sent, orphans } = streamHarness()
+test('every op 8 and 9 carries its own nonce', () => {
+  const { requests, sent } = streamHarness()
+  requests.create('100')
+  requests.watch('1:2:abc')
+  assert.deepEqual(sent, [
+    { op: 8, data: { channel_id: '100' }, nonce: 'n-1' },
+    { op: 9, data: { stream_key: '1:2:abc' }, nonce: 'n-2' }
+  ])
+})
+
+test('op 12 and 13 answer the request whose nonce they carry, in any order', async () => {
+  const { requests, sent, orphans, answer } = streamHarness()
   const first = requests.create('100')
   const watch = requests.watch('1:2:abc')
   const second = requests.create('100')
   assert.deepEqual(
     sent.map((frame) => frame.op),
-    [7, 8, 7]
+    [8, 9, 8]
   )
   assert.equal(requests.size, 3)
 
-  assert.equal(requests.handle({ op: 11, stream_key: '100:1:aaa' }), true)
-  assert.equal(requests.handle({ op: 12, stream_key: '1:2:abc' }), true)
-  assert.equal(requests.handle({ op: 11, stream_key: '100:1:bbb' }), true)
+  assert.equal(requests.handle(answer(sent[2], 12, '100:1:bbb')), true)
+  assert.equal(requests.handle(answer(sent[1], 13, '1:2:abc')), true)
+  assert.equal(requests.handle(answer(sent[0], 12, '100:1:aaa')), true)
   assert.equal(await first, '100:1:aaa')
   assert.equal(await watch, '1:2:abc')
   assert.equal(await second, '100:1:bbb')
@@ -1269,10 +1293,10 @@ test('op 11 answers the oldest create, op 12 the watch of its key', async () => 
 test('other event-socket frames are not stream replies', () => {
   const { requests } = streamHarness()
   for (const msg of [
-    { op: 6, ticket: 't' },
-    { op: 3, data: { ev: 'StreamStarted', data: {} }, seq: 1 },
-    { op: 4 },
-    { err: 'nope' },
+    { op: 7, data: { ticket: 't' } },
+    { op: 3, seq: 1, event: 'StreamStarted', data: {} },
+    { op: 4, data: null },
+    { op: 0, data: { op: 8, code: 'already_streaming', message: 'nope' } },
     null
   ]) {
     assert.equal(requests.handle(msg), false)
@@ -1280,53 +1304,74 @@ test('other event-socket frames are not stream replies', () => {
 })
 
 test('watching a key already being asked for joins that request', async () => {
-  const { requests, sent } = streamHarness()
+  const { requests, sent, answer } = streamHarness()
   const a = requests.watch('k')
   const b = requests.watch('k')
   assert.equal(a, b)
   assert.equal(sent.length, 1)
-  requests.handle({ op: 12, stream_key: 'k' })
+  requests.handle(answer(sent[0], 13, 'k'))
   assert.equal(await b, 'k')
   // Once answered, a new watch asks again.
   requests.watch('k').catch(() => {})
   assert.equal(sent.length, 2)
 })
 
-test('an err rejects the oldest stream request and says which op it was', async () => {
-  const { requests } = streamHarness()
+test('an op 0 rejects the request with its nonce and says which op it was', async () => {
+  const { requests, sent, error } = streamHarness()
   const create = requests.create('1')
   const watch = requests.watch('k')
-  assert.equal(requests.fail('Missing required permission'), StreamOp.CREATE_STREAM)
+
+  // The watch fails first; the create is untouched.
+  const watchFailure = error(sent[1], 'stream_not_found', 'Stream not found')
+  assert.equal(requests.fail(watchFailure.data, watchFailure.nonce), StreamOp.WATCH_STREAM)
+  const watchErr = await watch.catch((e) => e)
+  assert.equal(watchErr.message, 'Stream not found')
+  assert.equal(watchErr.code, 'stream_not_found')
+  assert.equal(requests.size, 1)
+
+  const createFailure = error(sent[0], 'missing_permission', 'Missing required permission')
+  assert.equal(requests.fail(createFailure.data, createFailure.nonce), StreamOp.CREATE_STREAM)
   const err = await create.catch((e) => e)
   assert.ok(err instanceof StreamRequestError)
   assert.equal(err.message, 'Missing required permission')
+  assert.equal(err.code, 'missing_permission')
   assert.equal(err.request, StreamOp.CREATE_STREAM)
   assert.equal(err.timedOut, false)
+})
 
-  assert.equal(requests.fail('Stream not found'), StreamOp.WATCH_STREAM)
-  assert.equal((await watch.catch((e) => e)).message, 'Stream not found')
-  // Nothing waiting: the err answered op 1 or op 5, not us.
-  assert.equal(requests.fail('Invalid presence update'), null)
+test('an op 0 for another request leaves stream requests alone', async () => {
+  const { requests } = streamHarness()
+  requests.create('1').catch(() => {})
+  // An op 5 or op 6 failure, with its own nonce or none.
+  const presence = { op: 6, code: 'invalid_payload', message: 'Invalid presence update' }
+  assert.equal(requests.fail(presence, 'c-4'), null)
+  assert.equal(requests.fail(presence, undefined), null)
+  assert.equal(requests.size, 1)
 })
 
 test('a reply nothing waits for is handed back as an orphan', async () => {
   const { requests, orphans } = streamHarness()
-  // An err meant for an earlier op 1 failed our create...
-  const create = requests.create('1')
-  requests.fail('voice join failed')
-  await create.catch(() => {})
-  // ...so its real answer arrives with nothing waiting.
-  assert.equal(requests.handle({ op: 11, stream_key: '1:2:abc' }), true)
-  // A watch for a key nobody asked about.
-  assert.equal(requests.handle({ op: 12, stream_key: 'other' }), true)
+  // A create for a nonce nobody sent, and one with no nonce at all.
+  assert.equal(requests.handle({ op: 12, data: { stream_key: '1:2:abc' }, nonce: 'n-9' }), true)
+  assert.equal(requests.handle({ op: 13, data: { stream_key: 'other' } }), true)
   assert.deepEqual(orphans, [
-    { op: 11, streamKey: '1:2:abc' },
-    { op: 12, streamKey: 'other' }
+    { op: 12, streamKey: '1:2:abc' },
+    { op: 13, streamKey: 'other' }
   ])
 })
 
+test('a reply of the wrong kind for its nonce is an orphan', async () => {
+  const { requests, sent, orphans, answer } = streamHarness()
+  const create = requests.create('1')
+  requests.handle(answer(sent[0], 13, 'k'))
+  assert.deepEqual(orphans, [{ op: 13, streamKey: 'k' }])
+  assert.equal(requests.size, 1)
+  requests.handle(answer(sent[0], 12, 'mine'))
+  assert.equal(await create, 'mine')
+})
+
 test('a timed-out stream request rejects, and its late reply is an orphan', async () => {
-  const { requests, timers, orphans } = streamHarness({ timeoutMs: 50 })
+  const { requests, sent, timers, orphans, answer } = streamHarness({ timeoutMs: 50 })
   const create = requests.create('1')
   const watch = requests.watch('k')
   assert.equal(timers.length, 2)
@@ -1335,12 +1380,13 @@ test('a timed-out stream request rejects, and its late reply is an orphan', asyn
   timers[0].fn()
   const err = await create.catch((e) => e)
   assert.equal(err.timedOut, true)
+  assert.equal(err.code, null)
   assert.equal(requests.size, 1)
-  requests.handle({ op: 11, stream_key: 'late' })
-  assert.deepEqual(orphans, [{ op: 11, streamKey: 'late' }])
+  requests.handle(answer(sent[0], 12, 'late'))
+  assert.deepEqual(orphans, [{ op: 12, streamKey: 'late' }])
 
   // An answered request's timer is cleared.
-  requests.handle({ op: 12, stream_key: 'k' })
+  requests.handle(answer(sent[1], 13, 'k'))
   await watch
   assert.equal(timers[1].cleared, true)
 })
@@ -1363,7 +1409,7 @@ test('a stream request with no open socket fails at once and is never queued', a
 
   setOpen(true)
   assert.equal(requests.notify(StreamRequest.stopWatching('k')), true)
-  assert.deepEqual(sent, [{ op: 9, data: { stream_key: 'k' } }])
+  assert.deepEqual(sent, [{ op: 10, data: { stream_key: 'k' } }])
 })
 
 test('reset rejects every stream request still waiting', async () => {

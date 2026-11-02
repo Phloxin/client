@@ -796,9 +796,8 @@ async function stopShareContext(ctx, { notifyServer = true } = {}) {
 
   if (notifyServer) {
     void Promise.all(producerIds.map((id) => closeServerProducer(id)))
-    // Closing the sources ends a stream that had them; one that never got a
-    // source is handed back. Without notifyServer the session is gone, and the
-    // stream with it.
+    // The stream is handed back with op 11. Without notifyServer the session
+    // is gone, and the stream with it.
     if (ctx.streamKey) releaseStream(ctx.streamKey)
   }
 
@@ -1328,7 +1327,7 @@ export async function shareScreen({
     ctx.height = settings.height > 0 ? settings.height : height
     ctx.fps = settings.frameRate > 0 ? Math.min(settings.frameRate, fps) : fps
 
-    // The backend's go-ahead (op 7 → op 11). Asked for only once there is a
+    // The backend's go-ahead (op 8 → op 12). Asked for only once there is a
     // capture to publish: an OS picker can outlast the 30s the stream gives us
     // to create its first source.
     const streamKey = await createStream()

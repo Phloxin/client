@@ -92,7 +92,7 @@ export const Request = Object.freeze({
   // the old source, announcing it with a Closed ahead of this request's Source
   // answer.
   //
-  // `streamKey` names the stream (event-socket op 11) a Stream or StreamAudio
+  // `streamKey` names the stream (event-socket op 12) a Stream or StreamAudio
   // source belongs to, and must be null for Microphone and Webcam. A
   // replacement inherits its predecessor's stream, so it may pass null; a
   // different key is refused.
@@ -121,7 +121,7 @@ export const Request = Object.freeze({
     ConfigureSink: { node: localId('node', node), ...sinkConfigFields(config) }
   }),
   // The owner's pause of one of our own Webcam, Stream or StreamAudio sources.
-  // A Microphone is refused (NotSupported): mute is voice state, op 1.
+  // A Microphone is refused (NotSupported): mute is voice state, op 5.
   setSourcePaused: (node, paused) => ({
     SetSourcePaused: { node: localId('node', node), paused: paused === true }
   }),
@@ -1240,32 +1240,33 @@ function sameLayers(a, b) {
 // ─── Event socket: screen streams ────────────────────────────────
 // The backend authorizes streams; the voice socket only carries their media. A
 // stream is named by a stream key, an opaque public string.
-//   Publish: op 7 asks for a key (answered by op 11), then CreateSource for the
+//   Publish: op 8 asks for a key (answered by op 12), then CreateSource for the
 //            Stream and/or StreamAudio with that key within 30s.
-//   Watch:   op 8 (answered by op 12), then CreateSink on the stream's sources,
+//   Watch:   op 9 (answered by op 13), then CreateSink on the stream's sources,
 //            the ones whose ChannelSource kind carries the key.
-//   Stop:    op 9 stops watching, op 10 ends our own stream. Neither is answered.
-// Requests use the event socket's { op, data } envelope. Op 11 and 12 come back
-// flat ({ op, stream_key }) and unsequenced, so like op 6 a resume never
-// replays them. A failure is { err: String }, saying nothing about which
-// request it answers (see createStreamRequests).
+//   Stop:    op 10 stops watching, op 11 ends our own stream. Neither is answered.
+// Every frame uses the event socket's { op, data, nonce? } envelope. Op 12 and
+// 13 carry { stream_key } in data and are unsequenced, so like op 7 a resume
+// never replays them. A failure is op 0 { op, code, message }. Both echo the
+// request's nonce, which is how createStreamRequests pairs them.
 export const StreamOp = Object.freeze({
-  CREATE_STREAM: 7,
-  WATCH_STREAM: 8,
-  STOP_WATCHING_STREAM: 9,
-  END_STREAM: 10,
-  STREAM_CREATED: 11,
-  STREAM_WATCHING: 12
+  CREATE_STREAM: 8,
+  WATCH_STREAM: 9,
+  STOP_WATCHING_STREAM: 10,
+  END_STREAM: 11,
+  STREAM_CREATED: 12,
+  STREAM_WATCHING: 13
 })
 
 export const StreamRequest = Object.freeze({
-  // We must be in that voice channel, hold STREAM there, and have no other
-  // stream, pending or live.
+  // We must be in that voice channel, hold STREAM there, and have no other live
+  // stream. A pending one is replaced.
   create: (channelId) => ({
     op: StreamOp.CREATE_STREAM,
     data: { channel_id: String(channelId) }
   }),
-  // The stream must be live (StreamStarted) in our current channel, and not ours.
+  // The stream must be in our current channel and not ours. It need not be
+  // announced (StreamStarted) yet.
   watch: (streamKey) => ({ op: StreamOp.WATCH_STREAM, data: { stream_key: streamKey } }),
   stopWatching: (streamKey) => ({
     op: StreamOp.STOP_WATCHING_STREAM,
@@ -1274,47 +1275,58 @@ export const StreamRequest = Object.freeze({
   end: (streamKey) => ({ op: StreamOp.END_STREAM, data: { stream_key: streamKey } })
 })
 
-// A stream request that failed ({ err }), timed out, or never went out.
+// A stream request that failed (op 0), timed out, or never went out. `code`
+// is the server's error code, null when the server never answered.
 export class StreamRequestError extends Error {
-  constructor(message, { request = null, timedOut = false } = {}) {
+  constructor(message, { request = null, timedOut = false, code = null } = {}) {
     super(message)
     this.name = 'StreamRequestError'
-    this.request = request // the op asked for: 7 (create) or 8 (watch)
+    this.request = request // the op asked for: 8 (create) or 9 (watch)
     this.timedOut = timedOut
+    this.code = code
   }
 }
 
-// Pairs op 11 and 12 with the op 7 and 8 that asked for them. The backend
-// answers event-socket frames one at a time and in order, so op 11 answers the
-// oldest create still waiting and op 12 the oldest watch of its key.
+// The reply op that answers each request op.
+const STREAM_REPLY_FOR = Object.freeze({
+  [StreamOp.CREATE_STREAM]: StreamOp.STREAM_CREATED,
+  [StreamOp.WATCH_STREAM]: StreamOp.STREAM_WATCHING
+})
+
+let streamNonceCounter = 0
+const nextStreamNonce = () => `s-${++streamNonceCounter}`
+
+// Pairs op 12 and 13, and op 0 failures, with the op 8 and 9 that asked for
+// them. Every request goes out with its own nonce and the server echoes it on
+// the answer, so a reply or failure finds its request by nonce alone.
 //
-// Failures are the weak spot. { err } names neither op nor key, and op 1 and
-// op 5 fail with the same frame. An err rejects the oldest stream request still
-// waiting, which is right unless an op 1 or 5 sent just before it failed too.
-// A wrong guess costs that one request: it fails, and its real reply arrives
-// later with nothing waiting for it. onOrphan gets that reply so the caller
-// can give back what it was granted (op 10 for a create, op 9 for a watch).
+// A reply can still arrive with nothing waiting for it: its request timed out,
+// or the socket it went out on was reset. onOrphan gets that reply so the
+// caller can give back what it was granted (op 11 for a create, op 10 for a
+// watch).
 //
-//   transmit(frame)             send one { op, data } frame; false (or a throw)
-//                               when the event socket isn't open
-//   onOrphan({ op, streamKey }) an op 11 or 12 that nothing was waiting for
+//   transmit(frame)             send one { op, data, nonce } frame; false (or a
+//                               throw) when the event socket isn't open
+//   onOrphan({ op, streamKey }) an op 12 or 13 that nothing was waiting for
+//   nextNonce()                 a nonce no other request on the socket uses
 export function createStreamRequests({
   transmit,
   timeoutMs = 10_000,
   onOrphan = () => {},
+  nextNonce = nextStreamNonce,
   setTimer = setTimeout,
   clearTimer = clearTimeout
 }) {
-  const pending = [] // { op, streamKey, promise, resolve, reject, timer }, oldest first
+  const pending = new Map() // nonce -> { op, streamKey, promise, resolve, reject, timer }
 
-  // Take an entry out of the queue. False if something else already did.
-  const take = (entry) => {
-    const index = pending.indexOf(entry)
-    if (index === -1) return false
-    pending.splice(index, 1)
+  // Take an entry out of the map. False if something else already did.
+  const take = (nonce) => {
+    const entry = pending.get(nonce)
+    if (!entry) return null
+    pending.delete(nonce)
     if (entry.timer != null) clearTimer(entry.timer)
     entry.timer = null
-    return true
+    return entry
   }
 
   const transmitted = (frame) => {
@@ -1326,20 +1338,21 @@ export function createStreamRequests({
   }
 
   const send = (op, frame, streamKey = null) => {
+    const nonce = nextNonce()
     const entry = { op, streamKey, timer: null }
     entry.promise = new Promise((resolve, reject) => {
       entry.resolve = resolve
       entry.reject = reject
     })
-    if (!transmitted(frame)) {
+    if (!transmitted({ ...frame, nonce })) {
       entry.reject(new StreamRequestError('Not connected to the server', { request: op }))
       return entry.promise
     }
-    pending.push(entry)
+    pending.set(nonce, entry)
     if (timeoutMs > 0) {
       entry.timer = setTimer(() => {
         entry.timer = null
-        if (!take(entry)) return
+        if (!take(nonce)) return
         entry.reject(
           new StreamRequestError(`Stream request (op ${op}) timed out`, {
             request: op,
@@ -1357,46 +1370,50 @@ export function createStreamRequests({
   // Ask to watch a stream. Resolves (with the key) once sinks may be created on
   // it. Watching a key that is already being asked for joins that request.
   const watch = (streamKey) => {
-    const waiting = pending.find(
-      (entry) => entry.op === StreamOp.WATCH_STREAM && entry.streamKey === streamKey
-    )
-    if (waiting) return waiting.promise
+    for (const entry of pending.values()) {
+      if (entry.op === StreamOp.WATCH_STREAM && entry.streamKey === streamKey) {
+        return entry.promise
+      }
+    }
     return send(StreamOp.WATCH_STREAM, StreamRequest.watch(streamKey), streamKey)
   }
 
-  // Ops 9 and 10, which are never answered. Returns whether the frame went out.
+  // Ops 10 and 11, which are never answered. Returns whether the frame went out.
   const notify = (frame) => transmitted(frame)
 
-  // Route one event-socket frame. True when it was op 11 or 12 (handled here).
+  // Route one event-socket frame. True when it was op 12 or 13 (handled here).
   const handle = (msg) => {
     if (msg?.op !== StreamOp.STREAM_CREATED && msg?.op !== StreamOp.STREAM_WATCHING) return false
-    const streamKey = typeof msg.stream_key === 'string' ? msg.stream_key : null
+    const streamKey = typeof msg.data?.stream_key === 'string' ? msg.data.stream_key : null
     if (streamKey == null) return true
-    const entry =
-      msg.op === StreamOp.STREAM_CREATED
-        ? pending.find((waiting) => waiting.op === StreamOp.CREATE_STREAM)
-        : pending.find(
-            (waiting) => waiting.op === StreamOp.WATCH_STREAM && waiting.streamKey === streamKey
-          )
-    if (entry && take(entry)) entry.resolve(streamKey)
+    const waiting = pending.get(msg.nonce)
+    const entry = waiting && STREAM_REPLY_FOR[waiting.op] === msg.op ? take(msg.nonce) : null
+    if (entry) entry.resolve(streamKey)
     else onOrphan({ op: msg.op, streamKey })
     return true
   }
 
-  // An { err } frame. Rejects the oldest stream request still waiting and
-  // returns the op it had asked for, or null when none was waiting (so the err
-  // answered something else).
-  const fail = (message) => {
-    const entry = pending[0]
-    if (!entry || !take(entry)) return null
-    entry.reject(new StreamRequestError(message || 'Stream request failed', { request: entry.op }))
+  // An op 0 error ({ op, code, message }) and its nonce. Rejects the stream
+  // request that carried the nonce and returns the op it had asked for, or null
+  // when no stream request did (the error answered something else).
+  const fail = (error, nonce) => {
+    const entry = nonce == null ? null : take(nonce)
+    if (!entry) return null
+    entry.reject(
+      new StreamRequestError(error?.message || 'Stream request failed', {
+        request: entry.op,
+        code: typeof error?.code === 'string' ? error.code : null
+      })
+    )
     return entry.op
   }
 
-  // The event socket closed. A resume doesn't replay op 11 or 12, so nothing
+  // The event socket closed. A resume doesn't replay op 12 or 13, so nothing
   // still waiting will be answered.
   const reset = (error = new StreamRequestError('Event socket closed')) => {
-    for (const entry of pending.splice(0)) {
+    const entries = [...pending.values()]
+    pending.clear()
+    for (const entry of entries) {
       if (entry.timer != null) clearTimer(entry.timer)
       entry.timer = null
       entry.reject(error)
@@ -1411,7 +1428,7 @@ export function createStreamRequests({
     fail,
     reset,
     get size() {
-      return pending.length
+      return pending.size
     }
   }
 }
@@ -1528,14 +1545,15 @@ export const CloseCode = Object.freeze({
   Banned: 4007,
   VoiceEnded: 4008,
   E2eeFailed: 4009,
-  InternalError: 4010
+  InternalError: 4010,
+  RateLimited: 4011
 })
 
 export const CloseAction = Object.freeze({
   // Reconnect with backoff and pick up where we were: /ws resumes its event
   // stream, /voice sends Resume.
   Resume: 'resume',
-  // Reconnect without resuming. On /voice: a new ticket (op 13), then Identify.
+  // Reconnect without resuming. On /voice: a new ticket (op 14), then Identify.
   Fresh: 'fresh',
   // /ws: refresh the access token and reconnect; log in again if that fails.
   Reauth: 'reauth',
@@ -1564,7 +1582,8 @@ const CLOSE_TABLE = Object.freeze({
   [CloseCode.Banned]: ['Banned', CloseAction.Stop, 'banned'],
   [CloseCode.VoiceEnded]: ['VoiceEnded', CloseAction.IfInVoice, 'voice session ended'],
   [CloseCode.E2eeFailed]: ['E2eeFailed', CloseAction.Fresh, 'voice encryption failed'],
-  [CloseCode.InternalError]: ['InternalError', CloseAction.Resume, 'server error']
+  [CloseCode.InternalError]: ['InternalError', CloseAction.Resume, 'server error'],
+  [CloseCode.RateLimited]: ['RateLimited', CloseAction.Resume, 'rate limited']
 })
 
 // What a close means: { name, action, reason }. Anything not in the table (no
@@ -1577,12 +1596,13 @@ export function classifyClose(code) {
 }
 
 // ─── Voice tickets on the event socket ───────────────────────────
-// Op 13 asks for a ticket while in a voice channel; it is answered with op 6,
-// like the join that mints the first one. A refusal is a plain { err } frame
-// until the event socket sends coded errors, so the two
-// refusals that matter are told apart by their text (the backend's
-// services/voice.rs and voice_control.rs).
-export const REQUEST_VOICE_TICKET_OP = 13
+// Op 14 asks for a ticket while in a voice channel; it is answered with op 7,
+// like the join that mints the first one. A refusal is an op 0 error whose
+// code says why. The two refusals that matter for a connect waiting on its
+// ticket are below; any other code is not a ticket refusal.
+export const REQUEST_VOICE_TICKET_OP = 14
+// VoiceStateUpdate, whose join from no channel mints the first ticket.
+export const VOICE_STATE_UPDATE_OP = 5
 
 export const VoiceTicketError = Object.freeze({
   // Not in a voice channel (any more): stop.
@@ -1591,12 +1611,9 @@ export const VoiceTicketError = Object.freeze({
   VoiceUnavailable: 'voice_unavailable'
 })
 
-const VOICE_TICKET_ERROR_TEXT = Object.freeze({
-  'Client must join a voice channel before requesting a voice ticket': VoiceTicketError.NotInVoice,
-  'Voice media is unavailable': VoiceTicketError.VoiceUnavailable
-})
+const VOICE_TICKET_ERROR_CODES = new Set(Object.values(VoiceTicketError))
 
-// The VoiceTicketError an { err } message means, or null for any other.
-export function voiceTicketError(message) {
-  return VOICE_TICKET_ERROR_TEXT[message] ?? null
+// The VoiceTicketError an op 0 error code means, or null for any other.
+export function voiceTicketError(code) {
+  return VOICE_TICKET_ERROR_CODES.has(code) ? code : null
 }

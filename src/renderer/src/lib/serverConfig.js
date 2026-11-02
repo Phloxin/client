@@ -45,10 +45,22 @@ export function wsBase() {
 // any other (or a missing) `v` with 4000.
 export const VOICE_PROTOCOL_VERSION = 1
 
+// REST version sent as Pylon-Api-Version on every API request (see http.js).
+// main/session.js keeps its own copy for the refresh request.
+export const API_VERSION = 1
+
+// Event socket protocol version. The server closes any other (or a missing) `v`
+// with 4000.
+export const EVENTS_PROTOCOL_VERSION = 1
+
+export function eventSocketUrl() {
+  return `${wsBase()}/ws?v=${EVENTS_PROTOCOL_VERSION}`
+}
+
 // Full URL for the voice signaling socket, or null when voice is unavailable.
 //
 // /voice lives only on the voice node, never on the API host. Every voice
-// ticket arrives with the origin it is good for (op 6 `voice_endpoint`), so pass
+// ticket arrives with the origin it is good for (op 7 `voice_endpoint`), so pass
 // the one that came with the ticket about to be presented rather than
 // remembering an earlier one. A server without VOICE_PUBLIC_ENDPOINT sends no
 // endpoint at all, which means it has no reachable voice plane.
@@ -81,13 +93,15 @@ function voiceOrigin(voiceEndpoint) {
 }
 
 // Throw on a failed API response, preferring the server's human-readable
-// message. Handler errors come back as `{ "error": "..." }`; fall back to the
-// status code when there's no JSON body. Returns the response when it's ok, so
-// callers can `await throwIfError(res)` inline.
+// message. Errors come back as `{ "code": "...", "message": "..." }`; the code
+// is kept on the thrown error as `err.code` for callers that branch on it. Falls
+// back to the status code when there's no JSON body. Returns the response when
+// it's ok, so callers can `await throwIfError(res)` inline.
 export async function throwIfError(res) {
   if (res.ok) return res
   const body = await res.json().catch(() => null)
-  const err = new Error(body?.error || `Server responded ${res.status}`)
+  const err = new Error(body?.message || `Server responded ${res.status}`)
+  if (typeof body?.code === 'string') err.code = body.code
   // Keep the HTTP status so callers can tell a permission failure (403) apart
   // from other errors without matching on message text.
   err.status = res.status

@@ -10,11 +10,12 @@
 // This lives outside React on purpose: rotation must not re-render (or worse,
 // tear down the events websocket, whose effect keys on the login).
 import { apiBase } from './serverConfig.js'
-import { httpFetch } from './http.js'
+import { httpFetch, setUpdateRequiredHandler } from './http.js'
 
 const session = () => window.api.session
 
 let unsubscribeExpired = null
+let unsubscribeUpdateRequired = null
 
 // Called when the server rejects our refresh token (session revoked/expired):
 // the app must drop to the disconnected state and require a fresh login. One
@@ -22,6 +23,14 @@ let unsubscribeExpired = null
 export function setOnSessionExpired(cb) {
   unsubscribeExpired?.()
   unsubscribeExpired = cb ? session().onExpired(cb) : null
+}
+
+// Called when the server answers 426 to any request, from the renderer or from
+// main's refresh. One callback at a time. Passing null removes it.
+export function setOnUpdateRequired(cb) {
+  unsubscribeUpdateRequired?.()
+  unsubscribeUpdateRequired = cb ? session().onUpdateRequired(cb) : null
+  setUpdateRequiredHandler(cb)
 }
 
 // Start the session for the active server from a login or register response.
