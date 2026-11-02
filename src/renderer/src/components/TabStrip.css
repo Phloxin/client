@@ -1,7 +1,7 @@
 /* ============================================================================
-   TAB STRIP — one pane's browser-style tabs, the top row of the canvas above
-   the per-view header. Tabs sit on a recessed track; the active one is lit
-   with the canvas surface and opens into the view below it.
+   TAB STRIP — one pane's browser-style tabs, filling its header bar (see
+   PaneLayout's .pane-bar, which draws the recessed track they sit on). The
+   active tab is lit with the canvas surface and opens into the view below it.
    ============================================================================ */
 
 /* Positioned so a tab's offsetLeft (untouched by Motion's slide transforms)
@@ -9,17 +9,17 @@
 .tab-strip {
   position: relative;
   display: flex;
-  align-items: flex-end;
+  align-items: stretch;
+  align-self: stretch;
   gap: 2px;
-  height: 40px;
-  flex-shrink: 0;
-  padding: 6px var(--spacing-sm) 0;
+  flex: 1 1 auto;
+  min-width: 0;
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: none;
   user-select: none;
-  background: color-mix(in srgb, var(--color-background-mute) 45%, transparent);
-  border-bottom: 1px solid var(--hairline);
+  /* Width of a narrow tab (Streams); the group's basis counts it. */
+  --tab-narrow: 96px;
 }
 
 .tab-strip::-webkit-scrollbar {
@@ -28,7 +28,8 @@
 
 /* Browser sizing: a constant basis, so a tab's width depends only on the strip
    width and the tab count, never on its content or hover state. The strip
-   scrolls only once every tab is at its minimum. */
+   scrolls only once every tab is at its minimum. A tab fills the bar's height
+   (the strip stretches them), so there is no track above them. */
 .tab {
   position: relative;
   display: flex;
@@ -37,7 +38,6 @@
   flex: 1 1 220px;
   min-width: 80px;
   max-width: 220px;
-  height: 33px;
   padding: 0 4px 0 8px;
   overflow: hidden;
   border: 1px solid transparent;
@@ -57,10 +57,9 @@
   color: var(--color-text);
 }
 
-/* Lit like the canvas, overlapping the strip's bottom hairline so it joins
-   the view below. */
+/* Lit like the canvas, overlapping the bar's bottom hairline so it joins the
+   view below. */
 .tab.active {
-  height: 34px;
   margin-bottom: -1px;
   background: var(--color-background-soft);
   border-color: var(--hairline);
@@ -88,6 +87,15 @@ html[data-transparency='true'] .tab.active {
 /* The dragged tab's slot: where it lands if dropped now. */
 .tab.dragging {
   opacity: 0.35;
+}
+
+/* Streams: an extension of its channel's tab, so it keeps a fixed sliver of
+   the group rather than a full tab's width (it carries no pin or close to
+   make room for). */
+.tab.narrow {
+  flex: 0 0 var(--tab-narrow);
+  min-width: 0;
+  max-width: none;
 }
 
 /* Preview tab (VS Code): italic and dimmer until pinned. */
@@ -177,38 +185,19 @@ html[data-transparency='true'] .tab.active {
 }
 
 /* The connected group (Chat + Streams of the joined channel or call): one
-   tinted segment at the left edge, closed only by its leave control. Its basis
-   and floor are its tabs' (--group-tabs of them) plus the leave control and
-   padding (36px), so it shrinks in step with the single tabs. */
+   tinted segment at the left edge, its tint showing through its own tabs.
+   Its basis and floor are its full tabs' (--group-wide of them, sized like any
+   single tab) plus its narrow ones, so the channel's tab stays as wide as it
+   is when merely peeked at. Leaving is the dock's door button (or the tab
+   menu), not a control here. */
 .tab-group {
   display: flex;
-  align-items: flex-end;
-  flex: 0 1 calc(var(--group-tabs, 2) * 220px + 36px);
-  min-width: calc(var(--group-tabs, 2) * 80px + 36px);
+  align-items: stretch;
+  flex: 0 1 calc(var(--group-wide, 1) * 220px + var(--group-narrow, 1) * var(--tab-narrow));
+  min-width: calc(var(--group-wide, 1) * 80px + var(--group-narrow, 1) * var(--tab-narrow));
   margin-right: 6px;
-  padding: 0 2px;
   border-radius: var(--radius-sm) var(--radius-sm) 0 0;
   background: color-mix(in srgb, var(--color-primary) 8%, transparent);
-}
-
-.tab-group-leave {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  align-self: center;
-  flex-shrink: 0;
-  width: 24px;
-  height: 24px;
-  margin: 0 4px;
-  padding: 0;
-  border-radius: var(--radius-xs);
-  background: transparent;
-  color: var(--color-text-tertiary);
-}
-
-.tab-group-leave:hover {
-  background: color-mix(in srgb, var(--color-danger) 15%, transparent);
-  color: var(--color-danger);
 }
 
 /* ── Right-click menu (same chrome as the channel menu) ───────────────────── */

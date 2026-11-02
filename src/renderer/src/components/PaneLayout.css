@@ -1,6 +1,6 @@
 /* ============================================================================
    PANE LAYOUT — the canvas holds one pane, or two side by side or stacked,
-   each a tab strip over its tab's header and view. A hairline divider sits
+   each a header bar of tabs over its tab's view. A hairline divider sits
    between two panes; a dragged tab shows where it would land.
    ============================================================================ */
 
@@ -25,6 +25,42 @@
   flex: 1 1 0;
   min-width: 0;
   min-height: 0;
+}
+
+/* ── Header bar: the pane's tabs, plus its view's extras ──────────────────── */
+
+/* The one bar at the top of a pane: a recessed track the tabs sit in, the
+   active one lit and joined to the view below. The strip takes the whole bar
+   but the actions, so its empty track reads as the bar's dark remainder (and
+   still takes a drop). Its tabs fill it edge to edge — the track shows only
+   where there are none. */
+.pane-bar {
+  display: flex;
+  align-items: stretch;
+  gap: var(--spacing-md);
+  height: 44px;
+  flex-shrink: 0;
+  background: color-mix(in srgb, var(--color-background-mute) 70%, transparent);
+  border-bottom: 1px solid var(--hairline);
+}
+
+/* The view's extras — call controls, who's in voice, a count — at the bar's
+   trailing edge; the active tab already names the view. */
+.pane-bar-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+  min-width: 0;
+  padding-right: var(--spacing-md);
+  user-select: none;
+}
+
+.pane-bar-meta {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-tertiary);
 }
 
 /* Header, view and the body drop zone over them. */
@@ -129,6 +165,8 @@ html.tab-dragging * {
   position: fixed;
   top: 0;
   left: 0;
+  /* Outside the strip, so nothing stretches it. */
+  height: 36px;
   z-index: 1001;
   pointer-events: none;
   border: 1px solid var(--hairline-strong);

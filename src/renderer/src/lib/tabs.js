@@ -2,7 +2,8 @@
 // each with a VS Code style preview slot, plus the connected group (the joined
 // channel's Chat and Streams tabs). Pure; Main holds it with useReducer.
 // Invariants: a tab is unpinned exactly when it is its pane's preview, a pane
-// with tabs always has an active one, and no pane is empty while two remain.
+// always has tabs and an active one (an empty pane falls back to the home tab,
+// the server's activity), and no pane is empty while two remain.
 
 export const TAB_KINDS = [
   'chat',
@@ -41,7 +42,7 @@ export function splitFits(side, width, height) {
 const newPane = (id) => ({ id, tabIds: [], activeTabId: null, previewTabId: null })
 
 export function createLayout() {
-  return {
+  return withHome({
     panes: [newPane('p1')],
     splitDirection: 'row',
     splitRatio: 0.5,
@@ -56,7 +57,43 @@ export function createLayout() {
     closed: [],
     // Next numeric suffix for tab and pane ids.
     seq: 2
-  }
+  })
+}
+
+// The home tab: the server's activity, which a pane shows when nothing else is
+// open in it. Closing it is a no-op — it would come straight back — so the
+// strip shows no close on it. An unpinned traffic tab is always a home tab:
+// pinning one (or opening the traffic view from the server menu, which pins
+// it) is what keeps it beside other tabs.
+const isHome = (state, tabId) => {
+  const tab = state.tabs[tabId]
+  return !!tab && tab.kind === 'server-traffic' && !tab.pinned
+}
+
+export function isHomeTab(state, tabId) {
+  return isHome(state, tabId) && paneOf(state, tabId)?.tabIds.length === 1
+}
+
+// Keep every pane on exactly one home tab or none: a pane left with no tabs
+// gets one as its preview, so the next thing opened takes that slot, and a
+// pane that gained another tab drops it again. At most one pane can be empty
+// here — `dropEmptyPanes` has already removed any other.
+function withHome(state) {
+  const stale = state.panes.flatMap((p) =>
+    p.tabIds.length > 1 ? p.tabIds.filter((id) => isHome(state, id)) : []
+  )
+  const next = stale.length ? removeTabs(state, stale) : state
+  const pane = next.panes.find((p) => !p.tabIds.length)
+  if (!pane) return next
+  const id = `t${next.seq}`
+  return withPane(
+    {
+      ...next,
+      seq: next.seq + 1,
+      tabs: { ...next.tabs, [id]: { id, kind: 'server-traffic', ref: null, pinned: false } }
+    },
+    { ...pane, tabIds: [id], activeTabId: id, previewTabId: id }
+  )
 }
 
 // Stable identity of a tab's content, e.g. for keying its view.
@@ -310,7 +347,7 @@ function closeTabs(state, ids) {
 }
 
 function close(state, tabId) {
-  if (isGroupTab(state, tabId)) return state
+  if (isGroupTab(state, tabId) || isHomeTab(state, tabId)) return state
   return closeTabs(state, [tabId])
 }
 
@@ -529,7 +566,8 @@ function setConnected(state, { channelId, focus }) {
   }
   const tabIds = [chatTabId, streamsTabId, ...pane.tabIds.filter((id) => id !== chatTabId)]
   const previewTabId = pane.previewTabId === chatTabId ? null : pane.previewTabId
-  const landOnChat = pane.activeTabId == null || pane.activeTabId === fold
+  const landOnChat =
+    pane.activeTabId == null || pane.activeTabId === fold || isHomeTab(state, pane.activeTabId)
   const activeTabId = focus ? focusId(connected) : landOnChat ? chatTabId : pane.activeTabId
   return {
     ...withPane(next, { ...pane, tabIds, previewTabId, activeTabId }),
@@ -599,6 +637,10 @@ function hydrate(state, persisted) {
 }
 
 export function tabsReducer(state, action) {
+  return withHome(reduce(state, action))
+}
+
+function reduce(state, action) {
   switch (action.type) {
     case 'open':
       return open(state, action)

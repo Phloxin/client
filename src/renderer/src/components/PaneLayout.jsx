@@ -97,7 +97,7 @@ function swallowNextClick() {
 // panes: [{ id, tabs, header, error, body, bodyKey }] in layout order; `tabs`
 // are TabStrip descriptions and `header`, `error`, `body` elements Main has
 // rendered, so a drag in progress never re-renders the views.
-function PaneLayout({ layout, panes, leave, menuItems, dispatch }) {
+function PaneLayout({ layout, panes, menuItems, dispatch }) {
   const rootRef = useRef(null)
   const ghostRef = useRef(null)
   // The press or drag under way: pointer bookkeeping read by window listeners.
@@ -297,27 +297,24 @@ function PaneLayout({ layout, panes, leave, menuItems, dispatch }) {
               style={split ? { flexGrow: i === 0 ? ratio : 1 - ratio } : undefined}
               onPointerDownCapture={() => focusPane(pane)}
             >
-              <TabStrip
-                paneId={view.id}
-                tabs={view.tabs}
-                leave={leave}
-                drag={stripDrag(pane)}
-                slide={slide && dragging}
-                dimmed={split && view.id !== layout.activePaneId}
-                onDragStart={(e, tab) => startDrag(e, tab, view.id)}
-                onActivate={(tabId) => dispatch({ type: 'activate', tabId })}
-                onClose={(tabId) => dispatch({ type: 'close', tabId })}
-                onPin={(tabId) => dispatch({ type: 'pin', tabId })}
-                onUnpin={(tabId) => dispatch({ type: 'unpin', tabId })}
-                menuItems={menuItems}
-                ariaLabel={split ? `Open views, pane ${i + 1}` : 'Open views'}
-              />
+              <div className="pane-bar">
+                <TabStrip
+                  paneId={view.id}
+                  tabs={view.tabs}
+                  drag={stripDrag(pane)}
+                  slide={slide && dragging}
+                  dimmed={split && view.id !== layout.activePaneId}
+                  onDragStart={(e, tab) => startDrag(e, tab, view.id)}
+                  onActivate={(tabId) => dispatch({ type: 'activate', tabId })}
+                  onClose={(tabId) => dispatch({ type: 'close', tabId })}
+                  onPin={(tabId) => dispatch({ type: 'pin', tabId })}
+                  onUnpin={(tabId) => dispatch({ type: 'unpin', tabId })}
+                  menuItems={menuItems}
+                  ariaLabel={split ? `Open views, pane ${i + 1}` : 'Open views'}
+                />
+                {view.header && <div className="pane-bar-actions">{view.header}</div>}
+              </div>
               <div className="pane-body">
-                {view.header && (
-                  <div className="chat-header">
-                    <div className="header-content">{view.header}</div>
-                  </div>
-                )}
                 {view.error}
                 {/* Keyed so a change of content remounts and replays the
                     switch animation (see Main's bodyKey). */}

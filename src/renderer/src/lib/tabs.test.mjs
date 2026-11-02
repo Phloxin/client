@@ -12,6 +12,7 @@ import {
   createLayout,
   cycleTarget,
   isGroupTab,
+  isHomeTab,
   moveOrder,
   openChannelRefs,
   paneOf,
@@ -63,13 +64,31 @@ const connect = (state, channelId, focus) =>
 // The closed stack as content key @ saved index.
 const closedOf = (state) => state.closed.map((e) => `${e.kind}:${e.ref ?? ''}@${e.index}`)
 
-test('a new layout is one empty, active pane with nothing connected', () => {
+test('a new layout is one active pane on its home tab, nothing connected', () => {
   const s = createLayout()
   assert.equal(s.panes.length, 1)
-  assert.deepEqual(view(s), [[]])
+  assert.deepEqual(view(s), [['server-traffic:~*']])
   assert.equal(s.activePaneId, s.panes[0].id)
   assert.equal(s.connected, null)
-  assert.equal(activeTab(s), null)
+  assert.equal(activeTab(s).kind, 'server-traffic')
+  assert.equal(isHomeTab(s, s.panes[0].activeTabId), true)
+})
+
+test('the home tab is not closed, and goes once another tab takes its slot', () => {
+  const s = createLayout()
+  const home = s.panes[0].activeTabId
+  assert.equal(run(s, { type: 'close', tabId: home }), s)
+  // It is the pane's preview, so the first channel opened takes that slot.
+  const opened = run(s, chat('a'))
+  assert.deepEqual(view(opened), [['chat:a~*']])
+  assert.equal(isHomeTab(opened, opened.panes[0].activeTabId), false)
+  // Closing the last tab brings it back.
+  assert.deepEqual(view(run(opened, { type: 'close', tabId: idOf(opened, 'chat', 'a') })), [
+    ['server-traffic:~*']
+  ])
+  // A pinned traffic tab is the user's own, and stays beside other tabs.
+  const kept = run(s, { type: 'pin', tabId: home }, chat('a'))
+  assert.deepEqual(view(kept), [['server-traffic:^', 'chat:a~*']])
 })
 
 test('tabKey identifies content, with no ref as empty', () => {
@@ -198,9 +217,8 @@ test('closing the active tab activates its right neighbour, else its left', () =
   s = run(s, { type: 'close', tabId: idOf(s, 'chat', 'c') })
   assert.deepEqual(view(s), [['chat:a^*']])
   s = run(s, { type: 'close', tabId: idOf(s, 'chat', 'a') })
-  assert.deepEqual(view(s), [[]])
-  assert.deepEqual(s.tabs, {})
-  assert.equal(activeTab(s), null)
+  assert.deepEqual(view(s), [['server-traffic:~*']])
+  assert.equal(Object.keys(s.tabs).length, 1)
 })
 
 test('closing an inactive tab keeps the active one; closing the preview frees the slot', () => {
@@ -629,7 +647,7 @@ test('pruning every tab of one pane removes it, and of both keeps the active one
   assert.deepEqual(view(one), [['chat:a^*']])
   assert.equal(one.activePaneId, s.panes[0].id)
   const none = run(s, { type: 'pruneBy', predicate: () => true })
-  assert.deepEqual(view(none), [[]])
+  assert.deepEqual(view(none), [['server-traffic:~*']])
   assert.equal(none.panes[0].id, right)
   assert.equal(none.activePaneId, right)
 })
@@ -650,7 +668,7 @@ test('joining installs Chat and Streams pinned at the left edge without moving t
   assert.equal(isGroupTab(createLayout(), 't1'), false)
 })
 
-test('joining from an empty pane lands on Chat', () => {
+test('joining from the home tab lands on Chat, and the home tab goes', () => {
   assert.deepEqual(view(connect(createLayout(), 'v')), [['chat:v^*', 'streams:v^']])
 })
 
@@ -832,7 +850,7 @@ test('hydrate drops invalid, streams and duplicate entries, empty and extra pane
 test('hydrate of nothing usable is a fresh layout', () => {
   for (const persisted of [undefined, null, 'x', {}, { panes: [{ tabs: [] }, null] }]) {
     const h = run(createLayout(), { type: 'hydrate', persisted })
-    assert.deepEqual(view(h), [[]])
+    assert.deepEqual(view(h), [['server-traffic:~*']])
     assert.equal(h.splitRatio, 0.5)
   }
 })
@@ -892,7 +910,7 @@ test('the first prune after a restore lands a pane on its first remaining tab', 
   })
   assert.deepEqual(view(onlyGroup), [['chat:w^*', 'streams:w^']])
   const emptied = run(h, { type: 'pruneBy', predicate: () => true, fallback: 'first' })
-  assert.deepEqual(view(emptied), [[]])
+  assert.deepEqual(view(emptied), [['server-traffic:~*']])
 })
 
 test('reset returns a fresh layout; unknown actions change nothing', () => {
@@ -901,12 +919,13 @@ test('reset returns a fresh layout; unknown actions change nothing', () => {
   assert.equal(run(s, { type: 'nope' }), s)
 })
 
-test('activePane and paneOf find panes; activeTab is null for an empty pane', () => {
+test('activePane and paneOf find panes; a closed-out pane falls back to home', () => {
   const s = pinned(createLayout(), 'a')
   assert.equal(activePane(s), s.panes[0])
   assert.equal(paneOf(s, idOf(s, 'chat', 'a')), s.panes[0])
   assert.equal(paneOf(s, 'nope'), null)
-  assert.equal(activeTab(run(s, { type: 'close', tabId: idOf(s, 'chat', 'a') })), null)
+  const closed = run(s, { type: 'close', tabId: idOf(s, 'chat', 'a') })
+  assert.equal(activeTab(closed).kind, 'server-traffic')
 })
 
 test('openChannelRefs lists channels with a tab open, minus the joined channel chat', () => {
@@ -926,7 +945,8 @@ test('openChannelRefs lists channels with a tab open, minus the joined channel c
 })
 
 test('cycleTarget wraps within the active pane', () => {
-  assert.equal(cycleTarget(createLayout(), 1), null)
+  const home = createLayout()
+  assert.equal(cycleTarget(home, 1), home.panes[0].activeTabId)
   let s = pinned(createLayout(), 'a', 'b', 'c')
   const [a, b, c] = s.panes[0].tabIds
   assert.equal(cycleTarget(s, 1), a)
@@ -941,5 +961,6 @@ test('tabAtIndex picks the nth tab of the active pane, -1 for the last', () => {
   assert.equal(tabAtIndex(s, 0), a)
   assert.equal(tabAtIndex(s, -1), c)
   assert.equal(tabAtIndex(s, 7), null)
-  assert.equal(tabAtIndex(createLayout(), -1), null)
+  const home = createLayout()
+  assert.equal(tabAtIndex(home, -1), home.panes[0].activeTabId)
 })

@@ -64,8 +64,8 @@ function TabMenu({ pos, items, onClose }) {
 
 // One pane's browser-style tab strip. Main describes each tab and supplies the
 // menu items; PaneLayout runs the drag and tells this how to show it.
-// tabs: [{ id, title, icon, active, preview, pinned, unread, group, closable, pinnable }]
-// leave: { title, icon, onLeave } closing the connected group's segment, or null.
+// tabs: [{ id, title, icon, active, preview, pinned, unread, group, narrow,
+// closable, pinnable }]
 // drag: while a tab is dragged anywhere, { tab, order }: the dragged tab's
 // description, and the tab ids to show in place of `tabs` (null keeps them),
 // which may include the dragged tab from the other pane.
@@ -74,7 +74,6 @@ function TabMenu({ pos, items, onClose }) {
 function TabStrip({
   paneId,
   tabs,
-  leave,
   drag,
   slide,
   dimmed,
@@ -125,7 +124,7 @@ function TabStrip({
       title={tab.title}
       className={`tab${tab.active ? ' active' : ''}${tab.preview ? ' preview' : ''}${
         tab.pinned ? ' pinned' : ''
-      }${drag?.tab.id === tab.id ? ' dragging' : ''}`}
+      }${tab.narrow ? ' narrow' : ''}${drag?.tab.id === tab.id ? ' dragging' : ''}`}
       onClick={() => onActivate(tab.id)}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
@@ -205,19 +204,14 @@ function TabStrip({
       onWheel={onWheel}
     >
       {group.length > 0 && (
-        <div className="tab-group" style={{ '--group-tabs': group.length }}>
+        <div
+          className="tab-group"
+          style={{
+            '--group-wide': group.filter((t) => !t.narrow).length,
+            '--group-narrow': group.filter((t) => t.narrow).length
+          }}
+        >
           {group.map(renderTab)}
-          {leave && (
-            <button
-              type="button"
-              className="tab-group-leave"
-              title={leave.title}
-              aria-label={leave.title}
-              onClick={leave.onLeave}
-            >
-              {leave.icon}
-            </button>
-          )}
         </div>
       )}
       {rest.map(renderTab)}

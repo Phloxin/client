@@ -92,6 +92,7 @@ import {
   createLayout,
   cycleTarget,
   isGroupTab,
+  isHomeTab,
   openChannelRefs,
   splitFits,
   tabAtIndex,
@@ -120,7 +121,6 @@ import {
   IconUser,
   IconUsersGroup,
   IconVideo,
-  IconVolume,
   IconX
 } from '@tabler/icons-react'
 
@@ -1388,7 +1388,10 @@ function Main() {
   const handleShowChannelSummary = (channelId) => openTab('channel-details', channelId)
 
   // Server menu → View server traffic / View server summary.
-  const handleViewServerTraffic = () => openTab('server-traffic')
+  // Pinned: an unpinned traffic tab is the home tab, which goes as soon as the
+  // pane holds anything else.
+  const handleViewServerTraffic = () =>
+    dispatchTabs({ type: 'open', content: { kind: 'server-traffic' }, pinned: true })
   const handleViewServerSummary = () => openTab('server-summary')
 
   // Open the DM an inbox alert points at: the channel itself when we know it
@@ -3848,21 +3851,6 @@ function Main() {
   const serverDisplayName = serverName ?? connectedServer?.nickname ?? 'Connected'
   const titleText = connectedServer ? `${APP_TITLE} — ${serverDisplayName}` : APP_TITLE
 
-  // Server-name header for the traffic canvas — shown both when lurking and when
-  // the traffic view is opened explicitly from the server menu, so the two land
-  // on the same header instead of one saying the server name and the other
-  // "Server Traffic".
-  const serverHeaderTitle = (
-    <div className="chat-title">
-      <span className="chat-title-icon">
-        <IconUsersGroup size={17} stroke={2} />
-      </span>
-      <span className="chat-title-text">
-        <span className="chat-title-name">{serverDisplayName}</span>
-      </span>
-    </div>
-  )
-
   // The joined voice channel or DM call.
   const joinedChannel = channels.find((c) => c.id === selfChannelId)
 
@@ -3966,121 +3954,61 @@ function Main() {
   const channelOf = (id) => channels.find((c) => c.id === id)
   const channelName = (ch) =>
     ch?.type === 'dm' ? dmDisplayName(ch, client?.id, nameOf) : (ch?.name ?? 'Channel')
-  // A channel's icon for a header chip or a tab: a DM's partner avatar (a group
-  // glyph for a group DM), a channel's own icon, else `fallback`.
-  const channelIconOf = (ch, fallback, imgClass, glyphSize = 18) => {
+  // A channel's icon for its tab: a DM's partner avatar (a group glyph for a
+  // group DM), a channel's own icon, else `fallback`.
+  const channelIconOf = (ch, fallback) => {
     const dm = ch?.type === 'dm' ? ch : null
     const src = dm ? dmAvatarOf(dm) : assetUrl(ch?.channel_icon)
-    if (src) return <img className={imgClass} src={src} alt="" />
-    if (dm && isGroupDm(dm)) return <IconUsersGroup size={glyphSize} stroke={2} />
-    if (dm) return <IconUser size={glyphSize} stroke={2} />
+    if (src) return <img src={src} alt="" />
+    if (dm && isGroupDm(dm)) return <IconUsersGroup size={17} stroke={2} />
+    if (dm) return <IconUser size={17} stroke={2} />
     return fallback
   }
   const countOf = (n, noun) => (n > 0 ? `${n} ${noun}${n === 1 ? '' : 's'}` : null)
 
-  // A header title block: icon chip, name, and an optional subtitle line.
-  const titleBlock = (icon, name, sub) => (
-    <div className="chat-title">
-      <span className="chat-title-icon">{icon}</span>
-      <span className="chat-title-text">
-        <span className="chat-title-name">{name}</span>
-        {sub != null && <span className="chat-title-sub">{sub}</span>}
-      </span>
-    </div>
-  )
+  // A bit of trailing text in a pane's header bar (a count, who's in voice).
+  const barMeta = (text) => (text ? <span className="pane-bar-meta">{text}</span> : null)
 
-  // A chat tab's header outside the call: the channel's name; a DM also offers
-  // its call.
-  const chatHeader = (tab) => {
-    const channelId = tab.ref
-    const ch = channelOf(channelId)
-    const dm = ch?.type === 'dm' ? ch : null
+  // A DM chat outside the call offers to join it; a channel's chat adds
+  // nothing to its bar.
+  const chatCallControls = (tab) => {
+    const dm = channelOf(tab.ref)
+    if (dm?.type !== 'dm') return null
     // Who is already in the DM's call (we aren't: being in it makes this tab
     // the connected group's Chat).
-    const callMembers = dm
-      ? clients.filter((c) => c.channel_id === dm.id && c.id !== client?.id)
-      : []
+    const callMembers = clients.filter((c) => c.channel_id === dm.id && c.id !== client?.id)
     return (
-      <>
-        <span className="view-preview-title">
-          <button
-            type="button"
-            className={`chat-title-icon${dm ? ' chat-title-icon-avatar' : ''}`}
-            onClick={() => handleShowChannelSummary(channelId)}
-            title="Channel details"
-          >
-            {channelIconOf(ch, <IconMessage size={18} stroke={2} />, 'chat-title-icon-img')}
-          </button>
-          <span className="view-preview-name">{channelName(ch)}</span>
-        </span>
-        {dm && (
-          <DmCallControls
-            members={callMembers}
-            joining={voice.channelId === dm.id || voice.pendingChannelId === dm.id}
-            onJoinCall={() => handleJoinDmCall(dm, tab)}
-          />
-        )}
-      </>
+      <DmCallControls
+        members={callMembers}
+        joining={voice.channelId === dm.id || voice.pendingChannelId === dm.id}
+        onJoinCall={() => handleJoinDmCall(dm, tab)}
+      />
     )
   }
 
-  // The connected group's header (voice channel or DM call): its name and who
-  // is in it.
-  const joinedHeader = (channelId) => {
-    const ch = channelOf(channelId)
-    const dm = ch?.type === 'dm' ? ch : null
+  // Who is in the connected group: the DM call's participant strip, or the
+  // voice channel's head count.
+  const joinedStatus = (channelId) => {
+    const dm = channelOf(channelId)?.type === 'dm' ? channelId : null
+    if (dm == null)
+      return barMeta(`${clients.filter((c) => c.channel_id === channelId).length} in voice`)
     return (
-      <div className="chat-title">
-        <button
-          type="button"
-          className={`chat-title-icon${dm ? ' chat-title-icon-avatar' : ''}`}
-          onClick={() => handleShowChannelSummary(channelId)}
-          title="Channel details"
-        >
-          {channelIconOf(ch, <IconVolume size={17} stroke={2} />, 'chat-title-icon-img')}
-        </button>
-        <span className="chat-title-text">
-          <span className="chat-title-name">{channelName(ch)}</span>
-          {dm ? (
-            <DmMemberStrip
-              entries={dmStripEntries}
-              onRing={(userId) => handleRingParticipant(dm.id, userId)}
-              onWatchStream={handleWatchStream}
-            />
-          ) : (
-            <span className="chat-title-sub">
-              {clients.filter((c) => c.channel_id === channelId).length} in voice
-            </span>
-          )}
-        </span>
-      </div>
+      <DmMemberStrip
+        entries={dmStripEntries}
+        onRing={(userId) => handleRingParticipant(dm, userId)}
+        onWatchStream={handleWatchStream}
+      />
     )
   }
 
-  // The per-view header under the strip, or null for the summaries (their
-  // banner card is the header). With no tab the pane shows the server's
-  // traffic under its name.
+  // What rides a pane's header bar beside its tabs: only the active tab's
+  // extras, trailing in the bar's empty track, the tab itself naming the view.
   const renderTabHeader = (tab) => {
-    if (!tab || tab.kind === 'server-traffic') return serverHeaderTitle
-    if (tab.kind === 'streams' || isGroupTab(layout, tab.id)) return joinedHeader(tab.ref)
-    if (tab.kind === 'chat') return chatHeader(tab)
-    if (tab.kind === 'files') {
-      return titleBlock(
-        <IconFiles size={17} stroke={2} />,
-        `Files · ${channelName(channelOf(tab.ref))}`,
-        countOf(filesCounts[tab.id] ?? 0, 'file')
-      )
-    }
-    if (tab.kind === 'bans') {
-      return titleBlock(
-        <IconBan size={17} stroke={2} />,
-        'Ban List',
-        countOf(resolvedBans.length, 'ban')
-      )
-    }
-    if (tab.kind === 'connection-info') {
-      return titleBlock(<IconActivity size={17} stroke={2} />, 'Connection Info')
-    }
+    if (!tab) return null
+    if (tab.kind === 'streams' || isGroupTab(layout, tab.id)) return joinedStatus(tab.ref)
+    if (tab.kind === 'chat') return chatCallControls(tab)
+    if (tab.kind === 'files') return barMeta(countOf(filesCounts[tab.id] ?? 0, 'file'))
+    if (tab.kind === 'bans') return barMeta(countOf(resolvedBans.length, 'ban'))
     return null
   }
 
@@ -4242,7 +4170,7 @@ function Main() {
     if (tab.kind === 'chat') {
       const ch = channelOf(tab.ref)
       title = channelName(ch)
-      icon = channelIconOf(ch, glyph(IconMessage), undefined, 17)
+      icon = channelIconOf(ch, glyph(IconMessage))
     } else if (tab.kind === 'streams') {
       title = 'Streams'
       icon = glyph(IconVideo)
@@ -4272,7 +4200,9 @@ function Main() {
       pinned: tab.pinned,
       unread: tab.kind === 'chat' && !active && unreadChannelIds.has(tab.ref),
       group,
-      closable: !group,
+      // Streams extends its channel's tab rather than standing on its own.
+      narrow: tab.kind === 'streams',
+      closable: !group && !isHomeTab(layout, tab.id),
       pinnable: !group
     }
   }
@@ -4283,6 +4213,7 @@ function Main() {
     const tab = layout.tabs[tabId]
     if (!tab) return []
     const group = isGroupTab(layout, tabId)
+    const home = isHomeTab(layout, tabId)
     const item = (key, label, Icon, onSelect, danger = false) => ({
       key,
       label,
@@ -4298,13 +4229,22 @@ function Main() {
       !!canvas &&
       splitFits(side, canvas.clientWidth, canvas.clientHeight)
     return [
+      // The bar no longer has a title chip to click, so a channel's tab is
+      // the way into its details.
+      ...(['chat', 'streams', 'files'].includes(tab.kind)
+        ? [
+            item('details', 'Channel Details', IconInfoCircle, () =>
+              handleShowChannelSummary(tab.ref)
+            )
+          ]
+        : []),
       ...(group
         ? []
         : [
             tab.pinned
               ? item('unpin', 'Unpin', IconPinnedOff, act('unpin'))
               : item('pin', 'Pin', IconPin, act('pin')),
-            item('close', 'Close', IconX, act('close'))
+            ...(home ? [] : [item('close', 'Close', IconX, act('close'))])
           ]),
       item('close-others', 'Close Others', IconSquareX, act('closeOthers')),
       item('close-right', 'Close to the Right', IconArrowBarToRight, act('closeToRight')),
@@ -4348,7 +4288,6 @@ function Main() {
         return {
           id: pane.id,
           tabs: pane.tabIds.map((id) => describeTab(layout.tabs[id], pane)),
-          // Summary tabs have no header bar: their banner card acts as the header.
           header: renderTabHeader(tab),
           error: dmCallErrorIn(tab),
           body: renderTab(tab),
@@ -4508,17 +4447,14 @@ function Main() {
                 <PaneLayout
                   layout={layout}
                   panes={paneViews}
-                  leave={groupLeave}
                   menuItems={tabMenuItems}
                   dispatch={dispatchTabs}
                 />
               ) : (
                 <>
-                  <div className="chat-header">
-                    <div className="header-content">
-                      <span aria-hidden="true" />
-                    </div>
-                  </div>
+                  {/* The empty header bar, so the canvas looks the same as it
+                      will once connected. */}
+                  <div className="pane-bar" />
                   <div className="chat-switch-region" key="disconnected">
                     <IdleAnimation connecting={connecting} />
                   </div>
