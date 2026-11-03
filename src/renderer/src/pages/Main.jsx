@@ -68,7 +68,7 @@ import {
 import { httpFetch } from '../lib/http'
 import { setServerLimits, previewKind } from '../lib/attachments'
 import { isCallMessage } from '../lib/callMessages'
-import { dmDisplayName, dmOthers } from '../lib/dm'
+import { dmDisplayName, dmOthers, inCallText } from '../lib/dm'
 import {
   applyReady,
   applyRingEnded,
@@ -1525,6 +1525,21 @@ function Main() {
     },
     [client, showError, showWarning]
   )
+
+  // Start or join a DM's call. Starting one rings every online participant,
+  // which only shows here as the local "Ringing…".
+  // `tab`: the DM's chat tab the call was started from.
+  const handleJoinDmCall = (dm, tab) => {
+    // Starting or joining a call from a preview tab pins it.
+    if (tab && !tab.pinned) dispatchTabs({ type: 'pin', tabId: tab.id })
+    if (!clients.some((c) => c.channel_id === dm.id)) {
+      const online = dmOthers(dm, client?.id)
+        .map((o) => o.id)
+        .filter((id) => statusOf(presences[id]) !== 'offline')
+      setOutgoingRings({ channelId: dm.id, rings: startOutgoing(new Map(), online, Date.now()) })
+    }
+    voice.join(dm.id)
+  }
 
   // Ring one participant who isn't in the DM's call (the member strip's Ring).
   const handleRingParticipant = async (dmId, userId) => {
@@ -3936,6 +3951,29 @@ function Main() {
     return fallback
   }
 
+  // A DM chat's call button beside its composer; a channel's chat has none.
+  const chatCallAction = (tab) => {
+    const dm = channelOf(tab.ref)
+    if (dm?.type !== 'dm') return null
+    if (voice.pendingChannelId === dm.id) {
+      return { state: 'joining', title: 'Joining…', disabled: true }
+    }
+    if (voice.pendingChannelId != null) {
+      return { state: 'switching', title: 'Switching call…', disabled: true }
+    }
+    if (voice.channelId === dm.id) {
+      return voice.joined
+        ? { state: 'leave', title: 'Leave call', onClick: () => voice.leave() }
+        : { state: 'joining', title: 'Joining…', disabled: true }
+    }
+    // Who is already in the DM's call (we aren't).
+    const members = clients.filter((c) => c.channel_id === dm.id && c.id !== client?.id)
+    const onClick = () => handleJoinDmCall(dm, tab)
+    if (!members.length) return { state: 'start', title: 'Start call', onClick }
+    const names = members.map((m) => m.name || 'Unknown')
+    return { state: 'join', title: `Join call — ${inCallText(names)}`, onClick }
+  }
+
   // Who is in the connected group: the DM call's participant strip. A voice
   // channel adds nothing — a head count here would resize the tabs as you
   // switch into the tab.
@@ -3994,6 +4032,7 @@ function Main() {
             onLoadOlder={() => loadOlderMessages(channelId)}
             hasMoreOlder={channelId != null && !exhaustedChannels.has(channelId)}
             pokeTargetName={dmNameOf(channelId)}
+            callAction={chatCallAction(tab)}
           />
         )
       }

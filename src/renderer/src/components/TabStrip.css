@@ -18,7 +18,9 @@
   overflow-y: hidden;
   scrollbar-width: none;
   user-select: none;
-  /* Width of a narrow tab (Streams); the group's basis counts it. */
+  /* Widths of a full tab and a narrow one (Streams); the group's basis counts
+     both. */
+  --tab-wide: 192px;
   --tab-narrow: 96px;
 }
 
@@ -35,9 +37,9 @@
   display: flex;
   align-items: center;
   gap: 4px;
-  flex: 1 1 220px;
+  flex: 1 1 var(--tab-wide);
   min-width: 80px;
-  max-width: 220px;
+  max-width: var(--tab-wide);
   padding: 0 4px 0 8px;
   overflow: hidden;
   border: 1px solid transparent;
@@ -193,7 +195,8 @@ html[data-transparency='true'] .tab.active {
 .tab-group {
   display: flex;
   align-items: stretch;
-  flex: 0 1 calc(var(--group-wide, 1) * 220px + var(--group-narrow, 1) * var(--tab-narrow));
+  flex: 0 1
+    calc(var(--group-wide, 1) * var(--tab-wide) + var(--group-narrow, 1) * var(--tab-narrow));
   min-width: calc(var(--group-wide, 1) * 80px + var(--group-narrow, 1) * var(--tab-narrow));
   margin-right: 6px;
   border-radius: var(--radius-sm) var(--radius-sm) 0 0;
