@@ -47,6 +47,7 @@ function Sidebar({
   servers,
   connectedServer,
   onConnect,
+  onRecovered,
   onDisconnect,
   onAddServer,
   onEditServer,
@@ -55,6 +56,10 @@ function Sidebar({
   onViewServerTraffic,
   onViewServerSummary,
   onOpenBanList,
+  canManageServer,
+  onOpenServerAdmin,
+  joinRequest,
+  onJoinConsumed,
   onCreateChannel,
   onDeleteChannel,
   onReorderChannel,
@@ -425,6 +430,7 @@ function Sidebar({
           servers={servers}
           connectedServer={connectedServer}
           onConnect={onConnect}
+          onRecovered={onRecovered}
           onDisconnect={onDisconnect}
           onAddServer={onAddServer}
           onEditServer={onEditServer}
@@ -434,6 +440,10 @@ function Sidebar({
           onViewServerSummary={onViewServerSummary}
           canBanMembers={canBanMembers}
           onOpenBanList={onOpenBanList}
+          canManageServer={canManageServer}
+          onOpenServerAdmin={onOpenServerAdmin}
+          joinRequest={joinRequest}
+          onJoinConsumed={onJoinConsumed}
         />
       </div>
 

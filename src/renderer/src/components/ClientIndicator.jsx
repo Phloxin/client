@@ -250,8 +250,15 @@ function ClientIndicator({
     setLocalMuted(false)
   }
 
-  const { onSetNickname, onSetPresence, onOpenStreamDebug, onWatchStream, presences } =
-    useClientActions()
+  const {
+    onSetNickname,
+    onSetPresence,
+    onOpenStreamDebug,
+    onWatchStream,
+    presences,
+    isAdmin,
+    onIssueResetCode
+  } = useClientActions()
 
   // Absent presence = offline. A status message stays visible while offline, so
   // it's appended independently of the status itself.
@@ -297,6 +304,8 @@ function ClientIndicator({
     canKickMembers,
     canBanMembers,
     canMuteMembers,
+    isAdmin,
+    onIssueResetCode,
     volume: {
       value: volume,
       muted: localMuted,

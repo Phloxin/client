@@ -14,6 +14,7 @@ export const TAB_KINDS = [
   'server-summary',
   'files',
   'bans',
+  'server-admin',
   'connection-info'
 ]
 export const MAX_PANES = 2

@@ -225,3 +225,27 @@ html[data-transparency='true'] .chat-area {
 .streams-popped-out-btn:hover {
   border-color: var(--color-primary);
 }
+
+/* The password reset code modal, built on the Roles and Groups popup's rg-* frame. */
+.reset-code-value {
+  padding: 10px 0 6px;
+  font-family: var(--font-family-mono);
+  font-size: 22px;
+  letter-spacing: 0.08em;
+  text-align: center;
+  color: var(--color-text);
+  user-select: all;
+}
+
+.reset-code-note {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  text-align: center;
+}
+
+.reset-code-actions {
+  display: flex;
+  justify-content: center;
+  margin-top: var(--spacing-sm);
+}

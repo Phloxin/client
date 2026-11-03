@@ -96,6 +96,17 @@ test('tabKey identifies content, with no ref as empty', () => {
   assert.equal(tabKey({ kind: 'bans', ref: null }), 'bans:')
 })
 
+test('the server admin tab opens once and survives hydrate', () => {
+  const opened = run(createLayout(), open('server-admin', null))
+  assert.deepEqual(view(opened), [['server-admin:~*']])
+  assert.deepEqual(view(run(opened, open('server-admin', null))), [['server-admin:~*']])
+  const h = run(createLayout(), {
+    type: 'hydrate',
+    persisted: { panes: [{ tabs: [{ kind: 'server-admin' }] }] }
+  })
+  assert.deepEqual(view(h), [['server-admin:^*']])
+})
+
 test('open puts content in a preview tab and activates it', () => {
   const s = run(createLayout(), chat('a'))
   assert.deepEqual(view(s), [['chat:a~*']])

@@ -1,0 +1,179 @@
+/* ============================================================================
+   SERVER SETTINGS: the Server Settings tab with registration mode and invites,
+   flush in the pane under the tab's header like the Ban List. Opened from the
+   server header's right-click menu (ADMINISTRATOR or CREATE_INVITES).
+   ============================================================================ */
+
+.sa-pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.sa-body {
+  padding: 12px 14px 16px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 120px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-lg);
+}
+
+.sa-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+}
+
+.sa-heading {
+  margin: 0 8px;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-tertiary);
+}
+
+.sa-radio-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.sa-radio {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--spacing-sm);
+  padding: 9px 8px;
+  border-radius: var(--radius-sm);
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.sa-radio:hover {
+  background: var(--color-background-mute);
+}
+
+.sa-radio-copy,
+.sa-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.sa-radio-label,
+.sa-code {
+  font-size: var(--font-size-md);
+}
+
+.sa-code {
+  font-family: var(--font-family-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sa-label {
+  font-family: var(--font-family-primary);
+  color: var(--color-text-secondary);
+}
+
+.sa-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-base);
+}
+
+.sa-create,
+.sa-custom {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: 0 8px;
+}
+
+.sa-input {
+  flex: 1;
+  min-width: 120px;
+  padding: 6px 9px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--color-background-mute);
+  color: var(--color-text);
+  font-family: var(--font-family-primary);
+  font-size: var(--font-size-base);
+  outline: none;
+}
+
+.sa-input:focus {
+  border-color: var(--color-primary);
+}
+
+.sa-input-uses {
+  flex: 0 0 96px;
+  min-width: 0;
+}
+
+.sa-btn,
+.sa-icon-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  padding: 6px 11px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--color-background-mute);
+  color: var(--color-text-secondary);
+  font-family: var(--font-family-primary);
+  font-size: var(--font-size-base);
+  cursor: pointer;
+}
+
+.sa-icon-btn {
+  padding: 6px;
+}
+
+.sa-btn:hover:not(:disabled),
+.sa-icon-btn:hover:not(:disabled) {
+  color: var(--color-text);
+  border-color: var(--hairline-strong);
+}
+
+.sa-icon-btn.danger:hover:not(:disabled) {
+  color: var(--color-danger);
+}
+
+.sa-btn:disabled,
+.sa-icon-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.sa-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: 9px 8px;
+  border-radius: var(--radius-sm);
+  color: var(--color-text);
+}
+
+.sa-row:hover {
+  background: var(--color-background-mute);
+}
+
+.sa-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: 24px 6px;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-base);
+}

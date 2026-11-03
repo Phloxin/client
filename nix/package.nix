@@ -163,9 +163,11 @@ buildNpmPackage {
       name = "app.pylon.client";
       desktopName = "Pylon";
       comment = packageJson.description;
-      exec = "pylon";
+      exec = "pylon %u";
       icon = "pylon";
       startupWMClass = "pylon";
+      # pylon://join invite links (see src/main/index.js).
+      mimeTypes = [ "x-scheme-handler/pylon" ];
       categories = [
         "Network"
         "Chat"

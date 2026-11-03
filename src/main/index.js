@@ -50,6 +50,43 @@ const APP_ID = 'app.pylon.client'
 // Main window reference, shared with the tray so it can reach the window.
 let mainWindow = null
 
+// pylon://join invite links. One app instance handles them: a second launch (the OS opening a
+// link while Pylon runs) hands its argv to this one and quits. Each userData dir has its own lock,
+// so the e2e harness's per-client config dirs still run side by side.
+const singleInstance = app.requestSingleInstanceLock()
+if (!singleInstance) app.quit()
+
+// The latest link not yet taken by the renderer. Read on mount, so a cold-start link waits here.
+let pendingDeepLink = null
+const deepLinkIn = (argv) => argv.find((arg) => arg.startsWith('pylon://')) ?? null
+
+function receiveDeepLink(url) {
+  if (!url) return
+  pendingDeepLink = url
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('deep-link:join')
+}
+
+function focusMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.show()
+  mainWindow.focus()
+}
+
+app.on('second-instance', (_, argv) => {
+  receiveDeepLink(deepLinkIn(argv))
+  focusMainWindow()
+})
+
+// macOS delivers links as an event, also for the launch that a link started.
+app.on('open-url', (event, url) => {
+  event.preventDefault()
+  receiveDeepLink(url)
+  focusMainWindow()
+})
+
+receiveDeepLink(deepLinkIn(process.argv))
+
 // Portals need a stable XDG application ID. In development there is no
 // installed .desktop file for Electron to infer it from, so set the name before
 // ready; packaged Linux builds use the matching desktopName metadata below.
@@ -514,9 +551,13 @@ function setupAppMenu() {
 }
 
 app.whenReady().then(() => {
+  // The second instance is already quitting. Make sure it never opens a window.
+  if (!singleInstance) return
   // Set app user model id for windows
   electronApp.setAppUserModelId(APP_ID)
   setupAppMenu()
+  // Development runs have no installed handler to register.
+  if (app.isPackaged) app.setAsDefaultProtocolClient('pylon')
 
   // Renderer error forwarding + native diagnostics export dialog.
   registerDiagnosticsIpc()
@@ -989,6 +1030,12 @@ app.whenReady().then(() => {
     contents.on('render-process-gone', () => clearSessionOwnedBy(contents))
     BrowserWindow.fromWebContents(contents)?.once('closed', () => clearSessionOwnedBy(contents))
   }
+  ipcMain.handle('deep-link:take', () => {
+    const url = pendingDeepLink
+    pendingDeepLink = null
+    return url
+  })
+
   ipcMain.handle('session:set', (event, payload) => {
     setSession(payload)
     sessionOwner = event.sender

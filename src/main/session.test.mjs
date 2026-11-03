@@ -1,7 +1,14 @@
 import assert from 'node:assert/strict'
 import test, { mock } from 'node:test'
 
-import { clearSession, getFreshToken, onExpired, onUpdateRequired, setSession } from './session.js'
+import {
+  authorizationFor,
+  clearSession,
+  getFreshToken,
+  onExpired,
+  onUpdateRequired,
+  setSession
+} from './session.js'
 
 // Ported from the renderer's auth.test.mjs when the token store moved here.
 // These shims keep the case bodies as they were: the session is for the
@@ -148,6 +155,18 @@ test('a forced refresh rotates a token that is not near expiry', async () => {
   } finally {
     clearAuthTokens()
     globalThis.fetch = originalFetch
+  }
+})
+
+test('credential endpoints carry no bearer, authenticated ones keep it', () => {
+  try {
+    setAuthTokens(tokenPair('current'))
+    for (const path of ['/auth/login', '/auth/register', '/auth/refresh', '/auth/recovery']) {
+      assert.equal(authorizationFor(`${API_ORIGIN}${path}`), null, path)
+    }
+    assert.equal(authorizationFor(`${API_ORIGIN}/auth/password`), 'Bearer current-access')
+  } finally {
+    clearAuthTokens()
   }
 })
 

@@ -22,6 +22,7 @@ import UpdatePrompt from '../components/UpdatePrompt'
 import StreamDebugPanel from '../components/StreamDebugPanel'
 import RolesGroupsMenu from '../components/RolesGroupsMenu'
 import BanListMenu from '../components/BanListMenu'
+import ServerAdminMenu from '../components/ServerAdminMenu'
 import FileBrowser from '../components/FileBrowser'
 import ImageViewer from '../components/ImageViewer'
 import FileViewer from '../components/FileViewer'
@@ -85,6 +86,7 @@ import {
   selfChannelChime
 } from '../lib/voiceRecoveryState'
 import { EVERYONE_ROLE_ID, viewChannelOverride } from '../lib/permissions'
+import { formatResetCode, parseInviteInput } from '../lib/invite'
 import {
   activePane,
   activeTab,
@@ -118,6 +120,7 @@ import {
   IconPin,
   IconPinnedOff,
   IconServer,
+  IconSettings,
   IconSquareX,
   IconUser,
   IconUsersGroup,
@@ -159,6 +162,7 @@ const PERM_BAN_MEMBERS = 1n << 11n
 const PERM_MANAGE_MESSAGES = 1n << 3n
 const PERM_MANAGE_CHANNELS = 1n << 5n
 const PERM_MANAGE_ROLES = 1n << 12n
+const PERM_CREATE_INVITES = 1n << 19n
 const PERM_ADMINISTRATOR = 1n << 62n
 
 const NO_OUTGOING_RINGS = { channelId: null, rings: new Map() }
@@ -186,11 +190,13 @@ function saveTabLayout(host, persisted) {
 }
 
 // Whether a tab's subject is gone: a channel deleted or hidden from us, a
-// client who left, the ban list without BAN_MEMBERS (`bansGone`). Shared by the
+// client who left, the ban list without BAN_MEMBERS (`bansGone`), server
+// settings without ADMINISTRATOR or CREATE_INVITES (`adminGone`). Shared by the
 // tab prune and reopen.
-function tabSubjectGone(tab, { channelIds, clientIds, bansGone }) {
+function tabSubjectGone(tab, { channelIds, clientIds, bansGone, adminGone }) {
   if (tab.kind === 'client') return !clientIds.has(tab.ref)
   if (tab.kind === 'bans') return bansGone
+  if (tab.kind === 'server-admin') return adminGone
   if (tab.kind === 'chat' || tab.kind === 'channel-details' || tab.kind === 'files') {
     return !channelIds.has(tab.ref)
   }
@@ -1658,6 +1664,10 @@ function Main() {
   const canKickMembers = isAdmin || (myPermissions & PERM_KICK_MEMBERS) !== 0n
   const canBanMembers = isAdmin || (myPermissions & PERM_BAN_MEMBERS) !== 0n
   const canMuteMembers = isAdmin || (myPermissions & PERM_MUTE_MEMBERS) !== 0n
+  const canCreateInvites = isAdmin || (myPermissions & PERM_CREATE_INVITES) !== 0n
+  // The Server settings tab: its registration section needs ADMINISTRATOR, its
+  // invites CREATE_INVITES.
+  const canManageServer = isAdmin || canCreateInvites
   // Editing a channel's permission overwrites needs MANAGE_CHANNELS or
   // MANAGE_ROLES (or admin). The server is authoritative; this only gates the UI.
   const canManageChannels =
@@ -1701,6 +1711,10 @@ function Main() {
     dispatchTabs({ type: 'open', content: { kind: 'bans' } })
   }, [refreshBans])
 
+  const handleOpenServerAdmin = useCallback(() => {
+    dispatchTabs({ type: 'open', content: { kind: 'server-admin' } })
+  }, [])
+
   // Tabs whose subject is gone: a channel deleted or hidden from us, a client
   // who left, the ban list once we lack BAN_MEMBERS. Waits for this
   // connection's Ready (and the role list, for bans) so a restored layout isn't
@@ -1711,13 +1725,14 @@ function Main() {
     const subjects = {
       channelIds: new Set(visibleChannels.map((c) => c.id)),
       clientIds: new Set(clients.map((c) => c.id)),
-      bansGone: rolesLoaded && !canBanMembers
+      bansGone: rolesLoaded && !canBanMembers,
+      adminGone: rolesLoaded && !canManageServer
     }
     const gone = (tab) => tabSubjectGone(tab, subjects)
     const fallback = restoredPruneRef.current ? 'first' : undefined
     if (rolesLoaded) restoredPruneRef.current = false
     dispatchTabs({ type: 'pruneBy', predicate: gone, fallback })
-  }, [rosterReady, visibleChannels, clients, rolesLoaded, canBanMembers])
+  }, [rosterReady, visibleChannels, clients, rolesLoaded, canBanMembers, canManageServer])
 
   // Assign / remove a role. role_ids is updated on success (not optimistically),
   // so a server rejection — e.g. missing MANAGE_ROLES — doesn't leave a stale
@@ -2009,6 +2024,32 @@ function Main() {
 
   const handleRemoveServer = (id) => saveServers(servers.filter((s) => s.id !== id))
 
+  // After Settings changes the password, so the saved login keeps working.
+  const handlePasswordChanged = (password) => {
+    if (connectedServer) {
+      const { host, username } = connectedServer
+      saveServers(
+        servers.map((s) => (s.host === host && s.username === username ? { ...s, password } : s))
+      )
+    }
+    showSuccess('Password changed')
+  }
+
+  // A pylon://join link the OS opened us with, { host, code }, held until
+  // ServerMenu has opened the register form with it.
+  const [joinRequest, setJoinRequest] = useState(null)
+  useEffect(() => {
+    const deepLink = window.api?.deepLink
+    if (!deepLink) return
+    const receive = (url) => {
+      const parsed = parseInviteInput(url)
+      if (parsed) setJoinRequest(parsed)
+    }
+    deepLink.getPending().then((url) => url && receive(url))
+    return deepLink.onJoin(receive)
+  }, [])
+  const handleJoinConsumed = useCallback(() => setJoinRequest(null), [])
+
   // Open the suppression window just before a self channel action, so the echoed
   // ChannelUpdated (which can arrive before the HTTP response resolves) doesn't
   // also fire the "your current channel was edited" cue.
@@ -2204,9 +2245,9 @@ function Main() {
     [token, showError]
   )
 
-  // Connect to a saved server: point all endpoints at its host, then log in with
-  // its stored credentials. Setting the token triggers the data-loading effect.
-  const handleConnect = async (server) => {
+  // The steps before login, shared by connect and password recovery. Returns GET
+  // /server's answer and throws when the server cannot give one.
+  const prepareConnect = async (server) => {
     // A host is global because the REST/WebSocket helpers are shared. Tear down
     // the previous session before changing it, otherwise old channel data and
     // reconnect callbacks can issue requests against the new host (or null).
@@ -2214,7 +2255,29 @@ function Main() {
     updateRequiredRef.current = false
     setServerHost(server.host)
     setConnecting(true)
+    // The server's name and the limits it enforces. Unauthenticated, so it
+    // comes first: a server that can't answer this can't be connected to.
+    // Also lets the header/title show the real name from the first render
+    // instead of flashing the nickname first.
+    const info = await httpFetch(`${apiBase()}/server`).then((res) => {
+      if (!res.ok) throw new Error(`Server responded ${res.status}`)
+      return res.json()
+    })
+    setServerLimits(info.limits)
+    return info
+  }
 
+  // The steps after login, from a login-shaped response.
+  const finishConnect = async (server, info, authResponse) => {
+    await applyAuthResponse(authResponse)
+    setConnectedServer(server)
+    setServerName(info.name ?? null)
+    playUiSound('connected')
+  }
+
+  // Connect to a saved server: point all endpoints at its host, then log in with
+  // its stored credentials. Setting the token triggers the data-loading effect.
+  const handleConnect = async (server) => {
     const credentials = {
       username: server.username,
       password: server.password,
@@ -2228,15 +2291,7 @@ function Main() {
       }).then(async (res) => ({ response: res, data: await res.json().catch(() => ({})) }))
 
     try {
-      // The server's name and the limits it enforces. Unauthenticated, so it
-      // comes first: a server that can't answer this can't be connected to.
-      // Also lets the header/title show the real name from the first render
-      // instead of flashing the nickname first.
-      const info = await httpFetch(`${apiBase()}/server`).then((res) => {
-        if (!res.ok) throw new Error(`Server responded ${res.status}`)
-        return res.json()
-      })
-      setServerLimits(info.limits)
+      const info = await prepareConnect(server)
 
       let result = await login()
       let data = result.data
@@ -2251,14 +2306,19 @@ function Main() {
         if (registerResponse.ok) {
           result = await login()
           data = result.data
+        } else {
+          const body = await registerResponse.json().catch(() => null)
+          if (body?.code === 'invite_required' || body?.code === 'invite_invalid') {
+            setServerHost(null)
+            setServerLimits(null)
+            showError('This server is invite-only; add it with an invite to create an account')
+            return
+          }
         }
       }
 
       if (result.response.ok && data.access_token) {
-        await applyAuthResponse(data)
-        setConnectedServer(server)
-        setServerName(info.name ?? null)
-        playUiSound('connected')
+        await finishConnect(server, info, data)
       } else {
         setServerHost(null)
         setServerLimits(null)
@@ -2267,6 +2327,20 @@ function Main() {
           showError(`Failed to connect to ${server.nickname}: ${data.message || 'login failed'}`)
         }
       }
+    } catch {
+      setServerHost(null)
+      setServerLimits(null)
+      showError(`Failed to connect to ${server.nickname}: could not reach server`)
+    } finally {
+      setConnecting(false)
+    }
+  }
+
+  // Password recovery already logged in, so its response is used as is.
+  const handleRecovered = async (server, authResponse) => {
+    try {
+      const info = await prepareConnect(server)
+      await finishConnect(server, info, authResponse)
     } catch {
       setServerHost(null)
       setServerLimits(null)
@@ -3640,6 +3714,27 @@ function Main() {
 
   // Copy a file's share link: the absolute URL, which is what someone without
   // a session needs.
+  // A reset code is shown once, in a small modal with a Copy button.
+  const [resetCode, setResetCode] = useState(null)
+  const handleIssueResetCode = async (clientId) => {
+    const name = clients.find((c) => c.id === clientId)?.name ?? 'this user'
+    try {
+      const res = await authFetch(`${apiBase()}/clients/${clientId}/reset-code`, {
+        method: 'POST'
+      })
+      await throwIfError(res)
+      const data = await res.json()
+      setResetCode({ name, code: formatResetCode(data.code), expiresAt: data.expires_at })
+    } catch (err) {
+      showError(`Failed to issue a reset code: ${err.message}`, err)
+    }
+  }
+  const copyResetCode = () =>
+    navigator.clipboard.writeText(resetCode.code).then(
+      () => showSuccess('Reset code copied'),
+      (err) => console.error('Copy reset code failed:', err)
+    )
+
   const handleCopyLink = (publicUrl) => {
     const url = assetUrl(publicUrl)
     if (!url) return
@@ -3813,6 +3908,7 @@ function Main() {
       if (ringOverlayOpen) setRingsHidden(true)
       else if (showSettings) setShowSettings(false)
       else if (rolesGroupsOpen) setRolesGroupsOpen(false)
+      else if (resetCode) setResetCode(null)
       // ImageViewer closes itself on Escape without claiming the key, so its
       // layer is listed here to keep the Files tab under it open.
       else if (filesViewerImage) setFilesViewerImage(null)
@@ -3823,7 +3919,15 @@ function Main() {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [ringOverlayOpen, showSettings, rolesGroupsOpen, filesViewerImage, layout, poppedOut])
+  }, [
+    ringOverlayOpen,
+    showSettings,
+    rolesGroupsOpen,
+    resetCode,
+    filesViewerImage,
+    layout,
+    poppedOut
+  ])
 
   // In-app tab shortcuts (Settings → Keybinds), off while Settings is open so
   // nothing changes behind it.
@@ -3837,7 +3941,8 @@ function Main() {
     const subjects = {
       channelIds: new Set(visibleChannels.map((c) => c.id)),
       clientIds: new Set(clients.map((c) => c.id)),
-      bansGone: !canBanMembers
+      bansGone: !canBanMembers,
+      adminGone: !canManageServer
     }
     return (content) => !tabSubjectGone(content, subjects)
   }
@@ -4144,6 +4249,17 @@ function Main() {
         // Gated like the old popup: nothing renders without BAN_MEMBERS (the
         // tab is pruned once the roles say so).
         return canBanMembers ? <BanListMenu bans={resolvedBans} onUnban={handleUnbanUser} /> : null
+      case 'server-admin':
+        return canManageServer ? (
+          <ServerAdminMenu
+            isAdmin={isAdmin}
+            canCreateInvites={canCreateInvites}
+            host={connectedServer?.host}
+            clients={clients}
+            onError={showError}
+            onSuccess={showSuccess}
+          />
+        ) : null
       case 'connection-info':
         return <StreamDebugPanel clients={clients} selfId={client?.id} />
       default:
@@ -4191,6 +4307,9 @@ function Main() {
     } else if (tab.kind === 'bans') {
       title = 'Bans'
       icon = glyph(IconBan)
+    } else if (tab.kind === 'server-admin') {
+      title = 'Server Settings'
+      icon = glyph(IconSettings)
     } else if (tab.kind === 'connection-info') {
       title = 'Connection Info'
       icon = glyph(IconActivity)
@@ -4328,7 +4447,9 @@ function Main() {
     onWatchStream: handleWatchStream,
     canKickMembers,
     canBanMembers,
-    canMuteMembers
+    canMuteMembers,
+    isAdmin,
+    onIssueResetCode: handleIssueResetCode
   }
 
   return (
@@ -4344,6 +4465,43 @@ function Main() {
               onCreateVanity={handleCreateVanityGroup}
               onClose={() => setRolesGroupsOpen(false)}
             />
+          )}
+          {resetCode && (
+            <div className="rg-overlay" onClick={() => setResetCode(null)}>
+              <motion.div
+                className="rg-modal"
+                onClick={(e) => e.stopPropagation()}
+                {...overlayPop(overlayAnim)}
+              >
+                <div className="rg-header">
+                  <span className="rg-title">Password reset code</span>
+                  <button
+                    type="button"
+                    className="rg-close"
+                    onClick={() => setResetCode(null)}
+                    title="Close"
+                  >
+                    <IconX size={16} />
+                  </button>
+                </div>
+                <div className="rg-body">
+                  <div className="reset-code-value">{resetCode.code}</div>
+                  <p className="reset-code-note">
+                    Give this code to {resetCode.name}. It works once, until{' '}
+                    {new Date(resetCode.expiresAt).toLocaleTimeString([], {
+                      hour: 'numeric',
+                      minute: '2-digit'
+                    })}
+                    , and is not shown again.
+                  </p>
+                  <div className="reset-code-actions">
+                    <button type="button" className="rg-icon-btn" onClick={copyResetCode}>
+                      Copy
+                    </button>
+                  </div>
+                </div>
+              </motion.div>
+            </div>
           )}
           {filesViewerImage && (
             <ImageViewer
@@ -4407,11 +4565,16 @@ function Main() {
               onViewServerTraffic={handleViewServerTraffic}
               onViewServerSummary={handleViewServerSummary}
               onOpenBanList={handleOpenBanList}
+              canManageServer={canManageServer}
+              onOpenServerAdmin={handleOpenServerAdmin}
+              joinRequest={joinRequest}
+              onJoinConsumed={handleJoinConsumed}
               // provide a renderer-level openSettings hook
               onOpenSettings={openSettings}
               servers={servers}
               connectedServer={connectedServer}
               onConnect={handleConnect}
+              onRecovered={handleRecovered}
               onDisconnect={handleDisconnect}
               onAddServer={handleAddServer}
               onEditServer={handleEditServer}
@@ -4485,7 +4648,13 @@ function Main() {
                     >
                       <IconX size={18} />
                     </button>
-                    <Settings />
+                    <Settings
+                      account={{
+                        connected,
+                        username: connectedServer?.username,
+                        onChangePassword: handlePasswordChanged
+                      }}
+                    />
                   </motion.div>
                 </motion.div>
               )}

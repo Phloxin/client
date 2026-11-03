@@ -70,6 +70,19 @@ const api = {
       return () => ipcRenderer.removeListener('session:update-required', handler)
     }
   },
+  // pylon://join links the OS opened Pylon with. Both take the one pending link, so a link is
+  // handled once: getPending() on mount, onJoin(cb) for links that arrive later.
+  deepLink: {
+    getPending: () => ipcRenderer.invoke('deep-link:take'),
+    onJoin: (cb) => {
+      const handler = () =>
+        ipcRenderer.invoke('deep-link:take').then((url) => {
+          if (url) cb(url)
+        })
+      ipcRenderer.on('deep-link:join', handler)
+      return () => ipcRenderer.removeListener('deep-link:join', handler)
+    }
+  },
   diagnostics: {
     isAvailable: () => ipcRenderer.invoke('diagnostics:is-available'),
     exportLogs: () => ipcRenderer.invoke('diagnostics:export'),

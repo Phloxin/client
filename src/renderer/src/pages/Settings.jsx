@@ -11,7 +11,8 @@ import {
   IconBreadOff,
   IconPlayerPlayFilled,
   IconAdjustments,
-  IconSettings
+  IconSettings,
+  IconUser
 } from '@tabler/icons-react'
 import { useSettings } from '../context/SettingsContext'
 import { ThemeSwitcher } from '../components/ThemeSwitcher'
@@ -19,6 +20,7 @@ import AudioSettings from '../components/AudioSettings'
 import KeybindsSettings from '../components/KeybindsSettings'
 import AdvancedSettings from '../components/AdvancedSettings'
 import GeneralSettings from '../components/GeneralSettings'
+import AccountSettings from '../components/AccountSettings'
 import {
   SOUND_SECTIONS,
   SOUND_DEFAULTS,
@@ -37,6 +39,12 @@ const sections = [
     title: 'General',
     description: 'App version and updates.',
     icon: IconSettings
+  },
+  {
+    id: 'account',
+    title: 'Account',
+    description: 'Your login on the connected server.',
+    icon: IconUser
   },
   {
     id: 'appearance',
@@ -70,7 +78,9 @@ const sections = [
   }
 ]
 
-function Settings() {
+// `account` is { connected, username, onChangePassword } from Main. The Account section shows only
+// while connected.
+function Settings({ account }) {
   const {
     micSettings,
     updateMicSettings,
@@ -88,13 +98,14 @@ function Settings() {
     updateAnimationSettings
   } = useSettings()
   const [activeSection, setActiveSection] = useState('appearance')
+  const shownSections = sections.filter((section) => section.id !== 'account' || account?.connected)
 
   return (
     <div className="settings-layout">
       <div className="settings-header">Settings</div>
       <div className="settings-body">
         <aside className="settings-menu">
-          {sections.map((section) => {
+          {shownSections.map((section) => {
             const SectionIcon = section.icon
             const isActive = activeSection === section.id
 
@@ -116,6 +127,13 @@ function Settings() {
 
         <section className="settings-panel">
           {activeSection === 'general' && <GeneralSettings />}
+
+          {activeSection === 'account' && account?.connected && (
+            <AccountSettings
+              username={account.username}
+              onChangePassword={account.onChangePassword}
+            />
+          )}
 
           {activeSection === 'appearance' && (
             <div className="settings-panel-card">
