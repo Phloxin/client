@@ -16,6 +16,11 @@ files:
   # The pylon-e2ee submodule (crate source and its Rust target/); the renderer
   # bundles only the WASM that build:e2ee builds from it.
   - '!pylon-e2ee/**'
+# pylon://join invite links (see src/main/index.js).
+protocols:
+  - name: Pylon
+    schemes:
+      - pylon
 asarUnpack:
   - resources/**
   # Native modules must live outside the asar to be dlopen-able.

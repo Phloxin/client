@@ -28,7 +28,12 @@ const MIN_REFRESH_INTERVAL_MS = 30_000
 
 // Credential endpoints carry no session of their own; the header hook leaves
 // them alone even on the session's origin.
-const CREDENTIAL_PATHS = new Set(['/auth/login', '/auth/register', '/auth/refresh'])
+const CREDENTIAL_PATHS = new Set([
+  '/auth/login',
+  '/auth/register',
+  '/auth/refresh',
+  '/auth/recovery'
+])
 
 // Same value as API_VERSION in renderer/src/lib/serverConfig.js.
 const API_VERSION = 1

@@ -12,7 +12,9 @@ import {
   IconMovie,
   IconPlayerPauseFilled,
   IconPlayerPlayFilled,
-  IconScreenShareOff
+  IconScreenShareOff,
+  IconVideo,
+  IconVideoOff
 } from '@tabler/icons-react'
 import { RESOLUTIONS } from '../lib/captureOptions'
 import { useMenuPosition } from '../lib/menuPosition'
@@ -34,7 +36,8 @@ function StreamContextMenu({
   onClose,
   isSelf,
   // { value (0..200, 0 while muted), muted, icon (element), onChange, onToggleMute,
-  // onReset } for someone else's stream; null for our own (we never hear it).
+  // onReset } for someone else's screen share; null for our own (we never hear it)
+  // and for a camera (no audio).
   audio,
   focused,
   canToggleFocus,
@@ -46,6 +49,8 @@ function StreamContextMenu({
   onStopSharing,
   // Our own stream: pause, change source, and retune the live share.
   shareControl,
+  // Our own stream: which share it is ('screen' | 'camera'), for shareControl.
+  source,
   onPopout,
   theatre,
   onToggleTheatre,
@@ -58,7 +63,7 @@ function StreamContextMenu({
   // The capture options live in the sidebar's voice channel; snapshot them as
   // the menu opens (it remounts per open) so the segments show what's live.
   const [shareOptions, setShareOptions] = useState(() =>
-    isSelf ? (shareControl?.getOptions() ?? null) : null
+    isSelf ? (shareControl?.getOptions(source) ?? null) : null
   )
   const [settingsOpen, setSettingsOpen] = useState(false)
 
@@ -98,10 +103,10 @@ function StreamContextMenu({
       ...rest,
       ...(audio == null ? {} : { audioMode: audio ? 'on' : 'none' })
     }))
-    await shareControl?.restart(patch)
+    await shareControl?.restart(source, patch)
     // Only resync if the restart left us sharing — mid-restart the sidebar's
     // handle is briefly gone, and blanking the menu then would look broken.
-    const settled = shareControl?.getOptions()
+    const settled = shareControl?.getOptions(source)
     if (settled) setShareOptions(settled)
   }
 
@@ -119,8 +124,8 @@ function StreamContextMenu({
         className="client-context-menu-item danger"
         onClick={act(onStopSharing)}
       >
-        <IconScreenShareOff size={16} />
-        Stop streaming
+        {source === 'camera' ? <IconVideoOff size={16} /> : <IconScreenShareOff size={16} />}
+        {source === 'camera' ? 'Stop camera' : 'Stop sharing screen'}
       </button>
     )
   ) : watched ? (
@@ -146,7 +151,7 @@ function StreamContextMenu({
   // Our own share's controls. Pausing restarts nothing: viewers keep the stream
   // and see it paused until it resumes. The settings flyout carries the capture
   // rows from the old in-bar popover; a camera share has none of those to
-  // retune, so it gets no flyout (only Pause/Resume and Change source).
+  // retune, so it gets no flyout (only Pause/Resume and Change camera…).
   const ownShareItems =
     isSelf && shareControl ? (
       <>
@@ -154,7 +159,7 @@ function StreamContextMenu({
           <button
             type="button"
             className="client-context-menu-item"
-            onClick={act(() => shareControl.setPaused(!shareOptions.paused))}
+            onClick={act(() => shareControl.setPaused(source, !shareOptions.paused))}
           >
             {shareOptions.paused ? (
               <IconPlayerPlayFilled size={16} />
@@ -167,10 +172,10 @@ function StreamContextMenu({
         <button
           type="button"
           className="client-context-menu-item"
-          onClick={act(() => shareControl.pickSource())}
+          onClick={act(() => shareControl.pickSource(source === 'camera' ? 'devices' : 'screens'))}
         >
-          <IconDeviceDesktop size={16} />
-          Change source
+          {source === 'camera' ? <IconVideo size={16} /> : <IconDeviceDesktop size={16} />}
+          {source === 'camera' ? 'Change camera…' : 'Change screen…'}
         </button>
         {shareOptions && !shareOptions.isCamera && (
           <div className="client-submenu">

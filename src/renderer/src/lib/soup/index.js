@@ -39,7 +39,7 @@ import {
   applyChannelCodecs,
   configureScreenShare,
   endShareFromServer,
-  getScreenShareContext,
+  getShareContexts,
   resetActiveScreenShare,
   stopScreenEncoderStats
 } from './screenShare'
@@ -113,7 +113,7 @@ export {
   setSharePaused,
   shareCamera,
   shareScreen,
-  stopScreenShare
+  stopShare
 } from './screenShare'
 export { startStreamDebugStats, startVoiceConnectionStats } from './streamDiagnostics'
 
@@ -239,13 +239,13 @@ configureStreamDiagnostics({
   getProducerTransport: () => producerTransport,
   getConsumerTransport: () => consumerTransport,
   getProducers: () => producers,
-  getScreenShareContext,
+  getShareContexts,
   getRemoteConsumers: () => remoteConsumers
 })
 configureTestHooks({
   getRemoteConsumers: () => remoteConsumers,
   getProducers: () => producers,
-  getScreenShareContext,
+  getShareContexts,
   dropVoiceSocket: () =>
     forceVoiceReconnect('Test harness dropped the voice socket', CloseAction.Resume)
 })
@@ -1039,7 +1039,8 @@ function closeVideoConsumer(id) {
     stream: null,
     kind: 'video',
     producerId: id,
-    clientId: entry.clientId
+    clientId: entry.clientId,
+    producedType: entry.producedType
   })
 }
 
@@ -1164,12 +1165,14 @@ function addRemoteSources(sources) {
 
     // Video does NOT receive here: it waits for an explicit watch
     // (setWatchedProducers). Register it and announce a tile with no stream.
-    knownVideoProducers.set(id, { clientId, producedType: producedTypeForSource(type) })
+    const producedType = producedTypeForSource(type)
+    knownVideoProducers.set(id, { clientId, producedType })
     activeCallbacks.onVideoStream?.({
       stream: null,
       kind: 'video',
       producerId: id,
       clientId,
+      producedType,
       paused
     })
     // Only a replacement arrives already watched (see replaceRemoteSource).
@@ -3832,6 +3835,7 @@ async function createSinkFor(id) {
       // being received.
       producerId: id,
       clientId,
+      producedType,
       codec: codecLabel(consumer.rtpParameters),
       paused: channelState.source(id)?.paused === true
     })

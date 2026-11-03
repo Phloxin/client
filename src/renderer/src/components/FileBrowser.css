@@ -1,39 +1,24 @@
 /* ============================================================================
-   FILE BROWSER — a channel's files with search, type chips, and per-file
-   actions. Built on the Ban List popup (bl-* classes from BanListMenu.css);
+   FILE BROWSER — the Files tab: a channel's files with search, type chips, and
+   per-file actions. Built on the Ban List tab's bl-* classes (BanListMenu.css);
    only the file-specific pieces live here.
    ============================================================================ */
-
-.fb-modal {
-  width: min(640px, 96%);
-  max-height: min(680px, 90%);
-}
-
-.fb-title {
-  min-width: 0;
-}
-
-.fb-title-text {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 
 .fb-chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  margin: 10px 18px 0;
+  gap: 8px;
+  margin: 12px 18px 0;
 }
 
 .fb-chip {
-  padding: 3px 10px;
+  padding: 5px 12px;
   border: 1px solid var(--hairline);
   border-radius: 999px;
   background: transparent;
   color: var(--color-text-secondary);
   font-family: var(--font-family-primary);
-  font-size: var(--font-size-sm);
+  font-size: var(--font-size-base);
   cursor: pointer;
 }
 
@@ -49,8 +34,8 @@
 }
 
 .fb-thumb {
-  width: 40px;
-  height: 40px;
+  width: 44px;
+  height: 44px;
   flex-shrink: 0;
   display: flex;
   align-items: center;
@@ -127,17 +112,17 @@
 .fb-confirm {
   gap: 6px;
   color: var(--color-text-secondary);
-  font-size: var(--font-size-sm);
+  font-size: var(--font-size-base);
 }
 
 .fb-confirm-btn {
-  padding: 3px 9px;
+  padding: 4px 11px;
   border: 1px solid var(--hairline);
   border-radius: var(--radius-sm);
   background: var(--color-background-mute);
   color: var(--color-text-secondary);
   font-family: var(--font-family-primary);
-  font-size: var(--font-size-sm);
+  font-size: var(--font-size-base);
   cursor: pointer;
 }
 

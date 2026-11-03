@@ -1,78 +1,22 @@
 /* ============================================================================
-   BAN LIST — popup listing the server's bans with an Unban action per row.
-   Opened from the server header's right-click menu (BAN_MEMBERS only).
+   BAN LIST — the Ban List tab: the server's bans with an Unban action per row,
+   flush in the pane under the tab's header. Opened from the server header's
+   right-click menu (BAN_MEMBERS only).
    ============================================================================ */
 
-.bl-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgb(var(--shadow-tint) / 0.55);
-  backdrop-filter: blur(3px);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1100;
-  padding: 24px;
-}
-
-.bl-modal {
-  width: min(460px, 96%);
-  max-height: min(560px, 90%);
-  border: 1px solid var(--hairline-strong);
-  border-radius: var(--radius-xl);
-  overflow: hidden;
-  background: var(--gradient-surface);
-  box-shadow: var(--shadow-3);
+.bl-pane {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-}
-
-.bl-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 14px 18px 10px;
-  border-bottom: 1px solid var(--hairline);
-}
-
-.bl-title {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-sm);
-  font-weight: 600;
-  color: var(--color-text);
-}
-
-.bl-count {
-  padding: 1px 7px;
-  border-radius: 999px;
-  background: var(--color-background-mute);
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-sm);
-  font-weight: 500;
-}
-
-.bl-close {
-  display: flex;
-  padding: 4px;
-  border: none;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--color-text-secondary);
-  cursor: pointer;
-}
-
-.bl-close:hover {
-  background: var(--color-background-mute);
-  color: var(--color-text);
 }
 
 .bl-search {
   display: flex;
   align-items: center;
   gap: var(--spacing-sm);
-  margin: 12px 18px 0;
-  padding: 6px 8px;
+  margin: 14px 18px 0;
+  padding: 8px 10px;
   border: 1px solid var(--hairline);
   border-radius: var(--radius-sm);
   background: var(--color-background-mute);
@@ -90,12 +34,12 @@
   background: transparent;
   color: var(--color-text);
   font-family: var(--font-family-primary);
-  font-size: var(--font-size-sm);
+  font-size: var(--font-size-md);
   outline: none;
 }
 
 .bl-body {
-  padding: 10px 12px 14px;
+  padding: 12px 14px 16px;
   overflow-y: auto;
   flex: 1;
   min-height: 120px;
@@ -105,7 +49,7 @@
   display: flex;
   align-items: center;
   gap: var(--spacing-sm);
-  padding: 7px 6px;
+  padding: 9px 8px;
   border-radius: var(--radius-sm);
   color: var(--color-text);
 }
@@ -115,8 +59,8 @@
 }
 
 .bl-avatar {
-  width: 28px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
   flex-shrink: 0;
   display: flex;
   align-items: center;
@@ -149,9 +93,13 @@
   white-space: nowrap;
 }
 
+.bl-name {
+  font-size: var(--font-size-md);
+}
+
 .bl-meta {
   color: var(--color-text-secondary);
-  font-size: var(--font-size-sm);
+  font-size: var(--font-size-base);
 }
 
 .bl-unban {
@@ -159,13 +107,13 @@
   align-items: center;
   gap: 4px;
   flex-shrink: 0;
-  padding: 5px 9px;
+  padding: 6px 11px;
   border: 1px solid var(--hairline);
   border-radius: var(--radius-sm);
   background: var(--color-background-mute);
   color: var(--color-text-secondary);
   font-family: var(--font-family-primary);
-  font-size: var(--font-size-sm);
+  font-size: var(--font-size-base);
   cursor: pointer;
 }
 
@@ -186,5 +134,5 @@
   gap: var(--spacing-sm);
   padding: 24px 6px;
   color: var(--color-text-secondary);
-  font-size: var(--font-size-sm);
+  font-size: var(--font-size-base);
 }

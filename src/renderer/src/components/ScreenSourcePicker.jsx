@@ -45,12 +45,16 @@ function loadPrefs() {
 // Modal that lists capturable screens/windows (fetched from the main process)
 // and lets the user pick which one to share. On Wayland the OS portal picks
 // the video source instead, so only audio/quality options are shown there.
-function ScreenSourcePicker({ onSelect, onCancel }) {
+// initialTab ('screens' | 'devices') is the tab it opens on.
+function ScreenSourcePicker({ onSelect, onCancel, initialTab = 'screens' }) {
   const [sources, setSources] = useState(null)
   const [cameras, setCameras] = useState(null)
   const [error, setError] = useState(null)
   const [selectedId, setSelectedId] = useState(null)
-  const [activeTab, setActiveTab] = useState('screens')
+  const [activeTab, setActiveTab] = useState(initialTab)
+  // Fixed at mount: opened on Devices, the source list's preselection must not
+  // pull the picker back to Screens, and the first camera is preselected.
+  const [openedOnDevices] = useState(initialTab === 'devices')
   const prefs = useMemo(loadPrefs, [])
   const [fps, setFps] = useState(prefs.fps ?? 30)
   const [resolution, setResolution] = useState(prefs.resolution ?? '1080p')
@@ -108,7 +112,7 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
         setSources(result)
         // Pre-select the first screen for a sensible default
         const firstScreen = result.find((s) => s.isScreen) || result[0]
-        if (firstScreen) {
+        if (firstScreen && !openedOnDevices) {
           setSelectedId(firstScreen.id)
           setActiveTab(firstScreen.isScreen ? 'screens' : 'windows')
         }
@@ -119,7 +123,7 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
     return () => {
       cancelled = true
     }
-  }, [capsLoaded, isWayland])
+  }, [capsLoaded, isWayland, openedOnDevices])
 
   // Enumerate connected webcams for the Devices tab. Labels are only populated
   // once camera permission has been granted; fall back to a generic name.
@@ -129,7 +133,9 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
       .enumerateDevices()
       .then((devices) => {
         if (cancelled) return
-        setCameras(devices.filter((d) => d.kind === 'videoinput'))
+        const videoInputs = devices.filter((d) => d.kind === 'videoinput')
+        setCameras(videoInputs)
+        if (openedOnDevices) setSelectedId((id) => id ?? videoInputs[0]?.deviceId ?? null)
       })
       .catch(() => {
         if (!cancelled) setCameras([])
@@ -137,7 +143,7 @@ function ScreenSourcePicker({ onSelect, onCancel }) {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [openedOnDevices])
 
   const screens = sources?.filter((s) => s.isScreen) ?? []
   const windows = sources?.filter((s) => !s.isScreen) ?? []

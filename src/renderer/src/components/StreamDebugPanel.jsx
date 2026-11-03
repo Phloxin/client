@@ -1,5 +1,4 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { IconGripVertical, IconX } from '@tabler/icons-react'
 import uPlot from 'uplot'
 import 'uplot/dist/uPlot.min.css'
 import { startStreamDebugStats } from '../lib/soup'
@@ -10,10 +9,6 @@ import './StreamDebugPanel.css'
 const CAP = 120 // ring-buffer length: 2 min at 1 sample/s
 const MISS_LIMIT = 10 // consecutive absent ticks before a stream's history is dropped
 const POLL_MS = 1000
-const PANEL_W = 380
-const PANEL_MIN_W = 300 // resize floor — charts stay readable down to here
-const PANEL_MIN_H = 220 // header + filters + one chart
-const DRAG_MARGIN = 40 // keep at least this much of the panel on-screen while dragging
 const CHART_FALLBACK_W = 320 // used only if the canvas reports zero width at mount
 
 // Heuristic "should not be this high" limits: each draws a dashed guide line on
@@ -33,8 +28,6 @@ const LIMITS = {
   acceleratedPerTick: 2400 // 50ms/s deleted by NetEq Accelerate — audible as sped-up speech
 }
 
-const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi)
-
 const TYPE_LABELS = {
   Audio: 'Microphone',
   ScreenShare: 'Screen',
@@ -53,8 +46,8 @@ const fmtFixed = (v, d = 1) => (v == null ? '—' : v.toFixed(d))
 
 // Resolve theme tokens to concrete color strings once, at mount. uPlot needs
 // real colors (it can't read CSS custom properties), so we snapshot them.
-// KNOWN LIMITATION: switching themes while the panel is open keeps these old
-// chart colors until the panel is closed and reopened.
+// KNOWN LIMITATION: switching themes while the tab is showing keeps these old
+// chart colors until it is shown again (it remounts on each activation).
 function readTheme() {
   const cs = getComputedStyle(document.documentElement)
   const v = (name, fallback) => (cs.getPropertyValue(name) || '').trim() || fallback
@@ -194,7 +187,7 @@ function UplotChart({ title, data, series, theme, height = 70, unit, threshold }
     const u = new uPlot(opts, withThresholdData(data, threshold), el)
     uRef.current = u
 
-    // Panel width is fixed, but keep the canvas honest if layout shifts.
+    // Follow the pane's width (window resize, the split divider).
     const ro = new ResizeObserver(() => {
       const w = el.clientWidth
       if (w) u.setSize({ width: w, height })
@@ -573,7 +566,13 @@ function EncryptionCard({ e2ee, clients, selfId }) {
   )
 }
 
-export default function StreamDebugPanel({ clients, selfId, onClose }) {
+// The Connection Info tab's body: WebRTC stats per produced and consumed
+// stream, plus the call's encryption state, filling its pane.
+// Theme colors are snapshotted at mount (readTheme), so a theme switch shows on
+// the next activation.
+// Only an active tab renders, so an inactive one costs no polling and its ring
+// buffers restart when it is shown again.
+export default function StreamDebugPanel({ clients, selfId }) {
   const e2ee = useSyncExternalStore(subscribeE2ee, getE2eeStatus)
   const showEncryption = e2ee.status !== 'idle'
   // Theme colors snapshotted once at mount (see readTheme's known-limitation
@@ -586,22 +585,6 @@ export default function StreamDebugPanel({ clients, selfId, onClose }) {
   // rebuild their data arrays from these buffers.
   const bufsRef = useRef(new Map())
   const [buffers, setBuffers] = useState([])
-
-  const rootRef = useRef(null)
-  const dragRef = useRef(null)
-  const resizeRef = useRef(null)
-  const [dragging, setDragging] = useState(false)
-
-  // Initial position ≈ top-right (top:56, right:24). Drag writes left/top, so
-  // derive the starting left from the current viewport width.
-  const [pos, setPos] = useState(() => ({
-    left: Math.max(DRAG_MARGIN, window.innerWidth - PANEL_W - 24),
-    top: 56
-  }))
-
-  // height === null means "auto, capped by the CSS max-height" until the user
-  // resizes; after that the explicit size wins.
-  const [size, setSize] = useState({ width: PANEL_W, height: null })
 
   // 'all' | 'self' (our produced streams) | a clientId (that user's consumed
   // streams only).
@@ -658,68 +641,6 @@ export default function StreamDebugPanel({ clients, selfId, onClose }) {
     }
   }, [])
 
-  // ── Drag (header only; charts + body scrolling never initiate it) ───────────
-  const onPointerDown = (e) => {
-    if (e.target.closest('button')) return // never drag from the close button
-    const rect = rootRef.current.getBoundingClientRect()
-    dragRef.current = { dx: e.clientX - rect.left, dy: e.clientY - rect.top }
-    e.currentTarget.setPointerCapture(e.pointerId)
-    setDragging(true)
-  }
-
-  const onPointerMove = (e) => {
-    if (!dragRef.current) return
-    const root = rootRef.current
-    const w = root.offsetWidth
-    // Keep at least DRAG_MARGIN of the panel/header on-screen so it can't be lost.
-    const left = clamp(
-      e.clientX - dragRef.current.dx,
-      DRAG_MARGIN - w,
-      window.innerWidth - DRAG_MARGIN
-    )
-    const top = clamp(e.clientY - dragRef.current.dy, 0, window.innerHeight - DRAG_MARGIN)
-    root.style.left = `${left}px`
-    root.style.top = `${top}px`
-  }
-
-  const onPointerUp = (e) => {
-    if (!dragRef.current) return
-    dragRef.current = null
-    e.currentTarget.releasePointerCapture?.(e.pointerId)
-    const root = rootRef.current
-    setPos({ left: parseFloat(root.style.left), top: parseFloat(root.style.top) })
-    setDragging(false)
-  }
-
-  // ── Resize (bottom-right grip; same write-through-ref pattern as drag) ──────
-  // Charts follow along on their own: each UplotChart has a ResizeObserver on
-  // its wrapper calling setSize.
-  const onResizeDown = (e) => {
-    const rect = rootRef.current.getBoundingClientRect()
-    resizeRef.current = { startX: e.clientX, startY: e.clientY, w: rect.width, h: rect.height }
-    e.currentTarget.setPointerCapture(e.pointerId)
-  }
-
-  const onResizeMove = (e) => {
-    const r = resizeRef.current
-    if (!r) return
-    const root = rootRef.current
-    const rect = root.getBoundingClientRect()
-    const width = clamp(r.w + e.clientX - r.startX, PANEL_MIN_W, window.innerWidth - rect.left - 8)
-    const height = clamp(r.h + e.clientY - r.startY, PANEL_MIN_H, window.innerHeight - rect.top - 8)
-    root.style.width = `${width}px`
-    root.style.height = `${height}px`
-    root.style.maxHeight = 'none'
-  }
-
-  const onResizeUp = (e) => {
-    if (!resizeRef.current) return
-    resizeRef.current = null
-    e.currentTarget.releasePointerCapture?.(e.pointerId)
-    const rect = rootRef.current.getBoundingClientRect()
-    setSize({ width: Math.round(rect.width), height: Math.round(rect.height) })
-  }
-
   const sends = buffers.filter((b) => b.meta.direction === 'send')
   const recvs = buffers.filter((b) => b.meta.direction === 'recv')
   const empty = sends.length === 0 && recvs.length === 0
@@ -753,29 +674,7 @@ export default function StreamDebugPanel({ clients, selfId, onClose }) {
         : recvs.filter((b) => b.meta.clientId === filter)
 
   return (
-    <div
-      ref={rootRef}
-      className={`stream-debug-panel${dragging ? ' sdp-dragging' : ''}`}
-      style={{
-        left: pos.left,
-        top: pos.top,
-        width: size.width,
-        ...(size.height != null ? { height: size.height, maxHeight: 'none' } : {})
-      }}
-    >
-      <div
-        className="sdp-header"
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-      >
-        <IconGripVertical size={16} className="sdp-grip" />
-        <span className="sdp-header-title">Connection Info</span>
-        <button type="button" className="sdp-close" onClick={onClose} title="Close">
-          <IconX size={16} />
-        </button>
-      </div>
-
+    <div className="stream-debug-panel">
       {groups.length > 1 && (
         <div className="sdp-filters">
           {[{ id: 'all', label: 'All', warn: false }, ...groups].map((g) => (
@@ -822,14 +721,6 @@ export default function StreamDebugPanel({ clients, selfId, onClose }) {
           </>
         )}
       </div>
-
-      <div
-        className="sdp-resize"
-        onPointerDown={onResizeDown}
-        onPointerMove={onResizeMove}
-        onPointerUp={onResizeUp}
-        title="Resize"
-      />
     </div>
   )
 }

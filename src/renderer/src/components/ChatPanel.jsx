@@ -24,6 +24,7 @@ import {
   IconLock,
   IconPhoneCall,
   IconPhoneEnd,
+  IconPhoneOff,
   IconHandFinger
 } from '@tabler/icons-react'
 import { motion, AnimatePresence } from 'motion/react'
@@ -489,7 +490,10 @@ function ChatPanel({
   onLoadOlder,
   hasMoreOlder = false,
   // Who our own pokes went to: the other participants of this DM.
-  pokeTargetName
+  pokeTargetName,
+  // A DM's call button beside the composer ({ state, title, disabled,
+  // onClick }); null in a channel.
+  callAction
 }) {
   const [text, setText] = useState(() => drafts.get(channelKey) || '')
   const [attachments, setAttachments] = useState([])
@@ -1599,103 +1603,121 @@ function ChatPanel({
         )}
       </AnimatePresence>
 
-      <div className="chat-input-bar">
-        <input
-          ref={fileInputRef}
-          type="file"
-          multiple
-          style={{ display: 'none' }}
-          onChange={handleFiles}
-          disabled={disabled}
-        />
-        <button
-          type="button"
-          className="chat-icon-btn"
-          title="Attach files"
-          onClick={() => fileInputRef.current?.click()}
-          disabled={disabled}
-        >
-          <IconPaperclip size={20} />
-        </button>
-        <div className="chat-input-wrap">
-          {/* Highlight backdrop: mirrors the textarea's text with mention
-              pills; the textarea above it types in transparent glyphs. */}
-          <div className="chat-input-highlight" ref={highlightRef} aria-hidden="true">
-            {composerMentionNodes(text, clients)}
-          </div>
-          <textarea
-            ref={inputRef}
-            rows={1}
-            placeholder={disabled ? 'Join a channel to chat' : 'Message...'}
-            value={text}
-            onChange={(e) => {
-              updateText(e.target.value)
-              updateMention(e.target.value, e.target.selectionEnd)
-              if (e.target.value) onTyping?.()
-            }}
-            onKeyDown={handleKeyDown}
-            onPaste={handlePaste}
-            onBlur={() => setMention(null)}
-            onScroll={(e) => {
-              // Keep the backdrop aligned when the composer scrolls at max height.
-              if (highlightRef.current) highlightRef.current.scrollTop = e.target.scrollTop
-            }}
+      <div className="chat-composer">
+        <div className="chat-input-bar">
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            style={{ display: 'none' }}
+            onChange={handleFiles}
             disabled={disabled}
           />
-        </div>
-        <AnimatePresence>
-          {mention && mentionMatches.length > 0 && (
-            <motion.div className="chat-mention-pop" {...menuPop(overlayAnim)}>
-              {mentionMatches.map((c, i) => (
-                <button
-                  key={c.id}
-                  type="button"
-                  className={`chat-mention-item${i === mentionIndex ? ' active' : ''}`}
-                  // mousedown so this fires before the textarea's blur closes us
-                  onMouseDown={(e) => {
-                    e.preventDefault()
-                    selectMention(c)
-                  }}
-                  onMouseEnter={() => setMentionIndex(i)}
-                >
-                  <span className="chat-avatar chat-mention-avatar" aria-hidden="true">
-                    {c.everyone ? (
-                      <IconUsers size={13} />
-                    ) : c.avatar ? (
-                      <img className="chat-avatar-img" src={c.avatar} alt="" />
-                    ) : (
-                      (c.name || '?').charAt(0).toUpperCase()
-                    )}
-                  </span>
-                  {c.everyone ? '@everyone' : c.name}
-                  {c.everyone && (
-                    <span className="chat-mention-hint">
-                      Notify everyone with visibility to this channel
-                    </span>
-                  )}
-                </button>
-              ))}
-            </motion.div>
-          )}
-        </AnimatePresence>
-        <div className="chat-emoji-wrapper" ref={emojiRef}>
           <button
             type="button"
             className="chat-icon-btn"
-            title="Emoji"
-            onClick={() => setShowEmoji((prev) => !prev)}
+            title="Attach files"
+            onClick={() => fileInputRef.current?.click()}
             disabled={disabled}
           >
-            <IconMoodSmile size={20} />
+            <IconPaperclip size={20} />
           </button>
+          <div className="chat-input-wrap">
+            {/* Highlight backdrop: mirrors the textarea's text with mention
+                pills; the textarea above it types in transparent glyphs. */}
+            <div className="chat-input-highlight" ref={highlightRef} aria-hidden="true">
+              {composerMentionNodes(text, clients)}
+            </div>
+            <textarea
+              ref={inputRef}
+              rows={1}
+              placeholder={disabled ? 'Join a channel to chat' : 'Message...'}
+              value={text}
+              onChange={(e) => {
+                updateText(e.target.value)
+                updateMention(e.target.value, e.target.selectionEnd)
+                if (e.target.value) onTyping?.()
+              }}
+              onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
+              onBlur={() => setMention(null)}
+              onScroll={(e) => {
+                // Keep the backdrop aligned when the composer scrolls at max height.
+                if (highlightRef.current) highlightRef.current.scrollTop = e.target.scrollTop
+              }}
+              disabled={disabled}
+            />
+          </div>
           <AnimatePresence>
-            {showEmoji && (
-              <motion.div className="chat-emoji-pop" {...menuPop(overlayAnim)}>
-                <EmojiPicker onSelect={insertEmoji} />
+            {mention && mentionMatches.length > 0 && (
+              <motion.div className="chat-mention-pop" {...menuPop(overlayAnim)}>
+                {mentionMatches.map((c, i) => (
+                  <button
+                    key={c.id}
+                    type="button"
+                    className={`chat-mention-item${i === mentionIndex ? ' active' : ''}`}
+                    // mousedown so this fires before the textarea's blur closes us
+                    onMouseDown={(e) => {
+                      e.preventDefault()
+                      selectMention(c)
+                    }}
+                    onMouseEnter={() => setMentionIndex(i)}
+                  >
+                    <span className="chat-avatar chat-mention-avatar" aria-hidden="true">
+                      {c.everyone ? (
+                        <IconUsers size={13} />
+                      ) : c.avatar ? (
+                        <img className="chat-avatar-img" src={c.avatar} alt="" />
+                      ) : (
+                        (c.name || '?').charAt(0).toUpperCase()
+                      )}
+                    </span>
+                    {c.everyone ? '@everyone' : c.name}
+                    {c.everyone && (
+                      <span className="chat-mention-hint">
+                        Notify everyone with visibility to this channel
+                      </span>
+                    )}
+                  </button>
+                ))}
               </motion.div>
             )}
           </AnimatePresence>
+          <div className="chat-emoji-wrapper" ref={emojiRef}>
+            <button
+              type="button"
+              className="chat-icon-btn"
+              title="Emoji"
+              onClick={() => setShowEmoji((prev) => !prev)}
+              disabled={disabled}
+            >
+              <IconMoodSmile size={20} />
+            </button>
+            <AnimatePresence>
+              {showEmoji && (
+                <motion.div className="chat-emoji-pop" {...menuPop(overlayAnim)}>
+                  <EmojiPicker onSelect={insertEmoji} />
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
         </div>
+        {callAction && (
+          <button
+            type="button"
+            className={`chat-call-btn ${callAction.state}`}
+            title={callAction.title}
+            aria-label={callAction.title}
+            disabled={callAction.disabled}
+            onClick={callAction.onClick}
+          >
+            {callAction.state === 'leave' ? (
+              <IconPhoneOff size={20} stroke={2} />
+            ) : (
+              <IconPhoneCall size={20} stroke={2} />
+            )}
+          </button>
+        )}
       </div>
 
       {msgMenu && (

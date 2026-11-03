@@ -1,0 +1,173 @@
+/* ============================================================================
+   PANE LAYOUT — the canvas holds one pane, or two side by side or stacked,
+   each a header bar of tabs over its tab's view. A hairline divider sits
+   between two panes; a dragged tab shows where it would land.
+   ============================================================================ */
+
+.pane-layout {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.pane-layout.row {
+  flex-direction: row;
+}
+
+.pane-layout.column {
+  flex-direction: column;
+}
+
+.pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* ── Header bar: the pane's tabs, plus its view's extras ──────────────────── */
+
+/* The one bar at the top of a pane: a recessed track the tabs sit in, the
+   active one lit and joined to the view below. The strip takes the whole bar
+   but the actions, so its empty track reads as the bar's dark remainder (and
+   still takes a drop). Its tabs fill it edge to edge — the track shows only
+   where there are none. */
+.pane-bar {
+  display: flex;
+  align-items: stretch;
+  gap: var(--spacing-md);
+  height: 44px;
+  flex-shrink: 0;
+  background: color-mix(in srgb, var(--color-background-mute) 70%, transparent);
+  border-bottom: 1px solid var(--hairline);
+}
+
+/* The view's extras — only a DM call's participant strip — at the bar's
+   trailing edge; the active tab already names the view. */
+.pane-bar-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+  min-width: 0;
+  padding-right: var(--spacing-md);
+  user-select: none;
+}
+
+/* Header, view and the body drop zone over them. */
+.pane-body {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+/* ── Divider: a hairline with a wider grab area ───────────────────────────── */
+
+/* Above the panes' own positioned layers (chat bars and popovers reach 40),
+   below menus and overlays. */
+.pane-divider {
+  position: relative;
+  z-index: 50;
+  flex: 0 0 1px;
+  background: var(--hairline);
+  transition: background 0.12s ease;
+}
+
+.pane-divider::before {
+  content: '';
+  position: absolute;
+  inset: 0 -4px;
+}
+
+.pane-layout.column > .pane-divider::before {
+  inset: -4px 0;
+}
+
+.pane-layout.row > .pane-divider {
+  cursor: col-resize;
+}
+
+.pane-layout.column > .pane-divider {
+  cursor: row-resize;
+}
+
+.pane-divider:hover,
+html.pane-resizing-row .pane-divider,
+html.pane-resizing-column .pane-divider {
+  background: color-mix(in srgb, var(--color-primary) 55%, transparent);
+}
+
+/* The cursor holds for the whole gesture, wherever the pointer wanders. */
+html.pane-resizing-row,
+html.pane-resizing-row * {
+  cursor: col-resize !important;
+  user-select: none;
+}
+
+html.pane-resizing-column,
+html.pane-resizing-column * {
+  cursor: row-resize !important;
+  user-select: none;
+}
+
+html.tab-dragging,
+html.tab-dragging * {
+  cursor: grabbing !important;
+  user-select: none;
+}
+
+/* ── Drop zones: a canvas half (split) or a pane's body (move there) ──────── */
+
+.pane-drop-zone {
+  position: absolute;
+  z-index: 60;
+  margin: 6px;
+  pointer-events: none;
+  border: 1px solid color-mix(in srgb, var(--color-primary) 55%, transparent);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--color-primary) 14%, transparent);
+}
+
+.pane-drop-zone.body {
+  inset: 0;
+}
+
+.pane-drop-zone.edge-left {
+  inset: 0 50% 0 0;
+}
+
+.pane-drop-zone.edge-right {
+  inset: 0 0 0 50%;
+}
+
+.pane-drop-zone.edge-top {
+  inset: 0 0 50% 0;
+}
+
+.pane-drop-zone.edge-bottom {
+  inset: 50% 0 0 0;
+}
+
+/* ── The dragged tab, following the pointer ───────────────────────────────── */
+
+.tab.tab-ghost {
+  position: fixed;
+  top: 0;
+  left: 0;
+  /* Outside the strip, so nothing stretches it. */
+  height: 36px;
+  z-index: 1001;
+  pointer-events: none;
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-background-soft);
+  color: var(--color-text);
+  box-shadow: var(--shadow-3);
+}
+
+.tab-ghost .tab-icon {
+  color: var(--color-primary);
+}

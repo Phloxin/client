@@ -1,7 +1,4 @@
 import { useEffect, useRef, useState } from 'react'
-import { motion } from 'motion/react'
-import { useAnimationCategory } from '../context/SettingsContext'
-import { overlayPop } from '../lib/motionPresets'
 import { formatBytes, previewKind } from '../lib/attachments'
 import { assetUrl } from '../lib/serverConfig'
 import './BanListMenu.css'
@@ -19,8 +16,7 @@ import {
   IconPhoto,
   IconSearch,
   IconTrash,
-  IconWorld,
-  IconX
+  IconWorld
 } from '@tabler/icons-react'
 
 // Page size for GET /channels/{id}/files; a full page means there may be more.
@@ -53,14 +49,13 @@ function FileTypeIcon({ file }) {
 const formatDate = (ms) =>
   new Date(ms).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })
 
-// 'Files' popup, opened from a channel's right-click menu: the channel's
+// 'Files' tab body, opened from a channel's right-click menu: the channel's
 // attachments (FileApiObject[]), newest first, with search, type filter, and
-// paging. Uploaders and moderators can make a file public/private or delete it;
-// the server stays authoritative. Nothing is edited locally: every change
-// arrives as a MessageUpdated broadcast, which bumps `revision` and refetches
-// the first page.
+// paging. Uploaders and moderators can make a file public/private or
+// delete it; the server stays authoritative. Nothing is edited locally: every
+// change arrives as a MessageUpdated broadcast, which bumps `revision` and
+// refetches the first page.
 function FileBrowser({
-  channel,
   clients = [],
   selfId,
   canModerate = false,
@@ -71,10 +66,8 @@ function FileBrowser({
   onCopyLink,
   onOpenImage,
   onPreviewFile,
-  onDownload,
-  onClose
+  onDownload
 }) {
-  const overlayAnim = useAnimationCategory('overlays')
   // Raw search box text, and the debounced, trimmed query actually sent.
   const [query, setQuery] = useState('')
   const [q, setQ] = useState('')
@@ -193,182 +186,165 @@ function FileBrowser({
   const filtered = !!q || type != null
 
   return (
-    <div className="bl-overlay" onClick={onClose}>
-      <motion.div
-        className="bl-modal fb-modal"
-        onClick={(e) => e.stopPropagation()}
-        {...overlayPop(overlayAnim)}
-      >
-        <div className="bl-header">
-          <span className="bl-title fb-title">
-            <span className="fb-title-text">Files · {channel.name}</span>
-            {rows.length > 0 && <span className="bl-count">{rows.length}</span>}
-          </span>
-          <button type="button" className="bl-close" onClick={onClose} title="Close">
-            <IconX size={16} />
+    <div className="bl-pane">
+      <div className="bl-search">
+        <IconSearch size={16} />
+        <input
+          value={query}
+          maxLength={MAX_QUERY_LENGTH}
+          placeholder="Search by filename"
+          onChange={(e) => setQuery(e.target.value)}
+          autoFocus
+        />
+      </div>
+      <div className="fb-chips">
+        {TYPE_FILTERS.map((f) => (
+          <button
+            key={f.label}
+            type="button"
+            className={`fb-chip${type === f.value ? ' active' : ''}`}
+            onClick={() => setType(f.value)}
+          >
+            {f.label}
           </button>
-        </div>
-        <div className="bl-search">
-          <IconSearch size={15} />
-          <input
-            value={query}
-            maxLength={MAX_QUERY_LENGTH}
-            placeholder="Search by filename"
-            onChange={(e) => setQuery(e.target.value)}
-            autoFocus
-          />
-        </div>
-        <div className="fb-chips">
-          {TYPE_FILTERS.map((f) => (
-            <button
-              key={f.label}
-              type="button"
-              className={`fb-chip${type === f.value ? ' active' : ''}`}
-              onClick={() => setType(f.value)}
-            >
-              {f.label}
-            </button>
-          ))}
-        </div>
-        <div className="bl-body">
-          {rows.length === 0 && !listing.error ? (
-            <div className="bl-empty">
-              {loading ? (
-                'Loading files…'
-              ) : filtered ? (
-                'No matches'
-              ) : (
-                <>
-                  <IconFiles size={22} />
-                  No files
-                </>
-              )}
-            </div>
-          ) : (
-            rows.map((file) => {
-              const canManage = String(file.uploader) === String(selfId) || canModerate
-              const busy = pending.has(file.id)
-              const confirming = confirmId === file.id
-              const previewable = isImage(file) || previewKind(file.filename, file.content_type)
-              return (
-                <div key={file.id} className="bl-row fb-row">
-                  <span className="fb-thumb">
-                    {isImage(file) ? (
-                      <img src={assetUrl(file.url)} alt="" loading="lazy" />
-                    ) : (
-                      <FileTypeIcon file={file} />
-                    )}
-                  </span>
-                  <div className="bl-info">
-                    <span className="bl-name fb-name" title={file.filename}>
-                      {file.filename}
-                      {file.public_url && <span className="fb-badge">public</span>}
-                    </span>
-                    <span className="bl-meta">
-                      {formatBytes(file.size)} · {uploaderName(file.uploader)} ·{' '}
-                      {formatDate(file.created_at)}
-                    </span>
-                  </div>
-                  {confirming ? (
-                    <div className="fb-confirm">
-                      Delete?
-                      <button
-                        type="button"
-                        className="fb-confirm-btn danger"
-                        disabled={busy}
-                        onClick={() => {
-                          setConfirmId(null)
-                          run(file.id, () => onDelete?.(file.id))
-                        }}
-                      >
-                        Yes
-                      </button>
-                      <button
-                        type="button"
-                        className="fb-confirm-btn"
-                        onClick={() => setConfirmId(null)}
-                      >
-                        No
-                      </button>
-                    </div>
+        ))}
+      </div>
+      <div className="bl-body">
+        {rows.length === 0 && !listing.error ? (
+          <div className="bl-empty">
+            {loading ? (
+              'Loading files…'
+            ) : filtered ? (
+              'No matches'
+            ) : (
+              <>
+                <IconFiles size={22} />
+                No files
+              </>
+            )}
+          </div>
+        ) : (
+          rows.map((file) => {
+            const canManage = String(file.uploader) === String(selfId) || canModerate
+            const busy = pending.has(file.id)
+            const confirming = confirmId === file.id
+            const previewable = isImage(file) || previewKind(file.filename, file.content_type)
+            return (
+              <div key={file.id} className="bl-row fb-row">
+                <span className="fb-thumb">
+                  {isImage(file) ? (
+                    <img src={assetUrl(file.url)} alt="" loading="lazy" />
                   ) : (
-                    <div className="fb-actions">
-                      {previewable ? (
-                        <button
-                          type="button"
-                          className="fb-action"
-                          title="Open"
-                          onClick={() => open(file)}
-                        >
-                          <IconEye size={16} />
-                        </button>
-                      ) : (
-                        // Keeps Download and the rest aligned with rows that have Open.
-                        <span className="fb-action-slot" aria-hidden="true" />
-                      )}
+                    <FileTypeIcon file={file} />
+                  )}
+                </span>
+                <div className="bl-info">
+                  <span className="bl-name fb-name" title={file.filename}>
+                    {file.filename}
+                    {file.public_url && <span className="fb-badge">public</span>}
+                  </span>
+                  <span className="bl-meta">
+                    {formatBytes(file.size)} · {uploaderName(file.uploader)} ·{' '}
+                    {formatDate(file.created_at)}
+                  </span>
+                </div>
+                {confirming ? (
+                  <div className="fb-confirm">
+                    Delete?
+                    <button
+                      type="button"
+                      className="fb-confirm-btn danger"
+                      disabled={busy}
+                      onClick={() => {
+                        setConfirmId(null)
+                        run(file.id, () => onDelete?.(file.id))
+                      }}
+                    >
+                      Yes
+                    </button>
+                    <button
+                      type="button"
+                      className="fb-confirm-btn"
+                      onClick={() => setConfirmId(null)}
+                    >
+                      No
+                    </button>
+                  </div>
+                ) : (
+                  <div className="fb-actions">
+                    {previewable ? (
                       <button
                         type="button"
                         className="fb-action"
-                        title="Download"
-                        onClick={() =>
-                          onDownload?.({ url: assetUrl(file.url), name: file.filename })
-                        }
+                        title="Open"
+                        onClick={() => open(file)}
                       >
-                        <IconDownload size={16} />
+                        <IconEye size={16} />
                       </button>
-                      {file.public_url && (
+                    ) : (
+                      // Keeps Download and the rest aligned with rows that have Open.
+                      <span className="fb-action-slot" aria-hidden="true" />
+                    )}
+                    <button
+                      type="button"
+                      className="fb-action"
+                      title="Download"
+                      onClick={() => onDownload?.({ url: assetUrl(file.url), name: file.filename })}
+                    >
+                      <IconDownload size={16} />
+                    </button>
+                    {file.public_url && (
+                      <button
+                        type="button"
+                        className="fb-action"
+                        title="Copy Link"
+                        onClick={() => onCopyLink?.(file.public_url)}
+                      >
+                        <IconLink size={16} />
+                      </button>
+                    )}
+                    {canManage && (
+                      <>
                         <button
                           type="button"
                           className="fb-action"
-                          title="Copy Link"
-                          onClick={() => onCopyLink?.(file.public_url)}
+                          title={file.public_url ? 'Make Private' : 'Make Public'}
+                          disabled={busy}
+                          onClick={() =>
+                            run(file.id, () => onSetPublic?.(file.id, !file.public_url))
+                          }
                         >
-                          <IconLink size={16} />
+                          {file.public_url ? <IconLock size={16} /> : <IconWorld size={16} />}
                         </button>
-                      )}
-                      {canManage && (
-                        <>
-                          <button
-                            type="button"
-                            className="fb-action"
-                            title={file.public_url ? 'Make Private' : 'Make Public'}
-                            disabled={busy}
-                            onClick={() =>
-                              run(file.id, () => onSetPublic?.(file.id, !file.public_url))
-                            }
-                          >
-                            {file.public_url ? <IconLock size={16} /> : <IconWorld size={16} />}
-                          </button>
-                          <button
-                            type="button"
-                            className="fb-action danger"
-                            title="Delete"
-                            disabled={busy}
-                            onClick={() => setConfirmId(file.id)}
-                          >
-                            <IconTrash size={16} />
-                          </button>
-                        </>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )
-            })
-          )}
-          {listing.error && <div className="fb-error">{listing.error}</div>}
-          {listing.hasMore && !loading && (
-            <button
-              type="button"
-              className="bl-unban fb-more"
-              onClick={loadMore}
-              disabled={loadingMore}
-            >
-              {loadingMore ? 'Loading…' : 'Load more'}
-            </button>
-          )}
-        </div>
-      </motion.div>
+                        <button
+                          type="button"
+                          className="fb-action danger"
+                          title="Delete"
+                          disabled={busy}
+                          onClick={() => setConfirmId(file.id)}
+                        >
+                          <IconTrash size={16} />
+                        </button>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+            )
+          })
+        )}
+        {listing.error && <div className="fb-error">{listing.error}</div>}
+        {listing.hasMore && !loading && (
+          <button
+            type="button"
+            className="bl-unban fb-more"
+            onClick={loadMore}
+            disabled={loadingMore}
+          >
+            {loadingMore ? 'Loading…' : 'Load more'}
+          </button>
+        )}
+      </div>
     </div>
   )
 }

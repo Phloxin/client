@@ -2,15 +2,13 @@
 // the app was launched with PYLON_TEST=1. soup hands in its state through configureTestHooks.
 let getRemoteConsumers = () => new Map()
 let getProducers = () => []
-let getScreenShareContext = () => null
+let getShareContexts = () => []
 let dropVoiceSocket = () => {}
 
 export function configureTestHooks(dependencies = {}) {
   if (dependencies.getRemoteConsumers) getRemoteConsumers = dependencies.getRemoteConsumers
   if (dependencies.getProducers) getProducers = dependencies.getProducers
-  if (dependencies.getScreenShareContext) {
-    getScreenShareContext = dependencies.getScreenShareContext
-  }
+  if (dependencies.getShareContexts) getShareContexts = dependencies.getShareContexts
   if (dependencies.dropVoiceSocket) dropVoiceSocket = dependencies.dropVoiceSocket
 }
 
@@ -26,8 +24,7 @@ function consumers() {
 
 function localProducers() {
   const list = getProducers().filter((p) => !p.closed)
-  const ctx = getScreenShareContext()
-  if (ctx && !ctx.stopped) {
+  for (const ctx of getShareContexts()) {
     for (const p of [ctx.producer, ctx.audioProducer]) {
       if (p && !p.closed && !list.includes(p)) list.push(p)
     }

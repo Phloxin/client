@@ -22,6 +22,8 @@ import {
   IconMicrophoneOff,
   IconScreenShare,
   IconScreenShareOff,
+  IconVideo,
+  IconVideoOff,
   IconPlus,
   IconX,
   IconFilter,
@@ -45,6 +47,7 @@ function Sidebar({
   servers,
   connectedServer,
   onConnect,
+  onRecovered,
   onDisconnect,
   onAddServer,
   onEditServer,
@@ -53,6 +56,10 @@ function Sidebar({
   onViewServerTraffic,
   onViewServerSummary,
   onOpenBanList,
+  canManageServer,
+  onOpenServerAdmin,
+  joinRequest,
+  onJoinConsumed,
   onCreateChannel,
   onDeleteChannel,
   onReorderChannel,
@@ -79,8 +86,7 @@ function Sidebar({
   canKickMembers,
   canBanMembers,
   canMuteMembers,
-  previewChannelId,
-  summaryChannelId,
+  previewingChannelIds,
   unreadChannelIds,
   // Voice self-state lives in Main so the stream view's theatre mode can share
   // it; the sidebar drives the toggles and Main mirrors the state into soup/tray.
@@ -89,9 +95,11 @@ function Sidebar({
   onToggleMic,
   onToggleDeafen,
   // Main's latest voice media state ({ channelId, state }) for the dock's
-  // connection indicator, plus the Connection Info panel toggle it hosts.
+  // connection indicator, plus the Connection Info tab buttons it hosts
+  // (see VoiceConnectionBar).
   voiceMediaState,
   connectionInfoOpen,
+  connectionInfoActive,
   onToggleConnectionInfo
 }) {
   const { keybindSettings, appearanceSettings } = useSettings()
@@ -422,6 +430,7 @@ function Sidebar({
           servers={servers}
           connectedServer={connectedServer}
           onConnect={onConnect}
+          onRecovered={onRecovered}
           onDisconnect={onDisconnect}
           onAddServer={onAddServer}
           onEditServer={onEditServer}
@@ -431,6 +440,10 @@ function Sidebar({
           onViewServerSummary={onViewServerSummary}
           canBanMembers={canBanMembers}
           onOpenBanList={onOpenBanList}
+          canManageServer={canManageServer}
+          onOpenServerAdmin={onOpenServerAdmin}
+          joinRequest={joinRequest}
+          onJoinConsumed={onJoinConsumed}
         />
       </div>
 
@@ -586,7 +599,7 @@ function Sidebar({
             canKickMembers={canKickMembers}
             canBanMembers={canBanMembers}
             canMuteMembers={canMuteMembers}
-            previewing={previewChannelId === ch.id || summaryChannelId === ch.id}
+            previewing={!!previewingChannelIds?.has(ch.id)}
             unread={!!unreadChannelIds?.has(ch.id)}
           />
         ))}
@@ -683,6 +696,7 @@ function Sidebar({
               voiceMediaState?.channelId === voice.channelId ? voiceMediaState.state : undefined
             }
             connectionInfoOpen={connectionInfoOpen}
+            connectionInfoActive={connectionInfoActive}
             onToggleConnectionInfo={onToggleConnectionInfo}
           />
         )}
@@ -710,15 +724,27 @@ function Sidebar({
             )}
           </button>
           <button
-            className={`control-btn${voice.sharing ? ' streaming' : ''}`}
-            title={voice.sharing ? 'End Stream' : 'Start Stream'}
+            className={`control-btn${voice.shares.screen ? ' streaming' : ''}`}
+            title={voice.shares.screen ? 'Stop sharing screen' : 'Share screen'}
             disabled={!voice.joined}
-            onClick={voice.toggleShare}
+            onClick={voice.toggleScreenShare}
           >
-            {voice.sharing ? (
+            {voice.shares.screen ? (
               <IconScreenShareOff className="control-icon" size={18} />
             ) : (
               <IconScreenShare className="control-icon" size={18} />
+            )}
+          </button>
+          <button
+            className={`control-btn${voice.shares.camera ? ' streaming' : ''}`}
+            title={voice.shares.camera ? 'Stop camera' : 'Start camera'}
+            disabled={!voice.joined}
+            onClick={voice.toggleCamera}
+          >
+            {voice.shares.camera ? (
+              <IconVideoOff className="control-icon" size={18} />
+            ) : (
+              <IconVideo className="control-icon" size={18} />
             )}
           </button>
           <button

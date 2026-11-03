@@ -66,121 +66,6 @@ html[data-transparency='true'] .chat-area {
   );
 }
 
-/* Canvas header: transparent strip separated by a hairline, not a dark bar. */
-.chat-header {
-  height: 54px;
-  flex-shrink: 0;
-  user-select: none;
-  padding: 0 var(--spacing-lg);
-  display: flex;
-  align-items: center;
-  border-bottom: 1px solid var(--hairline);
-}
-
-.header-content {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: var(--spacing-md);
-  width: 100%;
-  min-width: 0;
-}
-
-/* Left title block: icon chip + channel name + context line. */
-.chat-title {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-}
-
-/* Shortcut into the channel's summary page. */
-.chat-title-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 30px;
-  flex-shrink: 0;
-  padding: 0;
-  border: none;
-  cursor: pointer;
-  border-radius: var(--radius-sm);
-  background: color-mix(in srgb, var(--color-primary) 14%, transparent);
-  color: var(--color-primary);
-}
-
-.chat-title-icon {
-  transition: box-shadow 0.15s ease;
-}
-
-.chat-title-icon:hover {
-  box-shadow:
-    0 0 0 2px var(--color-primary),
-    0 0 10px color-mix(in srgb, var(--color-primary) 55%, transparent);
-}
-
-/* An image icon fills the box on its own — drop the tinted placeholder backing. */
-.chat-title-icon:has(.chat-title-icon-img) {
-  background: none;
-}
-
-.chat-title-icon-img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  border-radius: inherit;
-}
-
-.chat-title-icon-avatar {
-  border-radius: 50%;
-}
-
-.chat-title-text {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.chat-title-name {
-  font-size: var(--font-size-md);
-  font-weight: var(--font-weight-semibold);
-  color: var(--color-text);
-  line-height: 1.25;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.chat-title-sub {
-  font-size: var(--font-size-xs);
-  color: var(--color-text-tertiary);
-  line-height: 1.3;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-/* Header when peeking into another channel's chat / viewing a profile: just the
-   title (navigate out via the sidebar). */
-.view-preview-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  font-weight: var(--font-weight-semibold);
-  color: var(--color-text);
-}
-
-/* Ellipsis lives on the name, not the row — clipping the row would cut off the
-   icon button's hover ring. */
-.view-preview-name {
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
 .loading {
   color: var(--color-text);
   display: flex;
@@ -302,4 +187,65 @@ html[data-transparency='true'] .chat-area {
   font-size: var(--font-size-sm);
   color: var(--color-text-muted);
   max-width: 320px;
+}
+
+/* ============================================================================
+   STREAMS TAB, POPPED OUT — the tab stays open while the video grid lives in
+   its own window.
+   ============================================================================ */
+
+.streams-popped-out {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-lg);
+  color: var(--color-text-tertiary);
+  text-align: center;
+}
+
+.streams-popped-out p {
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-secondary);
+}
+
+.streams-popped-out-btn {
+  margin-top: var(--spacing-xs);
+  padding: 7px 14px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--color-background-mute);
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+}
+
+.streams-popped-out-btn:hover {
+  border-color: var(--color-primary);
+}
+
+/* The password reset code modal, built on the Roles and Groups popup's rg-* frame. */
+.reset-code-value {
+  padding: 10px 0 6px;
+  font-family: var(--font-family-mono);
+  font-size: 22px;
+  letter-spacing: 0.08em;
+  text-align: center;
+  color: var(--color-text);
+  user-select: all;
+}
+
+.reset-code-note {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  text-align: center;
+}
+
+.reset-code-actions {
+  display: flex;
+  justify-content: center;
+  margin-top: var(--spacing-sm);
 }

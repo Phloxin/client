@@ -27,13 +27,18 @@ const pct = (fraction) => (fraction == null ? '—' : `${(fraction * 100).toFixe
 // Voice connection strip at the top of the control dock, shown while we're in a
 // voice channel. Polls transport-level stats (RTT + audio loss) on its own
 // light timer for the signal bars and ping readout; the full per-stream graphs
-// live in the Connection Info panel this strip toggles.
+// live in the Connection Info tab this strip opens.
+// connectionInfoOpen: that tab exists in some pane (the button is lit);
+// connectionInfoActive: it is the active pane's tab, so the button closes it.
+// onToggleConnectionInfo({ show }) opens, brings forward or closes it; with
+// `show` it never closes.
 export default function VoiceConnectionBar({
   channelName,
   clients,
   selfId,
   mediaState,
   connectionInfoOpen,
+  connectionInfoActive,
   onToggleConnectionInfo
 }) {
   const [sample, setSample] = useState(null)
@@ -91,7 +96,7 @@ export default function VoiceConnectionBar({
         type="button"
         className="voice-connection-status"
         title={details}
-        onClick={onToggleConnectionInfo}
+        onClick={() => onToggleConnectionInfo()}
       >
         <span className="voice-connection-icon">
           <PylonSignalIcon level={level} />
@@ -116,7 +121,7 @@ export default function VoiceConnectionBar({
           type="button"
           className="voice-connection-info-btn warning"
           title={`${e2eeWarning} — open Connection Info`}
-          onClick={connectionInfoOpen ? undefined : onToggleConnectionInfo}
+          onClick={() => onToggleConnectionInfo({ show: true })}
         >
           <IconShieldExclamation size={16} />
         </button>
@@ -124,9 +129,9 @@ export default function VoiceConnectionBar({
       <button
         type="button"
         className={`voice-connection-info-btn${connectionInfoOpen ? ' active' : ''}`}
-        title={connectionInfoOpen ? 'Hide Connection Info' : 'Connection Info'}
+        title={connectionInfoActive ? 'Hide Connection Info' : 'Connection Info'}
         aria-pressed={!!connectionInfoOpen}
-        onClick={onToggleConnectionInfo}
+        onClick={() => onToggleConnectionInfo()}
       >
         <IconChartLine size={16} />
       </button>

@@ -1251,12 +1251,21 @@ button.chat-reply-preview:focus-visible {
 
 /* ── Composer: floating field docked at the canvas bottom ──────────────── */
 
+/* The field, and in a DM the call button beside it. */
+.chat-composer {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  margin: 8px 20px 16px;
+}
+
 .chat-input-bar {
   position: relative; /* anchors the @mention autocomplete popup */
   display: flex;
   align-items: flex-end;
   gap: 4px;
-  margin: 8px 20px 16px;
+  flex: 1 1 auto;
+  min-width: 0;
   padding: 6px;
   background: color-mix(in srgb, var(--color-background-mute) 85%, transparent);
   border: 1px solid var(--hairline);
@@ -1365,6 +1374,61 @@ button.chat-reply-preview:focus-visible {
 
 .chat-icon-btn:active:not(:disabled) {
   transform: scale(0.9);
+}
+
+/* A DM's call button: a square in the field's chrome at the field's one-line
+   height (34px row + 6px padding + 1px border, each side), so the two read as
+   one row. Bottom-aligned, it stays put as the field grows. */
+.chat-call-btn {
+  --call-bg: color-mix(in srgb, var(--color-background-mute) 85%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  flex-shrink: 0;
+  padding: 0;
+  background: var(--call-bg);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease,
+    transform 0.12s ease;
+}
+
+.chat-call-btn.start,
+.chat-call-btn.join,
+.chat-call-btn.joining {
+  color: var(--color-success);
+}
+
+.chat-call-btn.join,
+.chat-call-btn.start:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-success) 16%, var(--call-bg));
+}
+
+.chat-call-btn.join:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-success) 26%, var(--call-bg));
+}
+
+.chat-call-btn.leave {
+  color: var(--color-danger);
+}
+
+.chat-call-btn.leave:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-danger) 16%, var(--call-bg));
+}
+
+.chat-call-btn:active:not(:disabled) {
+  transform: scale(0.9);
+}
+
+.chat-call-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 /* ── Emoji picker popover ──────────────────────────────────────────────── */

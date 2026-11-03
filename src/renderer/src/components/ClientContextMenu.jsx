@@ -11,6 +11,7 @@ import {
   IconUserX,
   IconDoorExit,
   IconBan,
+  IconKey,
   IconMoodSilence,
   IconCheck,
   IconUserCheck,
@@ -64,6 +65,8 @@ function capabilities(client, o) {
   // Gag = server-wide mute (PATCH /client { server_mute }), gated on MUTE_MEMBERS.
   // Works from channel view and the roster, like ban.
   const canGag = !isSelf && !!o.onGag && o.canMuteMembers
+  // The server also refuses anyone who outranks us, such as an admin resetting the owner.
+  const canIssueResetCode = !isSelf && !!o.isAdmin && !!o.onIssueResetCode
   const canAssignRole = !isSelf
   // Groups are cosmetic, so unlike roles they're also assignable to ourselves —
   // our own menu shows the picker below Set Avatar instead of under moderation.
@@ -74,7 +77,8 @@ function capabilities(client, o) {
     canKick ||
     canKickFromChannel ||
     canGag ||
-    canBan
+    canBan ||
+    canIssueResetCode
   // A banned user's menu collapses to just Unban; otherwise it offers the normal
   // set. Don't open at all when nothing would be actionable.
   const canOpen = isBanned
@@ -101,6 +105,7 @@ function capabilities(client, o) {
     canBan,
     canUnban,
     canGag,
+    canIssueResetCode,
     canAssignGroup,
     canModerate,
     canOpen
@@ -689,6 +694,19 @@ function ClientContextMenu({ client, pos, onClose, opts, caps }) {
                     >
                       <IconBan size={16} />
                       Ban User
+                    </button>
+                  )}
+                  {caps.canIssueResetCode && (
+                    <button
+                      type="button"
+                      className="client-context-menu-item"
+                      onClick={() => {
+                        opts.onIssueResetCode?.(client.id)
+                        onClose()
+                      }}
+                    >
+                      <IconKey size={16} />
+                      Issue password reset code…
                     </button>
                   )}
                 </>

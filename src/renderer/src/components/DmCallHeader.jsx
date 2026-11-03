@@ -1,15 +1,8 @@
 import { useState } from 'react'
-import {
-  IconPhone,
-  IconMicrophoneOff,
-  IconHeadphonesOff,
-  IconVideoFilled
-} from '@tabler/icons-react'
-import { inCallText } from '../lib/dm'
+import { IconMicrophoneOff, IconHeadphonesOff, IconVideoFilled } from '@tabler/icons-react'
 import './DmCallHeader.css'
 
-// Call controls for a DM's chat header: start or join the call, and the strip
-// of participants once we're in it.
+// The strip of a DM call's participants, for the header of the call's chat.
 
 function Avatar({ client, className }) {
   return (
@@ -20,30 +13,6 @@ function Avatar({ client, className }) {
         (client.name || '?').charAt(0).toUpperCase()
       )}
     </span>
-  )
-}
-
-// Shown while we're not in the DM's call: who is in it, and the button in.
-export function DmCallControls({ members, joining, onJoinCall }) {
-  return (
-    <div className="dm-call-controls">
-      {members.length > 0 && (
-        <span className="dm-call-present">
-          <span className="dm-call-avatars">
-            {members.slice(0, 3).map((m) => (
-              <Avatar key={m.id} client={m} className="dm-call-avatar" />
-            ))}
-          </span>
-          <span className="dm-call-present-text">
-            {inCallText(members.map((m) => m.name || 'Unknown'))}
-          </span>
-        </span>
-      )}
-      <button type="button" className="dm-call-btn" disabled={joining} onClick={onJoinCall}>
-        <IconPhone size={15} stroke={2} />
-        {members.length > 0 ? 'Join call' : 'Start call'}
-      </button>
-    </div>
   )
 }
 
