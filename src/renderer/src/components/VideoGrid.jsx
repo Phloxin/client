@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { motion } from 'motion/react'
 import './VideoGrid.css'
 import {
+  IconVideo,
   IconVideoMinus,
   IconVideoFilled,
   IconMaximize,
@@ -30,6 +31,7 @@ import { useImageColors } from '../lib/imageColors'
 import { useWheelSlider } from '../lib/useWheelSlider'
 import { shouldPauseSelfPreview, syncSelfPreviewPlayback } from '../lib/selfPreviewPlayback'
 import { resolveStreamFocus } from '../lib/streamView'
+import { sortTiles } from '../lib/streamTiles'
 import { spring } from '../lib/motionPresets'
 import { useAnimationCategory, useSettings } from '../context/SettingsContext'
 import StreamContextMenu from './StreamContextMenu'
@@ -213,27 +215,27 @@ function StreamPausedOverlay({ compact = false, isSelf = false }) {
   )
 }
 
-// The stream view. Every stream is one always-mounted tile (keyed by the
-// publishing client) inside a single stage, so moving a stream into or out of
-// focus restyles and re-places its tile rather than remounting it — no <video>
-// ever restarts, and Motion tweens the tile between its old and new boxes. The
-// stage is either a grid (no focus: uniform tiles spread over the area) or a
-// focus layout (the focused tile fills the top, the rest wrap underneath as
-// thumbnails). A sole stream is always focused and can't be unfocused; see
-// resolveStreamFocus. Per-stream actions live in the right-click menu
-// (StreamContextMenu); the bottom bar keeps the focused stream's volume and the
-// view controls.
+// The stream view. Every stream is one always-mounted tile (keyed by tile id:
+// the publishing client and its source) inside a single stage, so moving a
+// stream into or out of focus restyles and re-places its tile rather than
+// remounting it — no <video> ever restarts, and Motion tweens the tile between
+// its old and new boxes. The stage is either a grid (no focus: uniform tiles
+// spread over the area) or a focus layout (the focused tile fills the top, the
+// rest wrap underneath as thumbnails). A sole stream is always focused and
+// can't be unfocused; see resolveStreamFocus. Per-stream actions live in the
+// right-click menu (StreamContextMenu); the bottom bar keeps the focused
+// stream's volume and the view controls.
 function VideoGrid({
   streams,
   clients,
-  selectedStreamClientId,
+  selectedTileId,
   onSelect,
   onPopout,
   onSetStreamRoles,
-  watchedStreamClientIds = EMPTY_WATCHED,
+  watchedTileIds = EMPTY_WATCHED,
   onSetStreamWatched,
-  // Ends our own screen share (owned by the sidebar's VoiceChannel). Absent in
-  // windows that can't reach it, which hides the stop action on our own stream.
+  // Ends one of our own shares, by its source ('screen' | 'camera'). Absent in
+  // windows that can't reach it, which hides the stop action on our own streams.
   onStopSharing,
   // Drives our own stream's menu entries: read the live options, restart with
   // new ones, pause, or reopen the source picker.
@@ -266,14 +268,14 @@ function VideoGrid({
   const selfPreviewPaused = useSelfPreviewPaused()
   const viewerRef = useRef(null)
   const stageRef = useRef(null)
-  // Each tile's element, by client id; zoom/pan measure against the focused
+  // Each tile's element, by tile id; zoom/pan measure against the focused
   // one. Looked up rather than held in a ref that moves between tiles, because
   // Motion only forwards a ref on mount/unmount, so moving one onto an
   // already-mounted tile when focus changes would never take.
   const tileElsRef = useRef(new Map())
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [carouselCollapsed, setCarouselCollapsed] = useState(false)
-  // The right-click menu: { clientId, pos: { x, y } } while open.
+  // The right-click menu: { tileId, pos: { x, y } } while open.
   const [menu, setMenu] = useState(null)
   const closeMenu = useCallback(() => setMenu(null), [])
   const menuOpen = menu != null
@@ -346,9 +348,13 @@ function VideoGrid({
 
   // Resolve the display label from the live clients list so a stream's
   // name stays correct even if it arrived before the clients list caught
-  // up with that client's channel move.
-  const resolveLabel = (s) =>
-    clients?.find((c) => c.id === s.clientId)?.name || s.fallbackLabel || `Stream ${s.consumerId}`
+  // up with that client's channel move. A camera tile says so; a screen
+  // share's carries the name alone.
+  const resolveLabel = (s) => {
+    const name =
+      clients?.find((c) => c.id === s.clientId)?.name || s.fallbackLabel || `Stream ${s.consumerId}`
+    return s.source === 'camera' ? `${name} · Camera` : name
+  }
 
   // Audience for every live producer, pushed from the voice socket. Subscribed
   // to soup directly in the main window, but the popout runs in a separate JS
@@ -362,23 +368,19 @@ function VideoGrid({
   const streamViewers = streamViewersProp ?? localStreamViewers
   const [viewersOpen, setViewersOpen] = useState(false)
 
-  const sortedStreams = [...streams].sort((a, b) => {
-    if (a.isSelf && !b.isSelf) return 1
-    if (!a.isSelf && b.isSelf) return -1
-    return 0
-  })
+  const sortedStreams = sortTiles(streams)
 
-  // Focus/watch intent is keyed by the publishing client, not by the transient
-  // mediasoup consumer id. Codec fallback re-produces the same logical stream
-  // with a new consumer id, and must not stop playback, drop focus, or remount
-  // its tile. A sole stream is always the focused one; with more, nothing
-  // selected means the grid.
-  const { focusedClientId, canToggleFocus } = resolveStreamFocus({
+  // Focus/watch intent is keyed by tile (the publishing client and its source),
+  // not by the transient mediasoup consumer id. Codec fallback re-produces the
+  // same logical stream with a new consumer id, and must not stop playback,
+  // drop focus, or remount its tile. A sole stream is always the focused one;
+  // with more, nothing selected means the grid.
+  const { focusedTileId, canToggleFocus } = resolveStreamFocus({
     streams: sortedStreams,
-    selectedStreamClientId
+    selectedTileId
   })
   const focusedStream =
-    focusedClientId == null ? null : sortedStreams.find((s) => s.clientId === focusedClientId)
+    focusedTileId == null ? null : sortedStreams.find((s) => s.tileId === focusedTileId)
 
   // The sharer isn't watching their own stream, so drop them if the server
   // happens to report them; everyone else resolves to a name and avatar (an
@@ -391,8 +393,8 @@ function VideoGrid({
     })
     .sort((a, b) => a.name.localeCompare(b.name))
 
-  const watchedStreams = sortedStreams.filter((s) => watchedStreamClientIds.has(s.clientId))
-  const isStopped = (s) => !watchedStreamClientIds.has(s.clientId)
+  const watchedStreams = sortedStreams.filter((s) => watchedTileIds.has(s.tileId))
+  const isStopped = (s) => !watchedTileIds.has(s.tileId)
 
   // Zoom needs a picture: a sole stream we aren't watching is still the focused
   // view, but shows its placeholder, so there's nothing to zoom into.
@@ -402,7 +404,7 @@ function VideoGrid({
   // The menu's stream went away (its sharer stopped, or every stream did): drop
   // the menu rather than leave it pointing at nothing. Adjusted during render
   // so a menu for a missing tile never paints.
-  const menuStream = menu ? (sortedStreams.find((s) => s.clientId === menu.clientId) ?? null) : null
+  const menuStream = menu ? (sortedStreams.find((s) => s.tileId === menu.tileId) ?? null) : null
   if (menu && !menuStream) setMenu(null)
 
   // Reset the zoom whenever focus moves (or clears) so returning to a stream
@@ -413,14 +415,14 @@ function VideoGrid({
     setView(NO_ZOOM)
     setViewersOpen(false)
     setMenu(null)
-  }, [focusedClientId])
+  }, [focusedTileId])
 
   // Scroll-to-zoom on the focused stream, anchored at the cursor. Native
   // listener (not React onWheel) because it must preventDefault, and wheel
   // events are passive by default. `theatre` is a dep because entering/leaving
   // it portals the viewer, which remounts the focused tile's element.
   useEffect(() => {
-    const el = tileElsRef.current.get(focusedClientId)
+    const el = tileElsRef.current.get(focusedTileId)
     if (!zoomable || !el) return
     const onWheel = (e) => {
       e.preventDefault()
@@ -442,7 +444,7 @@ function VideoGrid({
     }
     el.addEventListener('wheel', onWheel, { passive: false })
     return () => el.removeEventListener('wheel', onWheel)
-  }, [focusedClientId, zoomable, theatre])
+  }, [focusedTileId, zoomable, theatre])
 
   // Drag to pan while zoomed. A real drag (moved past a click threshold) sets
   // suppressClickRef so the mouseup's click doesn't unfocus the stream.
@@ -452,7 +454,7 @@ function VideoGrid({
   }
   const handlePanMove = (e) => {
     const d = dragRef.current
-    const el = tileElsRef.current.get(focusedClientId)
+    const el = tileElsRef.current.get(focusedTileId)
     if (!d || !el) return
     const dx = e.clientX - d.sx
     const dy = e.clientY - d.sy
@@ -478,7 +480,7 @@ function VideoGrid({
   const handleMapPanStart = (e) => {
     e.stopPropagation() // don't start a video-pan drag underneath
     if (e.button !== 0) return
-    const el = tileElsRef.current.get(focusedClientId)
+    const el = tileElsRef.current.get(focusedTileId)
     const map = e.currentTarget.getBoundingClientRect()
     if (!el || !map.width) return
     const rect = el.getBoundingClientRect()
@@ -565,8 +567,11 @@ function VideoGrid({
   const resetStreamVolume = (clientId) => onSetStreamAudio?.(clientId, { volume: 1, muted: false })
 
   // The bar's volume belongs to the focused stream, and only to someone else's
-  // (we never hear our own).
-  const barAudioClientId = focusedStream && !focusedStream.isSelf ? focusedStream.clientId : null
+  // screen share (we never hear our own, and a camera has no audio).
+  const barAudioClientId =
+    focusedStream && !focusedStream.isSelf && focusedStream.source === 'screen'
+      ? focusedStream.clientId
+      : null
   const handleBarVolumeChange = (e) => {
     if (barAudioClientId != null) setStreamVolume(barAudioClientId, e)
   }
@@ -583,14 +588,24 @@ function VideoGrid({
           <IconVideoMinus size={100} />
           No Active Streams
           {shareControl && (
-            <button
-              type="button"
-              className="btn btn-primary empty-share-btn"
-              onClick={() => shareControl.pickSource()}
-            >
-              <IconScreenShare size={18} />
-              Start streaming
-            </button>
+            <div className="empty-share-actions">
+              <button
+                type="button"
+                className="btn btn-primary empty-share-btn"
+                onClick={() => shareControl.pickSource('screens')}
+              >
+                <IconScreenShare size={18} />
+                Share screen
+              </button>
+              <button
+                type="button"
+                className="btn empty-share-btn secondary"
+                onClick={() => shareControl.pickSource('devices')}
+              >
+                <IconVideo size={18} />
+                Start camera
+              </button>
+            </div>
           )}
         </div>
       </div>
@@ -598,16 +613,16 @@ function VideoGrid({
 
   // Clicking a tile body focuses it (resuming it first if it was closed).
   const focusStream = (s) => {
-    if (isStopped(s)) onSetStreamWatched?.(s.clientId, true)
-    onSelect?.(s.clientId)
+    if (isStopped(s)) onSetStreamWatched?.(s.tileId, true)
+    onSelect?.(s.tileId)
   }
 
   // Start or stop consuming a stream. Can't watch a stream big once it's
   // stopped, so stopping the focused one drops focus — unless it's the only
   // stream, which is always the focused view (it shows its placeholder).
   const setWatched = (s, watch) => {
-    onSetStreamWatched?.(s.clientId, watch)
-    if (!watch && s.clientId === focusedClientId && canToggleFocus) onSelect?.(null)
+    onSetStreamWatched?.(s.tileId, watch)
+    if (!watch && s.tileId === focusedTileId && canToggleFocus) onSelect?.(null)
   }
 
   // The top-right watch/close button: stop consuming a stream, or resume it.
@@ -621,12 +636,12 @@ function VideoGrid({
   // ends a drag-pan, or that dismissed the menu, does neither.
   const handleTileMouseDown = (s, e) => {
     if (e.button === 0) swallowClickRef.current = menuOpen
-    if (s.clientId === focusedClientId) handlePanStart(e)
+    if (s.tileId === focusedTileId) handlePanStart(e)
   }
   const handleTileClick = (s) => {
     const dismissedMenu = swallowClickRef.current
     swallowClickRef.current = false
-    if (s.clientId === focusedClientId) {
+    if (s.tileId === focusedTileId) {
       if (suppressClickRef.current) {
         suppressClickRef.current = false
         return
@@ -640,7 +655,7 @@ function VideoGrid({
   const openMenu = (s, e) => {
     e.preventDefault()
     e.stopPropagation()
-    setMenu({ clientId: s.clientId, pos: { x: e.clientX, y: e.clientY } })
+    setMenu({ tileId: s.tileId, pos: { x: e.clientX, y: e.clientY } })
   }
 
   // Speaker-off pill beside the name plate of a stream whose audio we muted.
@@ -658,7 +673,7 @@ function VideoGrid({
   // its media wrapper are Motion layout nodes, so the tween moves the wrapper
   // with the tile instead of leaving the media behind.
   const renderTile = (s) => {
-    const isFocused = s.clientId === focusedClientId
+    const isFocused = s.tileId === focusedTileId
     const role = isFocused ? 'focused' : focusedStream ? 'thumb' : 'grid'
     const compact = role === 'thumb'
     // Watching is intent; the stream arrives a moment later once the consumer is
@@ -667,19 +682,20 @@ function VideoGrid({
     const stopped = isStopped(s) || !s.stream
     const client = clients?.find((c) => c.id === s.clientId)
     const label = resolveLabel(s)
-    // Our own stream is never played back to us, so it never carries the badge.
-    const audioMuted = !s.isSelf && !!streamAudio[s.clientId]?.muted
+    // Only someone else's screen share carries the badge: our own stream is never
+    // played back to us, and a camera has no audio.
+    const audioMuted = !s.isSelf && s.source === 'screen' && !!streamAudio[s.clientId]?.muted
     const zoomed = isFocused && zoom.z > 1
     // The frame the minimap's outline is measured against.
-    const zoomedEl = zoomed ? tileElsRef.current.get(s.clientId) : null
+    const zoomedEl = zoomed ? tileElsRef.current.get(s.tileId) : null
     return (
       <motion.div
-        key={s.clientId}
+        key={s.tileId}
         layout={animateFocus}
         transition={TILE_TRANSITION}
         ref={(el) => {
-          if (el) tileElsRef.current.set(s.clientId, el)
-          else tileElsRef.current.delete(s.clientId)
+          if (el) tileElsRef.current.set(s.tileId, el)
+          else tileElsRef.current.delete(s.tileId)
         }}
         className={`stream-tile ${role}${stopped ? ' stopped' : ''}${
           canToggleFocus ? ' focusable' : ''
@@ -800,7 +816,7 @@ function VideoGrid({
               title={s.isSelf ? 'Preview your stream' : 'Play stream'}
               onClick={(e) => {
                 e.stopPropagation()
-                onSetStreamWatched?.(s.clientId, true)
+                onSetStreamWatched?.(s.tileId, true)
               }}
             >
               <IconPlayerPlayFilled size={compact ? 13 : 15} />
@@ -1023,9 +1039,10 @@ function VideoGrid({
   // OS-fullscreen. Keyed per open so its flyout and settings snapshot reset.
   const renderStreamMenu = () => {
     const s = menuStream
-    const focused = s.clientId === focusedClientId
+    const focused = s.tileId === focusedTileId
+    // The volume row, like the bar's, is for someone else's screen share only.
     let audio = null
-    if (!s.isSelf) {
+    if (!s.isSelf && s.source === 'screen') {
       const a = audioOf(s.clientId)
       const value = audioPercent(a)
       audio = {
@@ -1039,7 +1056,7 @@ function VideoGrid({
     }
     return (
       <StreamContextMenu
-        key={`${menu.clientId}:${menu.pos.x},${menu.pos.y}`}
+        key={`${menu.tileId}:${menu.pos.x},${menu.pos.y}`}
         label={resolveLabel(s)}
         pos={menu.pos}
         onClose={closeMenu}
@@ -1053,12 +1070,13 @@ function VideoGrid({
         onStopSharing={
           s.isSelf && onStopSharing
             ? () => {
-                onStopSharing()
+                onStopSharing(s.source)
                 if (focused && canToggleFocus) onSelect?.(null)
               }
             : undefined
         }
         shareControl={s.isSelf ? shareControl : undefined}
+        source={s.isSelf ? s.source : undefined}
         onPopout={onPopout}
         theatre={theatre}
         onToggleTheatre={onToggleTheatre}

@@ -49,9 +49,13 @@ export function resolveWatchIntent({
   )
   // Screen-share audio follows the same watch set as the video, but keyed by
   // client: the audio producer is separate from the video producer, so it binds
-  // by whose stream is watched.
+  // by whose screen share is watched. A camera has no audio, so watching only a
+  // client's camera receives none of theirs.
   const watchedClientIds = new Set(
-    [...watchedProducerIds].map((producerId) => videoProducers.get(producerId).clientId)
+    [...watchedProducerIds]
+      .map((producerId) => videoProducers.get(producerId))
+      .filter(({ producedType }) => producedType === 'ScreenShare')
+      .map(({ clientId }) => clientId)
   )
 
   const close = []

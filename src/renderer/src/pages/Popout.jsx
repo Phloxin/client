@@ -22,7 +22,7 @@ function Popout() {
       bridge?.getData?.() || {
         streams: [],
         clients: [],
-        selectedStreamClientId: null,
+        selectedTileId: null,
         streamViewers: new Map(),
         streamAudio: {}
       }
@@ -43,17 +43,17 @@ function Popout() {
     if (!bridge) return
     const onKeyDown = (e) => {
       if (e.key !== 'Escape' || e.defaultPrevented || document.fullscreenElement) return
-      const { focusedClientId, canToggleFocus } = resolveStreamFocus({
+      const { focusedTileId, canToggleFocus } = resolveStreamFocus({
         streams: data.streams,
-        selectedStreamClientId: data.selectedStreamClientId
+        selectedTileId: data.selectedTileId
       })
-      if (focusedClientId == null || !canToggleFocus) return
+      if (focusedTileId == null || !canToggleFocus) return
       e.preventDefault()
       bridge.select(null)
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [bridge, data.streams, data.selectedStreamClientId])
+  }, [bridge, data.streams, data.selectedTileId])
 
   if (!bridge) {
     return <div className="popout-empty">This window must be opened from the main app.</div>
@@ -66,13 +66,13 @@ function Popout() {
       <VideoGrid
         streams={data.streams}
         clients={data.clients}
-        selectedStreamClientId={data.selectedStreamClientId}
-        onSelect={(id) => bridge.select(id)}
+        selectedTileId={data.selectedTileId}
+        onSelect={(tileId) => bridge.select(tileId)}
         streamAudio={data.streamAudio}
         onSetStreamAudio={(clientId, patch) => bridge.setStreamAudio(clientId, patch)}
         onSetStreamRoles={(payload) => bridge.setStreamRoles(payload)}
-        watchedStreamClientIds={data.watchedStreamClientIds}
-        onSetStreamWatched={(id, watched) => bridge.setStreamWatched(id, watched)}
+        watchedTileIds={data.watchedTileIds}
+        onSetStreamWatched={(tileId, watched) => bridge.setStreamWatched(tileId, watched)}
         onStopSharing={bridge.shareControl?.stop}
         shareControl={bridge.shareControl}
         streamViewers={data.streamViewers}

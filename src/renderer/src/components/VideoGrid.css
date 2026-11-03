@@ -21,11 +21,28 @@
   gap: var(--spacing-md);
 }
 
+.empty-share-actions {
+  display: flex;
+  gap: var(--spacing-sm);
+}
+
 .empty-share-btn {
   display: flex;
   align-items: center;
   gap: var(--spacing-sm);
   font-size: var(--font-size-base);
+}
+
+/* The plain .btn has no colours of its own; this is the app's secondary look
+   (picker / confirm dialogs). */
+.empty-share-btn.secondary {
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+}
+
+.empty-share-btn.secondary:hover {
+  color: var(--color-text);
+  background: var(--color-border-light);
 }
 
 /* ── Main viewer wrapper ─────────────────────────────────────────────────── */

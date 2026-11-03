@@ -22,6 +22,8 @@ import {
   IconMicrophoneOff,
   IconScreenShare,
   IconScreenShareOff,
+  IconVideo,
+  IconVideoOff,
   IconPlus,
   IconX,
   IconFilter,
@@ -712,15 +714,27 @@ function Sidebar({
             )}
           </button>
           <button
-            className={`control-btn${voice.sharing ? ' streaming' : ''}`}
-            title={voice.sharing ? 'End Stream' : 'Start Stream'}
+            className={`control-btn${voice.shares.screen ? ' streaming' : ''}`}
+            title={voice.shares.screen ? 'Stop sharing screen' : 'Share screen'}
             disabled={!voice.joined}
-            onClick={voice.toggleShare}
+            onClick={voice.toggleScreenShare}
           >
-            {voice.sharing ? (
+            {voice.shares.screen ? (
               <IconScreenShareOff className="control-icon" size={18} />
             ) : (
               <IconScreenShare className="control-icon" size={18} />
+            )}
+          </button>
+          <button
+            className={`control-btn${voice.shares.camera ? ' streaming' : ''}`}
+            title={voice.shares.camera ? 'Stop camera' : 'Start camera'}
+            disabled={!voice.joined}
+            onClick={voice.toggleCamera}
+          >
+            {voice.shares.camera ? (
+              <IconVideoOff className="control-icon" size={18} />
+            ) : (
+              <IconVideo className="control-icon" size={18} />
             )}
           </button>
           <button

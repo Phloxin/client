@@ -41,7 +41,9 @@ export function configureScreenShare(dependencies = {}) {
   if (dependencies.localProducerIds) localProducerIds = dependencies.localProducerIds
 }
 
-let screenShareCtx = null
+// One live share per kind: a screen share and a camera can run side by side.
+// Both slots share the claim and produce queues, so the two never produce at once.
+const shares = { screen: null, camera: null }
 const enqueueShareClaim = createSerialQueue()
 const enqueueShareProduce = createSerialQueue()
 
@@ -50,8 +52,8 @@ const enqueueShareProduce = createSerialQueue()
 // close the audio producer, surface the reason to the active channel UI.
 onScreenAudioError(({ message }) => {
   console.error('[Soup] Screen audio capture failed:', message)
-  const ctx = screenShareCtx
-  if (!ctx || ctx.type !== 'screen') return
+  const ctx = shares.screen
+  if (!ctx) return
 
   const audioProducer = ctx.audioProducer
   ctx.audioProducer = null
@@ -336,11 +338,9 @@ function logNegotiatedVideoCodec(producer, scalabilityMode) {
 // codec + whether the encoder is hardware or software (encoderImplementation, e.g.
 // 'libaom' = software AV1) for the sharer's HW/SW tile badge, and qualityLimitationReason
 // ('cpu' = the encoder can't keep up) which drives maybeDowngradeScreenCodec.
-// Also logged in dev. Returns a stop function; only the most recent share is
-// polled.
-let encoderStatsStop = null
+// Also logged in dev. Returns a stop function, which the share keeps as
+// ctx.statsStop.
 function startEncoderStatsLog(producer, onStats) {
-  encoderStatsStop?.()
   const sender = producer.rtpSender
   if (!sender?.getStats) return
   const previousByOutboundId = new Map()
@@ -370,12 +370,7 @@ function startEncoderStatsLog(producer, onStats) {
       // getStats can reject transiently around teardown — ignore.
     }
   }, 3000)
-  const stop = () => {
-    clearInterval(id)
-    if (encoderStatsStop === stop) encoderStatsStop = null
-  }
-  encoderStatsStop = stop
-  return stop
+  return () => clearInterval(id)
 }
 
 // ─── Adaptive screen-share SVC fallback ──────────────────────────
@@ -406,7 +401,7 @@ function isStreamDeniedError(error) {
 }
 
 function isActiveShare(ctx) {
-  return screenShareCtx === ctx && !ctx.stopped
+  return shares[ctx.type] === ctx && !ctx.stopped
 }
 
 function screenRungKey(codec, rung) {
@@ -441,7 +436,7 @@ function screenFallbackIsCoolingDown(ctx) {
   return Date.now() < (ctx.fallbackCooldownUntil ?? 0)
 }
 
-// Serialize mediasoup produce operations for the single local video-share slot.
+// Serialize mediasoup produce operations across both local share slots.
 // If ownership changes during the await, close only the producer just created;
 // never call a global teardown that could belong to the successor share.
 function produceForShare(ctx, options) {
@@ -756,7 +751,7 @@ async function stepDownScreenSvcRung(ctx, reason) {
 async function stopShareContext(ctx, { notifyServer = true } = {}) {
   if (!ctx || ctx.stopped) return ctx?.stopPromise
   ctx.stopped = true
-  if (screenShareCtx === ctx) screenShareCtx = null
+  if (shares[ctx.type] === ctx) shares[ctx.type] = null
 
   // Remove the watchdogs first so stopping the tracks below doesn't look
   // like a capture failure and trigger recovery.
@@ -812,10 +807,12 @@ async function stopShareContext(ctx, { notifyServer = true } = {}) {
   return ctx.stopPromise
 }
 
+// Take ctx's slot, stopping the share of the same kind first; the other kind's
+// share keeps running.
 function claimShareContext(ctx) {
   return enqueueShareClaim(async () => {
-    if (screenShareCtx) await stopShareContext(screenShareCtx)
-    screenShareCtx = ctx
+    if (shares[ctx.type]) await stopShareContext(shares[ctx.type])
+    shares[ctx.type] = ctx
   })
 }
 
@@ -1362,7 +1359,7 @@ export async function shareScreen({
         `${initialProducer.rung} [id:${initialProducer.producer.id}]`
     )
     // The channel's codecs may have changed while this was being produced.
-    applyChannelCodecs()
+    applyChannelCodecsTo(ctx)
 
     // Screenshare audio: native capture for per-app/system modes, or the legacy
     // loopback track riding getDisplayMedia. Audio failure keeps video live.
@@ -1643,8 +1640,8 @@ function cameraStatsHandler(ctx, stats) {
 }
 
 // ─── Share webcam ────────────────────────────────────────────────
-// Streams a camera device into the same producer slot as screen share, so the
-// existing stop/preview/remote-render paths all apply. Camera capture is capped
+// Streams a camera device from its own slot, beside any screen share, through
+// the same stop/preview/remote-render paths. Camera capture is capped
 // at an HD/30fps ideal to avoid opening a 4K-native webcam that the sender would
 // immediately crush into its 2.5 Mbps ceiling.
 //
@@ -1714,7 +1711,7 @@ export async function shareCamera(
       console.log('[Soup] Camera sharing with H264 simulcast (thumbnail + full layers)')
     }
     // The channel's codecs may have changed while this was being produced.
-    applyChannelCodecs()
+    applyChannelCodecsTo(ctx)
 
     const previewStream = new MediaStream([track])
     return {
@@ -1732,11 +1729,15 @@ export async function shareCamera(
 // ─── Channel codec changes ───────────────────────────────────────
 // The voice server only takes video in a codec every member of the channel can
 // decode, and that set shrinks when someone joins who can't decode what we're
-// sending. Move the share onto a codec still allowed. Its producer replaces the
-// old source, so viewers keep the tile and move to the new stream. Called on
-// every Codecs event and Channel snapshot; a no-op while the codec is allowed.
+// sending. Move each live share onto a codec still allowed. Its producer
+// replaces the old source, so viewers keep the tile and move to the new stream.
+// Called on every Codecs event and Channel snapshot; a no-op while the codec is
+// allowed.
 export function applyChannelCodecs() {
-  const ctx = screenShareCtx
+  for (const ctx of Object.values(shares)) applyChannelCodecsTo(ctx)
+}
+
+function applyChannelCodecsTo(ctx) {
   if (!ctx?.producer || !isActiveShare(ctx) || shareCodecAllowed(ctx)) return
   // The same slot the encoder fallbacks use, so the two never produce at once.
   const slot = ctx.type === 'camera' ? 'cameraTransition' : 'screenTransition'
@@ -1780,9 +1781,10 @@ function shareCodecAllowed(ctx) {
 // forwarding to every viewer, who sees a paused frame (SourceUpdated) rather
 // than the last one. Local producers pause too, so nothing is encoded or sent.
 // The capture keeps running and the self preview shares its track, so the
-// preview goes dark with it. Resolves false when there's no share to pause.
-export async function setSharePaused(paused) {
-  const ctx = screenShareCtx
+// preview goes dark with it. Resolves false when there's no share of that type
+// ('screen' | 'camera') to pause.
+export async function setSharePaused(type, paused) {
+  const ctx = shares[type]
   if (!ctx || !isActiveShare(ctx) || !ctx.producer) return false
   ctx.paused = paused === true
   const shareProducers = [ctx.producer, ctx.audioProducer].filter(Boolean)
@@ -1797,37 +1799,49 @@ export async function setSharePaused(paused) {
   return true
 }
 
-// ─── Stop screen share ───────────────────────────────────────────
-export async function stopScreenShare() {
+// ─── Stop a share ────────────────────────────────────────────────
+// Stops the share of that type ('screen' | 'camera'), or both without one.
+export async function stopShare(type) {
   return enqueueShareClaim(async () => {
-    const ctx = screenShareCtx
-    if (!ctx) return
-    await stopShareContext(ctx)
-    console.log('[Soup] Screen share stopped')
+    for (const slot of type ? [type] : ['screen', 'camera']) {
+      const ctx = shares[slot]
+      if (!ctx) continue
+      await stopShareContext(ctx)
+      console.log(`[Soup] ${slot === 'camera' ? 'Camera' : 'Screen'} share stopped`)
+    }
   })
 }
 
-export function getScreenShareContext() {
-  return screenShareCtx
+// The live shares, screen and camera (zero to two).
+export function getShareContexts() {
+  return Object.values(shares).filter((ctx) => ctx && !ctx.stopped)
 }
 
 export function resetActiveScreenShare() {
-  const activeShare = screenShareCtx
-  if (activeShare) void stopShareContext(activeShare, { notifyServer: false })
+  for (const ctx of Object.values(shares)) {
+    if (ctx) void stopShareContext(ctx, { notifyServer: false })
+  }
 }
 
-// The voice server closed one of the share's sources on its own: a channel
-// switch, or the backend ending our stream. Stop the share and tell its owner.
+// The voice server closed one of a share's sources on its own: a channel
+// switch, or the backend ending our stream. Stop that share and tell its owner.
 // The share's other source is closed on the server too, unless the same Closed
 // already took it (closeServerProducer then finds nothing to close).
 export function endShareFromServer(producerId) {
-  const ctx = screenShareCtx
-  if (!ctx || (ctx.producer?.id !== producerId && ctx.audioProducer?.id !== producerId)) return
+  const ctx = Object.values(shares).find(
+    (share) =>
+      share && (share.producer?.id === producerId || share.audioProducer?.id === producerId)
+  )
+  if (!ctx) return
   const notify = isActiveShare(ctx)
   void stopShareContext(ctx)
   if (notify) ctx.onShareEnded?.('server-closed')
 }
 
 export function stopScreenEncoderStats() {
-  encoderStatsStop?.()
+  for (const ctx of Object.values(shares)) {
+    if (!ctx) continue
+    ctx.statsStop?.()
+    ctx.statsStop = null
+  }
 }

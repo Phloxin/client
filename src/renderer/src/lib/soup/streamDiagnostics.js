@@ -10,16 +10,14 @@ import {
 let getProducerTransport = () => null
 let getConsumerTransport = () => null
 let getProducers = () => []
-let getScreenShareContext = () => null
+let getShareContexts = () => []
 let getRemoteConsumers = () => new Map()
 
 export function configureStreamDiagnostics(dependencies = {}) {
   if (dependencies.getProducerTransport) getProducerTransport = dependencies.getProducerTransport
   if (dependencies.getConsumerTransport) getConsumerTransport = dependencies.getConsumerTransport
   if (dependencies.getProducers) getProducers = dependencies.getProducers
-  if (dependencies.getScreenShareContext) {
-    getScreenShareContext = dependencies.getScreenShareContext
-  }
+  if (dependencies.getShareContexts) getShareContexts = dependencies.getShareContexts
   if (dependencies.getRemoteConsumers) getRemoteConsumers = dependencies.getRemoteConsumers
 }
 
@@ -27,7 +25,7 @@ export function configureStreamDiagnostics(dependencies = {}) {
 // Powers a UI diagnostics panel. Each tick enumerates our live producers (mic,
 // screen/camera video, screen audio) and every remote consumer, pulls ONE
 // getStats() per stream, and reports a flat per-class metrics object. This is a
-// strictly READ-ONLY observer: it never mutates producers / screenShareCtx /
+// strictly READ-ONLY observer: it never mutates producers / share contexts /
 // remoteConsumers and keeps its OWN delta state in the returned closure. That is
 // why double-polling a sender the encoder-stats logger also polls is safe — the
 // previous-sample maps are separate, so the two pollers never corrupt each
@@ -86,7 +84,7 @@ export function startStreamDebugStats(onSample, intervalMs = 1000) {
       let hasSendVideo = false
 
       // Module state is read LIVE here: producers is reassigned on reset and
-      // screenShareCtx / remoteConsumers churn constantly, so a captured reference
+      // the share contexts / remoteConsumers churn constantly, so a captured reference
       // would go stale. Referencing the module bindings each tick always sees the
       // current media state (a mid-tick resetMediaState just yields fewer streams).
       const pushSend = (producer, kind, producedType) => {
@@ -173,9 +171,8 @@ export function startStreamDebugStats(onSample, intervalMs = 1000) {
         if (p.kind !== 'audio' || p.closed) continue
         pushSend(p, 'audio', p.appData?.produced ?? 'Audio')
       }
-      // Screen/camera share: at most one video producer and one screen-audio one.
-      const ctx = getScreenShareContext()
-      if (ctx && !ctx.stopped) {
+      // Screen and camera shares: a video producer each, plus the screen's audio.
+      for (const ctx of getShareContexts()) {
         if (ctx.producer && !ctx.producer.closed) {
           pushSend(
             ctx.producer,

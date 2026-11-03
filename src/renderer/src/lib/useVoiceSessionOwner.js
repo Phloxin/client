@@ -7,7 +7,7 @@ import {
   shareScreen,
   shareCamera,
   setSharePaused,
-  stopScreenShare,
+  stopShare as stopSoupShare,
   requestVoiceMediaRecovery,
   setVolumeGateThreshold,
   setVoiceSelf
@@ -24,6 +24,7 @@ import { useSettings } from '../context/SettingsContext'
 import { getScreenAudioCapabilities } from './screenAudio'
 import { audioOptionsFor } from './captureOptions'
 import { dmDisplayName } from './dm'
+import { sourceOfProducedType, tileIdOf } from './streamTiles'
 
 // Chromium's OverconstrainedError has an empty message, so err.message alone
 // would render a blank banner. Each error name gets its own remedy text.
@@ -70,6 +71,9 @@ const ERROR_DISMISS_MS = 10_000
 // leave (which would cancel recovery).
 const VOICE_NULL_RECONCILE_GRACE_MS = 3000
 
+const NO_SHARES = { screen: false, camera: false }
+const noShareHandles = () => ({ screen: null, camera: null })
+
 // The live voice session for any channel id, owned once by Main (VoiceSessionContext).
 export function useVoiceSessionOwner({
   selfId,
@@ -97,8 +101,10 @@ export function useVoiceSessionOwner({
     const timer = setTimeout(() => setErrorMessage(null), ERROR_DISMISS_MS)
     return () => clearTimeout(timer)
   }, [error])
-  const [sharing, setSharing] = useState(false)
-  const [sourcePickerOpen, setSourcePickerOpen] = useState(false)
+  // Which of our two shares are live; each kind has its own slot in soup.
+  const [shares, setShares] = useState(NO_SHARES)
+  // null while closed, else the tab it opened on ('screens' | 'devices').
+  const [sourcePickerOpen, setSourcePickerOpen] = useState(null)
   const [videoStreams, setVideoStreams] = useState([])
   const [speakingClients, setSpeakingClients] = useState({})
   // Our own speaking state, for the system-tray mic indicator.
@@ -106,14 +112,15 @@ export function useVoiceSessionOwner({
   const { micSettings } = useSettings()
 
   const joinedRef = useRef(false)
-  // Owner-bound handle for the local screen/camera capture. Track-ended events
-  // can arrive after a successor share starts, so they must never call the
-  // singleton/global stop path or clear the successor's tile.
-  const activeShareRef = useRef(null)
-  // What the live share was started with, so the stream view's quick menu can
-  // restart it with one option changed; lastAudioRef remembers the audio setup
-  // to restore when that menu toggles audio back on.
-  const lastShareRef = useRef(null)
+  // Owner-bound handles for the local captures, one per kind. Track-ended
+  // events can arrive after a successor share of that kind starts, so they must
+  // never call the global stop path or clear the successor's tile.
+  const activeShareRef = useRef(noShareHandles())
+  // What each live share was started with ({ sourceId, options } per kind), so
+  // the stream view's quick menu can restart it with one option changed;
+  // lastAudioRef remembers the screen share's audio setup to restore when that
+  // menu toggles audio back on.
+  const lastShareRef = useRef(noShareHandles())
   const lastAudioRef = useRef(null)
   // Latest mic settings, read by the (re)publish path so a background reconnect
   // re-publishes with current settings rather than those captured at join time.
@@ -412,7 +419,8 @@ export function useVoiceSessionOwner({
     setPendingChannel(null)
     cancelPublishRetries()
     setJoined(false)
-    setSharing(false)
+    activeShareRef.current = noShareHandles()
+    setShares(NO_SHARES)
     setVideoStreams([])
     setSpeakingClients({})
     setSelfSpeaking(false)
@@ -435,8 +443,8 @@ export function useVoiceSessionOwner({
   // is NOT auto-restored (re-capturing the screen requires a fresh user
   // gesture). A resumed session never gets here: its media carries on.
   const handleReconnecting = () => {
-    activeShareRef.current = null
-    setSharing(false)
+    activeShareRef.current = noShareHandles()
+    setShares(NO_SHARES)
     setVideoStreams([])
     setSpeakingClients({})
     setSelfSpeaking(false)
@@ -505,13 +513,26 @@ export function useVoiceSessionOwner({
     )
   }
 
-  const handleVideoStream = ({ stream, kind, consumerId, producerId, clientId, codec, paused }) => {
-    // Don't bake in the client's name here - the clients list for this
+  const handleVideoStream = ({
+    stream,
+    kind,
+    consumerId,
+    producerId,
+    clientId,
+    producedType,
+    codec,
+    paused
+  }) => {
+    // One tile per source: a codec replacement, a consume or a stop watching
+    // swaps the entry with the same tile id, and a client's other source keeps
+    // its own. Don't bake in the client's name here - the clients list for this
     // channel may not have caught up with this client's channel move yet.
     // The label is resolved at render time from clientId instead.
+    const source = sourceOfProducedType(producedType)
+    const tileId = tileIdOf(clientId, source)
     setVideoStreams((prev) => [
       ...prev.filter(
-        (existing) => existing.kind !== 'video' || existing.clientId !== clientId || existing.isSelf
+        (existing) => existing.kind !== 'video' || existing.tileId !== tileId || existing.isSelf
       ),
       {
         stream,
@@ -520,6 +541,8 @@ export function useVoiceSessionOwner({
         kind,
         isSelf: false,
         clientId,
+        source,
+        tileId,
         codec,
         paused: paused === true,
         channelId: tileChannelId(),
@@ -609,29 +632,29 @@ export function useVoiceSessionOwner({
 
   // Drop the old channel's local media state without disconnecting the voice
   // socket: a declared switch, or the server moving us (a moderator's move).
-  // The server closes our share on the move, so its handle is dropped, not
+  // The server closes our shares on the move, so their handles are dropped, not
   // stopped.
   const deactivate = () => {
-    activeShareRef.current = null
+    activeShareRef.current = noShareHandles()
     cancelPublishRetries()
-    setSharing(false)
+    setShares(NO_SHARES)
     setVideoStreams([])
     setSpeakingClients({})
   }
 
   const handleLeave = () => {
     sessionRef.current = null
-    activeShareRef.current = null
+    activeShareRef.current = noShareHandles()
     joinedRef.current = false
     setPendingChannel(null)
     cancelPublishRetries()
     disconnect()
     setJoined(false)
-    setSharing(false)
+    setShares(NO_SHARES)
     setVideoStreams([])
     setSpeakingClients({})
     setSelfSpeaking(false)
-    setSourcePickerOpen(false)
+    setSourcePickerOpen(null)
     setSessionChannel(null)
   }
 
@@ -645,7 +668,10 @@ export function useVoiceSessionOwner({
   // server.
   const reset = () => handleLeave()
 
-  // Remove the local (self) screen-share tile after the share ends
+  const setShareLive = (type, live) =>
+    setShares((prev) => (prev[type] === live ? prev : { ...prev, [type]: live }))
+
+  // Remove one of our own share tiles after its share ends
   const clearSelfStream = (consumerId = null) => {
     setVideoStreams((prev) =>
       prev.filter((item) => !item.isSelf || (consumerId !== null && item.consumerId !== consumerId))
@@ -669,11 +695,13 @@ export function useVoiceSessionOwner({
   }
 
   const startShareWithSource = async (sourceId, options = {}) => {
-    setSourcePickerOpen(false)
+    const type = options.isCamera ? 'camera' : 'screen'
+    setSourcePickerOpen(null)
     // Re-picking a source (or changing quality) while live replaces the current
-    // share — stop it first so we never publish two at once.
-    await stopCurrentShare()
-    lastShareRef.current = { sourceId, options }
+    // share of that kind — stop it first so we never publish two of one kind.
+    // The other kind's share keeps running.
+    await stopShare(type)
+    lastShareRef.current = { ...lastShareRef.current, [type]: { sourceId, options } }
     if (options.audioMode && options.audioMode !== 'none') {
       lastAudioRef.current = { audioMode: options.audioMode, audioTargets: options.audioTargets }
     }
@@ -704,10 +732,10 @@ export function useVoiceSessionOwner({
       // of watching the raw track directly. The server can also end a share
       // (camera too) on its own.
       const onShareEnded = (reason) => {
-        if (activeShareRef.current !== screen) return
-        activeShareRef.current = null
-        setSharing(false)
-        clearSelfStream(screen?.id ?? null)
+        if (activeShareRef.current[type] !== screen) return
+        activeShareRef.current[type] = null
+        setShareLive(type, false)
+        clearSelfStream(screen.id)
         onErrorRef.current(shareEndedMessage(reason))
       }
       if (options.isCamera) {
@@ -731,25 +759,25 @@ export function useVoiceSessionOwner({
         })
       }
       if (screen?.stream) {
-        activeShareRef.current = screen
+        activeShareRef.current[type] = screen
         // Cameras can't recover, so a webcam track ending stops the share.
         if (options.isCamera) {
           screen.stream.getVideoTracks()[0].addEventListener(
             'ended',
             () => {
-              if (activeShareRef.current !== screen) return
-              activeShareRef.current = null
+              if (activeShareRef.current[type] !== screen) return
+              activeShareRef.current[type] = null
               void screen.stop?.()
-              setSharing(false)
+              setShareLive(type, false)
               clearSelfStream(screen.id)
             },
             { once: true }
           )
 
           if (screen.stream.getVideoTracks()[0].readyState === 'ended') {
-            activeShareRef.current = null
+            activeShareRef.current[type] = null
             await screen.stop?.()
-            setSharing(false)
+            setShareLive(type, false)
             clearSelfStream(screen.id)
             return
           }
@@ -767,6 +795,8 @@ export function useVoiceSessionOwner({
             kind: 'video',
             isSelf: true,
             clientId: selfIdRef.current,
+            source: type,
+            tileId: tileIdOf(selfIdRef.current, type),
             codec: screen.codec,
             channelId: tileChannelId(),
             channelName: tileChannelName(),
@@ -774,7 +804,7 @@ export function useVoiceSessionOwner({
           }
         ])
       }
-      setSharing(true)
+      setShareLive(type, true)
     } catch (err) {
       console.error('[VoiceChannel] Screen share failed:', err)
       // Surface as a toast (e.g. "Missing required permission" when STREAM is
@@ -783,27 +813,40 @@ export function useVoiceSessionOwner({
     }
   }
 
-  const stopCurrentShare = async () => {
-    if (!activeShareRef.current && !sharing) return
-    const activeShare = activeShareRef.current
-    activeShareRef.current = null
+  // Stop the share of that type ('screen' | 'camera'), or both without one.
+  const stopShare = async (type) => {
+    if (type == null) {
+      await stopShare('screen')
+      await stopShare('camera')
+      return
+    }
+    const activeShare = activeShareRef.current[type]
+    if (!activeShare && !shares[type]) return
+    activeShareRef.current[type] = null
     if (activeShare?.stop) await activeShare.stop()
-    else await stopScreenShare()
-    setSharing(false)
-    clearSelfStream(activeShare?.id ?? null)
+    else await stopSoupShare(type)
+    setShareLive(type, false)
+    if (activeShare) clearSelfStream(activeShare.id)
   }
 
-  const handleScreenShare = async () => {
-    if (sharing) await stopCurrentShare()
-    // Let the user choose a screen/window before capturing
-    else setSourcePickerOpen(true)
+  // A dock button: stop its kind's share, or open the picker on its tab to
+  // choose a source before capturing.
+  const toggleShareOf = async (type) => {
+    if (shares[type]) await stopShare(type)
+    else setSourcePickerOpen(type === 'camera' ? 'devices' : 'screens')
   }
 
-  // Restart the live share with tweaked capture options (fps/resolution/audio).
-  // Nothing in the publish path can be retuned in place, so this is a stop and
-  // re-start of the same source; on Wayland the OS portal asks again.
-  const restartShare = async (patch = {}) => {
-    const last = lastShareRef.current
+  // Restart the live screen share with tweaked capture options
+  // (fps/resolution/audio). Nothing in the publish path can be retuned in
+  // place, so this is a stop and re-start of the same source; on Wayland the OS
+  // portal asks again. A camera has nothing to retune: restarting it re-picks
+  // the device.
+  const restartShare = async (type, patch = {}) => {
+    if (type === 'camera') {
+      setSourcePickerOpen('devices')
+      return
+    }
+    const last = lastShareRef.current.screen
     if (!last) return
     const { audio, ...rest } = patch
     const options = { ...last.options, ...rest }
@@ -813,7 +856,7 @@ export function useVoiceSessionOwner({
         : { audioMode: 'none', audioTargets: null }
       // No usable audio mode without more input — let the picker collect it.
       if (audio && !next.audioMode) {
-        setSourcePickerOpen(true)
+        setSourcePickerOpen('screens')
         return
       }
       Object.assign(options, next)
@@ -834,13 +877,13 @@ export function useVoiceSessionOwner({
     return { audioMode: mode, audioTargets: mode === 'app' ? [sourceId] : null }
   }
 
-  // Pause or resume the live share in place (the stream view's quick menu).
+  // Pause or resume one live share in place (the stream view's quick menu).
   // Viewers keep the stream and see it paused; so does our own tile.
-  const pauseShare = async (paused) => {
-    const share = activeShareRef.current
+  const pauseShare = async (type, paused) => {
+    const share = activeShareRef.current[type]
     if (!share) return false
-    const applied = await setSharePaused(paused)
-    if (!applied || activeShareRef.current !== share) return false
+    const applied = await setSharePaused(type, paused)
+    if (!applied || activeShareRef.current[type] !== share) return false
     share.paused = paused
     setVideoStreams((prev) =>
       prev.map((s) => (s.isSelf && s.producerId === share.id ? { ...s, paused } : s))
@@ -886,37 +929,43 @@ export function useVoiceSessionOwner({
       reset,
       landSwitch,
       adopt,
-      handleScreenShare,
-      stopCurrentShare,
+      toggleShareOf,
+      stopShare,
       restartShare,
       pauseShare,
       startShareWithSource
     }
   })
-  // Starting or retuning a share outside voice does nothing.
+  // Starting or retuning a share outside voice does nothing. A share `type` is
+  // 'screen' | 'camera'; a picker `tab` is 'screens' | 'devices'.
   const [actions] = useState(() => ({
     join: (id) => latestRef.current.join(id),
     leave: () => latestRef.current.leave(),
     reset: () => latestRef.current.reset(),
-    toggleShare: () => {
-      if (joinedRef.current) return latestRef.current.handleScreenShare()
+    toggleScreenShare: () => {
+      if (joinedRef.current) return latestRef.current.toggleShareOf('screen')
     },
-    stopShare: () => latestRef.current.stopCurrentShare(),
-    restartShare: (patch) => {
-      if (joinedRef.current) return latestRef.current.restartShare(patch)
+    toggleCamera: () => {
+      if (joinedRef.current) return latestRef.current.toggleShareOf('camera')
     },
-    pauseShare: (paused) => latestRef.current.pauseShare(paused),
-    openSourcePicker: () => {
-      if (joinedRef.current) setSourcePickerOpen(true)
+    stopShare: (type) => latestRef.current.stopShare(type),
+    restartShare: (type, patch) => {
+      if (joinedRef.current) return latestRef.current.restartShare(type, patch)
     },
-    closeSourcePicker: () => setSourcePickerOpen(false),
+    pauseShare: (type, paused) => latestRef.current.pauseShare(type, paused),
+    openSourcePicker: (tab = 'screens') => {
+      if (joinedRef.current) setSourcePickerOpen(tab)
+    },
+    closeSourcePicker: () => setSourcePickerOpen(null),
     startShareWithSource: (sourceId, options) => {
       if (joinedRef.current) return latestRef.current.startShareWithSource(sourceId, options)
     },
-    getShareOptions: () =>
-      lastShareRef.current?.options
-        ? { ...lastShareRef.current.options, paused: activeShareRef.current?.paused === true }
+    getShareOptions: (type) => {
+      const last = lastShareRef.current[type]
+      return last?.options
+        ? { ...last.options, paused: activeShareRef.current[type]?.paused === true }
         : null
+    }
   }))
 
   // The channel the server says we're in (authoritative roster) confirms our
@@ -971,7 +1020,7 @@ export function useVoiceSessionOwner({
       joined,
       error,
       errorChannelId: error ? errorChannelId : null,
-      sharing,
+      shares,
       videoStreams,
       speakingClients,
       selfSpeaking,
@@ -984,7 +1033,7 @@ export function useVoiceSessionOwner({
       joined,
       error,
       errorChannelId,
-      sharing,
+      shares,
       videoStreams,
       speakingClients,
       selfSpeaking,

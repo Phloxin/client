@@ -54,6 +54,7 @@ import {
   setTalkingWhileMutedHandler
 } from '../lib/soup'
 import { resolveStreamFocus } from '../lib/streamView'
+import { preferredTileOf } from '../lib/streamTiles'
 import { playUiSound, isToastEnabled, setSoundsDeafened } from '../lib/sounds'
 import { setServerHost, apiBase, eventSocketUrl, assetUrl, throwIfError } from '../lib/serverConfig'
 import { validateMessage, statusOf } from '../lib/presence'
@@ -547,16 +548,17 @@ function Main() {
   const dismissToast = useCallback(() => setToast(null), [])
 
   //Client UI Hooks
-  // Logical stream intent is keyed by client id. A codec downgrade creates a
-  // new producer/consumer id for the same client's stream; using that transient
-  // id here used to clear focus, stop watching, and hard-mute stream audio.
-  const [selectedStreamClientId, setSelectedStreamClientId] = useState(null)
+  // Logical stream intent is keyed by tile id (client + source, lib/streamTiles).
+  // A codec downgrade creates a new producer/consumer id for the same stream;
+  // using that transient id here used to clear focus, stop watching, and
+  // hard-mute stream audio.
+  const [selectedTileId, setSelectedTileId] = useState(null)
   const [poppedOut, setPoppedOut] = useState(false)
   // Per-stream screen-share audio ({ [clientId]: { volume, muted } }), owned and
   // persisted per server by playback; this mirrors it for the stream view and
   // the popout bridge (see the subscribeStreamAudio effect below).
   const [streamAudio, setStreamAudioSnapshot] = useState(() => getAllStreamAudioState())
-  const [watchedStreamClientIds, setWatchedStreamClientIds] = useState(() => new Set())
+  const [watchedTileIds, setWatchedTileIds] = useState(() => new Set())
 
   // Voice self-state (mic mute / deafen). Owned here rather than in SideBar so
   // the stream view's theatre mode can read and toggle it alongside the sidebar;
@@ -620,14 +622,14 @@ function Main() {
   const popoutWindowRef = useRef(null)
   const popoutListenersRef = useRef(new Set())
   const allVideoStreamsRef = useRef([])
-  const selectedStreamClientIdRef = useRef(null)
+  const selectedTileIdRef = useRef(null)
   const streamAudioRef = useRef({})
   // The soup socket (and thus the viewer map) lives only in this window; the
   // popout runs in a separate JS realm with an empty soup instance, so mirror
   // the snapshot here and hand it over the bridge instead of letting the popout
   // subscribe to its own (always-empty) copy.
   const streamViewersRef = useRef(new Map())
-  const watchedStreamClientIdsRef = useRef(new Set())
+  const watchedTileIdsRef = useRef(new Set())
 
   // Channel id -> when we last told the server we were typing there.
   const lastTypingSentRef = useRef(new Map())
@@ -818,8 +820,8 @@ function Main() {
       // The baseline effect re-arms once we've settled in the new channel (or none).
       if ('channel_id' in patch) streamSoundsArmedRef.current = false
       if (channelChanged && !isReconnectRecovering()) {
-        setWatchedStreamClientIds(new Set())
-        setSelectedStreamClientId(null)
+        setWatchedTileIds(new Set())
+        setSelectedTileId(null)
       }
       if (eventsWsRef.current?.readyState !== WebSocket.OPEN) return false
       const data =
@@ -872,7 +874,9 @@ function Main() {
     }
   }, [theatre, streamsShown, poppedOut, allVideoStreams])
 
-  // Stable object so both windows can stop or retune our own share.
+  // Stable object so both windows can stop or retune our own shares: stop,
+  // restart, setPaused and getOptions take the share type ('screen' | 'camera'),
+  // pickSource the picker tab.
   const shareControl = useRef({
     stop: voice.stopShare,
     restart: voice.restartShare,
@@ -1002,14 +1006,14 @@ function Main() {
     allVideoStreamsRef.current = allVideoStreams
   }, [allVideoStreams])
   useEffect(() => {
-    selectedStreamClientIdRef.current = selectedStreamClientId
-  }, [selectedStreamClientId])
+    selectedTileIdRef.current = selectedTileId
+  }, [selectedTileId])
   useEffect(() => {
     streamAudioRef.current = streamAudio
   }, [streamAudio])
   useEffect(() => {
-    watchedStreamClientIdsRef.current = watchedStreamClientIds
-  }, [watchedStreamClientIds])
+    watchedTileIdsRef.current = watchedTileIds
+  }, [watchedTileIds])
 
   // Mirror playback's per-stream audio state. The callback fires after every
   // change (from either window) and whenever the overrides reload for a new
@@ -1038,14 +1042,14 @@ function Main() {
   // Notify the popout window whenever the data it mirrors changes.
   useEffect(() => {
     popoutListenersRef.current.forEach((cb) => cb())
-  }, [allVideoStreams, clients, selectedStreamClientId, streamAudio, watchedStreamClientIds])
+  }, [allVideoStreams, clients, selectedTileId, streamAudio, watchedTileIds])
 
   // Consumer lifetime follows the watch set: watching a stream subscribes to it,
   // stopping unsubscribes. Driven here rather than in VideoGrid because the
   // popout routes its play/stop back into this same state, so this one effect
-  // covers both windows. Watch intent is keyed by client, producers by id.
+  // covers both windows. Watch intent is keyed by tile, producers by id.
   const watchedProducerKey = allVideoStreams
-    .filter((s) => !s.isSelf && watchedStreamClientIds.has(s.clientId))
+    .filter((s) => !s.isSelf && watchedTileIds.has(s.tileId))
     .map((s) => s.producerId)
     .filter(Boolean)
     .sort()
@@ -1055,26 +1059,22 @@ function Main() {
   }, [watchedProducerKey])
 
   // Toggle whether a stream is watched (consumed); shared with the popout.
-  const handleSetStreamWatched = (clientId, watched) =>
-    setWatchedStreamClientIds((prev) => {
-      if (watched === prev.has(clientId)) return prev
+  const handleSetStreamWatched = (tileId, watched) =>
+    setWatchedTileIds((prev) => {
+      if (watched === prev.has(tileId)) return prev
       const next = new Set(prev)
-      if (watched) next.add(clientId)
-      else next.delete(clientId)
+      if (watched) next.add(tileId)
+      else next.delete(tileId)
       return next
     })
 
-  // Jump to watching a client's stream — the click target on the streaming
-  // (camera) icon next to a channel member. Mirrors VideoGrid's focusStream:
-  // start consuming the stream and focus it. The icon shows for streamers in
-  // every channel, but is only clickable for those with a tile in the channel
-  // we've joined, so the Streams view always has a tile to land on. When popped
+  // Watch a tile and focus it, as VideoGrid's focusStream does. When popped
   // out, the streams live in the popout window — the watch/select still
   // propagate there over the bridge, so just surface that window instead of
   // switching the in-app view.
-  const handleWatchStream = (clientId) => {
-    handleSetStreamWatched(clientId, true)
-    setSelectedStreamClientId(clientId)
+  const focusTile = (tileId) => {
+    handleSetStreamWatched(tileId, true)
+    setSelectedTileId(tileId)
     if (poppedOut) {
       if (popoutWindowRef.current && !popoutWindowRef.current.closed) {
         popoutWindowRef.current.focus()
@@ -1093,36 +1093,53 @@ function Main() {
     }
   }
 
+  // Jump to watching a client's stream — the click target on the streaming
+  // (camera) icon next to a channel member: their screen share's tile, else
+  // their camera's. The icon shows for streamers in every channel, but is only
+  // clickable for those with a tile in the channel we've joined, so the Streams
+  // view always has a tile to land on.
+  const handleWatchStream = (clientId) => {
+    const tileId = preferredTileOf(allVideoStreams, clientId)
+    if (tileId != null) focusTile(tileId)
+  }
+
   // Starting our own stream or camera jumps straight to it, as if we'd clicked
-  // its tile, so the sharer immediately sees what they're sending. Keyed on the
-  // self tile appearing: shares are never auto-restored after a reconnect and
+  // its tile, so the sharer immediately sees what they're sending. Keyed on a
+  // self tile id appearing (starting the camera while the screen shares
+  // focuses the camera): shares are never auto-restored after a reconnect and
   // a codec fallback swaps the tile in place, so only a user-started share (or
   // a retune's restart, which re-focuses the tile it was launched from) lands here.
-  const selfStreamClientId = allVideoStreams.find((s) => s.isSelf)?.clientId ?? null
+  const selfTileKey = allVideoStreams
+    .filter((s) => s.isSelf)
+    .map((s) => s.tileId)
+    .sort()
+    .join(',')
+  const selfTileIdsRef = useRef([])
   useEffect(() => {
-    if (selfStreamClientId != null) handleWatchStream(selfStreamClientId)
-    // Fires on the tile's arrival only; handleWatchStream is a fresh closure
-    // every render and would re-jump the view on each one.
+    const tileIds = selfTileKey ? selfTileKey.split(',') : []
+    const arrived = tileIds.find((id) => !selfTileIdsRef.current.includes(id))
+    selfTileIdsRef.current = tileIds
+    if (arrived != null) focusTile(arrived)
+    // Fires on a tile's arrival only; focusTile is a fresh closure every render
+    // and would re-jump the view on each one.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selfStreamClientId])
+  }, [selfTileKey])
 
   // Replacement handoffs retain a placeholder tile (the SFU marks their
-  // ProducerClosed event), so any client absent here genuinely stopped sharing.
+  // ProducerClosed event), so any tile absent here genuinely stopped sharing.
   // Clear intent immediately: a later unrelated share must require a new click.
   useEffect(() => {
     // Voice recovery deliberately clears tiles before the SFU replays producers.
-    // Preserve the client-level watch/focus intent across that empty snapshot so
-    // replayed screen video and audio are consumed again automatically.
+    // Preserve the tile-level watch/focus intent across that empty snapshot so
+    // replayed video and screen audio are consumed again automatically.
     if (isReconnectRecovering()) return
-    const liveClientIds = new Set(allVideoStreams.map((stream) => stream.clientId))
-    setWatchedStreamClientIds((prev) => {
+    const liveTileIds = new Set(allVideoStreams.map((stream) => stream.tileId))
+    setWatchedTileIds((prev) => {
       if (prev.size === 0) return prev
-      if ([...prev].every((id) => liveClientIds.has(id))) return prev
-      return new Set([...prev].filter((id) => liveClientIds.has(id)))
+      if ([...prev].every((id) => liveTileIds.has(id))) return prev
+      return new Set([...prev].filter((id) => liveTileIds.has(id)))
     })
-    setSelectedStreamClientId((current) =>
-      current != null && !liveClientIds.has(current) ? null : current
-    )
+    setSelectedTileId((current) => (current != null && !liveTileIds.has(current) ? null : current))
   }, [allVideoStreams, recoveryEpoch, isReconnectRecovering])
 
   // A sole stream is always the focused one (the stream view has no focus
@@ -1133,7 +1150,7 @@ function Main() {
   // replayed one would override the focus the recovery is preserving.
   useEffect(() => {
     if (isReconnectRecovering()) return
-    if (allVideoStreams.length === 1) setSelectedStreamClientId(allVideoStreams[0].clientId)
+    if (allVideoStreams.length === 1) setSelectedTileId(allVideoStreams[0].tileId)
   }, [allVideoStreams, recoveryEpoch, isReconnectRecovering])
 
   // Clear notification + unread history on connect/disconnect only — switching
@@ -1152,13 +1169,13 @@ function Main() {
       getData: () => ({
         streams: allVideoStreamsRef.current,
         clients: clientsRef.current,
-        selectedStreamClientId: selectedStreamClientIdRef.current,
+        selectedTileId: selectedTileIdRef.current,
         streamAudio: streamAudioRef.current,
-        watchedStreamClientIds: watchedStreamClientIdsRef.current,
+        watchedTileIds: watchedTileIdsRef.current,
         streamViewers: streamViewersRef.current
       }),
-      select: (id) => setSelectedStreamClientId(id),
-      setStreamWatched: (id, watched) => handleSetStreamWatched(id, watched),
+      select: (tileId) => setSelectedTileId(tileId),
+      setStreamWatched: (tileId, watched) => handleSetStreamWatched(tileId, watched),
       shareControl,
       // Per-stream audio plays in this window's soup, so the popout's volume and
       // mute controls write here; the change comes back via streamAudio.
@@ -1339,13 +1356,13 @@ function Main() {
   }, [visibleChatChannelIds, channels, readStates, token, markChannelRead])
 
   // (Re)baseline stream-sound detection on connect / channel change / recovery:
-  // snapshot the streams in view (by clientId, so re-consumed streams after a
+  // snapshot the streams in view (by tile id, so re-consumed streams after a
   // reconnect aren't heard as restarts) without sounding, then arm after a delay.
   // Stays disarmed until healthy. Must run before the diff effect below so a
   // channel switch disarms before the diff sees the new channel's streams.
   useEffect(() => {
     streamSoundsArmedRef.current = false
-    prevStreamIdsRef.current = new Set(allVideoStreamsRef.current.map((s) => s.clientId))
+    prevStreamIdsRef.current = new Set(allVideoStreamsRef.current.map((s) => s.tileId))
     if (!token || connectionStatus !== 'connected') return
     const t = setTimeout(() => {
       streamSoundsArmedRef.current = true
@@ -1355,10 +1372,11 @@ function Main() {
 
   // Play start/stop chimes as streams appear/vanish in our channel. Includes our
   // own streams (isSelf) so we hear feedback when we start/stop sharing, and
-  // fires regardless of chat vs video view.
+  // fires regardless of chat vs video view. Each tile is its own stream, so a
+  // camera starting or stopping beside a screen share chimes too.
   useEffect(() => {
     const prev = prevStreamIdsRef.current
-    const curIds = new Set(allVideoStreams.map((s) => s.clientId))
+    const curIds = new Set(allVideoStreams.map((s) => s.tileId))
     if (streamSoundsArmedRef.current) {
       let started = false
       let stopped = false
@@ -2296,8 +2314,8 @@ function Main() {
       setClients([])
       setPresences({})
       setFeed([])
-      setSelectedStreamClientId(null)
-      setWatchedStreamClientIds(new Set())
+      setSelectedTileId(null)
+      setWatchedTileIds(new Set())
       setConnectedServer(null)
       setServerName(null)
       setServerHost(null)
@@ -3782,11 +3800,11 @@ function Main() {
     const activeShowsStreams = activeTab(layout)?.kind === 'streams'
     const streamFocusEscapable = () => {
       if (!activeShowsStreams || poppedOut || document.fullscreenElement) return false
-      const { focusedClientId, canToggleFocus } = resolveStreamFocus({
+      const { focusedTileId, canToggleFocus } = resolveStreamFocus({
         streams: allVideoStreamsRef.current,
-        selectedStreamClientId: selectedStreamClientIdRef.current
+        selectedTileId: selectedTileIdRef.current
       })
-      return focusedClientId != null && canToggleFocus
+      return focusedTileId != null && canToggleFocus
     }
     const { activeTabId, previewTabId } = activePane(layout)
     const previewActive = activeTabId != null && activeTabId === previewTabId
@@ -3799,7 +3817,7 @@ function Main() {
       // layer is listed here to keep the Files tab under it open.
       else if (filesViewerImage) setFilesViewerImage(null)
       else if (previewActive) dispatchTabs({ type: 'close', tabId: activeTabId })
-      else if (streamFocusEscapable()) setSelectedStreamClientId(null)
+      else if (streamFocusEscapable()) setSelectedTileId(null)
       else return
       e.preventDefault()
     }
@@ -4049,10 +4067,10 @@ function Main() {
           <VideoGrid
             streams={allVideoStreams}
             clients={clients}
-            selectedStreamClientId={selectedStreamClientId}
-            onSelect={setSelectedStreamClientId}
+            selectedTileId={selectedTileId}
+            onSelect={setSelectedTileId}
             onPopout={handlePopout}
-            watchedStreamClientIds={watchedStreamClientIds}
+            watchedTileIds={watchedTileIds}
             onSetStreamWatched={handleSetStreamWatched}
             onStopSharing={shareControl.stop}
             shareControl={shareControl}
@@ -4349,6 +4367,7 @@ function Main() {
           </AnimatePresence>
           {voice.sourcePickerOpen && (
             <ScreenSourcePicker
+              initialTab={voice.sourcePickerOpen}
               onSelect={voice.startShareWithSource}
               onCancel={voice.closeSourcePicker}
             />
