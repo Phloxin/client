@@ -110,3 +110,11 @@ jobs:
 
       - name: Build + Package
         run: npm run ${{ matrix.script }} -- --publish=never
+
+  build-status:
+    name: Build status
+    needs: build
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: test "${{ needs.build.result }}" = "success"
