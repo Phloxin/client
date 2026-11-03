@@ -81,6 +81,15 @@ function getRnnoiseBinary() {
 // survives for the next publish. RNNoise is trained on 48 kHz audio, so the
 // rate is pinned.
 let micContext = null
+// Set when the context reports that its output device failed (it renders to
+// the default output even though nothing here is audible). Such a context
+// goes silent and, as the playback context showed in the field, never resumes,
+// so it is replaced instead.
+let micContextLost = false
+const micContextLostListeners = new Set()
+// A resume that doesn't settle in this long is treated like a lost context. An
+// unbounded await here would wedge every later publish behind it.
+const MIC_CONTEXT_RESUME_TIMEOUT_MS = 2000
 const rnnoiseWorkletLoads = new WeakMap()
 
 function ensureRnnoiseWorklet(audioContext) {
@@ -100,12 +109,58 @@ async function createRnnoiseProcessor(audioContext) {
   return new RnnoiseWorkletNode(audioContext, { maxChannels: 1, wasmBinary: binary })
 }
 
+// Fires when the live mic context failed, so the caller can move the chain
+// onto a new one. Returns an unsubscribe.
+export function onMicContextLost(listener) {
+  micContextLostListeners.add(listener)
+  return () => micContextLostListeners.delete(listener)
+}
+
+function createMicContext() {
+  const context = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 })
+  micContextLost = false
+  context.addEventListener?.('error', () => {
+    if (context !== micContext || micContextLost) return
+    console.warn(`[Soup] mic context error (state=${context.state}), replacing it`)
+    micContextLost = true
+    for (const listener of [...micContextLostListeners]) {
+      try {
+        listener()
+      } catch (err) {
+        console.error('[Soup] mic context lost listener failed:', err)
+      }
+    }
+  })
+  return context
+}
+
+function resumeWithin(context, timeoutMs) {
+  let timer
+  return Promise.race([
+    context.resume().then(
+      () => true,
+      () => false
+    ),
+    new Promise((resolve) => {
+      timer = setTimeout(() => resolve(false), timeoutMs)
+    })
+  ]).finally(() => clearTimeout(timer))
+}
+
 async function getMicContext() {
-  if (!micContext || micContext.state === 'closed') {
-    micContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 })
+  if (micContext && micContext.state !== 'closed' && !micContextLost) {
+    if (micContext.state !== 'suspended') return micContext
+    if (await resumeWithin(micContext, MIC_CONTEXT_RESUME_TIMEOUT_MS)) return micContext
+    console.warn('[Soup] mic context did not resume, replacing it')
   }
-  if (micContext.state === 'suspended') await micContext.resume()
-  return micContext
+  // Its graphs are the failed chain, which is being rebuilt by this caller.
+  micContext?.close().catch(() => {})
+  const fresh = createMicContext()
+  micContext = fresh
+  // Best effort: a fresh context that can't start still mustn't block the
+  // publish. Its graph runs once the context does.
+  if (fresh.state === 'suspended') await resumeWithin(fresh, MIC_CONTEXT_RESUME_TIMEOUT_MS)
+  return fresh
 }
 
 // ─── Build the local audio processing chain ──────────────────────
@@ -116,7 +171,7 @@ async function getMicContext() {
 // processed stream is also the source of truth for the local speaking indicator,
 // so it reflects everything that can affect what peers receive (including
 // RNNoise and a closed volume gate).
-export async function buildAudioProcessor(stream, micSettings) {
+export async function buildAudioProcessor(stream, micSettings, hooks = {}) {
   const stereo = micProfileWantsStereo(micSettings)
   // The RNNoise worklet is a mono, speech-trained denoiser: it cannot preserve a
   // stereo image and would gut music, which is exactly what Hi-Fi Voice is for.
@@ -135,6 +190,7 @@ export async function buildAudioProcessor(stream, micSettings) {
   let node = input
   let rnnoiseNode = null
   let stopGateTicker = null
+  let gateController = null
 
   if (needsRnnoise) {
     try {
@@ -151,8 +207,9 @@ export async function buildAudioProcessor(stream, micSettings) {
   if (needsGate) {
     const reader = createSpeechLevelReader(audioContext)
     const gate = audioContext.createGain()
-    const gateController = createLevelGateController(audioContext, gate, reader.read, {
-      threshold: micSettings.volumeGateThreshold
+    gateController = createLevelGateController(audioContext, gate, reader.read, {
+      threshold: micSettings.volumeGateThreshold,
+      onOpenChange: hooks.onGateOpenChange
     })
     chainNodes.push(...reader.nodes, gate)
     // Analysis is a sidechain so the speech-band filters never color outgoing
@@ -196,7 +253,13 @@ export async function buildAudioProcessor(stream, micSettings) {
   // The muted-talk detector listens there instead of the raw capture, so it only
   // hears audio that would really be transmitted, and it keeps hearing it while
   // muted (muting disables the destination's *track*, not the graph feeding it).
-  return { stream: destination.stream, stop, tap: { context: audioContext, node } }
+  return {
+    stream: destination.stream,
+    stop,
+    tap: { context: audioContext, node },
+    gated: Boolean(needsGate),
+    gateOpen: () => gateController?.isOpen() === true
+  }
 }
 
 // Release a raw getUserMedia capture, closing the OS mic handle. Safe on null.
@@ -334,7 +397,8 @@ export function createLevelGateController(
     threshold = DEFAULT_VOLUME_GATE_THRESHOLD,
     hysteresis = 3,
     holdMs = 200,
-    rampSeconds = 0.03
+    rampSeconds = 0.03,
+    onOpenChange = () => {}
   } = {}
 ) {
   let open = false
@@ -349,6 +413,7 @@ export function createLevelGateController(
     gate.gain.cancelScheduledValues(now)
     gate.gain.setValueAtTime(current, now)
     gate.gain.linearRampToValueAtTime(next ? 1 : 0, now + rampSeconds)
+    onOpenChange(next)
   }
 
   const update = (nextThreshold = threshold) => {

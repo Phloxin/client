@@ -1,8 +1,9 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { IconGripVertical, IconX } from '@tabler/icons-react'
 import uPlot from 'uplot'
 import 'uplot/dist/uPlot.min.css'
 import { startStreamDebugStats } from '../lib/soup'
+import { e2eeListeners, getE2eeStatus, subscribeE2ee } from '../lib/e2ee'
 import './StreamDebugPanel.css'
 
 // ── Tunables ────────────────────────────────────────────────────────────────
@@ -523,7 +524,58 @@ function RecvCard({ buf, theme, clients }) {
   )
 }
 
-export default function StreamDebugPanel({ clients, onClose }) {
+// The call's encryption (PLAN-e2ee.md 5.7). The call code is the same for everyone in the call:
+// comparing it out of band rules out a server in the middle. Everyone who can decrypt the call is
+// in the MLS roster; anyone in it we don't recognise is flagged.
+function EncryptionCard({ e2ee, clients, selfId }) {
+  const failed = e2ee.status === 'failed'
+  const { listeners, unknown } = e2eeListeners(e2ee, clients, selfId)
+  const warn = failed || unknown.length > 0
+
+  return (
+    <div className={`sdp-card${warn ? ' sdp-card-warn' : ''}`}>
+      <div className="sdp-card-head">
+        <span className="sdp-card-title">End-to-end encryption</span>
+        {failed ? (
+          <Badge tone="danger">Failed</Badge>
+        ) : e2ee.callCode ? (
+          <Badge tone="ok">Encrypted</Badge>
+        ) : (
+          <Badge tone="warn">Setting up</Badge>
+        )}
+        {unknown.length > 0 && (
+          <Badge tone="danger">
+            {unknown.length} unknown listener{unknown.length > 1 ? 's' : ''}
+          </Badge>
+        )}
+      </div>
+      {e2ee.callCode && !failed && (
+        <>
+          <div className="sdp-call-code-label">Call code</div>
+          <div className="sdp-call-code">{e2ee.callCode}</div>
+          <div className="sdp-card-sub">Everyone in the call should see the same code.</div>
+        </>
+      )}
+      {listeners.length > 0 && (
+        <div className="sdp-listeners">
+          <span className="sdp-stat-label">Can decrypt:</span>
+          {listeners.map((l) => (
+            <span
+              key={l.id}
+              className={`sdp-listener${l.name == null ? ' sdp-listener-unknown' : ''}`}
+            >
+              {l.name ?? `Unknown user ${l.id}`}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+export default function StreamDebugPanel({ clients, selfId, onClose }) {
+  const e2ee = useSyncExternalStore(subscribeE2ee, getE2eeStatus)
+  const showEncryption = e2ee.status !== 'idle'
   // Theme colors snapshotted once at mount (see readTheme's known-limitation
   // note). Lazy initializer runs a single time.
   const [theme] = useState(readTheme)
@@ -718,7 +770,7 @@ export default function StreamDebugPanel({ clients, onClose }) {
         onPointerUp={onPointerUp}
       >
         <IconGripVertical size={16} className="sdp-grip" />
-        <span className="sdp-header-title">Stream Debug</span>
+        <span className="sdp-header-title">Connection Info</span>
         <button type="button" className="sdp-close" onClick={onClose} title="Close">
           <IconX size={16} />
         </button>
@@ -741,6 +793,12 @@ export default function StreamDebugPanel({ clients, onClose }) {
       )}
 
       <div className="sdp-body">
+        {showEncryption && (
+          <>
+            <div className="sdp-section">Encryption</div>
+            <EncryptionCard e2ee={e2ee} clients={clients} selfId={selfId} />
+          </>
+        )}
         {empty ? (
           <div className="sdp-empty">No active streams</div>
         ) : (

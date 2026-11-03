@@ -151,24 +151,9 @@
   color: var(--color-primary);
 }
 
-.settings-menu-copy {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
 .settings-menu-title {
   font-size: var(--font-size-base);
   font-weight: var(--font-weight-semibold);
-  line-height: 1.3;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.settings-menu-desc {
-  font-size: var(--font-size-xs);
-  color: var(--color-text-tertiary);
   line-height: 1.3;
   overflow: hidden;
   white-space: nowrap;
@@ -350,17 +335,6 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-}
-
-.sound-preview-btn:has(.sound-preview-label) {
-  width: auto;
-  padding: 0 8px;
-  gap: 5px;
-}
-
-.sound-preview-label {
-  font-size: var(--font-size-sm);
-  text-transform: capitalize;
 }
 
 .sound-preview-btn {

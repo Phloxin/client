@@ -6,6 +6,8 @@ import './Main.css'
 import '../App.css'
 import { useAuth } from '../context/AuthContext'
 import { ClientActionsProvider } from '../context/ClientActionsContext'
+import { VoiceSessionProvider } from '../context/VoiceSessionContext'
+import { useVoiceSessionOwner } from '../lib/useVoiceSessionOwner'
 import SideBar from '../components/SideBar'
 import VideoGrid from '../components/VideoGrid'
 import ChatPanel from '../components/ChatPanel'
@@ -19,24 +21,62 @@ import Toast from '../components/Toast'
 import UpdatePrompt from '../components/UpdatePrompt'
 import StreamDebugPanel from '../components/StreamDebugPanel'
 import RolesGroupsMenu from '../components/RolesGroupsMenu'
+import BanListMenu from '../components/BanListMenu'
+import FileBrowser from '../components/FileBrowser'
+import ImageViewer from '../components/ImageViewer'
+import FileViewer from '../components/FileViewer'
+import ScreenSourcePicker from '../components/ScreenSourcePicker'
 import IdleAnimation from '../components/IdleAnimation'
+import { DmCallControls, DmMemberStrip } from '../components/DmCallHeader'
+import IncomingCallOverlay from '../components/IncomingCallOverlay'
 import Settings from './Settings'
 import {
-  disconnect as disconnectVoice,
+  applyReadyStreams,
+  applyStreamEvent,
+  eventSocketClosed,
+  getAllStreamAudioState,
   notifyEventsSessionRestored,
+  receiveEventSocketError,
+  receiveStreamReply,
   receiveVoiceTicket,
-  setFocusedScreenAudio,
+  restartVoiceSession,
+  setEventSocketSender,
+  setMicMuted,
+  setSoundMuted,
+  setVoiceServerHooks,
+  setStreamAudioState,
   setVideoStreamRoles,
   setWatchedProducers,
+  subscribeLiveStreams,
+  subscribeStreamAudio,
   subscribeStreamViewers,
   setTalkingWhileMutedHandler
 } from '../lib/soup'
-import { playUiSound, isToastEnabled } from '../lib/sounds'
-import { setServerHost, apiBase, wsBase, cdnUrl, throwIfError } from '../lib/serverConfig'
+import { resolveStreamFocus } from '../lib/streamView'
+import { playUiSound, isToastEnabled, setSoundsDeafened } from '../lib/sounds'
+import { setServerHost, apiBase, eventSocketUrl, assetUrl, throwIfError } from '../lib/serverConfig'
 import { validateMessage, statusOf } from '../lib/presence'
 import { useAutoIdle } from '../lib/useAutoIdle'
-import { authFetch, getFreshToken, setOnSessionExpired } from '../lib/auth'
+import { authFetch, getFreshToken, setOnSessionExpired, setOnUpdateRequired } from '../lib/auth'
+import {
+  CloseAction,
+  CloseCode,
+  REQUEST_VOICE_TICKET_OP,
+  classifyClose
+} from '../lib/soup/protocol'
 import { httpFetch } from '../lib/http'
+import { setServerLimits, previewKind } from '../lib/attachments'
+import { isCallMessage } from '../lib/callMessages'
+import { dmDisplayName, dmOthers } from '../lib/dm'
+import {
+  applyReady,
+  applyRingEnded,
+  applyRinging,
+  expire,
+  isMissedRing,
+  settleOutgoing,
+  startOutgoing
+} from '../lib/rings'
 import {
   isVoiceRecoveryReady,
   nextVoiceRebuildKind,
@@ -58,9 +98,19 @@ const APP_TITLE = 'Pylon'
 //Various Timing Definitions
 const MAX_LOG_ENTRIES = 500
 const HISTORY_LIMIT = 50
-const HEARTBEAT_INTERVAL_MS = 10000
+// Used until op 15 names the server's interval.
+const DEFAULT_HEARTBEAT_INTERVAL_MS = 10000
 const RECONNECT_BASE_DELAY_MS = 1000
 const RECONNECT_MAX_DELAY_MS = 30000
+// Nonces for event-socket requests. The server echoes one on the reply or op 0
+// error for that request, so an error names what it answers. Soup's stream
+// requests use their own prefix.
+let eventNonceCounter = 0
+const nextNonce = () => `c-${++eventNonceCounter}`
+
+// Event-socket 4002 (AuthFailed) closes in a row, each answered by a token
+// refresh, before we give up on the session.
+const MAX_EVENT_AUTH_FAILURES = 2
 const TYPING_DURATION_MS = 10000
 
 // Grace period after (re)connecting or changing channels during which streams
@@ -74,19 +124,17 @@ const STREAM_BASELINE_MS = 2000
 const PERM_MUTE_MEMBERS = 1n << 9n
 const PERM_KICK_MEMBERS = 1n << 10n
 const PERM_BAN_MEMBERS = 1n << 11n
+const PERM_MANAGE_MESSAGES = 1n << 3n
 const PERM_MANAGE_CHANNELS = 1n << 5n
 const PERM_MANAGE_ROLES = 1n << 12n
 const PERM_ADMINISTRATOR = 1n << 62n
+
+const NO_OUTGOING_RINGS = { channelId: null, rings: new Map() }
 
 // Append an entry to the feed, dropping the oldest entries once the cap is hit.
 function appendFeed(prev, entry) {
   const next = [...prev, entry]
   return next.length > MAX_LOG_ENTRIES ? next.slice(next.length - MAX_LOG_ENTRIES) : next
-}
-
-// Build a system (non-chat) feed entry, e.g. join/leave notices
-function systemEntry(text) {
-  return { id: crypto.randomUUID(), type: 'system', text, ts: Date.now() }
 }
 
 // Build a chat-feed entry from a MessageApiObject (POST response or MessageCreated event)
@@ -96,6 +144,9 @@ function messageFromApi(msg) {
     type: 'message',
     channelId: msg.channel_id,
     authorId: msg.author,
+    // 'default' | 'poke' | 'call_started' | 'call_ended'; `call` only on call_ended.
+    kind: msg.kind ?? 'default',
+    call: msg.call ?? null,
     text: msg.content,
     attachments: (msg.attachments || []).map((a) => ({
       id: a.id,
@@ -103,17 +154,26 @@ function messageFromApi(msg) {
       kind: kindFromContentType(a.content_type),
       contentType: a.content_type,
       size: a.size,
-      url: cdnUrl(a.url)
+      url: assetUrl(a.url),
+      // Root-relative /shared/<token> while the file is public, else null.
+      publicUrl: a.public_url ?? null
     })),
-    // Link-preview / rich cards. URLs (incl. attachment://) are resolved
-    // server-side, so they're render-ready. May arrive later via MessageUpdated.
-    embeds: msg.embeds || [],
+    // Link-preview / rich cards. May arrive later via MessageUpdated.
+    embeds: embedsFromApi(msg.embeds),
     // Aggregated reactions, flattened to what ChatPanel renders. Custom emoji
     // are skipped — the server marks them NOT YET IMPLEMENTED.
     reactions: (msg.reactions || [])
       .filter((r) => r.emoji?.type === 'basic')
-      // `user_ids` names everyone who reacted, for the chip's hover tooltip.
-      .map((r) => ({ emoji: r.emoji.value, count: r.count, me: r.me, userIds: r.user_ids || [] })),
+      // Messages carry only counts. `userIds` is filled on the chip's first hover
+      // (GET .../reactions/{emoji}, see handleLoadReactors) and kept current by
+      // live reaction events. `reactorsLoaded` marks that the fetch has happened.
+      .map((r) => ({
+        emoji: r.emoji.value,
+        count: r.count,
+        me: r.me,
+        userIds: [],
+        reactorsLoaded: false
+      })),
     mentions: msg.mentions || [],
     mentionEveryone: !!msg.mention_everyone,
     // Reply target. `message_reference` survives the target's deletion while
@@ -135,6 +195,70 @@ function messageFromApi(msg) {
   }
 }
 
+// Apply one user's reaction toggle to a message's reaction chips. Our own
+// toggles key off `me`, so the event echoing an optimistic flip is a no-op.
+// Ids compare as strings, as in ChatPanel's tooltip.
+function applyReaction(reactions, emoji, userId, added, selfId) {
+  const isSelf = String(userId) === String(selfId)
+  const existing = reactions.find((r) => r.emoji === emoji)
+  const listed = (existing?.userIds || []).some((id) => String(id) === String(userId))
+  if (isSelf ? !!existing?.me === added : added && listed) return reactions
+  if (!existing) {
+    if (!added) return reactions
+    // A new chip's one reactor is the whole list, so it never needs fetching.
+    return [
+      ...reactions,
+      { emoji, count: 1, me: isSelf, userIds: userId == null ? [] : [userId], reactorsLoaded: true }
+    ]
+  }
+  const others = (existing.userIds || []).filter((id) => String(id) !== String(userId))
+  const chip = added
+    ? {
+        ...existing,
+        count: existing.count + 1,
+        me: existing.me || isSelf,
+        userIds: [...others, userId]
+      }
+    : { ...existing, count: existing.count - 1, me: existing.me && !isSelf, userIds: others }
+  return reactions.map((r) => (r.emoji === emoji ? chip : r)).filter((r) => r.count > 0)
+}
+
+// GET the first `limit` users (ascending id) who reacted to a message with
+// `emoji`. The server pages with `after`, but a tooltip only needs the first page.
+async function fetchReactors(channelId, messageId, emoji, limit) {
+  const res = await authFetch(
+    `${apiBase()}/channels/${channelId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}?limit=${limit}`
+  )
+  await throwIfError(res)
+  const data = await res.json()
+  return Array.isArray(data?.user_ids) ? data.user_ids : []
+}
+
+// GET one page of a channel's history. Cursors (`before`/`after`/`around`) and
+// `limit` go in the query string; unset ones are left out.
+async function fetchChannelMessages(channelId, params) {
+  const query = new URLSearchParams()
+  for (const [key, value] of Object.entries(params)) {
+    if (value != null) query.set(key, String(value))
+  }
+  const res = await authFetch(`${apiBase()}/channels/${channelId}/messages?${query}`)
+  await throwIfError(res)
+  return res.json()
+}
+
+// Embeds with their media resolved for rendering. A file uploaded with the
+// message comes back as its root-relative /files/... URL, resolved here like
+// attachment URLs so ChatPanel can match the two; external URLs pass through.
+function embedsFromApi(embeds) {
+  return (embeds || []).map((embed) => {
+    const resolved = { ...embed }
+    for (const field of ['thumbnail', 'image', 'video']) {
+      if (embed[field]?.url) resolved[field] = { ...embed[field], url: assetUrl(embed[field].url) }
+    }
+    return resolved
+  })
+}
+
 function kindFromContentType(type) {
   if (type?.startsWith('image/')) return 'image'
   if (type?.startsWith('video/')) return 'video'
@@ -146,32 +270,40 @@ function byChronology(a, b) {
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
 }
 
-// The other party in a DM channel, given our own id. Reads `participant_ids`
-// (server) or `recipients` (local), which may be plain ids or { id, name }.
+// The other party in a 1:1 DM channel, given our own id (the first of them in
+// a group DM).
 function dmOther(channel, selfId) {
-  for (const r of channel?.participant_ids || channel?.recipients || []) {
-    const id = r && typeof r === 'object' ? r.id : r
-    if (id !== selfId) return { id, name: r && typeof r === 'object' ? r.name : undefined }
-  }
-  return { id: undefined, name: undefined }
+  return dmOthers(channel, selfId)[0] ?? { id: undefined, name: undefined }
 }
 
-// Normalize a ClientApiObject's voice fields for the roster. Self toggles stay
-// `self_mute`/`self_deaf`; the server-forced pair (`muted`/`deaf` — a moderator
-// gag / server deafen) becomes `server_mute`/`server_deaf`, so `server_mute`
-// alone means "gagged". Also resolves the avatar URL.
-function normalizeClientVoice(c) {
+// The roster's voice fields, from a VoiceStateApiObject (null: not in voice).
+// Self toggles are `self_mute`/`self_deaf`; the server-forced pair (a moderator
+// gag / server deafen) is `server_mute`/`server_deaf`, so `server_mute` alone
+// means "gagged". `connected` says a voice node session carries the member's
+// media; false while it is still connecting (or has lost it).
+function voiceFields(state) {
+  return {
+    channel_id: state?.channel_id ?? null,
+    self_mute: !!state?.self_mute,
+    self_deaf: !!state?.self_deaf,
+    server_mute: !!state?.server_mute,
+    server_deaf: !!state?.server_deaf,
+    connected: !!state?.connected
+  }
+}
+
+// A roster entry: a ClientApiObject (profile, roles, vanity) plus its voice
+// state, which the server sends separately (Ready.voice_states and
+// VoiceStateUpdate). Also resolves the avatar URL.
+function normalizeClientVoice(c, voiceState = null) {
   return {
     ...c,
-    avatar: cdnUrl(c.avatar),
+    avatar: assetUrl(c.avatar),
     // The server sends assigned vanity as full VanityItems; we only keep the
     // ids and resolve names/icons against the global vanity list, so icon/name
     // edits propagate from one place.
     vanity_ids: (c.vanity || []).map((v) => v.id),
-    self_mute: !!c.self_mute,
-    self_deaf: !!c.self_deaf,
-    server_mute: !!c.muted,
-    server_deaf: !!c.deaf
+    ...voiceFields(voiceState)
   }
 }
 
@@ -251,12 +383,28 @@ function Main() {
   }, [channels, isAdmin, clients, client])
   // 'Roles and Groups' popup, opened from a client context menu.
   const [rolesGroupsOpen, setRolesGroupsOpen] = useState(false)
+  // 'Ban List' popup, opened from the server header's right-click menu.
+  const [banListOpen, setBanListOpen] = useState(false)
   const [bans, setBans] = useState([])
+  // Channel whose file browser is open (right-click a channel → Files), or null.
+  // `filesRevision` ticks on every MessageUpdated/MessageDeleted in that channel
+  // so the browser refetches its first page.
+  const [filesChannelId, setFilesChannelId] = useState(null)
+  const [filesRevision, setFilesRevision] = useState(0)
+  // Image / text preview opened from the file browser (ChatPanel owns its own).
+  const [filesViewerImage, setFilesViewerImage] = useState(null)
+  const [filesViewerFile, setFilesViewerFile] = useState(null)
   const [connectedServer, setConnectedServer] = useState(null)
   // The server's own name (GET /server), distinct from the list entry's local
   // nickname. Shown in the title bar and lurking header once connected.
   const [serverName, setServerName] = useState(null)
+  // Overall health, including voice recovery: 'reconnecting' while either the
+  // events link is down or voice is rebuilding after an outage.
   const [connectionStatus, setConnectionStatus] = useState('connected')
+  // The events socket alone. Only this drives the full-app "Connection Dropped"
+  // overlay: while events are flowing the server is still usable, and a
+  // voice-only outage is surfaced by the voice connection bar instead.
+  const [eventsStatus, setEventsStatus] = useState('connected')
   // Transient toast banner: { message, variant } or null when hidden. 'error'
   // reports partial failures (bad requests, permission denials, failed fetches);
   // 'success' confirms completed actions. Latest toast replaces any showing.
@@ -300,21 +448,22 @@ function Main() {
   const dismissToast = useCallback(() => setToast(null), [])
 
   //Client UI Hooks
-  const [allVideoStreams, setAllVideoStreams] = useState([])
   // Logical stream intent is keyed by client id. A codec downgrade creates a
   // new producer/consumer id for the same client's stream; using that transient
   // id here used to clear focus, stop watching, and hard-mute stream audio.
   const [selectedStreamClientId, setSelectedStreamClientId] = useState(null)
   const [poppedOut, setPoppedOut] = useState(false)
-  const [streamVolume, setStreamVolume] = useState(100)
-  const [streamMuted, setStreamMuted] = useState(false)
+  // Per-stream screen-share audio ({ [clientId]: { volume, muted } }), owned and
+  // persisted per server by playback; this mirrors it for the stream view and
+  // the popout bridge (see the subscribeStreamAudio effect below).
+  const [streamAudio, setStreamAudioSnapshot] = useState(() => getAllStreamAudioState())
   const [watchedStreamClientIds, setWatchedStreamClientIds] = useState(() => new Set())
 
   // Voice self-state (mic mute / deafen). Owned here rather than in SideBar so
-  // the stream view's theatre mode can read and toggle it alongside the sidebar
-  // (which mirrors it into soup, the tray, and our broadcast status). Refs hold
-  // the latest value so the globally-bound keybind listener never reads stale
-  // state; the chime plays here since this is the single toggle path.
+  // the stream view's theatre mode can read and toggle it alongside the sidebar;
+  // the effects below mirror it into soup, the tray, and our broadcast status.
+  // Refs hold the latest value so the globally-bound keybind listener never
+  // reads stale state; the chime plays here since this is the single toggle path.
   const [micMuted, setMicMutedState] = useState(false)
   const [deafened, setDeafenedState] = useState(false)
   const micMutedRef = useRef(false)
@@ -338,24 +487,18 @@ function Main() {
     playUiSound(next ? 'sound-mute' : 'sound-unmute')
   }, [])
 
-  // Live per-client speaking map from the joined voice channel, surfaced by the
-  // active VoiceChannel for the theatre participant rail's speaking rings.
-  const [speakingClients, setSpeakingClients] = useState({})
-  const handleSpeakingClientsChange = useCallback((map) => setSpeakingClients(map || {}), [])
-
-  // Theatre mode: the stream view fills the window with the voice-channel
-  // participant icons and mic/deafen controls overlaid. It's a property of the
-  // stream view, so the effect below clears it whenever that view goes away
-  // (chat tab, popout, or no streams left).
-  const [theatre, setTheatre] = useState(false)
-  const toggleTheatre = useCallback((next) => {
-    setTheatre((v) => (typeof next === 'boolean' ? next : !v))
-  }, [])
+  // Apply mute state to soup whenever it changes. Deafening (deafened)
+  // also silences the mic, regardless of the independent mic-mute toggle.
   useEffect(() => {
-    if (theatre && (viewMode !== 'video' || poppedOut || allVideoStreams.length === 0)) {
-      setTheatre(false)
-    }
-  }, [theatre, viewMode, poppedOut, allVideoStreams])
+    setMicMuted(micMuted || deafened)
+  }, [micMuted, deafened])
+
+  useEffect(() => {
+    setSoundMuted(deafened)
+    // Deafening also silences notification sounds (message/channel/stream); the
+    // sounds module gates on this the way soup.js gates remote audio.
+    setSoundsDeafened(deafened)
+  }, [deafened])
 
   const [notifications, setNotifications] = useState([])
   const [dmNotifications, setDmNotifications] = useState([])
@@ -371,24 +514,15 @@ function Main() {
   // a stale closure (mirrors the channels/clients ref pattern above).
   const presencesRef = useRef({})
   const dndRef = useRef(false)
+  // Set once the update-required signal is handled, until the next connect.
+  const updateRequiredRef = useRef(false)
 
   //Stream Ref Hooks
   const popoutWindowRef = useRef(null)
   const popoutListenersRef = useRef(new Set())
-  // Set by the sidebar to the sharing channel's handle while we're sharing; lets
-  // the stream view stop or retune our own share.
-  const shareControlRef = useRef(null)
-  // Stable object so both windows can drive the share through the ref above.
-  const shareControl = useRef({
-    stop: () => shareControlRef.current?.stopShare(),
-    restart: (patch) => shareControlRef.current?.restartShare(patch),
-    pickSource: () => shareControlRef.current?.openSourcePicker(),
-    getOptions: () => shareControlRef.current?.getShareOptions() ?? null
-  }).current
   const allVideoStreamsRef = useRef([])
   const selectedStreamClientIdRef = useRef(null)
-  const streamVolumeRef = useRef(100)
-  const streamMutedRef = useRef(false)
+  const streamAudioRef = useRef({})
   // The soup socket (and thus the viewer map) lives only in this window; the
   // popout runs in a separate JS realm with an empty soup instance, so mirror
   // the snapshot here and hand it over the bridge instead of letting the popout
@@ -402,6 +536,13 @@ function Main() {
   const selfIdRef = useRef(null)
   const selfChannelIdRef = useRef(null)
   const voiceStateRef = useRef({ self_mute: false, self_deaf: false, channel_id: null })
+  // The voice channel the backend lists us in (Ready.voice_states and our own
+  // VoiceStateUpdates), as opposed to voiceStateRef's intent. Soup asks it how
+  // to get a ticket (op 14 while listed) and what a 4008 means.
+  const serverVoiceChannelRef = useRef(null)
+  // A fresh Ready didn't list us in the channel we mean to be in (the backend
+  // lost us). Set until we're listed again; soup rejoins with op 5.
+  const rejoinAfterReadyRef = useRef(false)
   // Timestamp of our last own channel action (create/edit/move/etc). The server
   // echoes ChannelUpdated back to us, and a reorder also reindexes sibling
   // channels — so within a short window after acting we suppress the "your
@@ -418,13 +559,13 @@ function Main() {
   // this channel — that's the moment the user is truly reconnected.
   const preDropChannelRef = useRef(null)
   // The channel we're waiting to land back in after a reconnect (null when not
-  // awaiting). While set: the overlay stays up, self channel chimes are
-  // suppressed, and the sidebar won't leave voice on the transient drop-to-null.
+  // awaiting). While set: connectionStatus stays 'reconnecting', self channel chimes are
+  // suppressed, and the voice session won't leave on the transient drop-to-null.
   const awaitingRejoinRef = useRef(null)
   // What kind of voice rebuild is happening: 'outage' when the connection
   // actually dropped, or 'intentional' when we asked for it, such as a
-  // channel switch or a moderator moving us. Only an outage shows the
-  // connection-lost overlay and plays the "back online" cue. Null when idle.
+  // channel switch or a moderator moving us. Only an outage marks the
+  // connection as reconnecting and plays the "back online" cue. Null when idle.
   const voiceRebuildKindRef = useRef(null)
   const rejoinTimeoutRef = useRef(null)
   const requiredVoiceMediaUpdateRef = useRef(null)
@@ -433,13 +574,15 @@ function Main() {
   // This is a diagnostic/recovery boundary, not a success boundary. Membership
   // alone only proves events recovered; soup must also rebuild a live local
   // media producer before the UI may claim voice is connected again.
-  const VOICE_REJOIN_TIMEOUT_MS = 20000
+  // Above soup's own give-up deadline (40 s), which leaves the channel and says
+  // why, so that one normally speaks first.
+  const VOICE_REJOIN_TIMEOUT_MS = 45000
   const isReconnectRecovering = useCallback(
     () => eventsRecoveringRef.current || awaitingRejoinRef.current != null,
     []
   )
   // Bumped whenever a recovery ends. The ref alone is invisible to React, so
-  // consumers that *defer* work while recovering (SideBar's adopt/leave effect)
+  // consumers that *defer* work while recovering (the voice session's reconcile effect)
   // would never re-evaluate when the rejoin times out — leaving the UI claiming
   // we're in a channel the server says we left. This is that wake-up signal.
   const [recoveryEpoch, setRecoveryEpoch] = useState(0)
@@ -448,7 +591,7 @@ function Main() {
     state: 'idle'
   })
   // Finish a reconnect recovery: we're truly back now, so play the connected cue
-  // and drop the overlay. Safe to call more than once (the ref guard no-ops).
+  // and mark the connection healthy. Safe to call more than once (the ref guard no-ops).
   const completeRecovery = useCallback(() => {
     if (awaitingRejoinRef.current == null || eventsRecoveringRef.current) return
     const wasOutage = voiceRebuildKindRef.current !== 'intentional'
@@ -472,8 +615,8 @@ function Main() {
       voiceRebuildKindRef.current = null
       requiredVoiceMediaUpdateRef.current = null
       clearTimeout(rejoinTimeoutRef.current)
-      // The events connection is healthy; remove its network overlay without a
-      // false success chime, then expose voice as the failed subsystem.
+      // The events connection is healthy; mark it connected without a false
+      // success chime, then expose voice as the failed subsystem.
       if (!eventsRecoveringRef.current) setConnectionStatus('connected')
       setRecoveryEpoch((epoch) => epoch + 1)
       showError(message)
@@ -489,17 +632,17 @@ function Main() {
       setVoiceMediaRecovery(next)
 
       if (stateName === 'reconnecting' && channelId != null) {
-        // Ownership can legitimately move to another channel while recovery is
-        // already active (moderator move racing the transport-reset event).
-        // Follow the callback owner that will publish the replacement media.
+        // The session can legitimately move to another channel while recovery
+        // is already active (moderator move racing the transport-reset event).
+        // Follow the channel that will publish the replacement media.
         awaitingRejoinRef.current = channelId
         requiredVoiceMediaUpdateRef.current = Math.max(
           requiredVoiceMediaUpdateRef.current ?? -1,
           updateId
         )
         // An intentional rebuild runs over a healthy connection, so it should
-        // not show the connection-lost overlay, even if it was flagged after
-        // the overlay already appeared.
+        // not count as reconnecting, even if it was flagged after recovery
+        // already began.
         const kind = nextVoiceRebuildKind(voiceRebuildKindRef.current, {
           expected: state?.expected === true,
           // A recovery already in progress always counts as an outage.
@@ -519,9 +662,9 @@ function Main() {
           }
         }, VOICE_REJOIN_TIMEOUT_MS)
       } else if (stateName === 'authenticated' && awaitingRejoinRef.current != null) {
-        // The active VoiceChannel callback is authoritative after auth. This
-        // also resolves a moderator move that raced an earlier reset callback
-        // from the channel we previously owned.
+        // The session's channel is authoritative after auth. This also
+        // resolves a moderator move that raced an earlier reset reported for
+        // the channel we were in before.
         awaitingRejoinRef.current = channelId
       } else if (stateName === 'idle' && awaitingRejoinRef.current === channelId) {
         awaitingRejoinRef.current = null
@@ -531,19 +674,220 @@ function Main() {
         if (!eventsRecoveringRef.current) setConnectionStatus('connected')
       }
 
-      // Voice state is stored in refs so SideBar needs an explicit wake-up when
-      // an authoritative null arrived before the browser reported socket close.
+      // Voice state is stored in refs so the voice session's reconcile effect
+      // needs an explicit wake-up when an authoritative null arrived before
+      // the browser reported socket close.
       setRecoveryEpoch((epoch) => epoch + 1)
     },
     [failRecovery]
   )
   const activeChatChannelIdRef = useRef(null)
+  const filesChannelIdRef = useRef(null)
   const chatVisibleRef = useRef(true)
   const feedRef = useRef([])
   const loadingOlderRef = useRef(false)
   const [exhaustedChannels, setExhaustedChannels] = useState(() => new Set())
   const prevStreamIdsRef = useRef(new Set())
   const streamSoundsArmedRef = useRef(false)
+
+  // Explicitly viewing the server-traffic log (server menu → View server
+  // traffic), forced on top of the in-channel chat/streams view. Another canvas
+  // override, mutually exclusive with the preview/summary views below; cleared
+  // by Esc or navigating elsewhere. When lurking, traffic is the default view
+  // anyway, so this only matters while in a voice channel.
+  const [showTraffic, setShowTraffic] = useState(false)
+  // Forced server-summary view (server menu). Same canvas-override rules as
+  // showTraffic: mutually exclusive with the preview/summary views, cleared by
+  // Esc or navigating elsewhere.
+  const [showServerSummary, setShowServerSummary] = useState(false)
+
+  // Single source of truth for our outbound voice state. The server's
+  // VoiceStateUpdate (op 5) is partial: an omitted field is left unchanged and
+  // `channel_id: null` leaves voice. So we send only the fields that changed,
+  // except that a join also carries our mute/deafen, so a server that lost them
+  // (a fresh session) learns them with the membership. The ref holds our
+  // intent, merged optimistically, for re-declaring after a reconnect.
+  //
+  // Returns whether the declaration actually reached the server. A dropped send
+  // still updates the ref (that's our intent, re-declared on the next handshake),
+  // but callers that depend on the server acting on it — voice join / rejoin,
+  // which is what mints a voice ticket — must be able to fail and retry rather
+  // than proceed as if membership had been asserted.
+  const sendVoiceState = useCallback(
+    (patch) => {
+      const channelChanged =
+        'channel_id' in patch && patch.channel_id !== voiceStateRef.current.channel_id
+      const next = { ...voiceStateRef.current, ...patch }
+      voiceStateRef.current = next
+      // A channel change (join/leave/switch) tears down and rebuilds media, so the
+      // streams that vanish/appear are the transition — not real stops/starts.
+      // Disarm the stream chimes now, synchronously, before handleLeave's teardown
+      // empties allVideoStreams and the diff effect mistakes it for a stream ending.
+      // The baseline effect re-arms once we've settled in the new channel (or none).
+      if ('channel_id' in patch) streamSoundsArmedRef.current = false
+      if (channelChanged && !isReconnectRecovering()) {
+        setWatchedStreamClientIds(new Set())
+        setSelectedStreamClientId(null)
+      }
+      if (eventsWsRef.current?.readyState !== WebSocket.OPEN) return false
+      const data =
+        patch.channel_id != null
+          ? { ...patch, self_mute: next.self_mute, self_deaf: next.self_deaf }
+          : patch
+      eventsWsRef.current.send(JSON.stringify({ op: 5, data, nonce: nextNonce() }))
+      return true
+    },
+    [isReconnectRecovering]
+  )
+
+  // The voice session's own channel declarations (join / switch / leave).
+  const declareChannel = useCallback(
+    (channelId) => {
+      // Joining/leaving a voice channel is a navigation — drop the
+      // forced traffic view so we land on that channel's chat.
+      setShowTraffic(false)
+      setShowServerSummary(false)
+      // Pass the sent/dropped result through: the session turns a dropped
+      // declaration into a failed join so a reconnect retries instead of
+      // connecting voice with no channel membership.
+      return sendVoiceState({ channel_id: channelId })
+    },
+    [sendVoiceState]
+  )
+
+  const voice = useVoiceSessionOwner({
+    selfId: client?.id,
+    clients,
+    channels: visibleChannels,
+    declareChannel,
+    isReconnectRecovering,
+    recoveryEpoch,
+    onMediaState: handleVoiceMediaState,
+    onError: showError
+  })
+  const allVideoStreams = voice.videoStreams
+  // Live per-client speaking map for the theatre participant rail's rings.
+  const speakingClients = voice.speakingClients
+  const resetVoice = voice.reset
+
+  // Theatre mode: the stream view fills the window with the voice-channel
+  // participant icons and mic/deafen controls overlaid. It's a property of the
+  // stream view, so the effect below clears it whenever that view goes away
+  // (chat tab, popout, or no streams left).
+  const [theatre, setTheatre] = useState(false)
+  const toggleTheatre = useCallback((next) => {
+    setTheatre((v) => (typeof next === 'boolean' ? next : !v))
+  }, [])
+  useEffect(() => {
+    if (theatre && (viewMode !== 'video' || poppedOut || allVideoStreams.length === 0)) {
+      setTheatre(false)
+    }
+  }, [theatre, viewMode, poppedOut, allVideoStreams])
+
+  // Stable object so both windows can stop or retune our own share.
+  const shareControl = useRef({
+    stop: voice.stopShare,
+    restart: voice.restartShare,
+    setPaused: voice.pauseShare,
+    pickSource: voice.openSourcePicker,
+    getOptions: voice.getShareOptions
+  }).current
+
+  // Drive the Windows system-tray mic indicator. Deafen outranks mute outranks
+  // talking; mute/deafen show even when not in a channel (they're global toggles),
+  // matching TeamSpeak. No-op off Windows (main ignores the message).
+  useEffect(() => {
+    const state = deafened
+      ? 'deafened'
+      : micMuted
+        ? 'muted'
+        : voice.selfSpeaking
+          ? 'talking'
+          : 'idle'
+    window.electron?.ipcRenderer?.send('tray:voice-state', state)
+  }, [micMuted, deafened, voice.selfSpeaking])
+
+  // Who is screen streaming in each channel (channel id -> owner ids), for the
+  // DM call's member strip. SideBar keeps its own copy for its rows.
+  const [liveStreams, setLiveStreams] = useState(() => new Map())
+  useEffect(() => subscribeLiveStreams(setLiveStreams), [])
+
+  // The caller's local "Ringing…" ({ channelId, rings: recipient id -> deadline }):
+  // the server doesn't say who it rang when a call starts. Only the session's DM
+  // keeps entries.
+  const [outgoingRings, setOutgoingRings] = useState(NO_OUTGOING_RINGS)
+  useEffect(() => {
+    setOutgoingRings((prev) =>
+      prev.channelId === voice.channelId || !prev.rings.size ? prev : NO_OUTGOING_RINGS
+    )
+  }, [voice.channelId])
+  const settleOutgoingRings = useCallback((roster) => {
+    setOutgoingRings((prev) => {
+      if (!prev.rings.size) return prev
+      const inCall = roster.filter((c) => c.channel_id === prev.channelId).map((c) => c.id)
+      const rings = settleOutgoing(prev.rings, inCall, Date.now())
+      return rings === prev.rings ? prev : { ...prev, rings }
+    })
+  }, [])
+  useEffect(() => {
+    settleOutgoingRings(clients)
+  }, [clients, settleOutgoingRings])
+
+  // DM calls ringing us: channel id -> { callerId, deadline }. The event handler
+  // and the tick work on the ref; the state renders the overlay.
+  const [rings, setRings] = useState(() => new Map())
+  const ringsRef = useRef(rings)
+  // Escape hides the overlay until the rings change.
+  const [ringsHidden, setRingsHidden] = useState(false)
+  const commitRings = useCallback((next) => {
+    if (next === ringsRef.current) return
+    ringsRef.current = next
+    setRings(next)
+    setRingsHidden(false)
+  }, [])
+  // A ring that ran out, or whose call ended without us: an inbox alert, a cue
+  // (not under DND), and the DM's latest call_started reads as missed (this
+  // session only).
+  const noteMissedCall = useCallback(({ channelId, callerId }) => {
+    const name = clientsRef.current.find((c) => c.id === callerId)?.name || 'Someone'
+    setDmNotifications((prev) => [
+      {
+        id: `missed-${channelId}-${Date.now()}`,
+        channelId,
+        authorId: callerId,
+        message: `Missed call from ${name}`,
+        timestamp: Date.now()
+      },
+      ...prev.filter((n) => n.channelId !== channelId)
+    ])
+    if (!dndRef.current) playUiSound('you_were_poked')
+    setFeed((prev) => {
+      for (let i = prev.length - 1; i >= 0; i--) {
+        const e = prev[i]
+        if (e.type !== 'message' || e.channelId !== channelId || e.kind !== 'call_started') {
+          continue
+        }
+        if (e.missed) return prev
+        const next = prev.slice()
+        next[i] = { ...e, missed: true }
+        return next
+      }
+      return prev
+    })
+  }, [])
+  // One clock for both ring maps while either has entries: incoming rings run
+  // out (missed), outgoing ones settle.
+  const ringsTicking = rings.size > 0 || outgoingRings.rings.size > 0
+  useEffect(() => {
+    if (!ringsTicking) return undefined
+    const timer = setInterval(() => {
+      const { rings: next, expired } = expire(ringsRef.current, Date.now())
+      commitRings(next)
+      for (const ring of expired) noteMissedCall(ring)
+      settleOutgoingRings(clientsRef.current)
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [ringsTicking, commitRings, noteMissedCall, settleOutgoingRings])
 
   // Keep refs to the latest channels/clients so the events websocket handler
   // (created once in the effect below) can look them up without stale closures.
@@ -573,14 +917,23 @@ function Main() {
     selectedStreamClientIdRef.current = selectedStreamClientId
   }, [selectedStreamClientId])
   useEffect(() => {
-    streamVolumeRef.current = streamVolume
-  }, [streamVolume])
-  useEffect(() => {
-    streamMutedRef.current = streamMuted
-  }, [streamMuted])
+    streamAudioRef.current = streamAudio
+  }, [streamAudio])
   useEffect(() => {
     watchedStreamClientIdsRef.current = watchedStreamClientIds
   }, [watchedStreamClientIds])
+
+  // Mirror playback's per-stream audio state. The callback fires after every
+  // change (from either window) and whenever the overrides reload for a new
+  // server host.
+  useEffect(() => subscribeStreamAudio(() => setStreamAudioSnapshot(getAllStreamAudioState())), [])
+  // Playback reloads its per-host overrides lazily, on the next read, so read
+  // once when the connected server changes; that reload is what notifies the
+  // subscription above with the new server's levels.
+  const connectedHost = connectedServer?.host ?? null
+  useEffect(() => {
+    getAllStreamAudioState()
+  }, [connectedHost])
 
   // Mirror the live viewer map for the popout bridge. subscribeStreamViewers
   // fires immediately with the current snapshot, and again on every change, so
@@ -597,14 +950,7 @@ function Main() {
   // Notify the popout window whenever the data it mirrors changes.
   useEffect(() => {
     popoutListenersRef.current.forEach((cb) => cb())
-  }, [
-    allVideoStreams,
-    clients,
-    selectedStreamClientId,
-    streamVolume,
-    streamMuted,
-    watchedStreamClientIds
-  ])
+  }, [allVideoStreams, clients, selectedStreamClientId, streamAudio, watchedStreamClientIds])
 
   // Consumer lifetime follows the watch set: watching a stream subscribes to it,
   // stopping unsubscribes. Driven here rather than in VideoGrid because the
@@ -632,11 +978,12 @@ function Main() {
 
   // Jump to watching a client's stream — the click target on the streaming
   // (camera) icon next to a channel member. Mirrors VideoGrid's focusStream:
-  // start consuming the stream and focus it. The camera icon only appears for
-  // streamers in the channel we've joined, so the Streams view always has their
-  // tile to land on. When popped out, the tab is disabled and the streams live
-  // in the popout window — the watch/select still propagate there over the
-  // bridge, so just surface that window instead of switching the in-app view.
+  // start consuming the stream and focus it. The icon shows for streamers in
+  // every channel, but is only clickable for those with a tile in the channel
+  // we've joined, so the Streams view always has a tile to land on. When popped
+  // out, the tab is disabled and the streams live in the popout window — the
+  // watch/select still propagate there over the bridge, so just surface that
+  // window instead of switching the in-app view.
   const handleWatchStream = (clientId) => {
     handleSetStreamWatched(clientId, true)
     setSelectedStreamClientId(clientId)
@@ -656,6 +1003,19 @@ function Main() {
     setViewMode('video')
   }
 
+  // Starting our own stream or camera jumps straight to it, as if we'd clicked
+  // its tile, so the sharer immediately sees what they're sending. Keyed on the
+  // self tile appearing: shares are never auto-restored after a reconnect and
+  // a codec fallback swaps the tile in place, so only a user-started share (or
+  // a retune's restart, which re-focuses the tile it was launched from) lands here.
+  const selfStreamClientId = allVideoStreams.find((s) => s.isSelf)?.clientId ?? null
+  useEffect(() => {
+    if (selfStreamClientId != null) handleWatchStream(selfStreamClientId)
+    // Fires on the tile's arrival only; handleWatchStream is a fresh closure
+    // every render and would re-jump the view on each one.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selfStreamClientId])
+
   // Replacement handoffs retain a placeholder tile (the SFU marks their
   // ProducerClosed event), so any client absent here genuinely stopped sharing.
   // Clear intent immediately: a later unrelated share must require a new click.
@@ -673,6 +1033,17 @@ function Main() {
     setSelectedStreamClientId((current) =>
       current != null && !liveClientIds.has(current) ? null : current
     )
+  }, [allVideoStreams, recoveryEpoch, isReconnectRecovering])
+
+  // A sole stream is always the focused one (the stream view has no focus
+  // toggle until a second appears), so selection follows it: when the count
+  // becomes 1, from 0 or from 2+, that stream is selected, and a second stream
+  // arriving later leaves it selected. Skipped while recovering, like the prune
+  // above: the SFU replays producers one at a time, and selecting the first
+  // replayed one would override the focus the recovery is preserving.
+  useEffect(() => {
+    if (isReconnectRecovering()) return
+    if (allVideoStreams.length === 1) setSelectedStreamClientId(allVideoStreams[0].clientId)
   }, [allVideoStreams, recoveryEpoch, isReconnectRecovering])
 
   // Clear notification + unread history on connect/disconnect only — switching
@@ -694,17 +1065,16 @@ function Main() {
         streams: allVideoStreamsRef.current,
         clients: clientsRef.current,
         selectedStreamClientId: selectedStreamClientIdRef.current,
-        volume: streamVolumeRef.current,
-        muted: streamMutedRef.current,
+        streamAudio: streamAudioRef.current,
         watchedStreamClientIds: watchedStreamClientIdsRef.current,
         streamViewers: streamViewersRef.current
       }),
       select: (id) => setSelectedStreamClientId(id),
-      setVolume: (v) => setStreamVolume(v),
-      setMuted: (m) => setStreamMuted(m),
       setStreamWatched: (id, watched) => handleSetStreamWatched(id, watched),
       shareControl,
-      setFocusedAudio: (clientId, opts) => setFocusedScreenAudio(clientId, opts),
+      // Per-stream audio plays in this window's soup, so the popout's volume and
+      // mute controls write here; the change comes back via streamAudio.
+      setStreamAudio: (clientId, patch) => setStreamAudioState(clientId, patch),
       setStreamRoles: (payload) => setVideoStreamRoles(payload),
       subscribe: (cb) => {
         popoutListenersRef.current.add(cb)
@@ -761,23 +1131,28 @@ function Main() {
   // Details). Mutually exclusive with the chat preview and client summary.
   const [summaryChannelId, setSummaryChannelId] = useState(null)
 
-  // Explicitly viewing the server-traffic log (server menu → View server
-  // traffic), forced on top of the in-channel chat/streams view. Another canvas
-  // override, mutually exclusive with the preview/summary views above; cleared
-  // by Esc or navigating elsewhere. When lurking, traffic is the default view
-  // anyway, so this only matters while in a voice channel.
-  const [showTraffic, setShowTraffic] = useState(false)
-  // Forced server-summary view (server menu). Same canvas-override rules as
-  // showTraffic: mutually exclusive with the preview/summary views, cleared by
-  // Esc or navigating elsewhere.
-  const [showServerSummary, setShowServerSummary] = useState(false)
-
   // The channel the local client currently has joined (chat is scoped to it)
   const selfChannelId = clients.find((c) => c.id === client?.id)?.channel_id ?? null
 
   // Chat (messages / typing / history) follows the previewed channel when
   // peeking, otherwise the joined channel.
   const activeChatChannelId = previewChannelId ?? selfChannelId
+
+  // Whether chat offers Delete on other people's messages: MANAGE_MESSAGES (or
+  // admin) outside DMs, where only the author may delete. The server is
+  // authoritative; this only gates the control.
+  // ponytail: from our roles only, the channel's overwrites aren't applied
+  // (lib/permissions only resolves VIEW_CHANNEL from them), so an overwrite that
+  // grants or denies MANAGE_MESSAGES here isn't reflected.
+  // canModerateIn(id) answers the same for any channel (the file browser asks
+  // it for the channel it is showing, not the active chat).
+  const canModerateIn = (channelId) => {
+    const type = channels.find((c) => c.id === channelId)?.type
+    return (
+      type != null && type !== 'dm' && (isAdmin || (myPermissions & PERM_MANAGE_MESSAGES) !== 0n)
+    )
+  }
+  const canModerateChat = canModerateIn(activeChatChannelId)
 
   // Chat is on screen when peeking a channel or when the joined channel's Chat
   // tab is selected (mirrors the render condition below).
@@ -822,14 +1197,17 @@ function Main() {
         voiceMediaRecovery.updateId > requiredVoiceMediaUpdateRef.current)
     ) {
       // The events connection is healthy but the browser rejected a mic/device
-      // request. End the network-reconnect overlay and leave the channel's
-      // actionable error visible instead of presenting an endless reconnect.
+      // request. End the reconnect state and leave the channel's actionable
+      // error visible instead of presenting an endless reconnect.
       failRecovery()
     }
   }, [selfChannelId, voiceMediaRecovery, recoveryEpoch, completeRecovery, failRecovery])
   useEffect(() => {
     activeChatChannelIdRef.current = activeChatChannelId
   }, [activeChatChannelId])
+  useEffect(() => {
+    filesChannelIdRef.current = filesChannelId
+  }, [filesChannelId])
   useEffect(() => {
     chatVisibleRef.current = chatVisible
   }, [chatVisible])
@@ -977,15 +1355,18 @@ function Main() {
     setShowServerSummary(true)
   }
 
-  // Open the DM an inbox alert points at: by sender id when known (resolves the
-  // header), else peek the channel by id. Viewing clears the alert.
+  // Open the DM an inbox alert points at: the channel itself when we know it
+  // (so a group DM's alert opens the group), else the 1:1 with its sender.
+  // Viewing clears the alert.
   const handleOpenDmNotification = (n) => {
-    if (n.authorId != null) {
-      handleOpenDm(n.authorId)
-    } else if (n.channelId != null) {
+    if (n.channelId != null && channels.some((c) => c.id === n.channelId && c.type === 'dm')) {
       setSummaryClientId(null)
       setSummaryChannelId(null)
+      setShowTraffic(false)
+      setShowServerSummary(false)
       setPreviewChannelId(n.channelId)
+    } else if (n.authorId != null) {
+      handleOpenDm(n.authorId)
     }
   }
 
@@ -1013,16 +1394,29 @@ function Main() {
     }
   }, [summaryChannelId, visibleChannels])
 
+  // Same for the file browser.
+  useEffect(() => {
+    if (filesChannelId != null && !visibleChannels.some((c) => c.id === filesChannelId)) {
+      setFilesChannelId(null)
+    }
+  }, [filesChannelId, visibleChannels])
+  // A preview opened from the browser goes with it.
+  useEffect(() => {
+    if (filesChannelId != null) return
+    setFilesViewerImage(null)
+    setFilesViewerFile(null)
+  }, [filesChannelId])
+
   // Get-or-create the 1:1 DM channel with another user and make it known to
-  // `channels`, returning its id. Shared by handleOpenDm (peek) and handlePoke
-  // (fire a message without necessarily switching views). Idempotent server-side.
+  // `channels`, returning its id. Used by handleOpenDm (peek). Idempotent
+  // server-side.
   const ensureDmChannel = useCallback(
     async (userId) => {
       const res = await authFetch(`${apiBase()}/channels/dm`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        // Array so the same endpoint creates a group chat later; today both entry
-        // points (double-click, poke) only ever send one recipient.
+        // Array so the same endpoint creates a group chat later; today opening a
+        // DM only ever sends one recipient.
         body: JSON.stringify({ recipient_ids: [userId] })
       })
       await throwIfError(res)
@@ -1063,37 +1457,95 @@ function Main() {
     [client, ensureDmChannel]
   )
 
-  // Poke a client: fire off a DM message (the attached note, or a wave if none)
-  // without leaving the current view. For now it's just a normal DM under the
-  // hood; the dedicated poke notification can come later.
+  // Poke a client: a poke message (with the note, if any) in our 1:1 DM with
+  // them, which the server creates on first use, then open that DM. The poke
+  // reaches the feed through its MessageCreated, as a sent message does.
   const handlePoke = useCallback(
     async (userId, message) => {
       if (!userId || userId === client?.id) return
-      const text = (message || '').trim() || '👋'
-
       try {
-        const id = await ensureDmChannel(userId)
-        if (id == null) return
-        // Mirror handleSendMessage's multipart shape (text-only, no files) so the
-        // server sees an ordinary DM message and broadcasts MessageCreated back.
-        const formData = new FormData()
-        formData.append(
-          'payload_json',
-          new Blob([JSON.stringify({ content: text, attachments: [] })], {
-            type: 'application/json'
-          })
-        )
-        const res = await authFetch(`${apiBase()}/channels/${id}/messages`, {
+        const res = await authFetch(`${apiBase()}/clients/${userId}/poke`, {
           method: 'POST',
-          body: formData
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content: (message || '').trim() || null })
         })
         await throwIfError(res)
+        const poke = await res.json()
+        if (poke?.channel_id == null) return
+        // A DM this poke created may not be merged from its ChannelCreated yet;
+        // registering it keeps the preview from being dropped as unknown.
+        const dm = { id: poke.channel_id, type: 'dm', recipients: [client?.id, userId] }
+        setChannels((prev) => (prev.some((c) => c.id === dm.id) ? prev : [...prev, dm]))
+        setSummaryClientId(null)
+        setShowTraffic(false)
+        setShowServerSummary(false)
+        setPreviewChannelId(dm.id)
       } catch (err) {
-        showError(`Failed to poke: ${err.message}`, err)
+        if (err.status === 429) showWarning(err.message)
+        else showError(`Failed to poke: ${err.message}`, err)
       }
     },
-    [client, token, ensureDmChannel]
+    [client, showError, showWarning]
   )
+
+  // Start or join a DM's call. Starting one rings every online participant,
+  // which only shows here as the local "Ringing…".
+  const handleJoinDmCall = (dm) => {
+    if (!clients.some((c) => c.channel_id === dm.id)) {
+      const online = dmOthers(dm, client?.id)
+        .map((o) => o.id)
+        .filter((id) => statusOf(presences[id]) !== 'offline')
+      setOutgoingRings({ channelId: dm.id, rings: startOutgoing(new Map(), online, Date.now()) })
+    }
+    voice.join(dm.id)
+  }
+
+  // Ring one participant who isn't in the DM's call (the member strip's Ring).
+  const handleRingParticipant = async (dmId, userId) => {
+    const name = clients.find((c) => c.id === userId)?.name || 'Someone'
+    try {
+      const res = await authFetch(`${apiBase()}/channels/${dmId}/call/ring`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ recipient_ids: [userId] })
+      })
+      await throwIfError(res)
+      const rung = (await res.json())?.rung || []
+      if (rung.length) {
+        setOutgoingRings((prev) => ({
+          channelId: dmId,
+          rings: startOutgoing(prev.channelId === dmId ? prev.rings : new Map(), rung, Date.now())
+        }))
+      }
+      if (!rung.includes(userId)) showToast(`${name} is not available`)
+    } catch (err) {
+      if (err.status === 429) showWarning(err.message)
+      else showError(`Failed to ring ${name}: ${err.message}`, err)
+    }
+  }
+
+  // Answer a ring: join its call (leaving any other) and open the DM. The
+  // preview turns into the joined view once the roster lands.
+  const handleAnswerCall = (channelId) => {
+    voice.join(channelId)
+    setSummaryClientId(null)
+    setSummaryChannelId(null)
+    setPreviewChannelId(channelId)
+  }
+
+  const handleDeclineCall = async (channelId) => {
+    commitRings(
+      applyRingEnded(ringsRef.current, { channel_id: channelId, reason: 'declined' }).rings
+    )
+    try {
+      const res = await authFetch(`${apiBase()}/channels/${channelId}/call/decline`, {
+        method: 'POST'
+      })
+      await throwIfError(res)
+    } catch (err) {
+      showError(`Failed to decline the call: ${err.message}`, err)
+    }
+  }
 
   // Admin moderation. The backend designates the first user to enter a server as
   // admin and enforces these; non-admins just get an error toast. The kicked/
@@ -1102,7 +1554,7 @@ function Main() {
     async (userId, reason) => {
       if (!userId || userId === client?.id) return
       try {
-        const res = await authFetch(`${apiBase()}/server/clients/${userId}/kick`, {
+        const res = await authFetch(`${apiBase()}/clients/${userId}/kick`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(reason ? { reason } : {})
@@ -1122,7 +1574,7 @@ function Main() {
       setRoles([])
       return
     }
-    authFetch(`${apiBase()}/server/roles`)
+    authFetch(`${apiBase()}/roles`)
       .then((res) => res.json())
       .then((data) => setRoles(Array.isArray(data) ? data : []))
       .catch((err) => console.error('Failed to load roles:', err))
@@ -1130,16 +1582,18 @@ function Main() {
 
   // Load the server's vanity groups once per connection; VanityCreated/
   // VanityDeleted events keep the list current afterwards. Icons come back as
-  // /cdn/… paths, resolved against the active host like avatars.
+  // /files/… paths, resolved against the active host like avatars.
   useEffect(() => {
     if (!token) {
       setVanity([])
       return
     }
-    authFetch(`${apiBase()}/server/vanity`)
+    authFetch(`${apiBase()}/vanity`)
       .then((res) => res.json())
       .then((data) =>
-        setVanity(Array.isArray(data) ? data.map((v) => ({ ...v, avatar: cdnUrl(v.avatar) })) : [])
+        setVanity(
+          Array.isArray(data) ? data.map((v) => ({ ...v, avatar: assetUrl(v.avatar) })) : []
+        )
       )
       .catch((err) => console.error('Failed to load vanity groups:', err))
   }, [token])
@@ -1162,7 +1616,7 @@ function Main() {
       setBans([])
       return
     }
-    authFetch(`${apiBase()}/server/bans`)
+    authFetch(`${apiBase()}/bans`)
       .then((res) => res.json())
       .then((data) => setBans(Array.isArray(data) ? data : []))
       .catch((err) => console.error('Failed to load bans:', err))
@@ -1172,12 +1626,23 @@ function Main() {
     refreshBans()
   }, [refreshBans])
 
-  // Banned users, shaped like roster clients (resolved avatar) so ClientIndicator
-  // can render them. Marked via the returned id set below.
-  const bannedUsers = useMemo(
-    () => bans.map((b) => ({ ...b.user, avatar: cdnUrl(b.user.avatar) })),
+  // Bans with each user's avatar resolved against the active host, for the Ban
+  // List popup.
+  const resolvedBans = useMemo(
+    () => bans.map((b) => ({ ...b, user: { ...b.user, avatar: assetUrl(b.user.avatar) } })),
     [bans]
   )
+
+  // Banned users, shaped like roster clients (resolved avatar) so ClientIndicator
+  // can render them. Marked via the returned id set below.
+  const bannedUsers = useMemo(() => resolvedBans.map((b) => b.user), [resolvedBans])
+
+  // Open the Ban List, refetching so it reflects bans made by other moderators
+  // (only our own ban/unban actions and ClientBanned events update it otherwise).
+  const handleOpenBanList = useCallback(() => {
+    refreshBans()
+    setBanListOpen(true)
+  }, [refreshBans])
 
   // Assign / remove a role. role_ids is updated on success (not optimistically),
   // so a server rejection — e.g. missing MANAGE_ROLES — doesn't leave a stale
@@ -1198,7 +1663,7 @@ function Main() {
         showSuccess(`Assigned "${roleName}" to ${clientName}`)
       }
       try {
-        const res = await authFetch(`${apiBase()}/server/clients/${clientId}/roles/${roleId}`, {
+        const res = await authFetch(`${apiBase()}/clients/${clientId}/roles/${roleId}`, {
           method: 'PUT'
         })
         await throwIfError(res)
@@ -1227,7 +1692,7 @@ function Main() {
         showSuccess(`Revoked "${roleName}" from ${clientName}`)
       }
       try {
-        const res = await authFetch(`${apiBase()}/server/clients/${clientId}/roles/${roleId}`, {
+        const res = await authFetch(`${apiBase()}/clients/${clientId}/roles/${roleId}`, {
           method: 'DELETE'
         })
         await throwIfError(res)
@@ -1245,7 +1710,7 @@ function Main() {
   const handleCreateVanityGroup = useCallback(
     async (name, avatar) => {
       try {
-        const res = await authFetch(`${apiBase()}/server/vanity`, {
+        const res = await authFetch(`${apiBase()}/vanity`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ type: 'group', name, ...(avatar ? { avatar } : {}) })
@@ -1268,7 +1733,7 @@ function Main() {
       const groupName = vanity.find((v) => v.id === vanityId)?.name ?? 'group'
       const clientName = clients.find((c) => c.id === clientId)?.name ?? 'user'
       try {
-        const res = await authFetch(`${apiBase()}/server/clients/${clientId}/vanity/${vanityId}`, {
+        const res = await authFetch(`${apiBase()}/clients/${clientId}/vanity/${vanityId}`, {
           method: assign ? 'PUT' : 'DELETE'
         })
         await throwIfError(res)
@@ -1291,15 +1756,15 @@ function Main() {
     [token, vanity, clients, showError, showSuccess]
   )
 
-  // durationSeconds 0 = permanent (server default); reason optional.
+  // durationSeconds 0 = permanent (server default); reason optional. The API takes ms.
   const handleBanUser = useCallback(
     async (userId, { durationSeconds = 0, reason } = {}) => {
       if (!userId || userId === client?.id) return
       try {
-        const body = { duration_seconds: durationSeconds }
+        const body = { duration_ms: durationSeconds * 1000 }
         if (reason) body.reason = reason
-        const res = await authFetch(`${apiBase()}/server/clients/${userId}/ban`, {
-          method: 'POST',
+        const res = await authFetch(`${apiBase()}/bans/${userId}`, {
+          method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body)
         })
@@ -1319,7 +1784,7 @@ function Main() {
     async (userId) => {
       if (!userId) return
       try {
-        const res = await authFetch(`${apiBase()}/server/clients/${userId}/ban`, {
+        const res = await authFetch(`${apiBase()}/bans/${userId}`, {
           method: 'DELETE'
         })
         await throwIfError(res)
@@ -1331,7 +1796,7 @@ function Main() {
     [token, showError, refreshBans]
   )
 
-  // Edit our own profile: PATCH /client/self //Update locally -> Server broadcasts ClientModified to others.
+  // Edit our own profile: PATCH /clients/self //Update locally -> Server broadcasts ClientModified to others.
   // `patch` is { avatar } and/or { nickname }; `local` is how it maps onto our
   // client row (the server calls it nickname, the roster renders it as `name`).
   const patchSelf = useCallback(
@@ -1339,7 +1804,7 @@ function Main() {
       const selfId = client?.id
       setClients((prev) => prev.map((c) => (c.id === selfId ? { ...c, ...local } : c)))
       try {
-        const res = await authFetch(`${apiBase()}/client/self`, {
+        const res = await authFetch(`${apiBase()}/clients/self`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(patch)
@@ -1372,28 +1837,15 @@ function Main() {
   )
 
   // Fetch a channel's recent history and replace that channel's feed entries with it.
-  // Routed through the main process (GET with a JSON body). `shouldApply`
-  // bails if the result is stale (user switched channels before it arrived).
+  // `shouldApply` bails if the result is stale (user switched channels before it
+  // arrived).
   const loadChannelHistory = useCallback(
     (channelId, shouldApply = () => true) => {
       if (!token || channelId == null) return Promise.resolve()
-      // The request runs in the main process, outside authFetch — hand it a
-      // token refreshed here if needed.
-      return getFreshToken()
-        .then((accessToken) =>
-          window.electron.ipcRenderer.invoke('get-channel-messages', {
-            url: `${apiBase()}/channels/${channelId}/messages`,
-            token: accessToken,
-            limit: HISTORY_LIMIT
-          })
-        )
-        .then((res) => {
+      return fetchChannelMessages(channelId, { limit: HISTORY_LIMIT })
+        .then((messages) => {
           if (!shouldApply()) return
-          if (!res?.ok) {
-            if (res?.error) console.error('Failed to load chat history:', res.error)
-            return
-          }
-          const history = (res.messages || []).map(messageFromApi).sort(byChronology)
+          const history = (messages || []).map(messageFromApi).sort(byChronology)
           // We just replaced this channel's messages with the recent page, so
           // it's no longer scrolled to the start — let scroll-up paginate again.
           setExhaustedChannels((prev) => {
@@ -1424,21 +1876,9 @@ function Main() {
     }, null)
     if (!oldest) return Promise.resolve()
     loadingOlderRef.current = true
-    return getFreshToken()
-      .then((accessToken) =>
-        window.electron.ipcRenderer.invoke('get-channel-messages', {
-          url: `${apiBase()}/channels/${channelId}/messages`,
-          token: accessToken,
-          limit: HISTORY_LIMIT,
-          before: oldest.id
-        })
-      )
-      .then((res) => {
-        if (!res?.ok) {
-          if (res?.error) console.error('Failed to load older messages:', res.error)
-          return 0
-        }
-        const older = (res.messages || []).map(messageFromApi)
+    return fetchChannelMessages(channelId, { limit: HISTORY_LIMIT, before: oldest.id })
+      .then((messages) => {
+        const older = (messages || []).map(messageFromApi)
         if (older.length < HISTORY_LIMIT) {
           setExhaustedChannels((prev) => new Set(prev).add(channelId))
         }
@@ -1493,23 +1933,19 @@ function Main() {
     lastSelfChannelActionAtRef.current = Date.now()
   }
 
-  // Create a channel on the server. Position is computed to append after the current last channel.
-  //The server also broadcasts ChannelCreated, so the add here is deduped by id in case that broadcast echoes back to us.
-  const handleCreateChannel = async ({ name, user_limit, afterPosition }) => {
+  // Create a channel on the server directly below the channel `after`, or last
+  // when `after` is undefined (JSON.stringify drops it, which the server reads as
+  // append). The backend shifts the rest. The server also broadcasts
+  // ChannelCreated, so the add here is deduped by id in case that broadcast echoes back to us.
+  const handleCreateChannel = async ({ name, user_limit, after }) => {
     const trimmed = name.trim()
     if (!trimmed) return
-    // Insert just below the channel the create was launched from; otherwise
-    // append after the current last channel. The backend reorders the rest.
-    const position =
-      typeof afterPosition === 'number'
-        ? afterPosition + 1
-        : channels.reduce((max, ch) => Math.max(max, ch.position ?? 0), -1) + 1
 
     try {
-      const res = await authFetch(`${apiBase()}/server/channel`, {
+      const res = await authFetch(`${apiBase()}/channels`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: trimmed, user_limit, position })
+        body: JSON.stringify({ name: trimmed, user_limit, after })
       })
       await throwIfError(res)
       const created = await res.json().catch(() => null)
@@ -1537,16 +1973,16 @@ function Main() {
     }
   }
 
-  // Move a channel to a new position (drag-to-reorder). The server reindexes the
-  // rest and broadcasts ChannelUpdated for the affected channels, so we don't
-  // mutate locally on success.
-  const handleReorderChannel = async (id, position) => {
+  // Move a channel directly below the channel `after` (null = top) for
+  // drag-to-reorder. The server reindexes the rest and broadcasts ChannelUpdated
+  // for the affected channels, so we don't mutate locally on success.
+  const handleReorderChannel = async (id, after) => {
     markSelfChannelAction()
     try {
       const res = await authFetch(`${apiBase()}/channels/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ position })
+        body: JSON.stringify({ after })
       })
       await throwIfError(res)
       playUiSound('channel_moved')
@@ -1629,8 +2065,9 @@ function Main() {
   }
 
   // Move another client into a channel (drag their entry onto a channel header).
-  // The server enforces permissions and broadcasts ClientModified, so we don't
-  // mutate locally on success.
+  // The server enforces permissions and broadcasts VoiceStateUpdate (the PATCH
+  // answers with the same VoiceStateApiObject), so we don't mutate locally on
+  // success.
   const handleMoveClientToChannel = useCallback(
     async (userId, channelId) => {
       if (userId == null) return
@@ -1639,7 +2076,7 @@ function Main() {
       if (current && current.channel_id === channelId) return
 
       try {
-        const res = await authFetch(`${apiBase()}/client/${userId}`, {
+        const res = await authFetch(`${apiBase()}/voice-states/${userId}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ channel_id: channelId })
@@ -1665,16 +2102,16 @@ function Main() {
     [handleMoveClientToChannel]
   )
 
-  // Gag / ungag a client: server-wide mute (PATCH /client { mute }) so they can't
+  // Gag / ungag a client: server-wide mute (PATCH /client { server_mute }) so they can't
   // speak in any channel. The server broadcasts VoiceStateUpdate with the new
   // server_mute, so we don't mutate locally on success.
   const handleGagUser = useCallback(
     async (userId, gag) => {
       try {
-        const res = await authFetch(`${apiBase()}/client/${userId}`, {
+        const res = await authFetch(`${apiBase()}/voice-states/${userId}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ mute: gag })
+          body: JSON.stringify({ server_mute: gag })
         })
         await throwIfError(res)
       } catch (err) {
@@ -1691,6 +2128,7 @@ function Main() {
     // the previous session before changing it, otherwise old channel data and
     // reconnect callbacks can issue requests against the new host (or null).
     if (token || connectedServer) handleDisconnect()
+    updateRequiredRef.current = false
     setServerHost(server.host)
     setConnecting(true)
 
@@ -1700,19 +2138,29 @@ function Main() {
       device_name: 'Pylon Desktop'
     }
     const login = () =>
-      httpFetch(`${apiBase()}/login`, {
+      httpFetch(`${apiBase()}/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(credentials)
       }).then(async (res) => ({ response: res, data: await res.json().catch(() => ({})) }))
 
     try {
+      // The server's name and the limits it enforces. Unauthenticated, so it
+      // comes first: a server that can't answer this can't be connected to.
+      // Also lets the header/title show the real name from the first render
+      // instead of flashing the nickname first.
+      const info = await httpFetch(`${apiBase()}/server`).then((res) => {
+        if (!res.ok) throw new Error(`Server responded ${res.status}`)
+        return res.json()
+      })
+      setServerLimits(info.limits)
+
       let result = await login()
       let data = result.data
       // Preserve the existing first-connect experience: an unauthorized login
       // may be a first-time account, so try registration and then retry login.
       if (result.response.status === 401) {
-        const registerResponse = await httpFetch(`${apiBase()}/register`, {
+        const registerResponse = await httpFetch(`${apiBase()}/auth/register`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(credentials)
@@ -1724,25 +2172,21 @@ function Main() {
       }
 
       if (result.response.ok && data.access_token) {
-        // Fetch the server's real name before revealing the connected UI, so the
-        // header/title show it from the first render instead of flashing the
-        // nickname first. Uses the fresh access token directly (auth state isn't
-        // applied yet). Falls back to the nickname if this fails.
-        const info = await httpFetch(`${apiBase()}/server`, {
-          headers: { Authorization: `Bearer ${data.access_token}` }
-        })
-          .then((res) => (res.ok ? res.json() : null))
-          .catch(() => null)
-        applyAuthResponse(data)
+        await applyAuthResponse(data)
         setConnectedServer(server)
-        setServerName(info?.name ?? null)
+        setServerName(info.name ?? null)
         playUiSound('connected')
       } else {
         setServerHost(null)
-        showError(`Failed to connect to ${server.nickname}: ${data.error || 'login failed'}`)
+        setServerLimits(null)
+        // The update-required handler has already said why.
+        if (result.response.status !== 426) {
+          showError(`Failed to connect to ${server.nickname}: ${data.message || 'login failed'}`)
+        }
       }
     } catch {
       setServerHost(null)
+      setServerLimits(null)
       showError(`Failed to connect to ${server.nickname}: could not reach server`)
     } finally {
       setConnecting(false)
@@ -1759,6 +2203,16 @@ function Main() {
       }
       popoutWindowRef.current = null
       setPoppedOut(false)
+      // A closed event socket no longer means "leave voice": the backend keeps
+      // us in the channel for its event-socket grace. Say so while we still can.
+      if (
+        voiceStateRef.current.channel_id != null &&
+        eventsWsRef.current?.readyState === WebSocket.OPEN
+      ) {
+        eventsWsRef.current.send(JSON.stringify({ op: 5, data: { channel_id: null } }))
+      }
+      serverVoiceChannelRef.current = null
+      rejoinAfterReadyRef.current = false
       awaitingRejoinRef.current = null
       voiceRebuildKindRef.current = null
       preDropChannelRef.current = null
@@ -1770,26 +2224,28 @@ function Main() {
         self_deaf: deafenedRef.current,
         channel_id: null
       }
-      disconnectVoice()
+      resetVoice()
+      commitRings(new Map())
       clearAuth()
       setChannels([])
       setClients([])
       setPresences({})
       setFeed([])
-      setAllVideoStreams([])
       setSelectedStreamClientId(null)
       setWatchedStreamClientIds(new Set())
       setConnectedServer(null)
       setServerName(null)
       setServerHost(null)
+      setServerLimits(null)
       setPreviewChannelId(null)
       setSummaryClientId(null)
       setReadStates({})
       setConnectionStatus('connected')
+      setEventsStatus('connected')
       // Kick/ban paths play their own specific cue and pass skipSound.
       if (!opts?.skipSound) playUiSound('disconnected')
     },
-    [clearAuth]
+    [clearAuth, resetVoice, commitRings]
   )
 
   // A refresh the server rejects means the device session is revoked or
@@ -1800,6 +2256,17 @@ function Main() {
       handleDisconnect()
     })
     return () => setOnSessionExpired(null)
+  }, [handleDisconnect, showError])
+
+  // A 426 from any request: handled like the event socket's 4000 close.
+  useEffect(() => {
+    setOnUpdateRequired(() => {
+      if (updateRequiredRef.current) return
+      updateRequiredRef.current = true
+      showError('This version of Pylon is no longer supported by the server; update to continue')
+      handleDisconnect()
+    })
+    return () => setOnUpdateRequired(null)
   }, [handleDisconnect, showError])
 
   // Warn when we speak while our mic is muted. soup detects this downstream of
@@ -1824,6 +2291,7 @@ function Main() {
     sessionIdRef.current = null
     lastEventSeqRef.current = null
     setConnectionStatus('connected')
+    setEventsStatus('connected')
 
     // Resync after losing our session (we can't replay the events we missed).
     // Channels/clients are restored by the server's Ready event on fresh re-auth;
@@ -1862,6 +2330,10 @@ function Main() {
     // teardown (effect cleanup, disconnect, or an auth failure).
     let closedByUs = false
     let reconnectAttempts = 0
+    // 4002 closes in a row, each followed by a forced token refresh. One that
+    // keeps coming back means the session is gone for good.
+    let authFailures = 0
+    let forceTokenRefresh = false
     let reconnectTimer = null
     let heartbeatTimer = null
     let ws = null
@@ -1899,6 +2371,7 @@ function Main() {
       }
       // Surface the drop to the user (full-app overlay) while we retry.
       setConnectionStatus('reconnecting')
+      setEventsStatus('reconnecting')
       const delay = Math.min(
         RECONNECT_MAX_DELAY_MS,
         RECONNECT_BASE_DELAY_MS * 2 ** reconnectAttempts
@@ -1912,18 +2385,10 @@ function Main() {
       }, jittered)
     }
 
-    // The server's one-shot reply to IDENTIFY (op 0) is an internally-tagged
-    // enum: { type: 'Authenticated' | 'Resumed' | 'InvalidSession' | 'Unauthorized',
-    // ...payload }. Returns it (renaming `type` → `kind`) or null for anything
-    // else (heartbeat acks, dispatches).
-    const IDENTIFY_KINDS = ['Authenticated', 'Resumed', 'InvalidSession', 'Unauthorized']
-    const readIdentifyReply = (msg) => {
-      if (typeof msg?.type === 'string' && IDENTIFY_KINDS.includes(msg.type)) {
-        return { kind: msg.type, ...msg }
-      }
-      return null
-    }
-
+    // The server's one-shot reply to IDENTIFY (op 1) is op 15:
+    // { session_id, resumed, heartbeat_interval_ms }. `resumed: false` is a fresh
+    // session, including a resume the server refused, and Ready follows it. A
+    // refused token closes the socket with 4002 instead.
     const handleIdentifyReply = (reply) => {
       // A completed handshake (fresh or resumed) means we're healthy again.
       // An announced drop means this handshake is a recovery, not the first
@@ -1931,69 +2396,75 @@ function Main() {
       // announcement rather than the attempt counter, which the OS `online`
       // signal resets mid-outage to shorten the backoff.
       const wasReconnecting = dropAnnounced
-      if (reply.kind === 'Authenticated' || reply.kind === 'Resumed') {
-        if (wasReconnecting) {
-          // Warn level deliberately: the renderer log bridge drops anything
-          // below it, so without this an export shows only the failures and
-          // never says whether the link came back.
-          console.warn(`[Events] Reconnected after ${reconnectAttempts} attempt(s) (${reply.kind})`)
-        }
-        reconnectAttempts = 0
-        dropAnnounced = false
-        eventsRecoveringRef.current = false
-        if (!wasReconnecting) {
-          // Initial connect — handleConnect already chimed.
-          setConnectionStatus('connected')
-        } else if (preDropChannelRef.current == null) {
-          // Recovered, and we weren't in a voice channel — fully back now.
-          requiredVoiceMediaUpdateRef.current = null
-          setConnectionStatus('connected')
-          playUiSound('connected')
-        } else {
-          // The events link is back, but the server dropped us from voice during
-          // the outage. Stay "reconnecting" (overlay up) until soup rejoins our
-          // channel — completeRecovery fires from the selfChannelId effect then.
-          // Keep the overlay up if media is still missing. Soup's bounded media
-          // watchdog performs one full voice reconnect; this timer only records
-          // why we are still waiting and must never turn a failed recovery into
-          // a false "connected" success.
-          awaitingRejoinRef.current ??= preDropChannelRef.current
-          // The ref assignment itself is invisible to React. Wake the readiness
-          // effect, which now requires a media update newer than the outage so a
-          // cached ready state cannot complete recovery before voice is rebuilt.
-          setRecoveryEpoch((epoch) => epoch + 1)
-          clearTimeout(rejoinTimeoutRef.current)
-          rejoinTimeoutRef.current = setTimeout(() => {
-            if (awaitingRejoinRef.current != null) {
-              console.warn(
-                '[Events] Voice membership/media recovery is still pending after timeout'
-              )
-              failRecovery(
-                'Server connection recovered, but voice audio did not. Leave and rejoin the channel to retry.'
-              )
-            }
-          }, VOICE_REJOIN_TIMEOUT_MS)
-        }
+      const resumed = reply?.resumed === true
+      if (wasReconnecting) {
+        // Warn level deliberately: the renderer log bridge drops anything
+        // below it, so without this an export shows only the failures and
+        // never says whether the link came back.
+        console.warn(
+          `[Events] Reconnected after ${reconnectAttempts} attempt(s) (${resumed ? 'resumed' : 'fresh'})`
+        )
       }
-      if (reply.kind === 'Authenticated') {
+      reconnectAttempts = 0
+      authFailures = 0
+      dropAnnounced = false
+      eventsRecoveringRef.current = false
+      // The events link is back, so the overlay comes down even if voice is
+      // still rebuilding below (the voice connection bar shows that).
+      setEventsStatus('connected')
+      if (!wasReconnecting) {
+        // Initial connect — handleConnect already chimed.
+        setConnectionStatus('connected')
+      } else if (preDropChannelRef.current == null) {
+        // Recovered, and we weren't in a voice channel — fully back now.
+        requiredVoiceMediaUpdateRef.current = null
+        setConnectionStatus('connected')
+        playUiSound('connected')
+      } else {
+        // The events link is back. Voice may have carried on through the outage
+        // (the backend keeps our membership for its event-socket grace), or the
+        // backend may have dropped us. Stay "reconnecting" until soup reports
+        // media ready in our channel — completeRecovery fires from the
+        // selfChannelId effect then.
+        // Keep waiting if media is still missing. Soup's bounded media
+        // watchdog performs one full voice reconnect; this timer only records
+        // why we are still waiting and must never turn a failed recovery into
+        // a false "connected" success.
+        awaitingRejoinRef.current ??= preDropChannelRef.current
+        // The ref assignment itself is invisible to React. Wake the readiness
+        // effect, which now requires a media update newer than the outage so a
+        // cached ready state cannot complete recovery before voice is rebuilt.
+        setRecoveryEpoch((epoch) => epoch + 1)
+        clearTimeout(rejoinTimeoutRef.current)
+        rejoinTimeoutRef.current = setTimeout(() => {
+          if (awaitingRejoinRef.current != null) {
+            console.warn('[Events] Voice membership/media recovery is still pending after timeout')
+            failRecovery(
+              'Server connection recovered, but voice audio did not. Leave and rejoin the channel to retry.'
+            )
+          }
+        }, VOICE_REJOIN_TIMEOUT_MS)
+      }
+      if (!resumed) {
         // Fresh session: store its id and reset our position (we've processed no
         // events yet). If we were holding a session before, our resume was
-        // effectively declined — resync so we don't trust state that may have
-        // drifted during the outage.
+        // refused — resync so we don't trust state that may have drifted during
+        // the outage.
         const hadSession = sessionIdRef.current != null
-        sessionIdRef.current = reply.session_id ?? null
+        sessionIdRef.current = reply?.session_id ?? null
         lastEventSeqRef.current = null
         if (hadSession) reloadHistory()
         // Ready follows and carries a presence snapshot, so no resync needed here.
         // A fresh session also knows nothing about our declared voice state, so
         // re-assert it — otherwise mute/deafen intent held here silently diverges
-        // from what the new server session believes. Channel re-assertion is NOT
-        // this path's job (the voice reconnect owns it, because that is what mints
-        // a ticket), so skip entirely while a rejoin is pending rather than
-        // double-declaring against it.
+        // from what the new server session believes. Only the flags go out: channel
+        // re-assertion is the voice reconnect's job (that is what mints a ticket),
+        // and a pending rejoin's join already carries the flags.
         const { self_mute: selfMute, self_deaf: selfDeaf } = voiceStateRef.current
-        if (awaitingRejoinRef.current == null && (selfMute || selfDeaf)) sendVoiceState({})
-      } else if (reply.kind === 'Resumed') {
+        if (awaitingRejoinRef.current == null && (selfMute || selfDeaf)) {
+          sendVoiceState({ self_mute: selfMute, self_deaf: selfDeaf })
+        }
+      } else {
         // Replay should redeliver the PresenceUpdates we missed, but a resume that
         // outlived the server's buffer would silently leave stale dots on screen.
         // A resync is one small request — cheap insurance on a rare path.
@@ -2001,23 +2472,6 @@ function Main() {
         // Resume accepted: the events we missed replay next as ordered, dup-free
         // dispatches, then live events continue. Keep our position; refresh id.
         if (reply.session_id != null) sessionIdRef.current = reply.session_id
-      } else if (reply.kind === 'InvalidSession') {
-        // Resume refused (server restarted or we were away too long): drop the
-        // session, full resync, and reconnect fresh. Clearing the refs makes the
-        // next connect identify without a resume object.
-        sessionIdRef.current = null
-        lastEventSeqRef.current = null
-        reconnectAttempts = 0
-        reloadHistory()
-        closedByUs = false
-        ws.close()
-      } else if (reply.kind === 'Unauthorized') {
-        // Token rejected — stop reconnecting and return to a fully clean
-        // disconnected state (not a half-torn-down one that would leave a stale
-        // channel list on screen).
-        closedByUs = true
-        ws.close()
-        handleDisconnect()
       }
 
       // Last, so the recovery refs above are settled before soup can declare a
@@ -2025,9 +2479,7 @@ function Main() {
       // (its rejoin declaration can't be sent while the events link is down),
       // so a voice reconnect sitting in backoff is waiting on something
       // that's already fixed, and that backoff outlasts the rejoin timeout.
-      if (reply.kind === 'Authenticated' || reply.kind === 'Resumed') {
-        notifyEventsSessionRestored()
-      }
+      notifyEventsSessionRestored()
     }
 
     // A create/reorder makes the server broadcast one ChannelCreated/Updated per
@@ -2055,6 +2507,11 @@ function Main() {
       }, 150)
     }
 
+    // The voice channel the roster has a client in. Client objects carry no
+    // voice state; it lives on the roster entry (VoiceStateUpdate).
+    const rosterChannelOf = (clientId) =>
+      clientsRef.current.find((c) => c.id === clientId)?.channel_id ?? null
+
     // Apply a dispatched event to local state.
     const handleEvent = (ev, data) => {
       // Initial snapshot pushed by the server right after a fresh, non-resuming
@@ -2064,11 +2521,21 @@ function Main() {
         setChannels(data.channels)
         // Authoritative presence snapshot. Keyed by client_id; absent = offline.
         setPresences(Object.fromEntries((data.presences || []).map((p) => [p.client_id, p])))
-        // Voice state splits into self toggles (`self_mute`/`self_deaf`) and
-        // server-forced state (`muted`/`deaf`, i.e. a moderator gag / server
-        // deafen). Normalize the server-forced pair to `server_mute`/`server_deaf`
-        // so `server_mute` alone means "gagged".
-        setClients(data.clients.map(normalizeClientVoice))
+        // Voice state comes separately, only for clients in voice: merge it
+        // onto the roster (see normalizeClientVoice).
+        const voiceStates = new Map((data.voice_states || []).map((v) => [v.client_id, v]))
+        setClients(data.clients.map((c) => normalizeClientVoice(c, voiceStates.get(c.id))))
+        // A fresh Ready is the truth about our voice state. If it
+        // doesn't list us in the channel we mean to be in, the backend lost us
+        // (its event-socket grace ran out, or it restarted): the voice session
+        // is over, and soup gets back in with op 5.
+        const selfVoiceChannel = voiceStates.get(selfIdRef.current)?.channel_id ?? null
+        serverVoiceChannelRef.current = selfVoiceChannel
+        rejoinAfterReadyRef.current = false
+        if (voiceStateRef.current.channel_id != null && selfVoiceChannel == null) {
+          rejoinAfterReadyRef.current = true
+          restartVoiceSession('A fresh Ready does not list us in voice')
+        }
         // Seed read cursors (one entry per visible channel).
         const reads = {}
         for (const rs of data.read_states || []) {
@@ -2077,8 +2544,17 @@ function Main() {
         setReadStates(reads)
         // Surface DMs that went unread while we were away in the inbox.
         seedUnreadDms(data.channels || [], reads, data.clients || [])
+        // DM calls ringing us right now.
+        commitRings(applyReady(ringsRef.current, data.rings, Date.now()))
+        // Live screen streams and their viewers. Soup keeps these: it needs
+        // them to watch a stream and to say who is watching ours.
+        applyReadyStreams(data.streams || [])
         return
       }
+
+      // StreamStarted / StreamViewersUpdated / StreamEnded, applied on top of
+      // Ready.streams (soup tolerates repeats of what Ready already had).
+      if (applyStreamEvent(ev, data)) return
 
       // Public presence broadcast. The object is authoritative for that user —
       // replace it wholesale rather than merging, so a cleared status_message
@@ -2103,30 +2579,91 @@ function Main() {
         return
       }
 
-      // Voice state update broadcast for a client: self toggles + server-forced
-      // gag/deafen. Authoritative source for all mute/deafen state (ClientModified
-      // no longer carries it).
+      // A client's whole voice state (VoiceStateApiObject): join, move, leave
+      // (`channel_id: null`), every mute or deafen change, and every
+      // `connected` change. The only source of voice state; ClientModified is
+      // profile, roles and vanity only.
       if (ev === 'VoiceStateUpdate') {
-        const { client_id, muted, deaf, self_mute, self_deaf } = data
+        const clientId = data.client_id
+        const isSelf = clientId === selfIdRef.current
+        const newChannelId = data.channel_id ?? null
+        const previous = clientsRef.current.find((c) => c.id === clientId)
+        const oldChannelId = previous?.channel_id ?? null
         // A change to our own server_mute is a gag/ungag by a moderator (our own
         // mic mute is self_mute, not this). Chime on the transition only.
-        if (client_id === selfIdRef.current) {
-          const wasGagged = !!clientsRef.current.find((c) => c.id === client_id)?.server_mute
-          if (!!muted !== wasGagged) playUiSound(muted ? 'you_were_gagged' : 'you_were_ungagged')
+        if (isSelf) {
+          const wasGagged = !!previous?.server_mute
+          if (!!data.server_mute !== wasGagged) {
+            playUiSound(data.server_mute ? 'you_were_gagged' : 'you_were_ungagged')
+          }
+          serverVoiceChannelRef.current = newChannelId
+          if (newChannelId != null) rejoinAfterReadyRef.current = false
+          // Landing in a DM's call answers its ring (the server says so too).
+          if (newChannelId != null) {
+            commitRings(
+              applyRingEnded(ringsRef.current, { channel_id: newChannelId, reason: 'answered' })
+                .rings
+            )
+          }
         }
         setClients((prev) =>
-          prev.map((c) =>
-            c.id === client_id
-              ? {
-                  ...c,
-                  self_mute: !!self_mute,
-                  self_deaf: !!self_deaf,
-                  server_mute: !!muted,
-                  server_deaf: !!deaf
-                }
-              : c
-          )
+          prev.map((c) => (c.id === clientId ? { ...c, ...voiceFields(data) } : c))
         )
+        if (oldChannelId === newChannelId) return
+
+        // What channel WE last declared (pre-sync). If it still differs from what
+        // the server now reports for us, we never asked for this change — it was
+        // forced (a moderator kick/move), not our own leave/switch.
+        const selfDeclaredChannel = voiceStateRef.current.channel_id
+
+        // A forced move (a moderator's PATCH /client) changes our channel without
+        // us sending a VoiceStateUpdate, so sync the voice-state intent. Otherwise
+        // a rejoin after a reconnect would take us back to the channel we were
+        // moved out of. A reconnect no longer leaves and rejoins (it resumes, or
+        // asks for a ticket with op 14), so a null here is always a real removal.
+        if (isSelf) {
+          voiceStateRef.current = { ...voiceStateRef.current, channel_id: newChannelId }
+        }
+
+        // A moderator move between two channels explains any voice rebuild
+        // that's currently in flight, even though the voice reset can arrive
+        // before this event does. Mark it here instead of waiting for the
+        // channel component to notice, since that happens after a re-render.
+        if (
+          isSelf &&
+          oldChannelId != null &&
+          newChannelId != null &&
+          awaitingRejoinRef.current != null &&
+          !eventsRecoveringRef.current &&
+          preDropChannelRef.current == null
+        ) {
+          voiceRebuildKindRef.current = 'intentional'
+          setConnectionStatus('connected')
+        }
+
+        // Join/leave chimes. For ourselves: a move into a channel is a "join",
+        // dropping out (channel_id null) is a "leave". For others: only sound
+        // when they enter or leave the channel we're currently in.
+        const myChannel = selfChannelIdRef.current
+        if (isSelf) {
+          // A voice rebuild can briefly report us out of voice and back in,
+          // which is not a real join or kick. Let the helper decide what
+          // cue, if any, this change actually deserves.
+          const cue = selfChannelChime({
+            oldChannelId,
+            newChannelId,
+            awaitingRejoin: awaitingRejoinRef.current,
+            rebuildKind: voiceRebuildKindRef.current,
+            selfDeclaredChannel
+          })
+          if (cue) playUiSound(cue)
+        } else if (myChannel != null) {
+          if (newChannelId === myChannel && oldChannelId !== myChannel) {
+            playUiSound('channel-join')
+          } else if (oldChannelId === myChannel && newChannelId !== myChannel) {
+            playUiSound('channel-leave')
+          }
+        }
         return
       }
 
@@ -2155,8 +2692,6 @@ function Main() {
           ].slice(0, 50)
         )
       } else if (ev === 'ClientModified') {
-        const oldChannelId = clientsRef.current.find((c) => c.id === data.id)?.channel_id
-
         // Someone changed OUR roles: diff old vs new ids and toast. When we
         // changed them ourselves, handleAssignRole/handleRemoveRole already
         // updated local state (and toasted), so the diff here is empty and
@@ -2203,86 +2738,30 @@ function Main() {
         }
         // ClientModified also carries profile changes (avatar / nickname). Merge
         // whatever fields are present so we don't clobber the others; `in` guards
-        // keep an event that omits a field from wiping it.
+        // keep an event that omits a field from wiping it. Voice state is never
+        // in it (VoiceStateUpdate).
         setClients((prev) =>
           prev.map((c) => {
             if (c.id !== data.id) return c
             const next = { ...c }
-            if ('channel_id' in data) next.channel_id = data.channel_id
             if ('role_ids' in data) next.role_ids = data.role_ids
             if ('vanity' in data) next.vanity_ids = (data.vanity || []).map((v) => v.id)
-            if ('avatar' in data) next.avatar = cdnUrl(data.avatar)
+            if ('avatar' in data) next.avatar = assetUrl(data.avatar)
             if (data.nickname != null) next.name = data.nickname
             if (data.name != null) next.name = data.name
             return next
           })
         )
-
-        // What channel WE last declared (pre-sync). If it still differs from what
-        // the server now reports for us, we never asked for this change — it was
-        // forced (a moderator kick/move), not our own leave/switch.
-        const selfDeclaredChannel = voiceStateRef.current.channel_id
-
-        // A forced move (a moderator's PATCH /client) changes our channel without
-        // us sending a VoiceStateUpdate, so sync the declarative voice-state ref.
-        // Otherwise the next mute/deafen merges our stale channel_id and yanks us
-        // back to the channel we were moved out of.
-        if (
-          data.id === selfIdRef.current &&
-          'channel_id' in data &&
-          !(data.channel_id == null && isReconnectRecovering())
-        ) {
-          voiceStateRef.current = { ...voiceStateRef.current, channel_id: data.channel_id }
-        }
-
-        // A moderator move between two channels explains any voice rebuild
-        // that's currently in flight, even though the voice reset can arrive
-        // before this event does. Mark it here instead of waiting for the
-        // channel component to notice, since that happens after a re-render.
-        if (
-          data.id === selfIdRef.current &&
-          oldChannelId != null &&
-          data.channel_id != null &&
-          oldChannelId !== data.channel_id &&
-          awaitingRejoinRef.current != null &&
-          !eventsRecoveringRef.current &&
-          preDropChannelRef.current == null
-        ) {
-          voiceRebuildKindRef.current = 'intentional'
-          setConnectionStatus('connected')
-        }
-
-        // Join/leave chimes. For ourselves: a move into a channel is a "join",
-        // dropping out (channel_id null) is a "leave" — but only when the channel
-        // actually changed. ClientModified now also fires for same-channel updates
-        // (e.g. a mute/deafen VoiceStateUpdate re-asserts our channel_id), and
-        // those must stay silent. For others: only sound when they enter or leave
-        // the channel we're currently in. Skip entirely for profile-only edits
-        // (avatar/nickname) that don't carry a channel_id.
-        const myChannel = selfChannelIdRef.current
-        if (!('channel_id' in data)) {
-          // no channel move to chime for
-        } else if (data.id === selfIdRef.current) {
-          // A voice rebuild can briefly report us out of voice and back in,
-          // which is not a real join or kick. Let the helper decide what
-          // cue, if any, this change actually deserves.
-          const cue = selfChannelChime({
-            oldChannelId,
-            newChannelId: data.channel_id,
-            awaitingRejoin: awaitingRejoinRef.current,
-            rebuildKind: voiceRebuildKindRef.current,
-            selfDeclaredChannel
-          })
-          if (cue) playUiSound(cue)
-        } else if (myChannel != null) {
-          if (data.channel_id === myChannel && oldChannelId !== myChannel) {
-            playUiSound('channel-join')
-          } else if (oldChannelId === myChannel && data.channel_id !== myChannel) {
-            playUiSound('channel-leave')
-          }
-        }
       } else if (ev === 'MessageCreated') {
+        const kind = data.kind ?? 'default'
+        // Written by the server when a DM call starts or ends: unread like any
+        // message, but not chat (no chime, and the author isn't done typing).
+        const callKind = isCallMessage(data)
         setFeed((prev) => appendFeed(prev, messageFromApi(data)))
+        // New files: refresh the open file browser if it's showing this channel.
+        if (data.attachments?.length && data.channel_id === filesChannelIdRef.current) {
+          setFilesRevision((r) => r + 1)
+        }
         // Advance the channel's newest-message pointer — unread is derived from
         // this vs. our read cursor. (The server does not auto-ack the sender, so
         // our own sends rely on the view→ack effect to mark them read.)
@@ -2291,15 +2770,28 @@ function Main() {
         )
         // Sending a message ends that author's typing indicator immediately,
         // leaving anyone else still typing untouched.
-        setTypingEntries((prev) => prev.filter((t) => t.clientId !== data.author))
+        if (!callKind) setTypingEntries((prev) => prev.filter((t) => t.clientId !== data.author))
         // Chime for messages arriving in the channel we're viewing, from anyone
         // but ourselves — regardless of whether we're on the chat or video tab.
+        // A poke has its own cue below.
         if (
+          !callKind &&
+          kind !== 'poke' &&
           data.author !== selfIdRef.current &&
           data.channel_id === activeChatChannelIdRef.current &&
           !dndRef.current
         ) {
           playUiSound('new-message')
+        }
+        // Someone poked us. A resume replaying an older poke stays quiet, and so
+        // does DND.
+        if (
+          kind === 'poke' &&
+          data.author !== selfIdRef.current &&
+          Math.abs(Date.now() - data.timestamp) <= 5000 &&
+          !dndRef.current
+        ) {
+          playUiSound('you_were_poked')
         }
         // A DM message from someone else, while we're not reading it, raises a
         // clickable inbox alert (deduped to the latest message per DM channel).
@@ -2326,7 +2818,13 @@ function Main() {
             ].slice(0, 50)
           )
         }
-        if (data.author !== selfIdRef.current && !readingHere) {
+        // A call that ended raises nothing, and one that started only while
+        // we're not in it.
+        const alerts =
+          kind === 'call_started'
+            ? data.channel_id !== serverVoiceChannelRef.current
+            : kind !== 'call_ended'
+        if (data.author !== selfIdRef.current && !readingHere && alerts) {
           const dmChannel = channelsRef.current.find((c) => c.id === data.channel_id)
           if (dmChannel?.type === 'dm') {
             const name = clientsRef.current.find((c) => c.id === data.author)?.name || 'Someone'
@@ -2335,31 +2833,77 @@ function Main() {
                 id: data.id ?? `${data.channel_id}-${Date.now()}`,
                 channelId: data.channel_id,
                 authorId: data.author,
-                message: `${name} sent you a direct message`,
+                message:
+                  kind === 'call_started'
+                    ? `${name} started a call`
+                    : kind === 'poke'
+                      ? `${name} poked you`
+                      : `${name} sent you a direct message`,
                 timestamp: Date.now()
               },
               ...prev.filter((n) => n.channelId !== data.channel_id)
             ])
           }
         }
+      } else if (ev === 'CallRinging') {
+        const now = Date.now()
+        const { rings: next, added } = applyRinging(
+          ringsRef.current,
+          data,
+          now,
+          serverVoiceChannelRef.current
+        )
+        commitRings(next)
+        // A ring this close to its deadline is a resume replaying it.
+        if (added && data.deadline - now > 5000 && !dndRef.current) playUiSound('new-message')
+      } else if (ev === 'CallRingEnded') {
+        const { rings: next, ended } = applyRingEnded(ringsRef.current, data)
+        commitRings(next)
+        if (ended && isMissedRing(ended.reason)) noteMissedCall(ended)
       } else if (ev === 'ReadStateUpdated') {
         // Private to us: another session (or our own ack) moved a read cursor.
         setReadStates((prev) => ({
           ...prev,
           [data.channel_id]: data.last_acknowledged_message_id
         }))
+      } else if (ev === 'ReactionAdded' || ev === 'ReactionRemoved') {
+        // { channel_id, message_id, user_id, emoji } — one user's toggle.
+        if (data.emoji?.type === 'basic') {
+          const added = ev === 'ReactionAdded'
+          setFeed((prev) =>
+            prev.map((e) =>
+              e.type === 'message' && e.id === data.message_id
+                ? {
+                    ...e,
+                    reactions: applyReaction(
+                      e.reactions || [],
+                      data.emoji.value,
+                      data.user_id,
+                      added,
+                      selfIdRef.current
+                    )
+                  }
+                : e
+            )
+          )
+        }
       } else if (ev === 'MessageUpdated') {
-        // Pushed after async work (e.g. link-unfurl embeds). Carries either the
-        // full updated message, or a partial { message_id, embeds }. Patch the
-        // matching feed entry in place by id.
+        // An edit, or async work such as link-unfurl embeds; never a reaction.
+        // Carries either the full updated message, or a partial
+        // { message_id, embeds }. Patch the matching feed entry in place by id.
         const isFull = data.content !== undefined && data.author !== undefined
         const targetId = data.id ?? data.message_id
         setFeed((prev) =>
           prev.map((e) => {
             if (e.type !== 'message' || e.id !== targetId) return e
-            return isFull ? messageFromApi(data) : { ...e, embeds: data.embeds || [] }
+            return isFull ? messageFromApi(data) : { ...e, embeds: embedsFromApi(data.embeds) }
           })
         )
+        // A file made public/private or deleted lands here too: refresh the
+        // open file browser if it's showing this channel.
+        if (data.channel_id != null && data.channel_id === filesChannelIdRef.current) {
+          setFilesRevision((r) => r + 1)
+        }
       } else if (ev === 'MessageDeleted') {
         // Tolerate either a full message object or a bare { message_id } / id.
         const removedId =
@@ -2373,6 +2917,9 @@ function Main() {
               c.id === data.channel_id ? { ...c, last_message_id: data.last_message_id } : c
             )
           )
+        }
+        if (data?.channel_id != null && data.channel_id === filesChannelIdRef.current) {
+          setFilesRevision((r) => r + 1)
         }
       } else if (ev === 'ChannelCreated' || ev === 'ChannelUpdated') {
         queueChannelUpsert(data)
@@ -2401,18 +2948,13 @@ function Main() {
         }
         setChannels((prev) => prev.filter((ch) => ch.id !== removedId))
       } else if (ev === 'TypingStarted') {
-        // { channel_id, timestamp, client } — refresh this client's typing entry
-        // with a fresh 10s expiry (replacing any existing one). Self is filtered
-        // out at render time using the current client id.
-        const { channel_id, client: typingClient } = data
+        // { channel_id, client_id, timestamp } — refresh this client's typing
+        // entry with a fresh 10s expiry (replacing any existing one). Names come
+        // from the roster and self is filtered out at render time.
+        const { channel_id, client_id } = data
         setTypingEntries((prev) => [
-          ...prev.filter((t) => t.clientId !== typingClient.id),
-          {
-            clientId: typingClient.id,
-            name: typingClient.name,
-            channelId: channel_id,
-            expiresAt: Date.now() + TYPING_DURATION_MS
-          }
+          ...prev.filter((t) => t.clientId !== client_id),
+          { clientId: client_id, channelId: channel_id, expiresAt: Date.now() + TYPING_DURATION_MS }
         ])
       } else if (ev === 'ClientRemoved') {
         // Authoritative roster removal (leave / kick / ban all emit this). `data`
@@ -2428,7 +2970,8 @@ function Main() {
         // handled on the socket close).
         if (
           data.client?.id !== selfIdRef.current &&
-          data.client?.channel_id === selfChannelIdRef.current
+          selfChannelIdRef.current != null &&
+          rosterChannelOf(data.client?.id) === selfChannelIdRef.current
         ) {
           playUiSound('neutral_kicked_server_currentchannel')
         }
@@ -2436,12 +2979,13 @@ function Main() {
           logTraffic(data.client?.id, data.client?.name || 'Someone', 'was kicked', false)
         }
       } else if (ev === 'ClientBanned') {
-        // { client, duration_seconds, reason }. Drop from the roster and record
+        // { client, expires_at, reason }. Drop from the roster and record
         // the ban so they surface in the Users tab (where they can be unbanned).
-        // The event carries the full client, so no /server/bans refetch is needed.
+        // The event carries the full client, so no /bans refetch is needed.
         if (
           data.client?.id !== selfIdRef.current &&
-          data.client?.channel_id === selfChannelIdRef.current
+          selfChannelIdRef.current != null &&
+          rosterChannelOf(data.client?.id) === selfChannelIdRef.current
         ) {
           playUiSound('neutral_banned_server_currentchannel')
         }
@@ -2452,12 +2996,19 @@ function Main() {
         setBans((prev) =>
           prev.some((b) => b.user.id === data.client.id)
             ? prev
-            : [...prev, { reason: data.reason ?? null, user: data.client }]
+            : [
+                ...prev,
+                {
+                  reason: data.reason ?? null,
+                  expires_at: data.expires_at ?? null,
+                  user: data.client
+                }
+              ]
         )
       } else if (ev === 'VanityCreated') {
         // data is the VanityItem ({ id, type: 'group', name, avatar }). Upsert
         // by id — our own POST gets this broadcast echoed back too.
-        const item = { ...data, avatar: cdnUrl(data.avatar) }
+        const item = { ...data, avatar: assetUrl(data.avatar) }
         setVanity((prev) =>
           prev.some((v) => v.id === item.id)
             ? prev.map((v) => (v.id === item.id ? item : v))
@@ -2474,7 +3025,7 @@ function Main() {
           )
         )
       } else {
-        setFeed((prev) => appendFeed(prev, systemEntry(`Unknown event: ${ev}`)))
+        console.warn('[Events] Ignoring unknown event:', ev)
       }
     }
 
@@ -2485,7 +3036,9 @@ function Main() {
       // expired while we were disconnected, so refresh first when needed.
       let accessToken
       try {
-        accessToken = await getFreshToken()
+        const force = forceTokenRefresh
+        forceTokenRefresh = false
+        accessToken = await getFreshToken({ force })
       } catch {
         // Couldn't refresh (network). Back off and retry; a dead session fires
         // the session-expired handler instead, which tears this effect down.
@@ -2498,7 +3051,7 @@ function Main() {
         ?.invoke('get-app-version')
         .catch(() => null)
       if (closedByUs) return
-      ws = new WebSocket(`${wsBase()}/ws`)
+      ws = new WebSocket(eventSocketUrl())
       eventsWsRef.current = ws
       // True between sending a heartbeat (op 2) and receiving its ack (op 4). If a
       // beat is still unacknowledged when the next is due, the connection is dead.
@@ -2516,11 +3069,17 @@ function Main() {
               resume: { session_id: sessionIdRef.current, seq: lastEventSeqRef.current }
             }
           : { token: accessToken, version: appVersion }
-        ws.send(JSON.stringify({ op: 0, data }))
-        // Heartbeat: prove we're still alive every interval, reporting the last
-        // event sequence we've processed. If these stop arriving the server
-        // evicts us, so clients that crash or are force-killed (Ctrl+C) stop
-        // appearing in the channel.
+        ws.send(JSON.stringify({ op: 1, data }))
+      }
+
+      // Heartbeat: prove we're still alive every interval, reporting the last
+      // event sequence we've processed. If these stop arriving the server
+      // evicts us, so clients that crash or are force-killed (Ctrl+C) stop
+      // appearing in the channel. Started by op 15, which names the interval;
+      // the server's heartbeat deadline starts there too.
+      const startHeartbeat = (intervalMs) => {
+        clearHeartbeat()
+        awaitingAck = false
         heartbeatTimer = setInterval(() => {
           if (ws.readyState !== WebSocket.OPEN) return
           if (awaitingAck) {
@@ -2532,7 +3091,7 @@ function Main() {
           }
           awaitingAck = true
           ws.send(JSON.stringify({ op: 2, data: lastEventSeqRef.current }))
-        }, HEARTBEAT_INTERVAL_MS)
+        }, intervalMs)
       }
 
       ws.onmessage = (event) => {
@@ -2546,69 +3105,122 @@ function Main() {
           return
         }
 
-        // One-shot reply to our IDENTIFY (op 0). Checked first since it carries
-        // connection-control state, not a dispatchable event.
-        const reply = readIdentifyReply(msg)
-        if (reply) {
-          handleIdentifyReply(reply)
-          return
-        }
+        // Every frame is { op, data, nonce? }; route by op alone.
+        switch (msg?.op) {
+          // One-shot reply to our IDENTIFY (op 1): the session and the heartbeat
+          // interval the server expects.
+          case 15: {
+            const interval = msg.data?.heartbeat_interval_ms
+            startHeartbeat(
+              Number.isFinite(interval) && interval > 0 ? interval : DEFAULT_HEARTBEAT_INTERVAL_MS
+            )
+            handleIdentifyReply(msg.data)
+            return
+          }
 
-        // Heartbeat acknowledgement — clears the outstanding beat; no event body.
-        if (msg.op === 4) {
-          awaitingAck = false
-          return
-        }
+          // Heartbeat acknowledgement — clears the outstanding beat; no event body.
+          case 4:
+            awaitingAck = false
+            return
 
-        // Voice ticket (op 6): the server's reply to a VoiceStateUpdate that
-        // moved us from no channel into a voice one. Hand it to soup, which is
-        // opening (or about to open) the voice socket that needs it. The
-        // optional voice_endpoint says which host that ticket is good for, and
-        // has to travel with it.
-        if (msg.op === 6) {
-          receiveVoiceTicket(msg.ticket, msg.voice_endpoint)
-          return
-        }
+          // Voice ticket (op 7): the server's reply to a VoiceStateUpdate that
+          // moved us from no channel into a voice one, or to op 14. Hand it to
+          // soup, which is opening (or about to open) the voice socket that needs
+          // it. The optional voice_endpoint says which host that ticket is good
+          // for, and has to travel with it.
+          case 7:
+            receiveVoiceTicket(msg.data?.ticket, msg.data?.voice_endpoint, msg.nonce)
+            return
 
-        // Rejected command (e.g. an invalid presence update). This is a reply to
-        // one message, not a connection fault — surface it and keep the socket.
-        if (typeof msg.err === 'string') {
-          showError(msg.err)
-          return
-        }
+          // Stream replies (op 12 StreamCreated, op 13 StreamWatching): the
+          // answers to soup's CreateStream and WatchStream, matched by nonce.
+          case 12:
+          case 13:
+            receiveStreamReply(msg)
+            return
 
-        // Events are wrapped as { op: 3, data: <event>, seq }, or arrive bare as
-        // { ev, data }. Support both, and remember the latest sequence so the
-        // heartbeat and any resume can report our position.
-        if (typeof msg.seq === 'number') lastEventSeqRef.current = msg.seq
-        const { ev, data } = msg.op === 3 ? msg.data : msg
-        handleEvent(ev, data)
+          // A refused request or frame (e.g. an invalid presence update). This is
+          // a reply to one message, not a connection fault: surface it and keep
+          // the socket. It may answer one of soup's stream or ticket requests; a
+          // failed share start or ticket wait is reported by its owner, so it
+          // isn't shown twice.
+          case 0:
+            console.warn('[Events] Request refused:', msg.data)
+            if (!receiveEventSocketError(msg.data, msg.nonce)) {
+              showError(msg.data?.message || 'Request refused by the server')
+            }
+            return
+
+          // Dispatch: { op: 3, seq, event, data }. Remember the latest sequence
+          // so the heartbeat and any resume can report our position.
+          case 3:
+            if (typeof msg.seq === 'number') lastEventSeqRef.current = msg.seq
+            handleEvent(msg.event, msg.data)
+            return
+
+          default:
+            console.warn('[Events] Dropping frame with unknown op:', msg?.op)
+        }
       }
 
       ws.onclose = (event) => {
         console.log('WebSocket disconnected', event.code, event.reason)
         clearHeartbeat()
-        if (eventsWsRef.current === ws) eventsWsRef.current = null
-        // Forced removal by an admin: the server closes with an application code
-        // and a reason. Stop retrying (a reconnect would just be rejected) and
-        // tell the user instead of silently dropping to the disconnected screen.
-        // ponytail: codes assumed 4001 kick / 4002 ban; the reason-text match is
-        // the fallback if the server numbers them differently.
-        const reason = (event.reason || '').toLowerCase()
-        const banned = event.code === 4002 || reason.includes('ban')
-        const kicked = event.code === 4001 || reason.includes('kick')
-        if (banned || kicked) {
+        if (eventsWsRef.current === ws) {
+          eventsWsRef.current = null
+          // Stream replies still owed on this socket will never arrive.
+          eventSocketClosed()
+        }
+        if (closedByUs) return
+        // The close code says what to do (the shared table, classifyClose).
+        const close = classifyClose(event.code)
+        if (close.action === CloseAction.Stop || close.action === CloseAction.Update) {
           closedByUs = true // suppress the reconnect path below
-          showError(`You have been ${banned ? 'banned' : 'kicked'} from the server`, {
-            silent: true,
-            soundId: banned ? 'you_were_banned' : 'you_kicked_server'
-          })
-          playUiSound(banned ? 'you_were_banned' : 'you_kicked_server')
-          handleDisconnect({ skipSound: true })
+          if (event.code === CloseCode.Kicked || event.code === CloseCode.Banned) {
+            // Forced removal by an admin: a reconnect would just be rejected, so
+            // tell the user instead of silently dropping to the disconnected screen.
+            const banned = event.code === CloseCode.Banned
+            showError(`You have been ${banned ? 'banned' : 'kicked'} from the server`, {
+              silent: true,
+              soundId: banned ? 'you_were_banned' : 'you_kicked_server'
+            })
+            playUiSound(banned ? 'you_were_banned' : 'you_kicked_server')
+            handleDisconnect({ skipSound: true })
+          } else if (close.action === CloseAction.Update) {
+            showError(
+              'This version of Pylon is no longer supported by the server; update to continue'
+            )
+            handleDisconnect()
+          } else {
+            // Replaced: a newer connection of this login took over.
+            showError('Disconnected: this session connected again elsewhere')
+            handleDisconnect()
+          }
           return
         }
-        // Recover unless the close was intentional. We resume if we still hold a
-        // session; the next handshake reply decides resume vs. fresh.
+        if (close.action === CloseAction.Reauth) {
+          // The server refused our access token (expired, revoked, or the
+          // identify was rate limited). Refresh it before the next identify; a
+          // refresh the server rejects fires the session-expired handler, which
+          // logs us out. One that keeps being refused ends the session here.
+          authFailures++
+          if (authFailures > MAX_EVENT_AUTH_FAILURES) {
+            closedByUs = true
+            showError('Session expired — please reconnect', { silent: true })
+            handleDisconnect()
+            return
+          }
+          forceTokenRefresh = true
+        } else if (close.action === CloseAction.Fresh) {
+          // The server couldn't read what we sent: a client bug. Start over
+          // without resuming rather than replaying into the same state.
+          console.error(`[Events] Server closed the socket: ${close.reason} (${event.code})`)
+          sessionIdRef.current = null
+          lastEventSeqRef.current = null
+          reloadHistory()
+        }
+        // Recover. We resume if we still hold a session; the next handshake reply
+        // decides resume vs. fresh.
         scheduleReconnect()
       }
 
@@ -2659,7 +3271,16 @@ function Main() {
       if (ws) ws.close()
       eventsWsRef.current = null
     }
-  }, [token, loadChannelHistory, handleDisconnect, logTraffic, failRecovery, isReconnectRecovering])
+  }, [
+    token,
+    loadChannelHistory,
+    handleDisconnect,
+    logTraffic,
+    failRecovery,
+    isReconnectRecovering,
+    commitRings,
+    noteMissedCall
+  ])
 
   // Drop typing entries as they expire. Re-scheduled to the soonest expiry each
   // time the set changes (no always-on interval); a fresh TypingStarted bumps an
@@ -2688,13 +3309,20 @@ function Main() {
     }).catch((err) => console.error('Failed to send typing:', err))
   }
 
-  // Send a chat message (with any attachments) to the channel we're currently in
-  const handleSendMessage = async (text, attachments, replyToId) => {
+  // Send a chat message (with any attachments) to the channel we're currently in.
+  // `options.public` (the composer's "Create public link") mints a share token
+  // for every attachment at upload; the field is left off otherwise.
+  const handleSendMessage = async (text, attachments, replyToId, options = {}) => {
     if (activeChatChannelId == null) return
 
     const payload = {
       content: text || undefined,
-      attachments: attachments.map((a, i) => ({ id: i, filename: a.file.name, description: null })),
+      attachments: attachments.map((a, i) => ({
+        ref: i,
+        filename: a.file.name,
+        description: null,
+        ...(options.public ? { public: true } : {})
+      })),
       // Replies are same-channel only, so `channel_id` is left off (the server
       // rejects it when it names another channel). `fail_if_not_exists` keeps
       // its default: replying to a message that's since been deleted fails
@@ -2756,45 +3384,23 @@ function Main() {
     }
   }
 
-  // Flip one reaction in the local feed (add / bump / un-react).
+  // Flip our own reaction in the local feed (add / bump / un-react).
   const toggleReactionLocal = (messageId, emoji) => {
+    const self = selfIdRef.current
     setFeed((prev) =>
       prev.map((e) => {
         if (e.type !== 'message' || e.id !== messageId) return e
         const reactions = e.reactions || []
-        const existing = reactions.find((r) => r.emoji === emoji)
-        const self = selfIdRef.current
-        // Keep `userIds` in step with the count so the hover tooltip doesn't lag
-        // behind the optimistic flip; the MessageUpdated broadcast overwrites it.
-        const withoutSelf = (ids) => (ids || []).filter((id) => String(id) !== String(self))
-        let next
-        if (existing?.me) {
-          // Un-react: drop our count; remove the chip when it hits zero.
-          next = reactions
-            .map((r) =>
-              r.emoji === emoji
-                ? { ...r, count: r.count - 1, me: false, userIds: withoutSelf(r.userIds) }
-                : r
-            )
-            .filter((r) => r.count > 0)
-        } else if (existing) {
-          next = reactions.map((r) =>
-            r.emoji === emoji
-              ? { ...r, count: r.count + 1, me: true, userIds: [...withoutSelf(r.userIds), self] }
-              : r
-          )
-        } else {
-          next = [...reactions, { emoji, count: 1, me: true, userIds: self == null ? [] : [self] }]
-        }
-        return { ...e, reactions: next }
+        const had = !!reactions.find((r) => r.emoji === emoji)?.me
+        return { ...e, reactions: applyReaction(reactions, emoji, self, !had, self) }
       })
     )
   }
 
   // Toggle a reaction: optimistic local flip, then PUT (add) or DELETE
-  // (remove) with the emoji as the path segment. The server's MessageUpdated
-  // broadcast carries the authoritative aggregate and overwrites the guess;
-  // on request failure we flip back.
+  // (remove) with the emoji as the path segment. The server's ReactionAdded /
+  // ReactionRemoved echo then matches the flip and changes nothing; on request
+  // failure we flip back.
   const handleReactMessage = async (messageId, emoji) => {
     const entry = feed.find((e) => e.type === 'message' && e.id === messageId)
     if (!entry) return
@@ -2813,9 +3419,52 @@ function Main() {
     }
   }
 
-  // Delete one of our own messages. The server validates ownership and broadcasts
-  // MessageDeleted; we also drop it locally on success so it disappears
-  // immediately even if the broadcast is delayed (the broadcast is idempotent).
+  // Fill a reaction chip's reactors for its hover tooltip, once per chip. Skipped
+  // when the ids we already know (plus ourselves via `me`) account for every
+  // reaction. Live events keep the list current afterwards. If the count moved
+  // while the request was out, the page may be stale (it could still list
+  // someone who just un-reacted), so it's dropped and the next hover refetches.
+  const reactorRequestsRef = useRef(new Set())
+  const handleLoadReactors = async (messageId, emoji, limit) => {
+    const entry = feed.find((e) => e.type === 'message' && e.id === messageId)
+    const chip = entry?.reactions?.find((r) => r.emoji === emoji)
+    if (!chip || chip.reactorsLoaded) return
+    const self = String(selfIdRef.current)
+    const others = (chip.userIds || []).filter((id) => String(id) !== self).length
+    if (others + (chip.me ? 1 : 0) >= chip.count) return
+
+    const key = `${messageId}:${emoji}`
+    if (reactorRequestsRef.current.has(key)) return
+    reactorRequestsRef.current.add(key)
+    try {
+      const fetched = await fetchReactors(entry.channelId, messageId, emoji, limit)
+      setFeed((prev) =>
+        prev.map((e) =>
+          e.type === 'message' && e.id === messageId
+            ? {
+                ...e,
+                reactions: (e.reactions || []).map((r) => {
+                  if (r.emoji !== emoji || r.count !== chip.count) return r
+                  const known = new Set((r.userIds || []).map(String))
+                  const added = fetched.filter((id) => !known.has(String(id)))
+                  return { ...r, userIds: [...(r.userIds || []), ...added], reactorsLoaded: true }
+                })
+              }
+            : e
+        )
+      )
+    } catch (err) {
+      // Only the tooltip suffers; the next hover tries again.
+      console.error('Failed to load reactors:', err)
+    } finally {
+      reactorRequestsRef.current.delete(key)
+    }
+  }
+
+  // Delete a message: ours, or anyone's as a moderator (see canModerateChat). The
+  // server validates the permission and broadcasts MessageDeleted; we also drop
+  // it locally on success so it disappears immediately even if the broadcast is
+  // delayed (the broadcast is idempotent).
   const handleDeleteMessage = async (messageId) => {
     if (activeChatChannelId == null) return
 
@@ -2831,51 +3480,145 @@ function Main() {
     }
   }
 
-  // Single source of truth for our outbound voice state. The server's
-  // VoiceStateUpdate (op 1) is declarative: it carries the *full* desired state,
-  // and a missing channel_id is read as "leave all channels". So every send must
-  // include all three fields. We hold them in a ref and merge each partial update
-  // optimistically — that way a mute toggle never drops our channel, a channel
-  // move never resets our mute/deafen, and a rapid move-then-mute can't race on a
-  // server-echoed field that hasn't arrived yet.
-  //
-  // Returns whether the declaration actually reached the server. A dropped send
-  // still updates the ref (that's our intent, re-declared on the next handshake),
-  // but callers that depend on the server acting on it — voice join / rejoin,
-  // which is what mints a voice ticket — must be able to fail and retry rather
-  // than proceed as if membership had been asserted.
-  const sendVoiceState = useCallback(
-    (patch) => {
-      const channelChanged =
-        'channel_id' in patch && patch.channel_id !== voiceStateRef.current.channel_id
-      const next = { ...voiceStateRef.current, ...patch }
-      voiceStateRef.current = next
-      // A channel change (join/leave/switch) tears down and rebuilds media, so the
-      // streams that vanish/appear are the transition — not real stops/starts.
-      // Disarm the stream chimes now, synchronously, before handleLeave's teardown
-      // empties allVideoStreams and the diff effect mistakes it for a stream ending.
-      // The baseline effect re-arms once we've settled in the new channel (or none).
-      if ('channel_id' in patch) streamSoundsArmedRef.current = false
-      if (channelChanged && !isReconnectRecovering()) {
-        setWatchedStreamClientIds(new Set())
-        setSelectedStreamClientId(null)
-      }
-      if (eventsWsRef.current?.readyState !== WebSocket.OPEN) return false
-      eventsWsRef.current.send(JSON.stringify({ op: 1, data: next }))
+  // Right-click a channel → Files: open that channel's file browser.
+  const handleOpenFiles = (channelId) => setFilesChannelId(channelId)
+
+  // One page of a channel's files (FileApiObject[], newest first). Unset
+  // filters are left out of the query. Rethrows after the toast so the browser
+  // can show its inline error line too.
+  const handleListFiles = async (channelId, { before, q, type, limit = 50 } = {}) => {
+    const query = new URLSearchParams({ limit: String(limit) })
+    if (before != null) query.set('before', before)
+    if (q) query.set('q', q)
+    if (type) query.set('type', type)
+    try {
+      const res = await authFetch(`${apiBase()}/channels/${channelId}/files?${query}`)
+      await throwIfError(res)
+      const data = await res.json()
+      return Array.isArray(data) ? data : []
+    } catch (err) {
+      showError(`Failed to load files: ${err.message}`, err)
+      throw err
+    }
+  }
+
+  // Make a file public (mint a share link) or private (revoke it). The server
+  // broadcasts MessageUpdated when something changed, which updates the feed
+  // and the file browser; nothing is patched locally. Returns the updated
+  // FileApiObject, or null on failure.
+  const handleSetFilePublic = async (channelId, fileId, isPublic) => {
+    try {
+      const res = await authFetch(`${apiBase()}/channels/${channelId}/files/${fileId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ public: isPublic })
+      })
+      await throwIfError(res)
+      return await res.json()
+    } catch (err) {
+      showError(`Failed to make file ${isPublic ? 'public' : 'private'}: ${err.message}`, err)
+      return null
+    }
+  }
+
+  // Delete a file. Its message stays (ChatPanel shows "File removed" once it is
+  // empty); the MessageUpdated broadcast carries the change. Returns success.
+  const handleDeleteFile = async (channelId, fileId) => {
+    try {
+      const res = await authFetch(`${apiBase()}/channels/${channelId}/files/${fileId}`, {
+        method: 'DELETE'
+      })
+      await throwIfError(res)
       return true
-    },
-    [isReconnectRecovering]
-  )
+    } catch (err) {
+      showError(`Failed to delete file: ${err.message}`, err)
+      return false
+    }
+  }
+
+  // Copy a file's share link: the absolute URL, which is what someone without
+  // a session needs.
+  const handleCopyLink = (publicUrl) => {
+    const url = assetUrl(publicUrl)
+    if (!url) return
+    navigator.clipboard.writeText(url).then(
+      () => showSuccess('Link copied'),
+      (err) => console.error('Copy link failed:', err)
+    )
+  }
+
+  // Save a file from the browser through the main process's save dialog (same
+  // path as ChatPanel's attachment download).
+  const handleDownloadFile = async ({ url, name }) => {
+    const result = await window.electron.ipcRenderer
+      .invoke('download-file', { url, filename: name })
+      .catch((err) => ({ ok: false, error: err.message }))
+    if (!result?.ok && !result?.canceled) {
+      showError(`Failed to download ${name}: ${result?.error || 'unknown error'}`)
+    }
+  }
 
   // Broadcast our mic-mute / deafen status, keeping our current channel.
   const sendStatus = (selfMute, selfDeaf) =>
     sendVoiceState({ self_mute: selfMute, self_deaf: selfDeaf })
 
+  // Let other clients know our mic-mute / deafen status
+  useEffect(() => {
+    sendStatus(micMuted, deafened)
+  }, [micMuted, deafened])
+
+  // Soup asks for, watches and ends screen streams (ops 8-11) on this socket.
+  // Registered once: the ref always names the live socket.
+  useEffect(() => {
+    setEventSocketSender((frame) => {
+      if (eventsWsRef.current?.readyState !== WebSocket.OPEN) return false
+      eventsWsRef.current.send(JSON.stringify(frame))
+      return true
+    })
+    return () => setEventSocketSender(null)
+  }, [])
+
+  // Soup gets its voice tickets through this socket (see setVoiceServerHooks):
+  // op 14 while the backend lists us in voice, or an op 5 back into our
+  // channel when a fresh Ready showed the backend lost us.
+  useEffect(() => {
+    setVoiceServerHooks({
+      requestTicket: () => {
+        const socket = eventsWsRef.current
+        if (socket?.readyState !== WebSocket.OPEN) return 'offline'
+        if (serverVoiceChannelRef.current != null) {
+          socket.send(
+            JSON.stringify({ op: REQUEST_VOICE_TICKET_OP, data: null, nonce: nextNonce() })
+          )
+          return 'sent'
+        }
+        const channelId = voiceStateRef.current.channel_id
+        if (channelId == null) return 'not-in-voice'
+        return sendVoiceState({ channel_id: channelId }) ? 'sent' : 'offline'
+      },
+      inVoice: () => serverVoiceChannelRef.current != null || rejoinAfterReadyRef.current
+    })
+    return () => setVoiceServerHooks({})
+  }, [sendVoiceState])
+
+  // Closing the window or reloading the renderer ends our voice session, but a
+  // closed event socket no longer takes us out of voice (the backend waits out
+  // its grace first). So leave explicitly.
+  useEffect(() => {
+    const leaveVoice = () => {
+      const socket = eventsWsRef.current
+      if (voiceStateRef.current.channel_id == null || socket?.readyState !== WebSocket.OPEN) return
+      socket.send(JSON.stringify({ op: 5, data: { channel_id: null } }))
+    }
+    window.addEventListener('pagehide', leaveVoice)
+    return () => window.removeEventListener('pagehide', leaveVoice)
+  }, [])
+
   // Automatic updates wait for the gateway handshake and retry silently if
   // disconnected. The hook tracks which Away transitions belong to auto idle.
   const sendAutoPresence = useCallback((patch) => {
     if (!sessionIdRef.current || eventsWsRef.current?.readyState !== WebSocket.OPEN) return false
-    eventsWsRef.current.send(JSON.stringify({ op: 5, data: patch }))
+    eventsWsRef.current.send(JSON.stringify({ op: 6, data: patch, nonce: nextNonce() }))
     return true
   }, [])
 
@@ -2886,7 +3629,7 @@ function Main() {
     send: sendAutoPresence
   })
 
-  // Manual presence (op 5) is a patch: omitted fields are preserved server-side.
+  // Manual presence (op 6) is a patch: omitted fields are preserved server-side.
   // `status_message: null` clears the message and must survive the trip.
   const sendPresence = useCallback(
     (patch) => {
@@ -2903,7 +3646,7 @@ function Main() {
         showError('Not connected — presence not updated')
         return
       }
-      eventsWsRef.current.send(JSON.stringify({ op: 5, data: patch }))
+      eventsWsRef.current.send(JSON.stringify({ op: 6, data: patch, nonce: nextNonce() }))
       if (patch.status != null) manualStatusSelected()
       // No optimistic update: the server echoes PresenceUpdate to us too, and it
       // arbitrates between our devices (last write wins). Guessing here would
@@ -2917,7 +3660,7 @@ function Main() {
   const refreshPresences = useCallback(async () => {
     if (!token) return
     try {
-      const res = await authFetch(`${apiBase()}/server/presences`)
+      const res = await authFetch(`${apiBase()}/presences`)
       const list = await (await throwIfError(res)).json()
       setPresences(Object.fromEntries((list || []).map((p) => [p.client_id, p])))
     } catch (err) {
@@ -2932,14 +3675,6 @@ function Main() {
     refreshPresencesRef.current = refreshPresences
   }, [refreshPresences])
 
-  // Merge stream updates from a specific channel into the global streams list
-  const handleStreamsUpdate = (channelId, streams) => {
-    setAllVideoStreams((prev) => {
-      const filtered = prev.filter((s) => s.channelId !== channelId)
-      return [...filtered, ...streams.map((s) => ({ ...s, channelId }))]
-    })
-  }
-
   const [showSettings, setShowSettings] = useState(false)
   const [streamDebugOpen, setStreamDebugOpen] = useState(false)
   // Exit animation is handled by AnimatePresence in the JSX below, so open/
@@ -2948,33 +3683,61 @@ function Main() {
   const closeSettings = () => setShowSettings(false)
   const overlayAnim = useAnimationCategory('overlays')
 
+  const ringOverlayOpen = !!token && rings.size > 0 && !ringsHidden
+
   // Focused Escape closes the topmost open menu/view, one layer per press, in
-  // stacking order (settings overlay → roles/groups menu → canvas summary/peek
-  // views). Skips when a nested control already handled the key (defaultPrevented,
-  // e.g. an open picker) so it never yanks a layer out from under one.
+  // stacking order (incoming calls → settings overlay → roles/groups menu → ban
+  // list → canvas summary/peek views → a focused stream). Skips when a nested
+  // control already handled the key (defaultPrevented, e.g. an open picker or
+  // the stream's right-click menu) so it never yanks a layer out from under one.
+  // Incoming calls are only hidden, never declined. The stream layer is last:
+  // with 2+ streams it drops back to the grid (a sole stream is always focused),
+  // never while OS-fullscreen, where Escape belongs to the browser, and theatre
+  // mode's own captured Escape runs before this ever sees the key.
   useEffect(() => {
+    const streamFocusEscapable = () => {
+      if (viewMode !== 'video' || poppedOut || document.fullscreenElement) return false
+      const { focusedClientId, canToggleFocus } = resolveStreamFocus({
+        streams: allVideoStreamsRef.current,
+        selectedStreamClientId: selectedStreamClientIdRef.current
+      })
+      return focusedClientId != null && canToggleFocus
+    }
     const onKeyDown = (e) => {
       if (e.key !== 'Escape' || e.defaultPrevented) return
-      if (showSettings) setShowSettings(false)
+      if (ringOverlayOpen) setRingsHidden(true)
+      else if (showSettings) setShowSettings(false)
       else if (rolesGroupsOpen) setRolesGroupsOpen(false)
+      else if (banListOpen) setBanListOpen(false)
+      // ImageViewer closes itself on Escape without claiming the key, so its
+      // layer is listed here to keep the browser under it open.
+      else if (filesViewerImage) setFilesViewerImage(null)
+      else if (filesChannelId != null) setFilesChannelId(null)
       else if (summaryChannelId != null) setSummaryChannelId(null)
       else if (summaryClientId != null) setSummaryClientId(null)
       else if (previewChannelId != null) setPreviewChannelId(null)
       else if (showTraffic) setShowTraffic(false)
       else if (showServerSummary) setShowServerSummary(false)
+      else if (streamFocusEscapable()) setSelectedStreamClientId(null)
       else return
       e.preventDefault()
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [
+    ringOverlayOpen,
     showSettings,
     rolesGroupsOpen,
+    banListOpen,
+    filesViewerImage,
+    filesChannelId,
     summaryChannelId,
     summaryClientId,
     previewChannelId,
     showTraffic,
-    showServerSummary
+    showServerSummary,
+    viewMode,
+    poppedOut
   ])
 
   const connected = !!token
@@ -3003,21 +3766,92 @@ function Main() {
   // Names of other clients typing in the channel we're viewing (self excluded).
   const typingUsers = typingEntries
     .filter((t) => t.channelId === activeChatChannelId && t.clientId !== client?.id)
-    .map((t) => t.name)
+    .map((t) => clients.find((c) => c.id === t.clientId)?.name)
+    .filter(Boolean)
+
+  const nameOf = (id) => clients.find((c) => c.id === id)?.name
+  // A DM's header icon: the other participant's avatar in a 1:1, a group glyph
+  // (isGroupDm) otherwise.
+  const dmAvatarOf = (dm) => {
+    const others = dmOthers(dm, client?.id)
+    return others.length === 1 ? clients.find((c) => c.id === others[0].id)?.avatar : undefined
+  }
+  const isGroupDm = (dm) => dmOthers(dm, client?.id).length > 1
 
   const previewChannel = channels.find((c) => c.id === previewChannelId)
-  let previewChannelName
-  let previewDmAvatar
-  if (previewChannel?.type === 'dm') {
-    const o = dmOther(previewChannel, client?.id)
-    const recipient = clients.find((c) => c.id === o.id)
-    previewChannelName = o.name || recipient?.name || previewChannel.name || 'Direct Message'
-    previewDmAvatar = recipient?.avatar
-  } else {
-    previewChannelName = previewChannel?.name ?? 'Channel'
-  }
-  const previewChannelIcon =
-    previewChannel?.type === 'dm' ? previewDmAvatar : cdnUrl(previewChannel?.channel_icon)
+  const previewDm = previewChannel?.type === 'dm' ? previewChannel : null
+  const previewChannelName = previewDm
+    ? dmDisplayName(previewDm, client?.id, nameOf)
+    : (previewChannel?.name ?? 'Channel')
+  const previewChannelIcon = previewDm
+    ? dmAvatarOf(previewDm)
+    : assetUrl(previewChannel?.channel_icon)
+  // Who is already in the previewed DM's call (we aren't: being in it drops the
+  // preview).
+  const previewCallMembers = previewDm
+    ? clients.filter((c) => c.channel_id === previewDm.id && c.id !== client?.id)
+    : []
+
+  // The DM whose call we're in, for the joined header: one strip entry per
+  // participant, us first.
+  const joinedDm = joinedChannel?.type === 'dm' ? joinedChannel : null
+  const dmStripEntries = (() => {
+    if (!joinedDm) return []
+    const tileOwners = new Set(
+      allVideoStreams.filter((s) => s.kind === 'video').map((s) => s.clientId)
+    )
+    const streamers = new Set(liveStreams.get(joinedDm.id) ?? [])
+    const others = dmOthers(joinedDm, client?.id)
+    return [{ id: client?.id }, ...others].map((p) => {
+      const c = clients.find((x) => x.id === p.id) ?? {}
+      const isSelf = p.id === client?.id
+      const inCall = c.channel_id === joinedDm.id
+      const ringing = outgoingRings.channelId === joinedDm.id && outgoingRings.rings.has(p.id)
+      return {
+        id: p.id,
+        name: c.name || p.name || 'Unknown',
+        avatar: c.avatar,
+        inCall,
+        speaking: inCall && !!speakingClients[p.id],
+        // Our own toggles beat the roster echo, as in the theatre rail.
+        muted: isSelf ? micMuted : !!c.self_mute || !!c.server_mute,
+        deafened: isSelf ? deafened : !!c.self_deaf,
+        streaming: streamers.has(p.id) || tileOwners.has(p.id),
+        watchable: tileOwners.has(p.id),
+        status: ringing ? 'ringing' : statusOf(presences[p.id]) === 'offline' ? 'offline' : 'ring'
+      }
+    })
+  })()
+
+  // The session's error has no sidebar row in a DM call, so it shows under the
+  // header of the DM it belongs to.
+  const headerDmId =
+    showTraffic || summaryChannelId != null || summaryClientId != null || showServerSummary
+      ? null
+      : previewChannelId != null
+        ? (previewDm?.id ?? null)
+        : (joinedDm?.id ?? null)
+  const dmCallError =
+    voice.error && headerDmId != null && voice.errorChannelId === headerDmId ? voice.error : null
+
+  // One card per DM call ringing us; a group DM's card also names the group.
+  const incomingCalls = [...rings].map(([channelId, ring]) => {
+    const dm = channels.find((c) => c.id === channelId)
+    const caller = clients.find((c) => c.id === ring.callerId)
+    return {
+      channelId,
+      deadline: ring.deadline,
+      callerName: caller?.name || 'Someone',
+      callerAvatar: caller?.avatar,
+      groupName: dm && isGroupDm(dm) ? dmDisplayName(dm, client?.id, nameOf) : null
+    }
+  })
+
+  const activeChatChannel = channels.find((c) => c.id === activeChatChannelId)
+  const activeChatDmName =
+    activeChatChannel?.type === 'dm'
+      ? dmDisplayName(activeChatChannel, client?.id, nameOf)
+      : undefined
 
   // The client whose summary is open (single-click), or null.
   const summaryClient =
@@ -3029,6 +3863,10 @@ function Main() {
     summaryChannelId != null ? channels.find((c) => c.id === summaryChannelId) : null
   const summaryChannelMemberCount =
     summaryChannel != null ? clients.filter((c) => c.channel_id === summaryChannel.id).length : 0
+
+  // The channel whose file browser is open, or null.
+  const filesChannel =
+    filesChannelId != null ? visibleChannels.find((c) => c.id === filesChannelId) : null
 
   // Handed to ClientActionsProvider so a client context menu can be opened from
   // anywhere (currently the sidebar roster and chat message authors).
@@ -3063,322 +3901,432 @@ function Main() {
 
   return (
     <ClientActionsProvider value={clientActions}>
-      <div className="app-shell">
-        <Toast toast={toast} onDismiss={dismissToast} />
-        <UpdatePrompt />
-        {/* Non-modal, so intentionally left out of the Escape-key cascade below —
-            it should survive Escape while flipping through views mid-debug. */}
-        {streamDebugOpen && (
-          <StreamDebugPanel clients={clients} onClose={() => setStreamDebugOpen(false)} />
-        )}
-        {rolesGroupsOpen && (
-          <RolesGroupsMenu
-            roles={roles}
-            vanity={vanity}
-            onCreateVanity={handleCreateVanityGroup}
-            onClose={() => setRolesGroupsOpen(false)}
-          />
-        )}
-        <TitleBar
-          title={titleText}
-          icon={IconUsersGroup}
-          notifications={notifications}
-          onClearNotifications={() => setNotifications([])}
-          onOpenNotification={handleOpenNotification}
-          silentNotifications={dnd}
-          dmNotifications={dmNotifications}
-          onOpenDmNotification={handleOpenDmNotification}
-          onClearDmNotifications={() => setDmNotifications([])}
-        />
-        <div className="layout">
-          <SideBar
-            channels={visibleChannels}
-            clients={clients}
-            self={client}
-            onStreamsUpdate={handleStreamsUpdate}
-            isReconnectRecovering={isReconnectRecovering}
-            recoveryEpoch={recoveryEpoch}
-            micMuted={micMuted}
-            deafened={deafened}
-            onToggleMic={toggleMic}
-            onToggleDeafen={toggleDeafen}
-            onSpeakingClientsChange={handleSpeakingClientsChange}
-            onVoiceMediaState={handleVoiceMediaState}
-            shareControlRef={shareControlRef}
-            onStatusChange={sendStatus}
-            onSelfChannelChange={(channelId) => {
-              // Joining/leaving a voice channel is a navigation — drop the
-              // forced traffic view so we land on that channel's chat.
-              setShowTraffic(false)
-              setShowServerSummary(false)
-              // Pass the sent/dropped result through: VoiceChannel turns a
-              // dropped declaration into a rejected patchChannel so a reconnect
-              // retries instead of connecting voice with no channel membership.
-              return sendVoiceState({ channel_id: channelId })
-            }}
-            onViewServerTraffic={handleViewServerTraffic}
-            onViewServerSummary={handleViewServerSummary}
-            // provide a renderer-level openSettings hook
-            onOpenSettings={openSettings}
-            servers={servers}
-            connectedServer={connectedServer}
-            onConnect={handleConnect}
-            onDisconnect={handleDisconnect}
-            onAddServer={handleAddServer}
-            onEditServer={handleEditServer}
-            onRemoveServer={handleRemoveServer}
-            onNotify={showSuccess}
-            onCreateChannel={handleCreateChannel}
-            onDeleteChannel={handleDeleteChannel}
-            onReorderChannel={handleReorderChannel}
-            onMoveClient={handleMoveClientToChannel}
-            onPreviewChannel={handlePreviewChannel}
-            onShowChannelSummary={handleShowChannelSummary}
-            onOpenDm={handleOpenDm}
-            onPoke={handlePoke}
-            onKick={handleKickUser}
-            onKickFromChannel={handleKickFromChannel}
-            onGag={handleGagUser}
-            onBan={handleBanUser}
-            onError={showError}
-            onUnban={handleUnbanUser}
-            onSetAvatar={handleSetAvatar}
-            onShowClientSummary={handleShowClientSummary}
-            roles={roles}
-            onAssignRole={handleAssignRole}
-            onRemoveRole={handleRemoveRole}
-            vanity={vanity}
-            onToggleVanity={handleToggleVanity}
-            onOpenRolesGroups={() => setRolesGroupsOpen(true)}
-            bannedUsers={bannedUsers}
-            canKickMembers={canKickMembers}
-            canBanMembers={canBanMembers}
-            canMuteMembers={canMuteMembers}
-            previewChannelId={previewChannelId}
-            summaryChannelId={summaryChannelId}
-            unreadChannelIds={unreadChannelIds}
-          />
-
-          <main className="chat-area">
-            {/* Summary views have no header bar: their banner card acts as the header.
-              Leaving a view = clicking back to your joined channel in the sidebar. */}
-            {summaryChannelId == null && summaryClientId == null && !showServerSummary && (
-              <div className="chat-header">
-                <div className="header-content">
-                  {showTraffic ? (
-                    // Forced traffic view (server menu). Same server-name header
-                    // as the lurking view below — Esc or navigating elsewhere
-                    // returns to the channel.
-                    serverHeaderTitle
-                  ) : previewChannelId != null ? (
-                    // Peeking into another channel's chat: no view tabs (no streams),
-                    // just the channel name.
-                    <span className="view-preview-title">
-                      <button
-                        type="button"
-                        className={`chat-title-icon${previewChannel?.type === 'dm' ? ' chat-title-icon-avatar' : ''}`}
-                        onClick={() => handleShowChannelSummary(previewChannelId)}
-                        title="Channel details"
-                      >
-                        {previewChannelIcon ? (
-                          <img className="chat-title-icon-img" src={previewChannelIcon} alt="" />
-                        ) : previewChannel?.type === 'dm' ? (
-                          <IconUser size={18} stroke={2} />
-                        ) : (
-                          <IconMessage size={18} stroke={2} />
-                        )}
-                      </button>
-                      <span className="view-preview-name">{previewChannelName}</span>
-                    </span>
-                  ) : connected && joinedChannel ? (
-                    // In a voice channel: channel name + member count + Chat/Streams tabs.
-                    <>
-                      <div className="chat-title">
-                        <button
-                          type="button"
-                          className="chat-title-icon"
-                          onClick={() => handleShowChannelSummary(joinedChannel.id)}
-                          title="Channel details"
-                        >
-                          {joinedChannel.channel_icon ? (
-                            <img
-                              className="chat-title-icon-img"
-                              src={cdnUrl(joinedChannel.channel_icon)}
-                              alt=""
-                            />
-                          ) : (
-                            <IconVolume size={17} stroke={2} />
-                          )}
-                        </button>
-                        <span className="chat-title-text">
-                          <span className="chat-title-name">{joinedChannel.name}</span>
-                          <span className="chat-title-sub">{joinedChannelUserCount} in voice</span>
-                        </span>
-                      </div>
-                      <SegmentedTabs
-                        ariaLabel="Main view"
-                        active={viewMode}
-                        onChange={setViewMode}
-                        tabs={[
-                          {
-                            id: 'log',
-                            label: 'Chat',
-                            icon: <IconMessage size={15} stroke={2} />
-                          },
-                          {
-                            id: 'video',
-                            label: 'Streams',
-                            icon: <IconVideo size={15} stroke={2} />,
-                            disabled: poppedOut,
-                            title: poppedOut ? 'Video is open in a separate window' : undefined
-                          }
-                        ]}
-                      />
-                    </>
-                  ) : connected ? (
-                    // Lurking (not in a voice channel): just the server name — the
-                    // canvas below shows server traffic, so no tabs or subtext.
-                    serverHeaderTitle
-                  ) : (
-                    <span aria-hidden="true" />
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* Keyed so switching channel/tab remounts and replays the switch
-                animation. The key mirrors the render branches below and keys the
-                channel views by *content identity* (which channel + chat-vs-grid),
-                not by peek-vs-joined: peeking channel X shows `chat-X` and joining
-                that same channel (landing on the log tab) is still `chat-X`, so the
-                fade doesn't redundantly replay when only the titlebar gains its
-                voice counter. Switching channel or chat↔video still changes the key. */}
-            <div
-              className="chat-switch-region"
-              key={
-                !connected
-                  ? 'disconnected'
-                  : summaryChannelId != null
-                    ? `channel-summary-${summaryChannelId}`
-                    : summaryClientId != null
-                      ? `summary-${summaryClientId}`
-                      : showServerSummary
-                        ? 'server-summary'
-                        : showTraffic || (previewChannelId == null && !joinedChannel)
-                          ? 'lobby'
-                          : previewChannelId != null || viewMode === 'log'
-                            ? `chat-${activeChatChannelId}`
-                            : `grid-${selfChannelId}`
+      <VoiceSessionProvider value={voice}>
+        <div className="app-shell">
+          <Toast toast={toast} onDismiss={dismissToast} />
+          <UpdatePrompt />
+          {/* Non-modal, so intentionally left out of the Escape-key cascade below —
+              it should survive Escape while flipping through views mid-debug. */}
+          {streamDebugOpen && (
+            <StreamDebugPanel
+              clients={clients}
+              selfId={client?.id}
+              onClose={() => setStreamDebugOpen(false)}
+            />
+          )}
+          {rolesGroupsOpen && (
+            <RolesGroupsMenu
+              roles={roles}
+              vanity={vanity}
+              onCreateVanity={handleCreateVanityGroup}
+              onClose={() => setRolesGroupsOpen(false)}
+            />
+          )}
+          {/* Gated on connected + BAN_MEMBERS too, so it drops away on disconnect
+              or if our roles lose the permission while it's open. */}
+          {banListOpen && connected && canBanMembers && (
+            <BanListMenu
+              bans={resolvedBans}
+              onUnban={handleUnbanUser}
+              onClose={() => setBanListOpen(false)}
+            />
+          )}
+          {filesChannel && connected && (
+            <FileBrowser
+              key={filesChannel.id}
+              channel={filesChannel}
+              clients={clients}
+              selfId={client?.id}
+              canModerate={canModerateIn(filesChannel.id)}
+              revision={filesRevision}
+              onList={(opts) => handleListFiles(filesChannel.id, opts)}
+              onSetPublic={(fileId, isPublic) =>
+                handleSetFilePublic(filesChannel.id, fileId, isPublic)
               }
-            >
-              {!connected ? (
-                <IdleAnimation connecting={connecting} />
-              ) : summaryChannelId != null ? (
-                <ChannelSummary
-                  channel={summaryChannel}
-                  memberCount={summaryChannelMemberCount}
-                  onSaveDescription={handleSetChannelDescription}
-                  onSetIcon={handleSetChannelIcon}
-                  roles={roles}
-                  clients={clients}
-                  canManagePermissions={canManageChannels}
-                  onSetOverwrite={handleSetChannelOverwrite}
-                  onDeleteOverwrite={handleDeleteChannelOverwrite}
-                />
-              ) : summaryClientId != null ? (
-                <ClientSummary
-                  client={summaryClient}
-                  roles={roles}
-                  vanity={vanity}
-                  isSelf={summaryClient?.id === client?.id}
-                  onSetAvatar={handleSetAvatar}
-                />
-              ) : showServerSummary ? (
-                <ServerSummary />
-              ) : showTraffic || (previewChannelId == null && !joinedChannel) ? (
-                // Server-traffic log: shown on demand (server menu) or as the
-                // default when lurking (not in a voice channel, not peeking).
-                <ServerTraffic entries={traffic} clients={clients} />
-              ) : previewChannelId != null || viewMode === 'log' ? (
-                <ChatPanel
-                  feed={feed.filter(
-                    (e) => e.type === 'system' || e.channelId === activeChatChannelId
-                  )}
-                  clients={clients}
-                  selfId={client?.id}
-                  onSend={handleSendMessage}
-                  onEditMessage={handleEditMessage}
-                  onDeleteMessage={handleDeleteMessage}
-                  onReactMessage={handleReactMessage}
-                  onTyping={handleTyping}
-                  onError={showError}
-                  typingUsers={typingUsers}
-                  disabled={activeChatChannelId == null}
-                  channelKey={activeChatChannelId}
-                  onLoadOlder={loadOlderMessages}
-                  hasMoreOlder={
-                    activeChatChannelId != null && !exhaustedChannels.has(activeChatChannelId)
-                  }
-                />
-              ) : (
-                <VideoGrid
-                  streams={allVideoStreams}
-                  clients={clients}
-                  selectedStreamClientId={selectedStreamClientId}
-                  onSelect={setSelectedStreamClientId}
-                  onPopout={handlePopout}
-                  watchedStreamClientIds={watchedStreamClientIds}
-                  onSetStreamWatched={handleSetStreamWatched}
-                  onStopSharing={shareControl.stop}
-                  shareControl={shareControl}
-                  volume={streamVolume}
-                  muted={streamMuted}
-                  onVolumeChange={setStreamVolume}
-                  onMutedChange={setStreamMuted}
-                  theatre={theatre}
-                  onToggleTheatre={toggleTheatre}
-                  voiceClients={clients
-                    .filter((c) => c.channel_id === selfChannelId)
-                    .sort((a, b) => (a.name || '').localeCompare(b.name || ''))}
-                  speakingClients={speakingClients}
-                  selfId={client?.id}
-                  micMuted={micMuted}
-                  deafened={deafened}
-                  onToggleMic={toggleMic}
-                  onToggleDeafen={toggleDeafen}
-                />
-              )}
-            </div>
-          </main>
+              onDelete={(fileId) => handleDeleteFile(filesChannel.id, fileId)}
+              onCopyLink={handleCopyLink}
+              onOpenImage={setFilesViewerImage}
+              onPreviewFile={setFilesViewerFile}
+              onDownload={handleDownloadFile}
+              onClose={() => setFilesChannelId(null)}
+            />
+          )}
+          {filesViewerImage && (
+            <ImageViewer
+              src={filesViewerImage.url}
+              name={filesViewerImage.name}
+              onClose={() => setFilesViewerImage(null)}
+            />
+          )}
           <AnimatePresence>
-            {showSettings && (
-              <motion.div
-                className="settings-overlay"
-                onClick={closeSettings}
-                {...scrimFade(overlayAnim)}
-              >
-                <motion.div
-                  className="settings-modal"
-                  onClick={(e) => e.stopPropagation()}
-                  {...overlayPop(overlayAnim)}
-                >
-                  <button
-                    className="settings-close-btn"
-                    onClick={closeSettings}
-                    title="Close settings"
-                  >
-                    <IconX size={18} />
-                  </button>
-                  <Settings />
-                </motion.div>
-              </motion.div>
+            {filesViewerFile && (
+              <FileViewer
+                key={filesViewerFile.url}
+                src={filesViewerFile.url}
+                name={filesViewerFile.name}
+                size={filesViewerFile.size}
+                kind={previewKind(filesViewerFile.name, filesViewerFile.contentType)}
+                onClose={() => setFilesViewerFile(null)}
+                onDownload={() => handleDownloadFile(filesViewerFile)}
+              />
             )}
           </AnimatePresence>
+          {voice.sourcePickerOpen && (
+            <ScreenSourcePicker
+              onSelect={voice.startShareWithSource}
+              onCancel={voice.closeSourcePicker}
+            />
+          )}
+          {ringOverlayOpen && (
+            <IncomingCallOverlay
+              calls={incomingCalls}
+              onAnswer={handleAnswerCall}
+              onDecline={handleDeclineCall}
+              onClose={() => setRingsHidden(true)}
+            />
+          )}
+          <TitleBar
+            title={titleText}
+            icon={IconUsersGroup}
+            notifications={notifications}
+            onClearNotifications={() => setNotifications([])}
+            onOpenNotification={handleOpenNotification}
+            silentNotifications={dnd}
+            dmNotifications={dmNotifications}
+            onOpenDmNotification={handleOpenDmNotification}
+            onClearDmNotifications={() => setDmNotifications([])}
+          />
+          <div className="layout">
+            <SideBar
+              channels={visibleChannels}
+              clients={clients}
+              self={client}
+              micMuted={micMuted}
+              deafened={deafened}
+              onToggleMic={toggleMic}
+              onToggleDeafen={toggleDeafen}
+              voiceMediaState={voiceMediaRecovery}
+              connectionInfoOpen={streamDebugOpen}
+              onToggleConnectionInfo={() => setStreamDebugOpen((open) => !open)}
+              onViewServerTraffic={handleViewServerTraffic}
+              onViewServerSummary={handleViewServerSummary}
+              onOpenBanList={handleOpenBanList}
+              // provide a renderer-level openSettings hook
+              onOpenSettings={openSettings}
+              servers={servers}
+              connectedServer={connectedServer}
+              onConnect={handleConnect}
+              onDisconnect={handleDisconnect}
+              onAddServer={handleAddServer}
+              onEditServer={handleEditServer}
+              onRemoveServer={handleRemoveServer}
+              onNotify={showSuccess}
+              onCreateChannel={handleCreateChannel}
+              onDeleteChannel={handleDeleteChannel}
+              onReorderChannel={handleReorderChannel}
+              onMoveClient={handleMoveClientToChannel}
+              onPreviewChannel={handlePreviewChannel}
+              onShowChannelSummary={handleShowChannelSummary}
+              onOpenFiles={handleOpenFiles}
+              onOpenDm={handleOpenDm}
+              onPoke={handlePoke}
+              onKick={handleKickUser}
+              onKickFromChannel={handleKickFromChannel}
+              onGag={handleGagUser}
+              onBan={handleBanUser}
+              onUnban={handleUnbanUser}
+              onSetAvatar={handleSetAvatar}
+              onShowClientSummary={handleShowClientSummary}
+              roles={roles}
+              onAssignRole={handleAssignRole}
+              onRemoveRole={handleRemoveRole}
+              vanity={vanity}
+              onToggleVanity={handleToggleVanity}
+              onOpenRolesGroups={() => setRolesGroupsOpen(true)}
+              bannedUsers={bannedUsers}
+              canKickMembers={canKickMembers}
+              canBanMembers={canBanMembers}
+              canMuteMembers={canMuteMembers}
+              previewChannelId={previewChannelId}
+              summaryChannelId={summaryChannelId}
+              unreadChannelIds={unreadChannelIds}
+            />
+
+            <main className="chat-area">
+              {/* Summary views have no header bar: their banner card acts as the header.
+                Leaving a view = clicking back to your joined channel in the sidebar. */}
+              {summaryChannelId == null && summaryClientId == null && !showServerSummary && (
+                <div className="chat-header">
+                  <div className="header-content">
+                    {showTraffic ? (
+                      // Forced traffic view (server menu). Same server-name header
+                      // as the lurking view below — Esc or navigating elsewhere
+                      // returns to the channel.
+                      serverHeaderTitle
+                    ) : previewChannelId != null ? (
+                      // Peeking into another channel's chat: no view tabs (no streams),
+                      // just the channel name. A DM also offers its call.
+                      <>
+                        <span className="view-preview-title">
+                          <button
+                            type="button"
+                            className={`chat-title-icon${previewDm ? ' chat-title-icon-avatar' : ''}`}
+                            onClick={() => handleShowChannelSummary(previewChannelId)}
+                            title="Channel details"
+                          >
+                            {previewChannelIcon ? (
+                              <img
+                                className="chat-title-icon-img"
+                                src={previewChannelIcon}
+                                alt=""
+                              />
+                            ) : previewDm && isGroupDm(previewDm) ? (
+                              <IconUsersGroup size={18} stroke={2} />
+                            ) : previewDm ? (
+                              <IconUser size={18} stroke={2} />
+                            ) : (
+                              <IconMessage size={18} stroke={2} />
+                            )}
+                          </button>
+                          <span className="view-preview-name">{previewChannelName}</span>
+                        </span>
+                        {previewDm && (
+                          <DmCallControls
+                            members={previewCallMembers}
+                            joining={
+                              voice.channelId === previewDm.id ||
+                              voice.pendingChannelId === previewDm.id
+                            }
+                            onJoinCall={() => handleJoinDmCall(previewDm)}
+                          />
+                        )}
+                      </>
+                    ) : connected && joinedChannel ? (
+                      // In a voice channel or a DM call: its name, who is in it, and
+                      // the Chat/Streams tabs.
+                      <>
+                        <div className="chat-title">
+                          <button
+                            type="button"
+                            className={`chat-title-icon${joinedDm ? ' chat-title-icon-avatar' : ''}`}
+                            onClick={() => handleShowChannelSummary(joinedChannel.id)}
+                            title="Channel details"
+                          >
+                            {joinedDm ? (
+                              dmAvatarOf(joinedDm) ? (
+                                <img
+                                  className="chat-title-icon-img"
+                                  src={dmAvatarOf(joinedDm)}
+                                  alt=""
+                                />
+                              ) : isGroupDm(joinedDm) ? (
+                                <IconUsersGroup size={18} stroke={2} />
+                              ) : (
+                                <IconUser size={18} stroke={2} />
+                              )
+                            ) : joinedChannel.channel_icon ? (
+                              <img
+                                className="chat-title-icon-img"
+                                src={assetUrl(joinedChannel.channel_icon)}
+                                alt=""
+                              />
+                            ) : (
+                              <IconVolume size={17} stroke={2} />
+                            )}
+                          </button>
+                          <span className="chat-title-text">
+                            <span className="chat-title-name">
+                              {joinedDm
+                                ? dmDisplayName(joinedDm, client?.id, nameOf)
+                                : joinedChannel.name}
+                            </span>
+                            {joinedDm ? (
+                              <DmMemberStrip
+                                entries={dmStripEntries}
+                                onRing={(userId) => handleRingParticipant(joinedDm.id, userId)}
+                                onWatchStream={handleWatchStream}
+                              />
+                            ) : (
+                              <span className="chat-title-sub">
+                                {joinedChannelUserCount} in voice
+                              </span>
+                            )}
+                          </span>
+                        </div>
+                        <SegmentedTabs
+                          ariaLabel="Main view"
+                          active={viewMode}
+                          onChange={setViewMode}
+                          tabs={[
+                            {
+                              id: 'log',
+                              label: 'Chat',
+                              icon: <IconMessage size={15} stroke={2} />
+                            },
+                            {
+                              id: 'video',
+                              label: 'Streams',
+                              icon: <IconVideo size={15} stroke={2} />,
+                              disabled: poppedOut,
+                              title: poppedOut ? 'Video is open in a separate window' : undefined
+                            }
+                          ]}
+                        />
+                      </>
+                    ) : connected ? (
+                      // Lurking (not in a voice channel): just the server name — the
+                      // canvas below shows server traffic, so no tabs or subtext.
+                      serverHeaderTitle
+                    ) : (
+                      <span aria-hidden="true" />
+                    )}
+                  </div>
+                </div>
+              )}
+              {dmCallError && <div className="channel-error dm-call-error">{dmCallError}</div>}
+
+              {/* Keyed so switching channel/tab remounts and replays the switch
+                  animation. The key mirrors the render branches below and keys the
+                  channel views by *content identity* (which channel + chat-vs-grid),
+                  not by peek-vs-joined: peeking channel X shows `chat-X` and joining
+                  that same channel (landing on the log tab) is still `chat-X`, so the
+                  fade doesn't redundantly replay when only the titlebar gains its
+                  voice counter. Switching channel or chat↔video still changes the key. */}
+              <div
+                className="chat-switch-region"
+                key={
+                  !connected
+                    ? 'disconnected'
+                    : summaryChannelId != null
+                      ? `channel-summary-${summaryChannelId}`
+                      : summaryClientId != null
+                        ? `summary-${summaryClientId}`
+                        : showServerSummary
+                          ? 'server-summary'
+                          : showTraffic || (previewChannelId == null && !joinedChannel)
+                            ? 'lobby'
+                            : previewChannelId != null || viewMode === 'log'
+                              ? `chat-${activeChatChannelId}`
+                              : `grid-${selfChannelId}`
+                }
+              >
+                {!connected ? (
+                  <IdleAnimation connecting={connecting} />
+                ) : summaryChannelId != null ? (
+                  <ChannelSummary
+                    channel={summaryChannel}
+                    memberCount={summaryChannelMemberCount}
+                    onSaveDescription={handleSetChannelDescription}
+                    onSetIcon={handleSetChannelIcon}
+                    roles={roles}
+                    clients={clients}
+                    canManagePermissions={canManageChannels}
+                    onSetOverwrite={handleSetChannelOverwrite}
+                    onDeleteOverwrite={handleDeleteChannelOverwrite}
+                  />
+                ) : summaryClientId != null ? (
+                  <ClientSummary
+                    client={summaryClient}
+                    roles={roles}
+                    vanity={vanity}
+                    isSelf={summaryClient?.id === client?.id}
+                    onSetAvatar={handleSetAvatar}
+                  />
+                ) : showServerSummary ? (
+                  <ServerSummary />
+                ) : showTraffic || (previewChannelId == null && !joinedChannel) ? (
+                  // Server-traffic log: shown on demand (server menu) or as the
+                  // default when lurking (not in a voice channel, not peeking).
+                  <ServerTraffic entries={traffic} clients={clients} />
+                ) : previewChannelId != null || viewMode === 'log' ? (
+                  <ChatPanel
+                    feed={feed.filter(
+                      (e) => e.type === 'system' || e.channelId === activeChatChannelId
+                    )}
+                    clients={clients}
+                    selfId={client?.id}
+                    onSend={handleSendMessage}
+                    onEditMessage={handleEditMessage}
+                    onDeleteMessage={handleDeleteMessage}
+                    onSetFilePublic={(_messageId, fileId, isPublic) =>
+                      handleSetFilePublic(activeChatChannelId, fileId, isPublic)
+                    }
+                    onDeleteFile={(_messageId, fileId) =>
+                      handleDeleteFile(activeChatChannelId, fileId)
+                    }
+                    onCopyLink={handleCopyLink}
+                    onReactMessage={handleReactMessage}
+                    onLoadReactors={handleLoadReactors}
+                    onTyping={handleTyping}
+                    onError={showError}
+                    typingUsers={typingUsers}
+                    disabled={activeChatChannelId == null}
+                    canModerate={canModerateChat}
+                    channelKey={activeChatChannelId}
+                    onLoadOlder={loadOlderMessages}
+                    hasMoreOlder={
+                      activeChatChannelId != null && !exhaustedChannels.has(activeChatChannelId)
+                    }
+                    pokeTargetName={activeChatDmName}
+                  />
+                ) : (
+                  <VideoGrid
+                    streams={allVideoStreams}
+                    clients={clients}
+                    selectedStreamClientId={selectedStreamClientId}
+                    onSelect={setSelectedStreamClientId}
+                    onPopout={handlePopout}
+                    watchedStreamClientIds={watchedStreamClientIds}
+                    onSetStreamWatched={handleSetStreamWatched}
+                    onStopSharing={shareControl.stop}
+                    shareControl={shareControl}
+                    streamAudio={streamAudio}
+                    onSetStreamAudio={setStreamAudioState}
+                    theatre={theatre}
+                    onToggleTheatre={toggleTheatre}
+                    voiceClients={clients
+                      .filter((c) => c.channel_id === selfChannelId)
+                      .sort((a, b) => (a.name || '').localeCompare(b.name || ''))}
+                    speakingClients={speakingClients}
+                    selfId={client?.id}
+                    micMuted={micMuted}
+                    deafened={deafened}
+                    onToggleMic={toggleMic}
+                    onToggleDeafen={toggleDeafen}
+                  />
+                )}
+              </div>
+            </main>
+            <AnimatePresence>
+              {showSettings && (
+                <motion.div
+                  className="settings-overlay"
+                  onClick={closeSettings}
+                  {...scrimFade(overlayAnim)}
+                >
+                  <motion.div
+                    className="settings-modal"
+                    onClick={(e) => e.stopPropagation()}
+                    {...overlayPop(overlayAnim)}
+                  >
+                    <button
+                      className="settings-close-btn"
+                      onClick={closeSettings}
+                      title="Close settings"
+                    >
+                      <IconX size={18} />
+                    </button>
+                    <Settings />
+                  </motion.div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+          {connected && eventsStatus === 'reconnecting' && (
+            <ConnectionOverlay onAbort={handleDisconnect} />
+          )}
         </div>
-        {connected && connectionStatus === 'reconnecting' && (
-          <ConnectionOverlay onAbort={handleDisconnect} />
-        )}
-      </div>
+      </VoiceSessionProvider>
     </ClientActionsProvider>
   )
 }

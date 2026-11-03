@@ -3,16 +3,19 @@ import {
   computeOutboundVideoSample,
   extractRecvAudioMetrics,
   extractRecvVideoMetrics,
-  extractSendAudioMetrics
+  extractSendAudioMetrics,
+  extractTransportHealth
 } from '../streamStats'
 
 let getProducerTransport = () => null
+let getConsumerTransport = () => null
 let getProducers = () => []
 let getScreenShareContext = () => null
 let getRemoteConsumers = () => new Map()
 
 export function configureStreamDiagnostics(dependencies = {}) {
   if (dependencies.getProducerTransport) getProducerTransport = dependencies.getProducerTransport
+  if (dependencies.getConsumerTransport) getConsumerTransport = dependencies.getConsumerTransport
   if (dependencies.getProducers) getProducers = dependencies.getProducers
   if (dependencies.getScreenShareContext) {
     getScreenShareContext = dependencies.getScreenShareContext
@@ -232,6 +235,66 @@ export function startStreamDebugStats(onSample, intervalMs = 1000) {
     clearInterval(timer)
     outboundPrevByKey.clear()
     prevByKey.clear()
+  }
+}
+
+// ─── Voice connection health (sidebar indicator) ─────────────────
+// A much lighter poll than startStreamDebugStats: one transport-level getStats()
+// per transport per tick, reduced to the numbers the connection indicator shows.
+// Read-only like the per-stream poller, with its own delta state.
+//
+// onSample receives { ts, rttMs, inboundLoss, outboundLoss }. RTT prefers the
+// send transport's selected ICE pair (our mic is always on it) and falls back
+// to the receive transport's. Returns stop().
+export function startVoiceConnectionStats(onSample, intervalMs = 2000) {
+  const prevByLabel = new Map()
+  let stopped = false
+  let inFlight = false
+
+  const read = async (label, transport) => {
+    if (!transport || transport.closed || !transport.getStats) {
+      prevByLabel.delete(label)
+      return null
+    }
+    try {
+      const { metrics, snapshot } = extractTransportHealth(
+        await transport.getStats(),
+        prevByLabel.get(label)
+      )
+      if (snapshot) prevByLabel.set(label, snapshot)
+      else prevByLabel.delete(label)
+      return metrics
+    } catch {
+      return null
+    }
+  }
+
+  const tick = async () => {
+    if (inFlight) return
+    inFlight = true
+    try {
+      const [send, recv] = await Promise.all([
+        read('send', getProducerTransport()),
+        read('recv', getConsumerTransport())
+      ])
+      if (stopped) return
+      onSample?.({
+        ts: Date.now(),
+        rttMs: send?.rttMs ?? recv?.rttMs ?? null,
+        inboundLoss: recv?.inboundLoss ?? null,
+        outboundLoss: send?.outboundLoss ?? null
+      })
+    } finally {
+      inFlight = false
+    }
+  }
+
+  tick()
+  const timer = setInterval(tick, intervalMs)
+  return function stop() {
+    stopped = true
+    clearInterval(timer)
+    prevByLabel.clear()
   }
 }
 

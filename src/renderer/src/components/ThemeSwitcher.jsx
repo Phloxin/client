@@ -72,5 +72,3 @@ export function ThemeSwitcher() {
     </details>
   )
 }
-
-export default ThemeSwitcher

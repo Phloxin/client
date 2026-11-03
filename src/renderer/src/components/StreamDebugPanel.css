@@ -302,6 +302,41 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* ── Encryption card ──────────────────────────────────────────────────────── */
+.sdp-call-code-label {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-tertiary);
+}
+
+.sdp-call-code {
+  margin: 2px 0 4px;
+  font-family: var(--font-family-mono);
+  font-size: 18px;
+  font-weight: var(--font-weight-semibold);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.08em;
+  color: var(--color-text);
+  user-select: text;
+}
+
+.sdp-listeners {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  margin-top: 8px;
+  font-size: var(--font-size-xs);
+}
+
+.sdp-listener {
+  color: var(--color-text);
+}
+
+.sdp-listener-unknown {
+  color: var(--color-danger);
+  font-weight: var(--font-weight-semibold);
+}
+
 /* ── Resize grip (bottom-right corner) ────────────────────────────────────── */
 .sdp-resize {
   position: absolute;

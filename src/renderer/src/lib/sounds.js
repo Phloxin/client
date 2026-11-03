@@ -217,8 +217,7 @@ export const UNWIRED_SOUNDS = new Set([
   'neutral_connection_connectionlost_currentchannel',
   'neutral_moved_tocurrentchannel',
   'neutral_moved_awayfromcurrentchannel',
-  'you_were_moved',
-  'you_were_poked'
+  'you_were_moved'
 ])
 
 // Filename shown as a sound's title in Settings (null if the pack lacks it).

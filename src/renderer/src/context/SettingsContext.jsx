@@ -74,7 +74,8 @@ const DEFAULT_ANIMATIONS = {
   userJoin: 'pop', // 'pop' | 'off'
   channelList: 'pop', // 'pop' | 'off'
   overlays: 'on', // modals, menus, toasts — 'on' | 'off'
-  messages: 'slide' // new chat messages — 'slide' | 'off'
+  messages: 'slide', // new chat messages — 'slide' | 'off'
+  streamFocus: 'on' // stream tiles moving into/out of focus — 'on' | 'off'
 }
 
 // 'slide' was retired for user-join / channel-list (only 'pop' read well there)

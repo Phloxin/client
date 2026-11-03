@@ -30,7 +30,8 @@ function ServerSummary() {
         if (!res.ok) throw new Error(`Server responded ${res.status}`)
         return res.json()
       })
-      .then((data) => alive && setInfo(data))
+      // started_at is ms since the Unix epoch; uptime is taken once, when the summary opens.
+      .then((data) => alive && setInfo({ ...data, uptime: (Date.now() - data.started_at) / 1000 }))
       .catch((err) => alive && setError(err.message))
     return () => {
       alive = false
@@ -58,9 +59,7 @@ function ServerSummary() {
           </section>
           <section className="client-summary-section">
             <h3 className="client-summary-heading">Uptime</h3>
-            <p className="client-summary-value">
-              {info ? formatUptime(info.uptime) : '…'}
-            </p>
+            <p className="client-summary-value">{info ? formatUptime(info.uptime) : '…'}</p>
           </section>
         </>
       )}

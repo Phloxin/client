@@ -2,8 +2,8 @@
 // consume/close decisions are unit-testable without a signaling session.
 //
 // The hard part isn't the diff, it's the timing: a consume takes several awaited
-// round-trips (Consume → transport.consume → Pause/Resume) before it appears in
-// the consumer map, and the watch set can move twice in that window. Anything
+// round-trips (CreateSink → transport.consume → ConfigureSink) before it appears
+// in the consumer map, and the watch set can move twice in that window. Anything
 // that reads "am I consuming this?" therefore has to count consumes that are
 // still in flight, or a watch→unwatch→watch race starts a second consumer for
 // the same producer and orphans the first server-side.
@@ -73,7 +73,7 @@ export function resolveWatchIntent({
     consume.push({ producerId, kind: 'video', clientId, producedType })
   }
   // Screen audio for every watched client whose audio producer we know about.
-  // Producers that arrive later are picked up by the NewProducer handler.
+  // Sources that arrive later are picked up when SourcesAdded announces them.
   for (const [producerId, { clientId }] of screenAudioProducers) {
     if (!watchedClientIds.has(clientId) || isConsuming(producerId)) continue
     consume.push({ producerId, kind: 'audio', clientId, producedType: 'ScreenShareAudio' })

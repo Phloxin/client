@@ -13,9 +13,7 @@ import {
 } from 'electron'
 import { basename, join } from 'path'
 import { createRequire } from 'node:module'
-import { readFileSync, writeFileSync, unlinkSync } from 'fs'
-import http from 'http'
-import https from 'https'
+import { readFileSync, writeFileSync } from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import iconPng from '../../resources/icon.png?asset'
 import iconIco from '../../build/icon.ico?asset'
@@ -27,6 +25,15 @@ import { appRoot, pickFollowTarget } from './windowFollow'
 import { setupAudioCapture, stopAudioCaptureHost } from './audioCapture'
 import { setupUpdater } from './updater'
 import { setupTray, setTrayVoiceState, destroyTray } from './tray'
+import {
+  authorizationFor,
+  clearSession,
+  getFreshToken,
+  onExpired,
+  onUpdateRequired,
+  refresh,
+  setSession
+} from './session'
 import {
   attachWindowDiagnostics,
   installProductionDiagnostics,
@@ -215,56 +222,6 @@ if (enableFeatures.length > 0) {
   }
 }
 
-// Store auth token in main process so it persists across windows
-let authToken = null
-let authClient = null
-
-// ─── Encrypted auth persistence ───────────────────────────────────
-// Persists the token/client to disk (encrypted via the OS keychain) so the
-// user stays logged in across app restarts. Falls back to in-memory-only
-// storage if encryption isn't available on this platform.
-function authFilePath() {
-  return join(app.getPath('userData'), 'auth.json')
-}
-
-function readAuthFile() {
-  try {
-    const raw = readFileSync(authFilePath(), 'utf-8')
-    const data = JSON.parse(raw)
-    if (safeStorage.isEncryptionAvailable() && (data.token || data.client)) {
-      return {
-        token: data.token ? safeStorage.decryptString(Buffer.from(data.token, 'base64')) : null,
-        client: data.client ? safeStorage.decryptString(Buffer.from(data.client, 'base64')) : null
-      }
-    }
-    return {
-      token: data.plainToken ?? null,
-      client: data.plainClient ?? null
-    }
-  } catch (err) {
-    if (err?.code !== 'ENOENT') {
-      console.warn('[auth] Failed to restore saved authentication:', err)
-    }
-    return { token: null, client: null }
-  }
-}
-
-function persistAuth() {
-  try {
-    if (safeStorage.isEncryptionAvailable()) {
-      const data = {}
-      if (authToken != null) data.token = safeStorage.encryptString(authToken).toString('base64')
-      if (authClient != null) data.client = safeStorage.encryptString(authClient).toString('base64')
-      writeFileSync(authFilePath(), JSON.stringify(data))
-    } else {
-      const data = { plainToken: authToken, plainClient: authClient }
-      writeFileSync(authFilePath(), JSON.stringify(data))
-    }
-  } catch (err) {
-    console.error('Failed to persist auth data:', err)
-  }
-}
-
 // ─── Saved servers persistence ────────────────────────────────────
 // The user's saved server list (nickname / host / username / password) lives in
 // memory and is persisted to disk encrypted via the OS keychain, since it holds
@@ -409,6 +366,17 @@ function wireFramelessChrome(win) {
   const suppressSystemMenu = (e) => e.preventDefault()
   win.on('system-context-menu', suppressSystemMenu)
   win.webContents.on('system-context-menu', suppressSystemMenu)
+}
+
+const YOUTUBE_HOSTS = new Set(['www.youtube.com', 'www.youtube-nocookie.com'])
+
+function isYouTubeRequest(url) {
+  try {
+    const target = new URL(url)
+    return target.protocol === 'https:' && YOUTUBE_HOSTS.has(target.host)
+  } catch {
+    return false
+  }
 }
 
 function createWindow() {
@@ -774,21 +742,32 @@ app.whenReady().then(() => {
     }
   })
 
-  // Packaged builds load the renderer from file://, which has a null origin, so
-  // framed YouTube requests carry no Referer and the player refuses to start
-  // ("error 153"). Dev serves the renderer over the vite dev server, which is
-  // why it only breaks in releases — so send what dev sends when the page can't
-  // supply a referrer of its own. YouTube rejects its own domain here (error
-  // 152), it has to look like an ordinary embedding site.
-  // ponytail: forged header; the real fix is serving the packaged renderer over
-  // http://127.0.0.1 so prod has a genuine origin, do that if this stops working.
+  // ─── Outgoing request headers ──────────────────────────────────────
+  // A session allows one onBeforeSendHeaders listener (registering another
+  // replaces it), so every header rewrite lives in this one.
   session.defaultSession.webRequest.onBeforeSendHeaders(
-    { urls: ['https://www.youtube.com/*', 'https://www.youtube-nocookie.com/*'] },
+    { urls: ['http://*/*', 'https://*/*'] },
     (details, callback) => {
-      if (!details.requestHeaders.Referer) {
-        details.requestHeaders.Referer = 'http://localhost:5173/'
+      const headers = details.requestHeaders
+      // Packaged builds load the renderer from file://, which has a null origin,
+      // so framed YouTube requests carry no Referer and the player refuses to
+      // start ("error 153"). Dev serves the renderer over the vite dev server,
+      // which is why it only breaks in releases — so send what dev sends when
+      // the page can't supply a referrer of its own. YouTube rejects its own
+      // domain here (error 152), it has to look like an ordinary embedding site.
+      // ponytail: forged header; the real fix is serving the packaged renderer
+      // over http://127.0.0.1 so prod has a genuine origin, do that if this
+      // stops working.
+      if (isYouTubeRequest(details.url) && !headers.Referer) {
+        headers.Referer = 'http://localhost:5173/'
       }
-      callback({ requestHeaders: details.requestHeaders })
+      // The session credential, attached here rather than by callers so plain
+      // <img>/<video> loads of private /files URLs authenticate too. Never waits
+      // on a refresh: the proactive timer keeps the token fresh, and authFetch's
+      // token_expired retry covers a request that races a rotation.
+      const authorization = authorizationFor(details.url, headers)
+      if (authorization) headers.Authorization = authorization
+      callback({ requestHeaders: headers })
     }
   )
 
@@ -861,11 +840,6 @@ app.whenReady().then(() => {
     (e) => BrowserWindow.fromWebContents(e.sender)?.isMaximized() ?? false
   )
 
-  // Load any previously persisted auth from disk
-  const persisted = readAuthFile()
-  authToken = persisted.token
-  authClient = persisted.client
-
   // Load the saved server list from disk
   servers = readServersFile()
 
@@ -924,37 +898,6 @@ app.whenReady().then(() => {
     persistServers()
   })
 
-  // Store token from any window
-  ipcMain.on('store-token', (_, token) => {
-    authToken = token
-    persistAuth()
-  })
-
-  // Return stored token to any window that asks
-  ipcMain.handle('get-token', () => {
-    return authToken
-  })
-
-  ipcMain.on('store-client', (_, client) => {
-    authClient = client
-    persistAuth()
-  })
-
-  ipcMain.handle('get-client', () => {
-    return authClient
-  })
-
-  // Clear persisted + in-memory auth (e.g. on logout or token invalidation)
-  ipcMain.on('clear-auth', () => {
-    authToken = null
-    authClient = null
-    try {
-      unlinkSync(authFilePath())
-    } catch (err) {
-      if (err?.code !== 'ENOENT') console.warn('[auth] Failed to remove saved authentication:', err)
-    }
-  })
-
   // Download a remote file (e.g. a chat image attachment) to a user-chosen
   // location. Shows a native save dialog, then fetches the URL and writes it.
   ipcMain.handle('download-file', async (event, { url, filename }) => {
@@ -971,7 +914,12 @@ app.whenReady().then(() => {
         defaultPath: filename || basename(target.pathname) || 'download'
       })
       if (canceled || !filePath) return { ok: false, canceled: true }
-      const res = await fetch(url)
+      // Node's fetch bypasses the webRequest hook, so attach the session here.
+      const authorization = authorizationFor(url)
+      const res = await fetch(
+        url,
+        authorization ? { headers: { Authorization: authorization } } : {}
+      )
       if (!res.ok) throw new Error(`Server responded ${res.status}`)
       const buffer = Buffer.from(await res.arrayBuffer())
       writeFileSync(filePath, buffer)
@@ -986,80 +934,52 @@ app.whenReady().then(() => {
     }
   })
 
-  // Fetch a channel's recent messages. The endpoint is GET but expects a JSON
-  // body ({ limit }), which the renderer's fetch can't send (the Fetch spec
-  // forbids a body on GET). Node's http.request has no such restriction, so we
-  // make the request here and hand the parsed messages back to the renderer.
-  ipcMain.handle(
-    'get-channel-messages',
-    async (_, { url, token, limit, before, after, around }) => {
-      return new Promise((resolve) => {
-        let target
-        try {
-          target = new URL(url)
-        } catch (err) {
-          console.warn('[messages] Rejected invalid channel-history URL:', err)
-          resolve({ ok: false, error: 'Invalid URL' })
-          return
-        }
-        const lib = target.protocol === 'https:' ? https : http
-        const body = JSON.stringify({
-          limit,
-          ...(before != null ? { before } : {}),
-          ...(after != null ? { after } : {}),
-          ...(around != null ? { around } : {})
-        })
-        const req = lib.request(
-          {
-            hostname: target.hostname,
-            port: target.port,
-            path: target.pathname + target.search,
-            method: 'GET',
-            headers: {
-              'Content-Type': 'application/json',
-              'Content-Length': Buffer.byteLength(body),
-              Authorization: `Bearer ${token}`
-            }
-          },
-          (res) => {
-            let data = ''
-            res.on('data', (chunk) => {
-              data += chunk
-            })
-            res.on('end', () => {
-              if (res.statusCode >= 200 && res.statusCode < 300) {
-                try {
-                  resolve({ ok: true, messages: JSON.parse(data) })
-                } catch (err) {
-                  console.error('[messages] Channel history returned invalid JSON:', {
-                    host: target.host,
-                    status: res.statusCode,
-                    error: err
-                  })
-                  resolve({ ok: false, error: 'Invalid response JSON' })
-                }
-              } else {
-                console.warn('[messages] Channel history request failed:', {
-                  host: target.host,
-                  status: res.statusCode
-                })
-                resolve({ ok: false, status: res.statusCode, error: data })
-              }
-            })
-          }
-        )
-        req.on('error', (err) => {
-          console.error('[messages] Channel history network request failed:', {
-            host: target.host,
-            error: err
-          })
-          resolve({ ok: false, error: err.message })
-        })
-        req.write(body)
-        req.end()
-      })
+  // ─── Session (see session.js) ─────────────────────────────────────
+  // The renderer hands over the login/register response and asks for refreshes;
+  // only the events-WS identify ever gets a token back.
+  //
+  // A credential never outlives the UI that knows about it: the session is
+  // cleared when the renderer that set it goes away — a main-frame navigation
+  // to a new document (reload or navigating away; in-page and HMR updates don't
+  // count), its render process dying, or its window closing. The renderer always
+  // boots disconnected, so this is the same as it forgetting the pair. The
+  // server-side session is left alone (no logout).
+  let sessionOwner = null
+  const watchedSessionOwners = new WeakSet()
+  const clearSessionOwnedBy = (contents) => {
+    if (sessionOwner !== contents) return
+    sessionOwner = null
+    clearSession()
+  }
+  const watchSessionOwner = (contents) => {
+    if (watchedSessionOwners.has(contents)) return
+    watchedSessionOwners.add(contents)
+    contents.on('did-start-navigation', (details) => {
+      if (details.isMainFrame && !details.isSameDocument) clearSessionOwnedBy(contents)
+    })
+    contents.on('render-process-gone', () => clearSessionOwnedBy(contents))
+    BrowserWindow.fromWebContents(contents)?.once('closed', () => clearSessionOwnedBy(contents))
+  }
+  ipcMain.handle('session:set', (event, payload) => {
+    setSession(payload)
+    sessionOwner = event.sender
+    watchSessionOwner(event.sender)
+  })
+  ipcMain.handle('session:clear', () => {
+    clearSession()
+  })
+  ipcMain.handle('session:get-token', (_, opts) => getFreshToken(opts ?? {}))
+  ipcMain.handle('session:refresh', async () => {
+    await refresh()
+  })
+  onExpired(() => {
+    for (const win of BrowserWindow.getAllWindows()) win.webContents.send('session:expired')
+  })
+  onUpdateRequired(() => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send('session:update-required')
     }
-  )
+  })
 
   ipcMain.on('theme-changed-ipc', (_, themeId) => {
     const windows = BrowserWindow.getAllWindows()

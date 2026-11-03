@@ -6,18 +6,19 @@ const AuthContext = createContext(null)
 export function AuthProvider({ children }) {
   // Session-only: the app always launches disconnected and the user picks a
   // saved server to connect to. `token` marks a live session (set at login,
-  // cleared at disconnect) — the *current* access token lives in lib/auth and
-  // rotates underneath via refresh, so REST callers go through authFetch
-  // instead of reading this.
+  // cleared at disconnect): an opaque per-login marker, not a credential. The
+  // token pair lives in the main process (see lib/auth) and rotates underneath
+  // via refresh, so REST callers go through authFetch instead of reading this.
   const [token, setToken] = useState(null)
   const [session, setSession] = useState(null)
   const [client, setClient] = useState(null)
 
-  // Store a full login/register response: the rotating pair goes to the token
-  // store, the rest into React state.
-  const applyAuthResponse = useCallback((data) => {
-    setAuthTokens(data)
-    setToken(data.access_token)
+  // Store a full login/register response: the rotating pair goes to the main
+  // process's session, the rest into React state. Resolves once main holds the
+  // pair, so nothing keyed on `token` can send a request without it.
+  const applyAuthResponse = useCallback(async (data) => {
+    await setAuthTokens(data)
+    setToken({})
     setSession(data.session)
     setClient(data.client)
     return data

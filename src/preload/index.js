@@ -9,13 +9,13 @@ ipcRenderer.on('audiocapture:port', (e) => {
 })
 
 // Screen-share codec override from the environment (PREFER_SCREENSHARE_CODEC=
-// H264|AV1|VP9). Normalized here so the renderer reads a clean value or null;
+// H264|AV1|VP9|VP8). Normalized here so the renderer reads a clean value or null;
 // invalid values are ignored (main logs a warning to the terminal). This pins
 // the codec the share is produced with and disables the adaptive downgrade —
 // see pickVideoCodec/maybeDowngradeScreenCodec in renderer/src/lib/soup.js.
 function preferredScreenshareCodec() {
   const raw = process.env.PREFER_SCREENSHARE_CODEC?.trim().toUpperCase()
-  return raw === 'H264' || raw === 'AV1' || raw === 'VP9' ? raw : null
+  return raw === 'H264' || raw === 'AV1' || raw === 'VP9' || raw === 'VP8' ? raw : null
 }
 
 // Dev-only escape hatch: launch with PYLON_INSECURE=1 to reach a server over
@@ -26,11 +26,22 @@ function preferredScreenshareCodec() {
 // renderer/src/lib/serverConfig.js.
 const insecureConnections = import.meta.env.DEV && process.env.PYLON_INSECURE === '1'
 
+// Dev-only: launch with PYLON_VOICE_ENDPOINT=ws://host:port to dial that voice
+// node instead of the voice_endpoint the server sends with each ticket (for a
+// local pylon-voice the backend doesn't advertise). Stripped from packaged
+// builds like PYLON_INSECURE. Consumed by voiceSocketUrl in serverConfig.js.
+const voiceEndpointOverride = import.meta.env.DEV
+  ? process.env.PYLON_VOICE_ENDPOINT?.trim() || null
+  : null
+
 // Custom APIs for renderer
 const api = {
   platform: process.platform,
   preferScreenshareCodec: preferredScreenshareCodec(),
   insecureConnections,
+  voiceEndpointOverride,
+  // Installs window.pylonTest (renderer lib/testHooks.js) for the e2e harness.
+  isTestHarness: process.env.PYLON_TEST === '1',
   screenAudio: {
     getCapabilities: () => ipcRenderer.invoke('audiocapture:get-capabilities'),
     listApps: () => ipcRenderer.invoke('audiocapture:list-apps'),
@@ -40,6 +51,23 @@ const api = {
       const handler = (_e, payload) => cb(payload)
       ipcRenderer.on('audiocapture:error', handler)
       return () => ipcRenderer.removeListener('audiocapture:error', handler)
+    }
+  },
+  // The session lives in main (src/main/session.js); see renderer/src/lib/auth.js.
+  session: {
+    set: (payload) => ipcRenderer.invoke('session:set', payload),
+    clear: () => ipcRenderer.invoke('session:clear'),
+    getToken: (opts) => ipcRenderer.invoke('session:get-token', opts),
+    refresh: () => ipcRenderer.invoke('session:refresh'),
+    onExpired: (cb) => {
+      const handler = () => cb()
+      ipcRenderer.on('session:expired', handler)
+      return () => ipcRenderer.removeListener('session:expired', handler)
+    },
+    onUpdateRequired: (cb) => {
+      const handler = () => cb()
+      ipcRenderer.on('session:update-required', handler)
+      return () => ipcRenderer.removeListener('session:update-required', handler)
     }
   },
   diagnostics: {

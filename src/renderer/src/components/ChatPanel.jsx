@@ -18,13 +18,20 @@ import {
   IconChevronUp,
   IconChevronDown,
   IconDownload,
-  IconEye
+  IconEye,
+  IconLink,
+  IconWorld,
+  IconLock,
+  IconPhoneCall,
+  IconPhoneEnd,
+  IconHandFinger
 } from '@tabler/icons-react'
 import { motion, AnimatePresence } from 'motion/react'
 import ImageViewer from './ImageViewer'
 import FileViewer from './FileViewer'
 import EmojiPicker from './EmojiPicker'
 import { renderMarkdown } from '../lib/markdown'
+import { callMessageLabel, isCallMessage } from '../lib/callMessages'
 import { fitAttachments, formatBytes, previewKind } from '../lib/attachments'
 import { useClientMenu } from './ClientContextMenu'
 import { useClientActions } from '../context/ClientActionsContext'
@@ -438,12 +445,15 @@ function composerMentionNodes(text, clients) {
 // One-line summary of a message for a reply preview. Markdown is left as-is
 // (a preview isn't the place to render it), but `<@id>` tokens are resolved the
 // same way the message body resolves them, and newlines collapse so a
-// multi-line quote can't push the preview open — CSS truncates the rest.
-function previewText(msg, resolveMention) {
+// multi-line quote can't push the preview open — CSS truncates the rest. Call
+// messages and pokes read as their label, a poke's note after it.
+function previewText(msg, resolveMention, label) {
+  if (isCallMessage(msg)) return label
   const text = (msg.text || '')
     .replace(/<@(\d+)>/g, (raw, id) => `@${resolveMention(id) ?? 'unknown'}`)
     .replace(/\s+/g, ' ')
     .trim()
+  if (msg.kind === 'poke') return text ? `${label}: ${text}` : label
   if (text) return text
   const count = msg.attachments?.length || 0
   if (count) return `${count} attachment${count === 1 ? '' : 's'}`
@@ -465,17 +475,28 @@ function ChatPanel({
   onSend,
   onEditMessage,
   onDeleteMessage,
+  onSetFilePublic,
+  onDeleteFile,
+  onCopyLink,
   onReactMessage,
+  onLoadReactors,
   onTyping,
   onError,
   typingUsers = [],
   disabled,
+  canModerate = false,
   channelKey,
   onLoadOlder,
-  hasMoreOlder = false
+  hasMoreOlder = false,
+  // Who our own pokes went to: the other participants of this DM.
+  pokeTargetName
 }) {
   const [text, setText] = useState(() => drafts.get(channelKey) || '')
   const [attachments, setAttachments] = useState([])
+  // "Create public link" for every attachment in the next message. Resets after
+  // a send and whenever the pending list empties (in-render adjustment).
+  const [sharePublic, setSharePublic] = useState(false)
+  if (sharePublic && !attachments.length) setSharePublic(false)
   // Feed entry this message will reply to, or null. Declared before the
   // channel-swap block below, which clears it during render.
   const [replyTo, setReplyTo] = useState(null)
@@ -525,9 +546,12 @@ function ChatPanel({
   const [viewerFile, setViewerFile] = useState(null)
   // Id of the message currently being edited inline (only one at a time).
   const [editingId, setEditingId] = useState(null)
-  // Id of the message pending a delete confirmation (drives the in-app dialog).
-  const [pendingDeleteId, setPendingDeleteId] = useState(null)
+  // What's pending a delete confirmation (drives the in-app dialog), or null:
+  // { kind: 'message', id } or { kind: 'file', messageId, fileId, name }.
+  const [pendingDelete, setPendingDelete] = useState(null)
   // Right-click menu on own messages: { id, x, y } while open, else null.
+  // Opened from an attachment it also carries `attachment` (the feed attachment
+  // plus `canManage`), which adds the per-file actions.
   const [msgMenu, setMsgMenu] = useState(null)
   // Emoji picker for reactions (from the hover bar's "+"): { id, x, y } or null.
   const [reactPicker, setReactPicker] = useState(null)
@@ -728,13 +752,13 @@ function ChatPanel({
 
   // Escape closes the delete-confirmation dialog while it's open.
   useEffect(() => {
-    if (pendingDeleteId == null) return
+    if (pendingDelete == null) return
     const onKey = (e) => {
-      if (e.key === 'Escape') setPendingDeleteId(null)
+      if (e.key === 'Escape') setPendingDelete(null)
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [pendingDeleteId])
+  }, [pendingDelete])
 
   // Ctrl+F opens the search bar (or reselects the query when it's already up),
   // replacing the browser's own find — its highlights would cover the whole
@@ -876,11 +900,14 @@ function ChatPanel({
     if (disabled) return
     const trimmed = text.trim()
     if (!trimmed && !attachments.length) return
-    onSend?.(encodeMentions(trimmed, clients), attachments, replyTo?.id)
+    onSend?.(encodeMentions(trimmed, clients), attachments, replyTo?.id, {
+      public: sharePublic
+    })
     setMention(null)
     setText('')
     drafts.delete(channelKey)
     setAttachments([])
+    setSharePublic(false)
     setReplyTo(null)
     setShowEmoji(false)
   }
@@ -917,7 +944,7 @@ function ChatPanel({
     // in the feed is ours, so we never steal caret navigation from a draft.
     if (e.key === 'ArrowUp' && !text && !attachments.length && !disabled) {
       const last = [...feed].reverse().find((entry) => entry.type === 'message')
-      if (last && selfId != null && last.authorId === selfId) {
+      if (last && selfId != null && last.authorId === selfId && last.kind === 'default') {
         e.preventDefault()
         setEditingId(last.id)
         return
@@ -970,6 +997,16 @@ function ChatPanel({
 
   const resolveAvatar = (entry) => clients?.find((c) => c.id === entry.authorId)?.avatar
 
+  // The sentence a call message or a poke reads as, from the viewer's side.
+  const kindLabel = (entry) => {
+    if (isCallMessage(entry)) return callMessageLabel(entry, resolveName(entry))
+    if (entry.kind !== 'poke') return null
+    if (selfId != null && entry.authorId === selfId) {
+      return pokeTargetName ? `You poked ${pokeTargetName}` : 'You poked'
+    }
+    return `${resolveName(entry)} poked you`
+  }
+
   // Start replying to a message; the composer takes focus so typing can carry on
   // from wherever the user was reading.
   const startReply = (entry) => {
@@ -997,15 +1034,16 @@ function ChatPanel({
   }, [currentMatch])
 
   // Hover text for a reaction chip: who reacted, with anyone we can't name
-  // (someone who has since left the server) folded into "+N others". Ids
+  // folded into "+N others". `userIds` is the first page of reactors, fetched on
+  // the chip's first hover (onLoadReactors) and kept current by live events, so
+  // it can be a subset; `count` covers the rest and `me` supplies "You". Ids
   // compare as strings — roster ids may be numbers while the server's are
   // snowflake strings.
   const reactionTitle = (r) => {
-    const names = (r.userIds || []).map((id) =>
-      String(id) === String(selfId)
-        ? 'You'
-        : clients?.find((c) => String(c.id) === String(id))?.name || null
-    )
+    const names = (r.userIds || [])
+      .filter((id) => String(id) !== String(selfId))
+      .map((id) => clients?.find((c) => String(c.id) === String(id))?.name || null)
+    if (r.me) names.unshift('You')
     const known = names.filter(Boolean).slice(0, MAX_REACTION_NAMES)
     const others = r.count - known.length
     if (!known.length) return `${r.count} reaction${r.count === 1 ? '' : 's'}`
@@ -1034,11 +1072,15 @@ function ChatPanel({
   }
 
   const confirmDelete = () => {
-    const id = pendingDeleteId
-    setPendingDeleteId(null)
-    if (id == null) return
-    if (editingId === id) setEditingId(null)
-    onDeleteMessage?.(id)
+    const target = pendingDelete
+    setPendingDelete(null)
+    if (target == null) return
+    if (target.kind === 'file') {
+      onDeleteFile?.(target.messageId, target.fileId)
+      return
+    }
+    if (editingId === target.id) setEditingId(null)
+    onDeleteMessage?.(target.id)
   }
 
   return (
@@ -1140,12 +1182,17 @@ function ChatPanel({
           // first shows the avatar + author + time; the rest are bare lines.
           // A reply always starts its own group: its preview line needs the
           // header above it to make sense.
+          // Call messages are real messages (reactions, replies) drawn as a
+          // system line, so they neither join nor start a group.
+          const callEntry = isCallMessage(entry)
           const grouped =
             !compact &&
             !dayDivider &&
             !entry.replyTo &&
+            !callEntry &&
             prev &&
             prev.type === 'message' &&
+            !isCallMessage(prev) &&
             prev.authorId === entry.authorId &&
             entry.ts - prev.ts < GROUP_WINDOW_MS
           // An uploaded file referenced by an embed resolves to the same URL, so
@@ -1158,10 +1205,13 @@ function ChatPanel({
           }
           const visibleAttachments = (entry.attachments || []).filter((a) => !embedUrls.has(a.url))
           const isEditing = editingId === entry.id
-          // Only the author may edit/delete their own messages (the server
-          // enforces this too); hide the controls while that row is in edit mode.
+          // Only the author may edit, and only a plain message; the author or a
+          // moderator (canModerate: MANAGE_MESSAGES outside DMs) may delete,
+          // except a call message, which nobody can. The server enforces both;
+          // hide the controls while that row is in edit mode.
           const isOwn = selfId != null && entry.authorId === selfId
-          const canManage = isOwn && !disabled && !isEditing
+          const canEdit = isOwn && entry.kind === 'default' && !disabled && !isEditing
+          const canDelete = !callEntry && (isOwn || canModerate) && !disabled && !isEditing
           const edited = !!entry.editedTs && !isEditing
           // First image in the message (attachment, else embed image) for Copy Image.
           const imageUrl =
@@ -1171,7 +1221,36 @@ function ChatPanel({
           // Replying needs a live composer, but copying doesn't — so a peeked
           // (disabled) channel still gets a menu, just without Reply.
           const canReply = !disabled && !isEditing
-          const hasMenu = canReply || canManage || entry.text || imageUrl
+          const hasMenu = canReply || canEdit || canDelete || entry.text || imageUrl
+          // Who may make a file public/private or delete it: the uploader (the
+          // message author) or a moderator. The server enforces the real rule.
+          const canManageFiles = (isOwn || canModerate) && !disabled
+          // Opens the shared message menu; from an attachment it also carries
+          // that file, which adds Copy Link / Make Public / Delete File.
+          const openMessageMenu = (e, attachment = null) => {
+            e.preventDefault()
+            e.stopPropagation()
+            setMsgMenu({
+              id: entry.id,
+              x: e.clientX,
+              y: e.clientY,
+              text: entry.text || null,
+              imageUrl,
+              canEdit,
+              canDelete,
+              // The whole entry, so Reply can seed the composer bar
+              // with the author's name as well as the id.
+              entry: canReply ? entry : null,
+              attachment: attachment ? { ...attachment, canManage: canManageFiles } : null
+            })
+          }
+          // Nothing left to show: the message's only file was deleted.
+          const removed =
+            entry.kind === 'default' &&
+            !isEditing &&
+            !entry.text &&
+            !visibleAttachments.length &&
+            !entry.embeds?.length
           // Accent wash on messages that mention us (directly or @everyone).
           const mentionsMe =
             entry.mentionEveryone || (selfId != null && (entry.mentions || []).includes(selfId))
@@ -1179,25 +1258,8 @@ function ChatPanel({
             <div key={entry.id} data-mid={entry.id} data-anim-status={status}>
               {dayDivider}
               <div
-                className={`chat-message${grouped ? ' grouped' : ''}${mentionsMe ? ' mentioned' : ''}${entry.id === currentMatch ? ' search-match' : ''}`}
-                onContextMenu={
-                  hasMenu
-                    ? (e) => {
-                        e.preventDefault()
-                        setMsgMenu({
-                          id: entry.id,
-                          x: e.clientX,
-                          y: e.clientY,
-                          text: entry.text || null,
-                          imageUrl,
-                          canManage,
-                          // The whole entry, so Reply can seed the composer bar
-                          // with the author's name as well as the id.
-                          entry: canReply ? entry : null
-                        })
-                      }
-                    : undefined
-                }
+                className={`chat-message${grouped ? ' grouped' : ''}${callEntry ? ' chat-call-message' : ''}${mentionsMe ? ' mentioned' : ''}${entry.id === currentMatch ? ' search-match' : ''}`}
+                onContextMenu={hasMenu ? (e) => openMessageMenu(e) : undefined}
               >
                 {!disabled && !isEditing && (
                   <div className="chat-hover-actions">
@@ -1233,7 +1295,7 @@ function ChatPanel({
                     </button>
                   </div>
                 )}
-                {grouped ? (
+                {callEntry ? null : grouped ? (
                   <span className="chat-avatar-spacer" aria-hidden="true" />
                 ) : (
                   // aria-hidden: the avatar duplicates the author name beside it,
@@ -1264,7 +1326,11 @@ function ChatPanel({
                           {resolveName(entry.replyTo.message)}
                         </span>
                         <span className="chat-reply-text">
-                          {previewText(entry.replyTo.message, resolveMention)}
+                          {previewText(
+                            entry.replyTo.message,
+                            resolveMention,
+                            kindLabel(entry.replyTo.message)
+                          )}
                         </span>
                       </button>
                     ) : (
@@ -1273,7 +1339,7 @@ function ChatPanel({
                         <span className="chat-reply-text">Original message was deleted</span>
                       </div>
                     ))}
-                  {!grouped && (
+                  {!grouped && !callEntry && (
                     <div className="chat-message-header">
                       {resolveClient(entry) ? (
                         <span
@@ -1307,8 +1373,38 @@ function ChatPanel({
                       }}
                       onCancel={() => setEditingId(null)}
                     />
+                  ) : removed ? (
+                    <div className="chat-message-removed">File removed</div>
+                  ) : callEntry ? (
+                    <div className="chat-system-entry chat-call-entry">
+                      {entry.kind === 'call_ended' ? (
+                        <IconPhoneEnd size={14} stroke={2} />
+                      ) : (
+                        <IconPhoneCall size={14} stroke={2} />
+                      )}
+                      <span>{kindLabel(entry)}</span>
+                      <span className="chat-call-time">{formatTime(entry.ts)}</span>
+                    </div>
                   ) : (
-                    entry.text && <MessageText text={entry.text} resolveMention={resolveMention} />
+                    <>
+                      {entry.kind === 'poke' && (
+                        <div className="chat-poke">
+                          <IconHandFinger size={15} stroke={2} />
+                          {isOwn ? (
+                            <span>
+                              <strong>You</strong> poked{pokeTargetName ? ` ${pokeTargetName}` : ''}
+                            </span>
+                          ) : (
+                            <span>
+                              <strong>{resolveName(entry)}</strong> poked you
+                            </span>
+                          )}
+                        </div>
+                      )}
+                      {entry.text && (
+                        <MessageText text={entry.text} resolveMention={resolveMention} />
+                      )}
+                    </>
                   )}
                   {grouped && edited && (
                     <span className="chat-message-edited chat-message-edited-inline">(edited)</span>
@@ -1316,7 +1412,15 @@ function ChatPanel({
                   {visibleAttachments.length > 0 && (
                     <div className="chat-message-attachments">
                       {visibleAttachments.map((a) => (
-                        <div key={a.id} className="chat-attachment">
+                        <div
+                          key={a.id}
+                          className="chat-attachment"
+                          onContextMenu={
+                            hasMenu || a.publicUrl || canManageFiles
+                              ? (e) => openMessageMenu(e, a)
+                              : undefined
+                          }
+                        >
                           {a.kind === 'image' ? (
                             <img
                               src={a.url}
@@ -1350,6 +1454,13 @@ function ChatPanel({
                           type="button"
                           className={`chat-reaction${r.me ? ' mine' : ''}`}
                           title={reactionTitle(r)}
+                          // Enough reactors for the names the title shows, us included.
+                          onMouseEnter={() =>
+                            onLoadReactors?.(entry.id, r.emoji, MAX_REACTION_NAMES + 1)
+                          }
+                          onFocus={() =>
+                            onLoadReactors?.(entry.id, r.emoji, MAX_REACTION_NAMES + 1)
+                          }
                           onClick={() => onReactMessage?.(entry.id, r.emoji)}
                           layout={msgAnim}
                           // Only re-measure when this message's own reactions
@@ -1449,6 +1560,20 @@ function ChatPanel({
             </div>
           ))}
         </div>
+      )}
+      {!!attachments.length && (
+        <label
+          className="chat-share-public"
+          title="Anyone with the link can open these files, no account needed."
+        >
+          <input
+            type="checkbox"
+            checked={sharePublic}
+            onChange={(e) => setSharePublic(e.target.checked)}
+            disabled={disabled}
+          />
+          Create public link
+        </label>
       )}
 
       <AnimatePresence>
@@ -1621,33 +1746,100 @@ function ChatPanel({
               Copy Image
             </button>
           )}
-          {msgMenu.canManage && (
+          {(msgMenu.canEdit || msgMenu.canDelete) && (
             <>
               {(msgMenu.entry || msgMenu.text || msgMenu.imageUrl) && (
                 <div className="client-context-menu-divider" aria-hidden="true" />
               )}
-              <button
-                type="button"
-                className="client-context-menu-item"
-                onClick={() => {
-                  setEditingId(msgMenu.id)
-                  setMsgMenu(null)
-                }}
-              >
-                <IconPencil size={16} />
-                Edit Message
-              </button>
-              <button
-                type="button"
-                className="client-context-menu-item danger"
-                onClick={() => {
-                  setPendingDeleteId(msgMenu.id)
-                  setMsgMenu(null)
-                }}
-              >
-                <IconTrash size={16} />
-                Delete Message
-              </button>
+              {msgMenu.canEdit && (
+                <button
+                  type="button"
+                  className="client-context-menu-item"
+                  onClick={() => {
+                    setEditingId(msgMenu.id)
+                    setMsgMenu(null)
+                  }}
+                >
+                  <IconPencil size={16} />
+                  Edit Message
+                </button>
+              )}
+              {msgMenu.canDelete && (
+                <button
+                  type="button"
+                  className="client-context-menu-item danger"
+                  onClick={() => {
+                    setPendingDelete({ kind: 'message', id: msgMenu.id })
+                    setMsgMenu(null)
+                  }}
+                >
+                  <IconTrash size={16} />
+                  Delete Message
+                </button>
+              )}
+            </>
+          )}
+          {msgMenu.attachment && (msgMenu.attachment.publicUrl || msgMenu.attachment.canManage) && (
+            <>
+              {(msgMenu.entry ||
+                msgMenu.text ||
+                msgMenu.imageUrl ||
+                msgMenu.canEdit ||
+                msgMenu.canDelete) && (
+                <div className="client-context-menu-divider" aria-hidden="true" />
+              )}
+              {msgMenu.attachment.publicUrl && (
+                <button
+                  type="button"
+                  className="client-context-menu-item"
+                  onClick={() => {
+                    onCopyLink?.(msgMenu.attachment.publicUrl)
+                    setMsgMenu(null)
+                  }}
+                >
+                  <IconLink size={16} />
+                  Copy Link
+                </button>
+              )}
+              {msgMenu.attachment.canManage && (
+                <>
+                  <button
+                    type="button"
+                    className="client-context-menu-item"
+                    onClick={() => {
+                      onSetFilePublic?.(
+                        msgMenu.id,
+                        msgMenu.attachment.id,
+                        !msgMenu.attachment.publicUrl
+                      )
+                      setMsgMenu(null)
+                    }}
+                  >
+                    {msgMenu.attachment.publicUrl ? (
+                      <IconLock size={16} />
+                    ) : (
+                      <IconWorld size={16} />
+                    )}
+                    {msgMenu.attachment.publicUrl ? 'Make Private' : 'Make Public'}
+                  </button>
+                  <button
+                    type="button"
+                    className="client-context-menu-item danger"
+                    onClick={() => {
+                      setPendingDelete({
+                        kind: 'file',
+                        messageId: msgMenu.id,
+                        fileId: msgMenu.attachment.id,
+                        name: msgMenu.attachment.name
+                      })
+                      setMsgMenu(null)
+                    }}
+                  >
+                    <IconTrash size={16} />
+                    Delete File
+                  </button>
+                </>
+              )}
             </>
           )}
         </div>
@@ -1702,10 +1894,10 @@ function ChatPanel({
       </AnimatePresence>
 
       <AnimatePresence>
-        {pendingDeleteId != null && (
+        {pendingDelete != null && (
           <motion.div
             className="chat-confirm-overlay"
-            onClick={() => setPendingDeleteId(null)}
+            onClick={() => setPendingDelete(null)}
             role="presentation"
             {...scrimFade(overlayAnim)}
           >
@@ -1718,13 +1910,15 @@ function ChatPanel({
               {...overlayPop(overlayAnim)}
             >
               <div className="chat-confirm-body">
-                Are you sure you want to delete this message? This cannot be undone.
+                {pendingDelete.kind === 'file'
+                  ? `Are you sure you want to delete ${pendingDelete.name}? This cannot be undone.`
+                  : 'Are you sure you want to delete this message? This cannot be undone.'}
               </div>
               <div className="chat-confirm-footer">
                 <button
                   type="button"
                   className="chat-confirm-btn secondary"
-                  onClick={() => setPendingDeleteId(null)}
+                  onClick={() => setPendingDelete(null)}
                 >
                   Cancel
                 </button>

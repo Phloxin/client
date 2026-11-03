@@ -47,65 +47,166 @@
   padding: var(--spacing-lg);
 }
 
-/* Hide the grid/carousel name overlays while fullscreen for an unobstructed
+/* Hide the grid/thumbnail name overlays while fullscreen for an unobstructed
    view. The focused stream's own name still fades in on hover, like the
    volume/fullscreen controls. */
-.video-viewer.fullscreen .tile-label,
-.video-viewer.fullscreen .thumb-label {
+.video-viewer.fullscreen .stream-tile-label-row {
   display: none;
 }
 
-/* ── Unfocused grid view (spreads all streams across the area) ───────────── */
+/* ── Stage: one tile per stream, in grid or focus layout ─────────────────── */
 
-.video-grid-layout {
-  position: relative; /* anchor for the floating controls */
+/* Every stream's tile is a direct child in either layout, so a focus change only
+   restyles and re-places tiles (Motion tweens the move) and never remounts a
+   <video>. Also the anchor for the theatre overlays. */
+.video-stage {
+  position: relative;
   flex: 1;
   min-height: 0;
+  /* Tiles are sized to fit (in JS for the grid, by the rows when focused), so
+     the area itself never needs to scroll. */
+  overflow: hidden;
+}
+
+/* No stream focused: spread every stream across the whole area. Center the
+   cluster on both axes so tiles sit in the middle of the area and a partial last
+   row centers under the others (Discord-style), rather than stretching to fill
+   the height. */
+.video-stage.grid {
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
-  /* Center the cluster on both axes so tiles sit in the middle of the area and
-     a partial last row centers under the others (Discord-style), rather than
-     stretching to fill the height. */
   justify-content: center;
   align-content: center;
   align-items: center;
-  /* The tile size is computed (JS) so the whole set fits, so the area itself
-     never needs to scroll. */
-  overflow: hidden;
 }
 
-.video-grid-tile {
+/* A stream focused: the focused tile owns the first row, which takes whatever
+   height the thumbnail rows leave; thumbnails are fixed 200px 16:9 cells that
+   wrap onto further rows, left-aligned. */
+.video-stage.focus {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, 200px);
+  grid-template-rows: minmax(0, 1fr);
+  grid-auto-rows: auto;
+  justify-content: start;
+  gap: 12px 10px;
+}
+
+/* Ride the thumbnails above the control bar (46px) and its carousel toggle (24px
+   + gaps), which float over this same bottom edge. */
+.video-stage.focus.has-thumbs {
+  padding-bottom: 86px;
+}
+
+/* Holds the first row's cells so the thumbnails auto-place from row 2. The
+   focused tile can't hold them itself: it's absolutely positioned (to span the
+   full stage width), and absolute items occupy no cells. */
+.video-stage-focus-slot {
+  grid-row: 1;
+  grid-column: 1 / -1;
+}
+
+/* Collapsed strip: the thumbnails stay mounted (their video keeps its element)
+   but drop out of the layout. */
+.video-stage.focus.collapsed .stream-tile.thumb {
+  display: none;
+}
+
+/* ── Stream tile (shared by every role) ──────────────────────────────────── */
+
+.stream-tile {
   position: relative;
-  /* Uniform 16:9 tiles sized in JS (see bestUniformTileWidth) so every tile is
-     identical and the whole set fits the area without scrolling. flex grow/
-     shrink are 0 so the computed width is honored exactly. */
-  flex: 0 0 auto;
-  width: var(--grid-tile-width, 360px);
-  aspect-ratio: 16 / 9;
   overflow: hidden;
-  border-radius: 12px;
-  border: 2px solid transparent;
   background: #000;
-  cursor: pointer;
   padding: 0;
-  transition:
-    border-color 0.15s ease,
-    box-shadow 0.15s ease;
 }
 
-.video-grid-tile:hover {
-  border-color: var(--color-primary);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-primary) 30%, transparent);
+/* Clicking focuses / unfocuses only while there's more than one stream. */
+.stream-tile.focusable {
+  cursor: pointer;
 }
 
-.video-grid-tile video {
+/* Zoomed: drag pans instead of click-to-unfocus, so signal grabbability. */
+.stream-tile.zoomed {
+  cursor: grab;
+}
+.stream-tile.zoomed:active {
+  cursor: grabbing;
+}
+
+/* The media fills the tile. It's its own Motion layout node, so the focus tween
+   carries it along with the tile. */
+.stream-media {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.stream-media video {
   width: 100%;
   height: 100%;
   object-fit: contain;
   background: #000;
   display: block;
 }
+
+/* Grid role (nothing focused). */
+.stream-tile.grid {
+  /* Uniform 16:9 tiles sized in JS (see bestUniformTileWidth) so every tile is
+     identical and the whole set fits the area without scrolling. flex grow/
+     shrink are 0 so the computed width is honored exactly. */
+  flex: 0 0 auto;
+  width: var(--grid-tile-width, 360px);
+  aspect-ratio: 16 / 9;
+  border-radius: 12px;
+  border: 2px solid transparent;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.stream-tile.grid:hover {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-primary) 30%, transparent);
+}
+
+/* Thumbnail role (the others while one is focused). */
+.stream-tile.thumb {
+  width: 200px;
+  aspect-ratio: 16 / 9;
+  border-radius: 10px;
+  border: 2px solid transparent;
+  background: #06070d;
+  transition: border-color 0.15s ease;
+}
+
+/* Border only, no hover lift: Motion owns the tile's transform (it leaves an
+   inline transform behind after a tween), which would override a CSS one. */
+.stream-tile.thumb:hover {
+  border-color: var(--color-border-light);
+}
+
+.stream-tile.thumb .stream-media video {
+  object-fit: cover;
+}
+
+/* Focused role. Absolutely positioned in the stage's first row: with no column
+   placement, an absolute grid item's horizontal containing block is the stage's
+   padding box, so it spans the full width even though the 200px columns
+   don't; vertically it fills row 1 (an explicit end line — an `auto` one would
+   mean the stage's bottom edge for an absolute item). */
+.stream-tile.focused {
+  position: absolute;
+  inset: 0;
+  grid-row: 1 / 2;
+  border-radius: 14px;
+}
+
+/* ── Paused overlays ─────────────────────────────────────────────────────── */
 
 .self-preview-paused {
   position: absolute;
@@ -144,14 +245,36 @@
   font-size: 0.78rem;
 }
 
-/* Name plate, bottom-left of a tile: a solid pill rather than a scrim, so it
-   reads the same over video, a placeholder, or a bright avatar colour. */
-.tile-label,
-.thumb-label {
+/* ── Name plate + mute badge ─────────────────────────────────────────────── */
+
+/* Bottom-left of a grid tile / thumbnail: the name plate, then the mute badge
+   when we've muted this stream. */
+.stream-tile-label-row {
   position: absolute;
   left: 8px;
   bottom: 8px;
   max-width: calc(100% - 16px);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  pointer-events: none;
+}
+
+.stream-tile.thumb .stream-tile-label-row {
+  left: 6px;
+  bottom: 6px;
+  max-width: calc(100% - 12px);
+}
+
+/* Name plate: a solid pill rather than a scrim, so it reads the same over
+   video, a placeholder, or a bright avatar colour. The owner's avatar leads,
+   centred with the name; the name itself truncates (.stream-label-text). */
+.tile-label,
+.thumb-label {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
   padding: 3px 8px;
   border-radius: var(--radius-sm);
   color: #fff;
@@ -159,21 +282,89 @@
   font-size: 0.85rem;
   white-space: nowrap;
   overflow: hidden;
+}
+
+/* Same plate, scaled down for the small thumbnails. */
+.thumb-label {
+  font-size: 0.78rem;
+}
+
+/* A name beside an avatar (tile labels, the viewer list): truncates on its
+   own so the avatar never gets squeezed. */
+.stream-label-text {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
   text-overflow: ellipsis;
-  pointer-events: none;
+}
+
+/* Small round avatar before a name. Without an image it shows the initial on
+   the same tint as the placeholder's avatar (.stream-placeholder-avatar).
+   18px by default (grid and focused labels, viewer list), 14px in thumbnails. */
+.stream-avatar {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--color-primary) 30%, #000);
+  color: #fff;
+  font-size: 10px;
+  font-weight: var(--font-weight-bold);
+  line-height: 1;
+}
+
+.stream-avatar.small {
+  width: 14px;
+  height: 14px;
+  font-size: 8px;
+}
+
+.stream-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* Speaker-off badge: we muted this stream's audio. Same plate as the name. */
+.stream-mute-badge {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  color: #fff;
+  background: rgba(0, 0, 0, 0.75);
 }
 
 /* ── Per-stream watch / close toggle + stopped placeholder ──────────────── */
 
-/* The top-right control on each thumbnail / grid tile: one pill in two colours —
-   green to start watching, red to close a stream we're watching. The close pill
-   is hidden until hover, since it only applies to a tile already showing video. */
-.stream-watch-cta,
-.stream-toggle-btn {
+/* Top-right cluster of a tile: the focused stream's viewer count, then the
+   watch/close toggle. */
+.stream-tile-actions {
   position: absolute;
   top: 6px;
   right: 6px;
   z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.stream-tile.focused .stream-tile-actions {
+  top: 12px;
+  right: 12px;
+}
+
+/* The watch/close control: one pill in two colours — green to start watching,
+   red to close a stream we're watching. The close pill is hidden until hover,
+   since it only applies to a tile already showing video. */
+.stream-watch-cta,
+.stream-toggle-btn {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -209,14 +400,13 @@
   transform: scale(1.04);
 }
 
-.video-thumbnail:hover .stream-toggle-btn,
-.video-grid-tile:hover .stream-toggle-btn {
+.stream-tile:hover .stream-toggle-btn {
   opacity: 1;
 }
 
-/* Icon-only and compact inside the small carousel thumbnails. */
-.video-thumbnail .stream-watch-cta,
-.video-thumbnail .stream-toggle-btn {
+/* Icon-only and compact inside the small thumbnails. */
+.stream-tile.thumb .stream-watch-cta,
+.stream-tile.thumb .stream-toggle-btn {
   padding: 7px;
 }
 
@@ -255,7 +445,7 @@
   object-fit: cover;
 }
 
-.video-thumbnail .stream-placeholder-avatar {
+.stream-tile.thumb .stream-placeholder-avatar {
   width: 46px;
   height: 46px;
   font-size: 19px;
@@ -264,43 +454,8 @@
 /* The placeholder fills the padding box, so the tile's own black would show
    through the (transparent) border as a dark ring and swallow the hover
    outline. Drop it and let the border sit on the page background instead. */
-.video-thumbnail.stopped,
-.video-grid-tile.stopped {
+.stream-tile.stopped {
   background: transparent;
-}
-
-/* ── Focus (large) view ──────────────────────────────────────────────────── */
-
-.video-focus {
-  position: relative;
-  width: 100%;
-  flex: 1; /* takes remaining height after carousel */
-  min-height: 0;
-  background: #000;
-  border-radius: 14px;
-  overflow: hidden;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.video-focus.focusable {
-  cursor: pointer;
-}
-
-.video-focus video {
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-  background: #000;
-}
-
-/* Zoomed: drag pans instead of click-to-unfocus, so signal grabbability. */
-.video-focus.zoomed {
-  cursor: grab;
-}
-.video-focus.zoomed:active {
-  cursor: grabbing;
 }
 
 /* ── Zoom minimap (full frame + visible-region outline, hover-only) ──────── */
@@ -344,6 +499,8 @@
   box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.55);
 }
 
+/* ── Focused stream's name, codec badge, viewer count ────────────────────── */
+
 .focus-label {
   position: absolute;
   left: 0;
@@ -351,15 +508,22 @@
   bottom: 0;
   padding: 12px 16px;
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
   color: #fff;
   font-size: 0.95rem;
   background: linear-gradient(to top, rgba(0, 0, 0, 0.6) 0%, transparent 100%);
   pointer-events: none;
   opacity: 0;
   transition: opacity 0.15s ease;
+}
+
+/* The owner's avatar, then the name (which truncates on its own). */
+.focus-label-name {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
 }
 
 /* Fades with the control bar and viewer count — all one piece of chrome. */
@@ -396,10 +560,68 @@
   color: #fbbf24;
 }
 
+/* Viewer count, in the focused tile's top-right cluster. Fades with the rest of
+   the overlay chrome (which an open list keeps shown, so moving the pointer to
+   the list never fades the thing you're reading). */
+.focus-viewers {
+  position: relative;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.video-viewer.chrome-shown .focus-viewers {
+  opacity: 1;
+}
+
+/* Wider than a square .vid-btn to fit the count beside the icon. */
+.focus-viewers-btn {
+  width: auto;
+  gap: 5px;
+  padding: 0 9px;
+}
+
+.focus-viewers-count {
+  font-size: 0.8rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Drops below the button, right-aligned with it. */
+.focus-viewers-list {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 132px;
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 6px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(4px);
+  color: #fff;
+  font-size: 0.82rem;
+}
+
+/* The viewer's avatar, then their name (which truncates on its own). */
+.focus-viewers-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.focus-viewers-empty {
+  padding: 3px 6px;
+  opacity: 0.6;
+}
+
 /* ── Control bar (anchored to the viewer, not the video frame) ───────────── */
 
-/* Spans the viewer's bottom edge: centre dock in the middle cell, volume and
-   window controls at the right. Fades as one with the rest of the chrome. */
+/* Spans the viewer's bottom edge: the carousel toggle floats above its middle,
+   volume and window controls sit at the right. Fades as one with the rest of
+   the chrome. */
 .viewer-controls {
   position: absolute;
   left: var(--spacing-lg);
@@ -438,64 +660,6 @@
   justify-self: end;
   display: flex;
   gap: 8px;
-}
-
-/* ── Viewer count (top-right of the focused frame) ───────────────────────── */
-
-/* Shares .video-controls' fade gate so it appears and disappears with the rest
-   of the overlay chrome. Kept interactive while the popover is open, otherwise
-   moving the pointer to the list would fade the thing you're reading. */
-.focus-viewers {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 6px;
-  opacity: 0;
-  transition: opacity 0.15s ease;
-}
-
-.video-viewer.chrome-shown .focus-viewers {
-  opacity: 1;
-}
-
-/* Wider than a square .vid-btn to fit the count beside the icon. */
-.focus-viewers-btn {
-  width: auto;
-  gap: 5px;
-  padding: 0 9px;
-}
-
-.focus-viewers-count {
-  font-size: 0.8rem;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-
-.focus-viewers-list {
-  min-width: 132px;
-  max-height: 220px;
-  overflow-y: auto;
-  padding: 6px;
-  border-radius: 8px;
-  background: rgba(0, 0, 0, 0.75);
-  backdrop-filter: blur(4px);
-  color: #fff;
-  font-size: 0.82rem;
-}
-
-.focus-viewers-row {
-  padding: 3px 6px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.focus-viewers-empty {
-  padding: 3px 6px;
-  opacity: 0.6;
 }
 
 .vid-btn {
@@ -547,106 +711,17 @@
   color: var(--color-text);
 }
 
-/* ── Centred stream controls (middle cell of the control bar) ────────────── */
+/* ── Stream settings flyout (our own stream's right-click menu) ──────────── */
 
-/* A floating dock, same panel treatment as the sidebar's .control-dock. */
-.focus-stream-controls {
-  position: relative; /* anchors the capture-settings popover */
-  grid-column: 2;
-  justify-self: center;
-  display: flex;
-  gap: 4px;
-  padding: 6px;
-  border: 1px solid var(--hairline);
-  border-radius: var(--radius-lg);
-  background: var(--gradient-footer);
-  box-shadow: var(--shadow-2);
-}
-
-/* Nothing to show (popout, no voice controls) — don't float an empty panel. */
-.focus-stream-controls:empty {
-  display: none;
-}
-
-/* Buttons sit on the panel, so they drop .vid-btn's own dark chrome and take
-   the sidebar's .control-btn treatment instead. Compound selectors so these
-   outrank the equal-specificity .vid-btn rules declared later. */
-.focus-stream-controls .vid-btn {
-  width: 46px;
-  background: transparent;
-  border-radius: var(--radius-sm);
-  color: var(--color-text-secondary);
-}
-
-.focus-stream-controls .vid-btn:hover {
-  background: var(--color-surface);
-  color: var(--color-text);
-}
-
-.focus-stream-controls .vid-btn.success,
-.focus-stream-controls .vid-btn.danger {
-  background: color-mix(in srgb, var(--tint) 16%, transparent);
-  color: var(--tint);
-}
-
-.focus-stream-controls .vid-btn.success:hover,
-.focus-stream-controls .vid-btn.danger:hover {
-  background: color-mix(in srgb, var(--tint) 26%, transparent);
-  color: var(--tint);
-}
-
-.focus-stream-controls .vid-btn.success {
-  --tint: var(--color-success);
-}
-
-.focus-stream-controls .vid-btn.danger {
-  --tint: var(--color-danger);
-}
-
-/* Split button: the stop action plus a narrow arrow that opens the capture
-   settings. The halves share one tinted block, so their inner corners square
-   off and a hairline separates them. */
-.vid-split {
-  display: flex;
-  gap: 1px;
-}
-
-.vid-split:has(.vid-split-more) .vid-btn:first-child {
-  border-top-right-radius: 0;
-  border-bottom-right-radius: 0;
-}
-
-.focus-stream-controls .vid-btn.vid-split-more {
-  width: 22px;
-  border-top-left-radius: 0;
-  border-bottom-left-radius: 0;
-}
-
-/* Capture settings popover. Anchored to the controls dock rather than the split
-   button it hangs off (hence no positioning on .vid-split), so it sits centred
-   above the whole panel. */
-.stream-settings-menu {
-  position: absolute;
-  bottom: calc(100% + 10px);
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 3;
+/* The capture rows, inside the menu's flyout panel (.client-role-list). */
+.stream-settings-panel {
   display: flex;
   flex-direction: column;
   gap: 8px;
   min-width: 250px;
-  padding: 10px;
-  border: 1px solid var(--hairline);
-  border-radius: var(--radius-lg);
-  background: var(--gradient-footer);
-  box-shadow: var(--shadow-2);
+  padding: 6px;
   color: var(--color-text);
   font-size: var(--font-size-sm);
-}
-
-/* In focus view the carousel toggle sits directly above the dock — clear it. */
-.viewer-controls:has(.carousel-toggle) .stream-settings-menu {
-  bottom: calc(100% + 42px);
 }
 
 .stream-settings-row {
@@ -655,25 +730,6 @@
   justify-content: space-between;
   gap: 10px;
   white-space: nowrap;
-}
-
-.stream-settings-action {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 9px;
-  border: 1px solid var(--hairline);
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--color-text);
-  font-size: var(--font-size-sm);
-  font-family: inherit;
-  cursor: pointer;
-  transition: background 0.15s ease;
-}
-
-.stream-settings-action:hover {
-  background: var(--color-surface);
 }
 
 .stream-settings-note {
@@ -795,95 +851,6 @@
   cursor: pointer;
 }
 
-/* ── Thumbnail carousel ──────────────────────────────────────────────────── */
-
-.video-carousel {
-  min-width: 0;
-  max-width: 100%;
-  display: flex;
-  gap: 10px;
-  overflow-x: auto;
-  overflow-y: hidden;
-  flex-shrink: 0; /* never squish the carousel row */
-  margin-top: 12px;
-  /* Ride above the control bar (46px) and its carousel toggle (24px + gaps),
-     which float over this same bottom edge. */
-  margin-bottom: 86px;
-  max-height: 140px; /* room for 200x112.5 thumbnails + scrollbar */
-  padding-bottom: 4px; /* room for scrollbar without clipping thumbnails */
-  scrollbar-width: thin;
-  scrollbar-color: var(--color-border-light) transparent;
-  transition:
-    max-height 0.2s ease,
-    margin-top 0.2s ease,
-    opacity 0.15s ease;
-}
-
-.video-carousel.collapsed {
-  max-height: 0;
-  margin-top: 0;
-  padding-bottom: 0;
-  opacity: 0;
-  overflow: hidden;
-}
-
-.video-carousel::-webkit-scrollbar {
-  height: 4px;
-}
-
-.video-carousel::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.video-carousel::-webkit-scrollbar-thumb {
-  background: var(--color-border-light);
-  border-radius: 2px;
-}
-
-/* ── Individual thumbnail ────────────────────────────────────────────────── */
-
-.video-thumbnail {
-  position: relative;
-  flex: 0 0 auto; /* never wrap, never grow */
-  width: 200px;
-  aspect-ratio: 16 / 9;
-  overflow: hidden;
-  border-radius: 10px;
-  border: 2px solid transparent;
-  background: #06070d;
-  cursor: pointer;
-  transition:
-    border-color 0.15s ease,
-    box-shadow 0.15s ease,
-    transform 0.15s ease;
-  padding: 0;
-}
-
-.video-thumbnail:hover {
-  transform: translateY(-1px);
-  border-color: var(--color-border-light);
-}
-
-.video-thumbnail.selected {
-  border-color: var(--color-primary);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-primary) 30%, transparent);
-}
-
-.video-thumbnail video {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
-}
-
-/* Same plate, scaled down for the carousel's small thumbnails. */
-.thumb-label {
-  left: 6px;
-  bottom: 6px;
-  max-width: calc(100% - 12px);
-  font-size: 0.78rem;
-}
-
 /* ============================================================================
    THEATRE MODE — the viewer escapes the chat canvas to fill the window, with
    the voice-channel participant rail (left) and mic/deafen controls (bottom-
@@ -905,8 +872,8 @@
   height: auto;
 }
 
-/* Fill edge-to-edge: the focus frame drops its rounding in theatre. */
-.video-viewer.theatre .video-focus {
+/* Fill edge-to-edge: the focused tile drops its rounding in theatre. */
+.video-viewer.theatre .stream-tile.focused {
   border-radius: 0;
 }
 

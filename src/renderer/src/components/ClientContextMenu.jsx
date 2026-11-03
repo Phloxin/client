@@ -61,8 +61,8 @@ function capabilities(client, o) {
     !isSelf && !rosterMode && !!o.onKickFromChannel && client.channel_id != null
   const canBan = !isSelf && o.canBanMembers
   const canUnban = !isSelf && o.canBanMembers && isBanned
-  // Gag = server-wide mute (PATCH /client { mute }), gated on MUTE_MEMBERS. Works
-  // from channel view and the roster, like ban.
+  // Gag = server-wide mute (PATCH /client { server_mute }), gated on MUTE_MEMBERS.
+  // Works from channel view and the roster, like ban.
   const canGag = !isSelf && !!o.onGag && o.canMuteMembers
   const canAssignRole = !isSelf
   // Groups are cosmetic, so unlike roles they're also assignable to ourselves —
@@ -110,7 +110,7 @@ function capabilities(client, o) {
 // A picker that flies out to the right of its parent item instead of pushing the
 // rest of the menu down. Measured once at mount and flipped to the left / bottom-
 // aligned when the window edge is closer than the panel is wide/tall.
-function Submenu({ children }) {
+export function Submenu({ children }) {
   const ref = useRef(null)
   const [place, setPlace] = useState('')
   useLayoutEffect(() => {

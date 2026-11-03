@@ -105,12 +105,3 @@ export const avatarStackItem = {
   hidden: { opacity: 0, scale: 0.5, x: -6 },
   shown: { opacity: 1, scale: 1, x: 0, transition: spring }
 }
-
-// New chat message: slide up a few pixels and fade.
-export function messageSlide(enabled) {
-  if (!enabled) return noMotion
-  return {
-    initial: { opacity: 0, y: 10 },
-    animate: { opacity: 1, y: 0, transition: { type: 'spring', stiffness: 480, damping: 40 } }
-  }
-}

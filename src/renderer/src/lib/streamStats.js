@@ -345,3 +345,71 @@ export function extractRecvAudioMetrics(report, previous) {
     }
   }
 }
+
+// Transport-wide health for the voice connection indicator. Takes one
+// transport-level getStats() report (the whole peer connection, so every
+// stream on it plus the ICE candidate pair) and returns the selected pair's
+// RTT and audio packet loss in both directions. inboundLoss is the fraction of
+// audio packets lost since `previous` (summed across every received mic);
+// outboundLoss is the worst receiver-reported fractionLost on what we send.
+export function extractTransportHealth(report, previous) {
+  let selectedPairId = null
+  for (const stat of report.values()) {
+    if (stat.type === 'transport' && stat.selectedCandidatePairId) {
+      selectedPairId = stat.selectedCandidatePairId
+    }
+  }
+  let pair = selectedPairId ? report.get(selectedPairId) : null
+  let lost = 0
+  let received = 0
+  let hasInbound = false
+  let outboundLoss = null
+  for (const stat of report.values()) {
+    if (!pair && stat.type === 'candidate-pair' && stat.nominated && stat.state === 'succeeded') {
+      pair = stat
+    } else if (stat.type === 'inbound-rtp' && stat.kind === 'audio') {
+      hasInbound = true
+      lost += stat.packetsLost ?? 0
+      received += stat.packetsReceived ?? 0
+    } else if (
+      stat.type === 'remote-inbound-rtp' &&
+      stat.kind === 'audio' &&
+      typeof stat.fractionLost === 'number'
+    ) {
+      outboundLoss = Math.max(outboundLoss ?? 0, stat.fractionLost)
+    }
+  }
+
+  let inboundLoss = null
+  if (hasInbound && previous) {
+    // A consumer leaving shrinks the sums; treat that tick as no data rather
+    // than a negative delta.
+    const dLost = lost - previous.lost
+    const dReceived = received - previous.received
+    if (dLost >= 0 && dReceived >= 0 && dLost + dReceived > 0) {
+      inboundLoss = dLost / (dLost + dReceived)
+    }
+  }
+
+  const rtt = pair?.currentRoundTripTime
+  return {
+    metrics: {
+      rttMs: typeof rtt === 'number' ? rtt * 1000 : null,
+      inboundLoss,
+      outboundLoss
+    },
+    snapshot: hasInbound ? { lost, received } : null
+  }
+}
+
+// Bucket a voice connection sample into good / fair / poor for the indicator.
+// 'unknown' until there is an RTT to judge by. Thresholds are rules of thumb:
+// past ~150ms conversation starts to feel laggy, past ~2% loss Opus
+// concealment becomes audible.
+export function voiceConnectionQuality({ rttMs, lossFraction } = {}) {
+  if (rttMs == null) return 'unknown'
+  const loss = lossFraction ?? 0
+  if (rttMs > 300 || loss > 0.08) return 'poor'
+  if (rttMs > 150 || loss > 0.02) return 'fair'
+  return 'good'
+}

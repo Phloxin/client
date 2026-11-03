@@ -46,10 +46,10 @@ export function shouldFallBackToDefaultInput({
   return !ids.has(selectedDeviceId)
 }
 
-// Voice recovery is hard-blocked on the events socket. The rejoin declaration
-// that mints a ticket can't leave the client while it's down, so every
-// attempt made during an events outage fails for a reason the voice backoff
-// knows nothing about. Its 30s cap outlives the UI's rejoin timeout, so a
+// A new voice session is hard-blocked on the events socket. The ticket request
+// (op 14) can't leave the client while it's down, so every attempt made during
+// an events outage fails for a reason the voice backoff knows nothing about.
+// (A resume needs no ticket and isn't blocked.) Its 30s cap outlives the UI's rejoin timeout, so a
 // restore that lands mid-backoff would otherwise be declared a failed recovery
 // seconds before it was going to succeed.
 export function shouldKickVoiceReconnect({
@@ -72,34 +72,6 @@ export function allKnownAudioConsumersReady(knownProducerIds, activeConsumerIds)
     if (!active.has(producerId)) return false
   }
   return true
-}
-
-// SFU errors are externally tagged enums. Both variants are failures; treating a
-// ServerError as a normal response lets callers commit transports/consumers with
-// missing payloads and can leave a session permanently silent.
-export function voiceRequestError(message) {
-  const tagged =
-    message?.UserError != null
-      ? { name: 'VoiceUserError', value: message.UserError }
-      : message?.ServerError != null
-        ? { name: 'VoiceServerError', value: message.ServerError }
-        : message?.type === 'UserError'
-          ? { name: 'VoiceUserError', value: message.data }
-          : message?.type === 'ServerError'
-            ? { name: 'VoiceServerError', value: message.data }
-            : null
-  if (!tagged) return null
-
-  const error = new Error(typeof tagged.value === 'string' ? tagged.value : 'Voice request failed')
-  error.name = tagged.name
-  return error
-}
-
-// ConsumerClosed is both a pushed SFU event ({ type, data: { id, ... } }) and
-// the unit acknowledgement for CloseConsumer ({ type }). Only the former is an
-// event; the latter must continue through the FIFO response queue.
-export function isConsumerClosedEvent(message) {
-  return message?.type === 'ConsumerClosed' && message?.data?.id != null
 }
 
 // WebSocket readyState values are standardized as CONNECTING=0, OPEN=1,

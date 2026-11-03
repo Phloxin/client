@@ -1,0 +1,182 @@
+/* ============================================================================
+   DM CALL HEADER — start/join controls and the participant strip in a DM's
+   chat header.
+   ============================================================================ */
+
+.dm-call-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+  min-width: 0;
+  flex-shrink: 0;
+}
+
+.dm-call-present {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  min-width: 0;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+}
+
+.dm-call-avatars {
+  display: flex;
+}
+
+.dm-call-avatar,
+.dm-strip-avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  overflow: hidden;
+  font-weight: var(--font-weight-bold);
+  background: color-mix(in srgb, var(--color-primary) 30%, var(--color-background-mute));
+  color: var(--color-text);
+}
+
+.dm-call-avatar {
+  width: 22px;
+  height: 22px;
+  font-size: 10px;
+  box-shadow: 0 0 0 2px var(--color-background-soft);
+}
+
+.dm-call-avatar + .dm-call-avatar {
+  margin-left: -6px;
+}
+
+.dm-call-avatar img,
+.dm-strip-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.dm-call-present-text {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.dm-call-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border: none;
+  border-radius: 999px;
+  background: var(--color-success);
+  color: #fff;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  cursor: pointer;
+}
+
+.dm-call-btn:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+.dm-call-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* Replaces the "N in voice" subtitle under the DM's name. */
+.dm-strip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--font-size-xs);
+  line-height: 1.3;
+}
+
+.dm-strip-member {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.dm-strip-avatar-wrap {
+  position: relative;
+  display: flex;
+}
+
+.dm-strip-avatar {
+  width: 18px;
+  height: 18px;
+  font-size: 9px;
+  box-shadow: 0 0 0 2px transparent;
+  transition: box-shadow 0.12s ease;
+}
+
+.dm-strip-member.speaking .dm-strip-avatar {
+  box-shadow:
+    0 0 0 2px var(--color-success),
+    0 0 6px color-mix(in srgb, var(--color-success) 70%, transparent);
+}
+
+.dm-strip-member.absent .dm-strip-avatar {
+  opacity: 0.45;
+}
+
+.dm-strip-badge {
+  position: absolute;
+  right: -4px;
+  bottom: -3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--color-background-soft);
+  color: var(--color-danger);
+}
+
+.dm-strip-stream {
+  display: flex;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--color-primary);
+}
+
+button.dm-strip-stream {
+  cursor: pointer;
+}
+
+.dm-strip-ring {
+  padding: 0 6px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 999px;
+  background: none;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-xs);
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.dm-strip-ring:hover:not(:disabled) {
+  border-color: var(--color-success);
+  color: var(--color-success);
+}
+
+.dm-strip-ring:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.dm-strip-status {
+  color: var(--color-text-tertiary);
+}
+
+/* The session's error, under the header of the DM whose call it belongs to. */
+.channel-error.dm-call-error {
+  padding: 6px var(--spacing-lg);
+  border-bottom: 1px solid var(--hairline);
+}

@@ -154,6 +154,39 @@
   padding: 4px 24px;
 }
 
+/* A call message: a real message (reactions, replies) drawn as a system line. */
+.chat-message.chat-call-message {
+  margin-top: 4px;
+}
+
+.chat-call-entry {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex-basis: 100%;
+}
+
+.chat-call-time {
+  opacity: 0.7;
+}
+
+.chat-call-message .chat-reactions {
+  justify-content: center;
+}
+
+/* "X poked you" above a poke's note. */
+.chat-poke {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-text-muted);
+}
+
+.chat-poke strong {
+  color: var(--color-text);
+}
+
 /* Day divider: centered date chip between hairlines. */
 .chat-day-divider {
   display: flex;
@@ -1127,6 +1160,38 @@ button.chat-reply-preview:focus-visible {
 .chat-attachment-remove:hover {
   background: color-mix(in srgb, var(--color-danger) 15%, transparent);
   color: var(--color-danger);
+}
+
+/* "Create public link" row under the pending attachments: one quiet line in
+   the reply bar's tone, applying to every file in the message. */
+.chat-share-public {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  margin: 6px 20px 0;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+
+.chat-share-public input {
+  margin: 0;
+  accent-color: var(--color-primary);
+  cursor: pointer;
+}
+
+.chat-share-public:hover {
+  color: var(--color-text);
+}
+
+/* Body of a message whose only content was a file that has since been deleted. */
+.chat-message-removed {
+  font-size: var(--font-size-md);
+  font-style: italic;
+  color: var(--color-text-muted);
 }
 
 /* ── Typing indicator ──────────────────────────────────────────────────── */

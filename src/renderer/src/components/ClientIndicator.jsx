@@ -26,6 +26,7 @@ function ClientIndicator({
   deafened,
   isSelf,
   streaming,
+  streamWatchable,
   animStatus,
   rosterMode,
   draggableToChannel,
@@ -334,9 +335,14 @@ function ClientIndicator({
     statusIcon = <IconMicrophone size={18} className="mic-indicator" aria-label="Not speaking" />
   }
 
+  // In a voice channel on the backend, but no voice node session carries its
+  // media yet (still connecting, or lost and not back).
+  const connecting = !rosterMode && client.channel_id != null && client.connected === false
+
   return (
     <div
-      className="client-indicator"
+      className={`client-indicator${connecting ? ' connecting' : ''}`}
+      title={connecting ? `${client.name} is connecting to voice…` : undefined}
       data-anim-status={animStatus}
       draggable={canDragToChannel}
       onDragStart={canDragToChannel ? handleDragStart : undefined}
@@ -397,10 +403,11 @@ function ClientIndicator({
         </span>
       )}
       {streaming &&
-        (onWatchStream ? (
+        (streamWatchable && onWatchStream ? (
           // Click to jump to this client's stream in the Streams view. stopPropagation
           // + clearing the row's deferred single-click keeps it off the summary/DM
-          // handlers on the enclosing row.
+          // handlers on the enclosing row. Only streams with a tile in our joined
+          // channel are clickable; ones elsewhere just show the glyph.
           <button
             type="button"
             className="client-streaming-btn"
@@ -417,7 +424,7 @@ function ClientIndicator({
             </span>
           </button>
         ) : (
-          <span className="client-streaming-glyph">
+          <span className="client-streaming-glyph" title={`${client.name} is streaming`}>
             <IconVideoFilled size={15} className="client-streaming-icon" aria-label="Streaming" />
           </span>
         ))}

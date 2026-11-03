@@ -24,6 +24,8 @@ export default defineConfig({
         '@renderer': resolve('src/renderer/src')
       }
     },
-    plugins: [react()]
+    plugins: [react()],
+    // The E2EE worker imports its WASM glue as an ES module.
+    worker: { format: 'es' }
   }
 })

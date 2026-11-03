@@ -46,6 +46,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: ${{ inputs.release_tag || github.ref }}
+          submodules: true
 
       - name: Setup Node.js 22
         uses: actions/setup-node@v6
@@ -78,14 +79,32 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: native/audio-capture
+          workspaces: |
+            native/audio-capture
+            pylon-e2ee
+
+      # build:e2ee needs the wasm-bindgen CLI at the version pylon-e2ee's Cargo.lock pins.
+      - name: Read wasm-bindgen version
+        id: wasm-bindgen
+        shell: bash
+        run: echo "version=$(grep -A1 '^name = "wasm-bindgen"$' pylon-e2ee/Cargo.lock | sed -n 's/^version = "\(.*\)"$/\1/p')" >> "$GITHUB_OUTPUT"
+
+      - name: Install wasm-bindgen
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@${{ steps.wasm-bindgen.outputs.version }}
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Build E2EE WASM
+        run: npm run build:e2ee
 
       - name: Build native audio addon
         run: npm run build:native
