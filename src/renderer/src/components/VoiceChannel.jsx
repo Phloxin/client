@@ -219,8 +219,10 @@ function VoiceChannel({
                 client={c}
                 animStatus={status}
                 speaking={!!speakingClients[c.id]}
-                micMuted={c.id === self?.id ? micMuted : !!c.self_mute}
-                deafened={c.id === self?.id ? deafened : !!c.self_deaf}
+                // Our live toggles only describe this session's voice connection;
+                // another session of ours (a second app) shows the roster state.
+                micMuted={c.id === self?.id && joined ? micMuted : !!c.self_mute}
+                deafened={c.id === self?.id && joined ? deafened : !!c.self_deaf}
                 isSelf={c.id === self?.id}
                 streaming={streamingClientIds.has(c.id)}
                 streamWatchable={tileClientIds.has(c.id)}

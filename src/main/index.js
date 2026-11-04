@@ -41,6 +41,10 @@ import {
   registerDiagnosticsIpc
 } from './diagnostics'
 
+// `electron-vite dev` runs beside the installed app: its own userData keeps the
+// settings, session, and single-instance lock apart
+if (process.env['ELECTRON_RENDERER_URL']) app.setPath('userData', `${app.getPath('userData')}-dev`)
+
 // Install before startup settings are read so early persistence/configuration
 // failures are retained in packaged builds.
 installProductionDiagnostics()
