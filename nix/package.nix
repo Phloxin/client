@@ -16,6 +16,10 @@
   libxtst,
   libxrandr,
   libxt,
+  lld,
+  buildPackages,
+  # Source of the pylon-e2ee crate (the flake's pylon-e2ee input)
+  pylonE2eeSrc,
   preferScreenshareCodec ? null,
   # disableHardwareEncode: true turns VA-API video encoding off entirely
   disableHardwareEncode ? false,
@@ -68,6 +72,48 @@ let
     buildInputs = [ pipewire ];
 
     # Tests cannot link outside of node or Electron
+    doCheck = false;
+  };
+
+  # The wasm-bindgen CLI must match the wasm-bindgen crate in Cargo.lock exactly
+  e2eeLock = lib.importTOML "${pylonE2eeSrc}/Cargo.lock";
+  wasmBindgenVersion =
+    (lib.findFirst (p: p.name == "wasm-bindgen")
+      (throw "pylon: wasm-bindgen is missing from pylon-e2ee's Cargo.lock")
+      e2eeLock.package
+    ).version;
+  wasmBindgenAttr = "wasm-bindgen-cli_${lib.replaceStrings [ "." ] [ "_" ] wasmBindgenVersion}";
+  wasmBindgenCli =
+    buildPackages.${wasmBindgenAttr}
+      or (throw "pylon: nixpkgs has no ${wasmBindgenAttr}, which pylon-e2ee's Cargo.lock requires");
+
+  # WASM for the E2EE worker (src/renderer/src/lib/e2ee/pkg), the same output
+  # as `npm run build:e2ee`
+  e2eeWasm = rustPlatform.buildRustPackage {
+    pname = "pylon-e2ee-wasm";
+    version = (lib.importTOML "${pylonE2eeSrc}/Cargo.toml").package.version;
+
+    src = pylonE2eeSrc;
+    cargoLock.lockFile = "${pylonE2eeSrc}/Cargo.lock";
+
+    nativeBuildInputs = [
+      wasmBindgenCli
+      lld # nixpkgs' rustc links wasm32 with a bare `lld`
+    ];
+
+    buildPhase = ''
+      runHook preBuild
+      cargo build --offline --release --features wasm --target wasm32-unknown-unknown
+      runHook postBuild
+    '';
+
+    installPhase = ''
+      runHook preInstall
+      wasm-bindgen --target web --out-dir $out --out-name pylon_e2ee \
+        target/wasm32-unknown-unknown/release/pylon_e2ee.wasm
+      runHook postInstall
+    '';
+
     doCheck = false;
   };
 in
@@ -127,6 +173,9 @@ buildNpmPackage {
 
     cp ${audioCapture}/lib/libaudio_capture.so \
       native/audio-capture/audio-capture.linux-${stdenv.hostPlatform.node.arch}-gnu.node
+
+    # The E2EE worker imports its WASM from here. It's gitignored, so it isn't in src
+    install -Dm644 -t src/renderer/src/lib/e2ee/pkg ${e2eeWasm}/*
   '';
 
   installPhase = ''
@@ -176,7 +225,7 @@ buildNpmPackage {
     })
   ];
 
-  passthru = { inherit audioCapture electron; };
+  passthru = { inherit audioCapture e2eeWasm electron; };
 
   meta = {
     description = packageJson.description;

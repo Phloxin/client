@@ -1,10 +1,24 @@
 {
   description = "Pylon desktop client";
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+
+    # Source for the E2EE worker's WASM. Flakes fetched as github: tarballs
+    # don't include git submodules, so this pins the same commit as the
+    # pylon-e2ee submodule. Bump the rev whenever the submodule moves.
+    pylon-e2ee = {
+      url = "github:Phloxin/pylon-e2ee-v1/1521dc03f0e3dd4757028cd08bf1fe9859f45d6d";
+      flake = false;
+    };
+  };
 
   outputs =
-    { self, nixpkgs }:
+    {
+      self,
+      nixpkgs,
+      pylon-e2ee,
+    }:
     let
       systems = [
         "x86_64-linux"
@@ -15,12 +29,12 @@
     in
     {
       packages = forAllSystems (pkgs: rec {
-        pylon = pkgs.callPackage ./nix/package.nix { };
+        pylon = pkgs.callPackage ./nix/package.nix { pylonE2eeSrc = pylon-e2ee; };
         default = pylon;
       });
 
       overlays.default = final: prev: {
-        pylon = final.callPackage ./nix/package.nix { };
+        pylon = final.callPackage ./nix/package.nix { pylonE2eeSrc = pylon-e2ee; };
       };
 
       devShells = forAllSystems (

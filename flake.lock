@@ -16,9 +16,27 @@
         "type": "github"
       }
     },
+    "pylon-e2ee": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1793039766,
+        "narHash": "sha256-cQxjAzxr3J7/LPG5Jc8ty3S+Z/LJdpQagShbJ7QNbDE=",
+        "owner": "Phloxin",
+        "repo": "pylon-e2ee-v1",
+        "rev": "1521dc03f0e3dd4757028cd08bf1fe9859f45d6d",
+        "type": "github"
+      },
+      "original": {
+        "owner": "Phloxin",
+        "repo": "pylon-e2ee-v1",
+        "rev": "1521dc03f0e3dd4757028cd08bf1fe9859f45d6d",
+        "type": "github"
+      }
+    },
     "root": {
       "inputs": {
-        "nixpkgs": "nixpkgs"
+        "nixpkgs": "nixpkgs",
+        "pylon-e2ee": "pylon-e2ee"
       }
     }
   },
