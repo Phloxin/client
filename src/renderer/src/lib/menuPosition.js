@@ -14,6 +14,9 @@ export function fitMenuAxis(start, size, cursor, limit) {
 // and pull it back in: flip to the other side of the cursor when the menu fits
 // there (what native menus do), otherwise clamp to the edge.
 //
+// A menu anchored below an element rather than at a cursor passes `pos.flipY`:
+// the edge a flipped menu ends at, in place of the cursor's y.
+//
 // Returns the style object to spread onto the menu. The measuring pass renders
 // hidden at the raw cursor point; useLayoutEffect resolves the real position
 // before the browser paints, so the wrong spot is never visible.
@@ -29,7 +32,7 @@ export function useMenuPosition(ref, pos) {
     const { offsetWidth: w, offsetHeight: h } = el
     setPlaced({
       left: fitMenuAxis(pos.x, w, pos.x, window.innerWidth),
-      top: fitMenuAxis(pos.y, h, pos.y, window.innerHeight)
+      top: fitMenuAxis(pos.y, h, pos.flipY ?? pos.y, window.innerHeight)
     })
   }, [pos, ref])
 

@@ -357,6 +357,13 @@
   transform-origin: bottom left;
 }
 
+/* The message editor's popup is placed in window coordinates from JS. */
+.chat-mention-pop.in-editor {
+  position: fixed;
+  bottom: auto;
+  left: auto;
+}
+
 .chat-mention-item {
   display: flex;
   align-items: center;
@@ -640,6 +647,7 @@
 }
 
 .chat-message-edit-input {
+  field-sizing: content;
   width: 100%;
   resize: none;
   padding: 8px 10px;
@@ -722,6 +730,29 @@
   border-radius: var(--radius-sm);
   overflow-x: auto;
   max-width: 640px;
+}
+
+.chat-mermaid {
+  margin: 6px 0;
+  padding: 10px 12px;
+  background: var(--color-background-mute);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  max-width: 640px;
+}
+
+.chat-mermaid.zoomable {
+  cursor: zoom-in;
+}
+
+.chat-mermaid svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.chat-mermaid-error {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
 }
 
 .chat-message-text pre code.hljs {
@@ -1292,7 +1323,8 @@ button.chat-reply-preview:focus-visible {
   font-size: var(--font-size-md);
   line-height: 1.45;
   padding: 7px 6px;
-  max-height: 320px;
+  field-sizing: content;
+  max-height: calc(10lh + 14px);
 }
 
 /* Composer with a mention-highlight backdrop: the div behind mirrors the text
@@ -1334,8 +1366,6 @@ button.chat-reply-preview:focus-visible {
   margin: 0 -3px;
   /* Same reason: semibold glyphs are wider than the textarea's regular ones. */
   font-weight: inherit;
-  /* ponytail: wrap can drift from the textarea by a scrollbar's width once the
-     composer overflows at max height; scope a scrollbar-gutter fix if it shows. */
 }
 
 .chat-input-bar textarea::placeholder {

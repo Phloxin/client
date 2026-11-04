@@ -42,9 +42,6 @@ import { menuPop, overlayPop, scrimFade } from '../lib/motionPresets'
 import { fitMenuAxis, useMenuPosition } from '../lib/menuPosition'
 import './ChatPanel.css'
 
-// The message box grows with its content up to this many lines, then scrolls.
-const MAX_INPUT_LINES = 10
-
 // Distance from the bottom, in px, under which the view counts as "at the
 // newest message" and keeps following it. The jump-to-bottom pill uses a looser
 // threshold so it doesn't flash on and off around the boundary.
@@ -99,6 +96,7 @@ function replaceRange(el, start, end, text) {
   if (document.execCommand('insertText', false, text)) return
   const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set
   setValue.call(el, el.value.slice(0, start) + text + el.value.slice(end))
+  el.setSelectionRange(start + text.length, start + text.length)
   el.dispatchEvent(new Event('input', { bubbles: true }))
 }
 
@@ -161,36 +159,141 @@ function emojiOnlySizeClass(text) {
 // and fenced code, etc.). Memoized so the parse only re-runs when the text
 // changes, not on every feed re-render. Emoji-only messages get a jumbo/medium
 // size class (see emojiOnlySizeClass).
-const MessageText = memo(function MessageText({ text, resolveMention }) {
+// eslint-disable-next-line react/prop-types -- The renderer does not use runtime PropTypes.
+const MessageText = memo(function MessageText({ text, resolveMention, onImageClick }) {
   const sizeClass = emojiOnlySizeClass(text)
   return (
     <div className={`chat-message-text${sizeClass ? ` ${sizeClass}` : ''}`}>
-      {renderMarkdown(text, resolveMention)}
+      {renderMarkdown(text, resolveMention, onImageClick)}
     </div>
   )
 })
 
-// Inline editor swapped in for a message's text while it's being edited. Mirrors
-// the composer's auto-grow; Enter saves, Shift+Enter newlines, Escape cancels.
-function MessageEditor({ initialText, onSave, onCancel }) {
+// @mention autocomplete for a textarea (the composer's and the message
+// editor's). The host feeds it from onChange, onKeyDown, and onBlur, and renders
+// MentionList from `matches` while there are any.
+function useMentionAutocomplete(clients, textareaRef) {
+  // { start, query } while the caret sits in an @token being typed, else null.
+  // `start` is the index of the '@' in the text.
+  const [mention, setMention] = useState(null)
+  const [index, setIndex] = useState(0)
+
+  const matches = mention
+    ? [
+        // @everyone isn't a roster entry — synthesize it, listed first like
+        // Discord. `name` is all select needs to insert the token.
+        ...('everyone'.includes(mention.query.toLowerCase())
+          ? [{ id: '@everyone', name: 'everyone', everyone: true }]
+          : []),
+        ...(clients || []).filter((c) =>
+          c.name?.toLowerCase().includes(mention.query.toLowerCase())
+        )
+      ].slice(0, 8)
+    : []
+
+  // Re-derive the active @token from the text before the caret. "@" opens the
+  // popup; the query narrows as they keep typing (word chars only, so a space
+  // or punctuation ends the token).
+  const update = (value, caret) => {
+    const m = value.slice(0, caret).match(/(?:^|\s)@(\w*)$/)
+    setMention(m ? { start: caret - m[1].length - 1, query: m[1] } : null)
+    setIndex(0)
+  }
+
+  const close = () => setMention(null)
+
+  // Replace the in-progress @token with the chosen name. The text keeps the
+  // friendly "@name"; the host encodes it to <@id> when it sends.
+  const select = (client) => {
+    const el = textareaRef.current
+    replaceRange(el, mention.start, el.selectionEnd, `@${client.name} `)
+    close()
+  }
+
+  // The popup captures navigation keys while it's open. True when it took the key.
+  const handleKey = (e) => {
+    if (!matches.length) return false
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault()
+      const delta = e.key === 'ArrowDown' ? 1 : -1
+      setIndex((i) => (i + delta + matches.length) % matches.length)
+      return true
+    }
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault()
+      select(matches[index])
+      return true
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      close()
+      return true
+    }
+    return false
+  }
+
+  return { matches, index, setIndex, update, handleKey, close, select }
+}
+
+function MentionList({ matches, index, onPick, onHover }) {
+  return matches.map((c, i) => (
+    <button
+      key={c.id}
+      type="button"
+      className={`chat-mention-item${i === index ? ' active' : ''}`}
+      // mousedown so this fires before the textarea's blur closes us
+      onMouseDown={(e) => {
+        e.preventDefault()
+        onPick(c)
+      }}
+      onMouseEnter={() => onHover(i)}
+    >
+      <span className="chat-avatar chat-mention-avatar" aria-hidden="true">
+        {c.everyone ? (
+          <IconUsers size={13} />
+        ) : c.avatar ? (
+          <img className="chat-avatar-img" src={c.avatar} alt="" />
+        ) : (
+          (c.name || '?').charAt(0).toUpperCase()
+        )}
+      </span>
+      {c.everyone ? '@everyone' : c.name}
+      {c.everyone && (
+        <span className="chat-mention-hint">Notify everyone with visibility to this channel</span>
+      )}
+    </button>
+  ))
+}
+
+// Inline editor swapped in for a message's text while it's being edited.
+// Enter saves, Shift+Enter newlines, Escape cancels.
+// eslint-disable-next-line react/prop-types -- The renderer does not use runtime PropTypes.
+function MessageEditor({ initialText, clients, onSave, onCancel }) {
   const [value, setValue] = useState(initialText)
   const ref = useRef(null)
+  const mention = useMentionAutocomplete(clients, ref)
+  const overlayAnim = useAnimationCategory('overlays')
+  // The list would clip a popup positioned inside it, so this one is fixed to
+  // the window: below the textarea, or ending just above it when there's no room.
+  const popRef = useRef(null)
+  const mentionCount = mention.matches.length
+  const [popPos, setPopPos] = useState(null)
+  useLayoutEffect(() => {
+    if (!mentionCount) return
+    const r = ref.current.getBoundingClientRect()
+    setPopPos({ x: r.left, y: r.bottom + 6, flipY: r.top - 6 })
+  }, [mentionCount])
+  const popStyle = useMenuPosition(popRef, mentionCount ? popPos : null)
 
-  // Focus and place the caret at the end when the editor opens.
+  // Caret at the end, then reveal the whole editor, hint line included; focus's
+  // own scroll would stop at the textarea.
   useLayoutEffect(() => {
     const el = ref.current
     if (!el) return
-    el.focus()
+    el.focus({ preventScroll: true })
     el.setSelectionRange(el.value.length, el.value.length)
+    el.parentElement.scrollIntoView({ block: 'nearest' })
   }, [])
-
-  // Grow to fit the content (no MAX cap here — edits are usually short).
-  useLayoutEffect(() => {
-    const el = ref.current
-    if (!el) return
-    el.style.height = 'auto'
-    el.style.height = `${el.scrollHeight}px`
-  }, [value])
 
   const trimmed = value.trim()
   const submit = () => {
@@ -202,6 +305,7 @@ function MessageEditor({ initialText, onSave, onCancel }) {
   }
 
   const handleKeyDown = (e) => {
+    if (mention.handleKey(e)) return
     if (handleFormatHotkey(e, ref.current)) return
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
@@ -219,8 +323,12 @@ function MessageEditor({ initialText, onSave, onCancel }) {
         className="chat-message-edit-input"
         rows={1}
         value={value}
-        onChange={(e) => setValue(e.target.value)}
+        onChange={(e) => {
+          setValue(e.target.value)
+          mention.update(e.target.value, e.target.selectionEnd)
+        }}
         onKeyDown={handleKeyDown}
+        onBlur={mention.close}
       />
       <div className="chat-message-edit-hint">
         escape to{' '}
@@ -232,6 +340,23 @@ function MessageEditor({ initialText, onSave, onCancel }) {
           save
         </button>
       </div>
+      <AnimatePresence>
+        {mentionCount > 0 && (
+          <motion.div
+            ref={popRef}
+            className="chat-mention-pop in-editor"
+            style={popStyle}
+            {...menuPop(overlayAnim)}
+          >
+            <MentionList
+              matches={mention.matches}
+              index={mention.index}
+              onPick={mention.select}
+              onHover={mention.setIndex}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   )
 }
@@ -414,6 +539,15 @@ function encodeMentions(text, clients) {
   return out
 }
 
+// The reverse, for the message editor. A token whose user can't be resolved
+// stays as <@id>, so saving the edit keeps the mention.
+function decodeMentions(text, resolveMention) {
+  return text.replace(/<@(\d+)>/g, (raw, id) => {
+    const name = resolveMention(id)
+    return name ? `@${name}` : raw
+  })
+}
+
 // Composer text split into plain segments and mention pills, for the highlight
 // backdrop behind the textarea. Same matching rules as encodeMentions (plus bare
 // @everyone, which the server matches as a standalone whitespace-delimited
@@ -540,10 +674,6 @@ function ChatPanel({
     enterDuration: 260
   })
   const [showEmoji, setShowEmoji] = useState(false)
-  // @mention autocomplete: { start, query } while the caret sits in an @token
-  // being typed, else null. `start` is the index of the '@' in the text.
-  const [mention, setMention] = useState(null)
-  const [mentionIndex, setMentionIndex] = useState(0)
   const [dragging, setDragging] = useState(false)
   const [viewerImage, setViewerImage] = useState(null)
   // Text attachment open in the file viewer (a feed attachment entry), or null.
@@ -572,6 +702,7 @@ function ChatPanel({
   const emojiRef = useRef(null)
   const listRef = useRef(null)
   const inputRef = useRef(null)
+  const mention = useMentionAutocomplete(clients, inputRef)
   const dragCounterRef = useRef(0)
   // Last-seen scroll metrics, the channel we measured them in, and a flag set
   // when a scroll-up load is prepending older messages (so we hold the viewport
@@ -688,38 +819,39 @@ function ChatPanel({
     }
   }
 
-  // Grow the message box to fit its content, up to MAX_INPUT_LINES, then let it
-  // scroll. Runs on every text change (typing, emoji insert, send-clear). Measure
-  // whether the message list is pinned before changing the textarea height, then
-  // restore the bottom after flexbox gives the composer its additional space.
+  // The composer sizes itself to its text (field-sizing), squeezing the list.
+  // While following, keep the newest message in view: pinBottom's scrollHeight
+  // read forces the layout that includes the composer's new height.
   useLayoutEffect(() => {
-    const el = inputRef.current
-    if (!el) return
     const list = listRef.current
-    const keepLatestVisible = list && followRef.current
-    el.style.height = 'auto' // shrink first so scrollHeight reflects the content
-    const cs = getComputedStyle(el)
-    const lineHeight = parseFloat(cs.lineHeight) || 20
-    const verticalPadding = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom)
-    const verticalBorder = parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth)
-    const maxHeight = lineHeight * MAX_INPUT_LINES + verticalPadding + verticalBorder
-    // scrollHeight excludes the border under border-box, so add it back.
-    const fullHeight = el.scrollHeight + verticalBorder
-    el.style.height = `${Math.min(fullHeight, maxHeight)}px`
-    el.style.overflowY = fullHeight > maxHeight ? 'auto' : 'hidden'
-    if (keepLatestVisible) {
-      // Reading scrollHeight forces the flex layout to include the textarea's
-      // new height before the scroll is applied.
-      pinBottom(list)
-      metricsRef.current = {
-        scrollTop: list.scrollTop,
-        scrollHeight: list.scrollHeight,
-        clientHeight: list.clientHeight
-      }
-      setScrolledUp(false)
-      setNewBelow(false)
+    if (!list || !followRef.current) return
+    pinBottom(list)
+    metricsRef.current = {
+      scrollTop: list.scrollTop,
+      scrollHeight: list.scrollHeight,
+      clientHeight: list.clientHeight
     }
+    setScrolledUp(false)
+    setNewBelow(false)
   }, [text])
+
+  // Past its line cap the composer shows a scrollbar, which narrows the
+  // textarea's text but not the backdrop's; inset the backdrop to match so both
+  // wrap at the same width.
+  useEffect(() => {
+    const el = inputRef.current
+    const sides = ['paddingLeft', 'paddingRight', 'borderLeftWidth', 'borderRightWidth']
+    const observer = new ResizeObserver(([entry]) => {
+      const cs = getComputedStyle(el)
+      const scrollbar = sides.reduce(
+        (w, prop) => w - parseFloat(cs[prop]),
+        entry.borderBoxSize[0].inlineSize - entry.contentBoxSize[0].inlineSize
+      )
+      highlightRef.current.style.right = `${scrollbar}px`
+    })
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [])
 
   // Close the emoji picker on outside click
   useEffect(() => {
@@ -846,44 +978,10 @@ function ChatPanel({
     })
   }
 
-  // Re-derive the active @token from the text before the caret. "@" opens the
-  // popup; the query narrows as they keep typing (word chars only, so a space
-  // or punctuation ends the token).
-  const updateMention = (value, caret) => {
-    const m = value.slice(0, caret).match(/(?:^|\s)@(\w*)$/)
-    setMention(m ? { start: caret - m[1].length - 1, query: m[1] } : null)
-    setMentionIndex(0)
-  }
-
-  const mentionMatches = mention
-    ? [
-        // @everyone isn't a roster entry — synthesize it, listed first like
-        // Discord. `name` is all selectMention needs to insert the token.
-        ...('everyone'.includes(mention.query.toLowerCase())
-          ? [{ id: '@everyone', name: 'everyone', everyone: true }]
-          : []),
-        ...(clients || []).filter((c) =>
-          c.name?.toLowerCase().includes(mention.query.toLowerCase())
-        )
-      ].slice(0, 8)
-    : []
-
-  // Replace the in-progress @token with the chosen name. The composer keeps
-  // the friendly "@name" text; handleSend encodes it to <@id> for the wire.
-  const selectMention = (c) => {
-    const caret = inputRef.current?.selectionEnd ?? text.length
-    updateText(`${text.slice(0, mention.start)}@${c.name} ${text.slice(caret)}`)
-    setMention(null)
-    const pos = mention.start + c.name.length + 2
-    requestAnimationFrame(() => {
-      inputRef.current?.focus()
-      inputRef.current?.setSelectionRange(pos, pos)
-    })
-  }
-
   const insertEmoji = (emoji) => {
-    updateText(text + emoji)
-    inputRef.current?.focus()
+    const el = inputRef.current
+    el.focus()
+    replaceRange(el, el.selectionStart, el.selectionEnd, emoji)
   }
 
   const handlePaste = (e) => {
@@ -907,7 +1005,7 @@ function ChatPanel({
     onSend?.(encodeMentions(trimmed, clients), attachments, replyTo?.id, {
       public: sharePublic
     })
-    setMention(null)
+    mention.close()
     setText('')
     drafts.delete(channelKey)
     setAttachments([])
@@ -917,25 +1015,7 @@ function ChatPanel({
   }
 
   const handleKeyDown = (e) => {
-    // The mention popup captures navigation keys while it's open.
-    if (mention && mentionMatches.length > 0) {
-      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-        e.preventDefault()
-        const delta = e.key === 'ArrowDown' ? 1 : -1
-        setMentionIndex((i) => (i + delta + mentionMatches.length) % mentionMatches.length)
-        return
-      }
-      if (e.key === 'Enter' || e.key === 'Tab') {
-        e.preventDefault()
-        selectMention(mentionMatches[mentionIndex])
-        return
-      }
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        setMention(null)
-        return
-      }
-    }
+    if (mention.handleKey(e)) return
     // Escape drops the pending reply (the mention popup above already claimed
     // Escape for itself while it's open).
     if (e.key === 'Escape' && replyTo) {
@@ -1370,7 +1450,8 @@ function ChatPanel({
                   )}
                   {isEditing ? (
                     <MessageEditor
-                      initialText={entry.text || ''}
+                      initialText={decodeMentions(entry.text || '', resolveMention)}
+                      clients={clients}
                       onSave={(content) => {
                         onEditMessage?.(entry.id, encodeMentions(content, clients))
                         setEditingId(null)
@@ -1406,7 +1487,11 @@ function ChatPanel({
                         </div>
                       )}
                       {entry.text && (
-                        <MessageText text={entry.text} resolveMention={resolveMention} />
+                        <MessageText
+                          text={entry.text}
+                          resolveMention={resolveMention}
+                          onImageClick={setViewerImage}
+                        />
                       )}
                     </>
                   )}
@@ -1635,12 +1720,12 @@ function ChatPanel({
               value={text}
               onChange={(e) => {
                 updateText(e.target.value)
-                updateMention(e.target.value, e.target.selectionEnd)
+                mention.update(e.target.value, e.target.selectionEnd)
                 if (e.target.value) onTyping?.()
               }}
               onKeyDown={handleKeyDown}
               onPaste={handlePaste}
-              onBlur={() => setMention(null)}
+              onBlur={mention.close}
               onScroll={(e) => {
                 // Keep the backdrop aligned when the composer scrolls at max height.
                 if (highlightRef.current) highlightRef.current.scrollTop = e.target.scrollTop
@@ -1649,37 +1734,14 @@ function ChatPanel({
             />
           </div>
           <AnimatePresence>
-            {mention && mentionMatches.length > 0 && (
+            {mention.matches.length > 0 && (
               <motion.div className="chat-mention-pop" {...menuPop(overlayAnim)}>
-                {mentionMatches.map((c, i) => (
-                  <button
-                    key={c.id}
-                    type="button"
-                    className={`chat-mention-item${i === mentionIndex ? ' active' : ''}`}
-                    // mousedown so this fires before the textarea's blur closes us
-                    onMouseDown={(e) => {
-                      e.preventDefault()
-                      selectMention(c)
-                    }}
-                    onMouseEnter={() => setMentionIndex(i)}
-                  >
-                    <span className="chat-avatar chat-mention-avatar" aria-hidden="true">
-                      {c.everyone ? (
-                        <IconUsers size={13} />
-                      ) : c.avatar ? (
-                        <img className="chat-avatar-img" src={c.avatar} alt="" />
-                      ) : (
-                        (c.name || '?').charAt(0).toUpperCase()
-                      )}
-                    </span>
-                    {c.everyone ? '@everyone' : c.name}
-                    {c.everyone && (
-                      <span className="chat-mention-hint">
-                        Notify everyone with visibility to this channel
-                      </span>
-                    )}
-                  </button>
-                ))}
+                <MentionList
+                  matches={mention.matches}
+                  index={mention.index}
+                  onPick={mention.select}
+                  onHover={mention.setIndex}
+                />
               </motion.div>
             )}
           </AnimatePresence>

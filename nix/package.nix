@@ -140,7 +140,7 @@ buildNpmPackage {
   };
 
   nodejs = nodejs_22; # matches engines in package.json
-  npmDepsHash = "sha256-Z0mmJLmoL3dX6fazKhZfiTbqOcAh1b96H+LV7sqV8qQ=";
+  npmDepsHash = "sha256-LzoqUgPc368eQGm+1nNY6UnjWKI3Sj9ogtV+WDd171E=";
 
   # Skip npm install scripts since the native modules are built below
   npmRebuildFlags = [ "--ignore-scripts" ];

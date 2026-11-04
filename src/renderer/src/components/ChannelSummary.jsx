@@ -19,16 +19,10 @@ function DescriptionEditor({ initialText, onSave, onCancel }) {
   useLayoutEffect(() => {
     const el = ref.current
     if (!el) return
-    el.focus()
+    el.focus({ preventScroll: true })
     el.setSelectionRange(el.value.length, el.value.length)
+    el.parentElement.scrollIntoView({ block: 'nearest' })
   }, [])
-
-  useLayoutEffect(() => {
-    const el = ref.current
-    if (!el) return
-    el.style.height = 'auto'
-    el.style.height = `${el.scrollHeight}px`
-  }, [value])
 
   const submit = () => {
     const trimmed = value.trim()
