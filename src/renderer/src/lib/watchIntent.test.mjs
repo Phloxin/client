@@ -188,6 +188,44 @@ test('screen audio follows the watched client and closes with the stream', async
   assert.equal(session.activeConsumers.size, 0)
 })
 
+test("watching only a client's camera receives none of their screen audio", async () => {
+  const session = createSession()
+  session.videoProducers.set('cam1', { clientId: 'c1', producedType: 'Camera' })
+  session.videoProducers.set('p1', { clientId: 'c1', producedType: 'ScreenShare' })
+  session.screenAudioProducers.set('a1', { clientId: 'c1' })
+
+  const camera = session.setWatched(['cam1'])
+  assert.equal(camera.watchedClientIds.size, 0)
+  assert.deepEqual(
+    camera.consume.map((item) => item.producerId),
+    ['cam1']
+  )
+  assert.equal(
+    isProducerWatched({
+      producerId: 'a1',
+      watchedProducerIds: camera.watchedProducerIds,
+      watchedClientIds: camera.watchedClientIds,
+      videoProducers: session.videoProducers,
+      screenAudioProducers: session.screenAudioProducers
+    }),
+    false
+  )
+  await session.flush()
+  assert.deepEqual([...session.activeConsumers.keys()], ['cam1'])
+
+  // Watching their screen share as well brings its audio in.
+  const both = session.setWatched(['cam1', 'p1'])
+  assert.deepEqual([...both.watchedClientIds], ['c1'])
+  assert.deepEqual(both.consume.map((item) => item.producerId).sort(), ['a1', 'p1'])
+  await session.flush()
+  assert.equal(session.activeConsumers.size, 3)
+
+  // Back to the camera alone: the screen share and its audio close, the camera stays.
+  const cameraAgain = session.setWatched(['cam1'])
+  assert.deepEqual(cameraAgain.close.map((item) => item.kind).sort(), ['screenAudio', 'video'])
+  assert.deepEqual([...session.activeConsumers.keys()], ['cam1'])
+})
+
 test('screen audio arriving during an in-flight video consume is not consumed twice', async () => {
   const session = createSession()
   session.videoProducers.set('p1', { clientId: 'c1', producedType: 'ScreenShare' })

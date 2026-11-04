@@ -3,7 +3,7 @@ import './ClientSummary.css'
 import { IconUsersGroup, IconPhotoUp, IconTrash, IconZoomIn } from '@tabler/icons-react'
 import { RoleIcon } from '../lib/roleIcon'
 import { useClientActions } from '../context/ClientActionsContext'
-import { statusOf, STATUS_LABELS } from '../lib/presence'
+import { statusOf, statusLabel } from '../lib/presence'
 import { useMenuPosition } from '../lib/menuPosition'
 import { renderInlineMarkdown } from '../lib/markdown'
 import { useImageColors, bannerGradient } from '../lib/imageColors'
@@ -86,11 +86,9 @@ function ClientSummary({ client, roles = [], vanity = [], isSelf = false, onSetA
   const bannerColors = useImageColors(client?.avatar)
 
   // Presence is user-level and lives in the shared map, not on the client record.
-  // STATUS_LABELS.offline is 'Invisible' — that's the wording for picking your own
-  // status; from the outside the two are indistinguishable, so read it as Offline.
   const presence = useClientActions().presences?.[client?.id]
   const status = statusOf(presence)
-  const statusLabel = status === 'offline' ? 'Offline' : STATUS_LABELS[status]
+  const label = statusLabel(status, isSelf)
 
   return (
     <div className="client-summary">
@@ -133,7 +131,7 @@ function ClientSummary({ client, roles = [], vanity = [], isSelf = false, onSetA
         )}
           <span
             className={`client-summary-avatar-dot presence-${status}`}
-            title={statusLabel}
+            title={label}
             aria-hidden="true"
           />
         </div>

@@ -37,6 +37,7 @@ const BITS = {
   SPEAK: 13,
   STREAM: 14,
   DEAFEN_MEMBERS: 15,
+  CREATE_INVITES: 19,
   ADMINISTRATOR: 62
 }
 
@@ -67,7 +68,7 @@ export const toBits = (decimal) => {
 //
 // ponytail: deliberately ignores base role permissions, so this can only ever
 // answer "explicitly denied" — the client can't compute a trustworthy base (the
-// implicit @everyone role isn't in /server/roles), and guessing wrong there
+// implicit @everyone role isn't in /roles), and guessing wrong there
 // would hide channels the server actually grants. The server stays authoritative.
 export function viewChannelOverride(overwrites = [], { roleIds = [], userId } = {}) {
   const says = (overwrite, field) => (toBits(overwrite[field]) & VIEW_CHANNEL_BIT) !== 0n

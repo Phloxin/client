@@ -46,9 +46,14 @@ export function applyAppearanceSettings({
   transparencyOpacity = 85,
   gradientsEnabled = true,
   shadowsEnabled = true,
-  fontFamily = 'inter'
+  fontFamily = 'inter',
+  clientPanelPosition = 'left'
 }) {
   const html = document.documentElement
+  html.setAttribute(
+    'data-client-panel-position',
+    clientPanelPosition === 'right' ? 'right' : 'left'
+  )
 
   // Drive the global --font-family-primary token off the saved choice; every
   // surface already consumes that token, so the whole UI switches at once.

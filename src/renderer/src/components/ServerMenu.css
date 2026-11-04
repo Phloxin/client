@@ -361,6 +361,30 @@
   border-color: var(--color-primary);
 }
 
+/* The Login tab's "Forgot password?" link. */
+.add-server-link {
+  align-self: flex-end;
+  margin-top: -6px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--color-primary);
+  font-family: var(--font-family-primary);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+
+.add-server-link:hover {
+  text-decoration: underline;
+}
+
+/* Helper text under a field, such as the invite field's. */
+.add-server-field .add-server-hint {
+  font-weight: normal;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
 /* Password field with an inline reveal (eye) toggle. */
 .add-server-password {
   position: relative;

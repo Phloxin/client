@@ -11,6 +11,7 @@ import {
   IconUserX,
   IconDoorExit,
   IconBan,
+  IconKey,
   IconMoodSilence,
   IconCheck,
   IconUserCheck,
@@ -22,7 +23,7 @@ import {
   IconX,
   IconActivity
 } from '@tabler/icons-react'
-import { STATUSES, STATUS_LABELS, STATUS_MESSAGE_MAX, statusOf } from '../lib/presence'
+import { STATUSES, STATUS_MESSAGE_MAX, statusOf, statusLabel } from '../lib/presence'
 import { fileToAvatarDataUrl } from '../lib/avatarFile'
 import { RoleIcon } from '../lib/roleIcon'
 import { useMenuPosition } from '../lib/menuPosition'
@@ -61,9 +62,11 @@ function capabilities(client, o) {
     !isSelf && !rosterMode && !!o.onKickFromChannel && client.channel_id != null
   const canBan = !isSelf && o.canBanMembers
   const canUnban = !isSelf && o.canBanMembers && isBanned
-  // Gag = server-wide mute (PATCH /client { mute }), gated on MUTE_MEMBERS. Works
-  // from channel view and the roster, like ban.
+  // Gag = server-wide mute (PATCH /client { server_mute }), gated on MUTE_MEMBERS.
+  // Works from channel view and the roster, like ban.
   const canGag = !isSelf && !!o.onGag && o.canMuteMembers
+  // The server also refuses anyone who outranks us, such as an admin resetting the owner.
+  const canIssueResetCode = !isSelf && !!o.isAdmin && !!o.onIssueResetCode
   const canAssignRole = !isSelf
   // Groups are cosmetic, so unlike roles they're also assignable to ourselves —
   // our own menu shows the picker below Set Avatar instead of under moderation.
@@ -74,7 +77,8 @@ function capabilities(client, o) {
     canKick ||
     canKickFromChannel ||
     canGag ||
-    canBan
+    canBan ||
+    canIssueResetCode
   // A banned user's menu collapses to just Unban; otherwise it offers the normal
   // set. Don't open at all when nothing would be actionable.
   const canOpen = isBanned
@@ -101,6 +105,7 @@ function capabilities(client, o) {
     canBan,
     canUnban,
     canGag,
+    canIssueResetCode,
     canAssignGroup,
     canModerate,
     canOpen
@@ -110,7 +115,7 @@ function capabilities(client, o) {
 // A picker that flies out to the right of its parent item instead of pushing the
 // rest of the menu down. Measured once at mount and flipped to the left / bottom-
 // aligned when the window edge is closer than the panel is wide/tall.
-function Submenu({ children }) {
+export function Submenu({ children }) {
   const ref = useRef(null)
   const [place, setPlace] = useState('')
   useLayoutEffect(() => {
@@ -316,7 +321,7 @@ function ClientContextMenu({ client, pos, onClose, opts, caps }) {
                   }}
                 >
                   <span className={`presence-dot presence-${s}`} />
-                  {STATUS_LABELS[s]}
+                  {statusLabel(s, true)}
                   {myStatus === s && (
                     <IconCheck size={16} className="client-context-menu-trailing" />
                   )}
@@ -689,6 +694,19 @@ function ClientContextMenu({ client, pos, onClose, opts, caps }) {
                     >
                       <IconBan size={16} />
                       Ban User
+                    </button>
+                  )}
+                  {caps.canIssueResetCode && (
+                    <button
+                      type="button"
+                      className="client-context-menu-item"
+                      onClick={() => {
+                        opts.onIssueResetCode?.(client.id)
+                        onClose()
+                      }}
+                    >
+                      <IconKey size={16} />
+                      Issue password reset code…
                     </button>
                   )}
                 </>

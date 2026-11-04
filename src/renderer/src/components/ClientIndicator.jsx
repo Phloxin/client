@@ -14,7 +14,7 @@ import { setClientAudioState, getClientAudioState } from '../lib/soup'
 import { useClientMenu } from './ClientContextMenu'
 import { useSettings } from '../context/SettingsContext'
 import { useClientActions } from '../context/ClientActionsContext'
-import { statusOf, STATUS_LABELS } from '../lib/presence'
+import { statusOf, statusLabel } from '../lib/presence'
 
 // rosterMode renders a presence-only entry (the sidebar's Users tab): no mic/
 // status indicator and no right-click volume control, since those entries aren't
@@ -26,6 +26,7 @@ function ClientIndicator({
   deafened,
   isSelf,
   streaming,
+  streamWatchable,
   animStatus,
   rosterMode,
   draggableToChannel,
@@ -249,16 +250,22 @@ function ClientIndicator({
     setLocalMuted(false)
   }
 
-  const { onSetNickname, onSetPresence, onOpenStreamDebug, onWatchStream, presences } =
-    useClientActions()
+  const {
+    onSetNickname,
+    onSetPresence,
+    onOpenStreamDebug,
+    onWatchStream,
+    presences,
+    isAdmin,
+    onIssueResetCode
+  } = useClientActions()
 
   // Absent presence = offline. A status message stays visible while offline, so
   // it's appended independently of the status itself.
   const presence = presences?.[client.id]
   const status = statusOf(presence)
-  const presenceTitle = presence?.status_message
-    ? `${STATUS_LABELS[status]} — ${presence.status_message}`
-    : STATUS_LABELS[status]
+  const label = statusLabel(status, isSelf)
+  const presenceTitle = presence?.status_message ? `${label} — ${presence.status_message}` : label
   // In a voice channel everyone listed is by definition present, so a dot on
   // every row is noise — only the two statuses that mean "here but unavailable"
   // earn one. The Users roster still shows all four, since that's the view whose
@@ -297,6 +304,8 @@ function ClientIndicator({
     canKickMembers,
     canBanMembers,
     canMuteMembers,
+    isAdmin,
+    onIssueResetCode,
     volume: {
       value: volume,
       muted: localMuted,
@@ -335,9 +344,14 @@ function ClientIndicator({
     statusIcon = <IconMicrophone size={18} className="mic-indicator" aria-label="Not speaking" />
   }
 
+  // In a voice channel on the backend, but no voice node session carries its
+  // media yet (still connecting, or lost and not back).
+  const connecting = !rosterMode && client.channel_id != null && client.connected === false
+
   return (
     <div
-      className="client-indicator"
+      className={`client-indicator${connecting ? ' connecting' : ''}`}
+      title={connecting ? `${client.name} is connecting to voice…` : undefined}
       data-anim-status={animStatus}
       draggable={canDragToChannel}
       onDragStart={canDragToChannel ? handleDragStart : undefined}
@@ -398,10 +412,11 @@ function ClientIndicator({
         </span>
       )}
       {streaming &&
-        (onWatchStream ? (
+        (streamWatchable && onWatchStream ? (
           // Click to jump to this client's stream in the Streams view. stopPropagation
           // + clearing the row's deferred single-click keeps it off the summary/DM
-          // handlers on the enclosing row.
+          // handlers on the enclosing row. Only streams with a tile in our joined
+          // channel are clickable; ones elsewhere just show the glyph.
           <button
             type="button"
             className="client-streaming-btn"
@@ -418,7 +433,7 @@ function ClientIndicator({
             </span>
           </button>
         ) : (
-          <span className="client-streaming-glyph">
+          <span className="client-streaming-glyph" title={`${client.name} is streaming`}>
             <IconVideoFilled size={15} className="client-streaming-icon" aria-label="Streaming" />
           </span>
         ))}

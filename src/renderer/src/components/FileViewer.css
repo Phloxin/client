@@ -1,0 +1,130 @@
+/* ============================================================================
+   FILE VIEWER (text / markdown attachment preview)
+   ============================================================================ */
+
+.file-viewer-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  background: rgb(var(--shadow-tint) / 0.55);
+  backdrop-filter: blur(3px);
+}
+
+.file-viewer {
+  display: flex;
+  flex-direction: column;
+  width: min(900px, 100%);
+  max-height: 100%;
+  background: var(--gradient-surface);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-3);
+  overflow: hidden;
+  outline: none;
+}
+
+.file-viewer-header {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: 10px 12px 10px 16px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.file-viewer-icon {
+  flex-shrink: 0;
+  color: var(--color-text-tertiary);
+}
+
+.file-viewer-name {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text);
+}
+
+.file-viewer-size {
+  flex-shrink: 0;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+
+.file-viewer-spacer {
+  flex: 1;
+}
+
+.file-viewer-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
+}
+
+.file-viewer-btn:hover {
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.file-viewer-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.file-viewer-pre {
+  margin: 0;
+  padding: 14px 16px;
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+  color: var(--color-text-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 4;
+}
+
+.file-viewer-pre code.hljs {
+  background: transparent;
+  padding: 0;
+}
+
+.file-viewer-markdown {
+  padding: 14px 18px;
+}
+
+/* Chat caps code blocks at message width; the viewer has room to spare. */
+.file-viewer-markdown pre {
+  max-width: none;
+}
+
+.file-viewer-status {
+  padding: 32px 16px;
+  text-align: center;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+}
+
+.file-viewer-note {
+  padding: 8px 16px;
+  border-top: 1px solid var(--hairline);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}

@@ -9,7 +9,11 @@ import Inbox from './Inbox'
 // shows an app icon + title (both configurable via props); the right side hosts
 // the minimize / maximize-restore / close controls. Drag regions use
 // -webkit-app-region: drag in CSS; the buttons opt out.
+//
+// controlsOnly drops the bell/inbox and the icon+title, leaving a bare drag
+// strip plus the window controls — used by the frameless stream popout.
 function TitleBar({
+  controlsOnly = false,
   title,
   icon: Icon,
   notifications = [],
@@ -32,27 +36,33 @@ function TitleBar({
   }, [ipc])
 
   return (
-    <div className="title-bar">
+    <div className={controlsOnly ? 'title-bar title-bar-bare' : 'title-bar'}>
       {/* Left region mirrors the controls' width so the centered title stays
           window-centered: the bell is pinned far-left, the rest is drag space. */}
-      <div className="title-bar-controls-left">
-        <NotificationBell
-          notifications={notifications}
-          onClear={onClearNotifications}
-          onOpen={onOpenNotification}
-          silent={silentNotifications}
-        />
-        <Inbox
-          notifications={dmNotifications}
-          onOpen={onOpenDmNotification}
-          onClear={onClearDmNotifications}
-          silent={silentNotifications}
-        />
-        <div className="title-bar-left-fill" aria-hidden="true" />
-      </div>
+      {!controlsOnly && (
+        <div className="title-bar-controls-left">
+          <NotificationBell
+            notifications={notifications}
+            onClear={onClearNotifications}
+            onOpen={onOpenNotification}
+            silent={silentNotifications}
+          />
+          <Inbox
+            notifications={dmNotifications}
+            onOpen={onOpenDmNotification}
+            onClear={onClearDmNotifications}
+            silent={silentNotifications}
+          />
+          <div className="title-bar-left-fill" aria-hidden="true" />
+        </div>
+      )}
       <div className="title-bar-drag">
-        {Icon && <Icon size={16} className="title-bar-icon" stroke={2} />}
-        <span className="title-bar-text">{title}</span>
+        {!controlsOnly && (
+          <>
+            {Icon && <Icon size={16} className="title-bar-icon" stroke={2} />}
+            <span className="title-bar-text">{title}</span>
+          </>
+        )}
       </div>
       <div className="title-bar-controls">
         <button

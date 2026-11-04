@@ -14,6 +14,10 @@
   padding: 0 2px 0 6px;
 }
 
+html[data-client-panel-position='right'] .sidebar {
+  padding: 0 6px 0 2px;
+}
+
 /* Server header row — hosts the ServerMenu trigger. */
 .server-header {
   flex-shrink: 0;
@@ -218,57 +222,104 @@ html[data-transparency='true'] .control-dock {
   );
 }
 
-.dock-user {
+/* Voice connection strip: shown above the dock buttons while in a voice
+   channel. The tone class colors the signal icon and status label by link
+   quality (or reconnect/failure). */
+.voice-connection-bar {
+  --vc-tone: var(--color-text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--hairline);
+  animation: voice-connection-in 0.18s ease;
+}
+
+.voice-connection-bar.tone-good {
+  --vc-tone: var(--color-success);
+}
+
+.voice-connection-bar.tone-fair {
+  --vc-tone: var(--color-warning);
+}
+
+.voice-connection-bar.tone-poor {
+  --vc-tone: var(--color-danger);
+}
+
+@keyframes voice-connection-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+.voice-connection-status {
+  flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 8px;
-  min-width: 0;
-  padding: 2px 2px 0;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s;
 }
 
-.dock-avatar {
+.voice-connection-status:hover {
+  background: var(--color-surface);
+}
+
+.voice-connection-icon {
   position: relative;
-  width: 30px;
-  height: 30px;
-  border-radius: 50%;
-  background: color-mix(in srgb, var(--color-primary) 18%, transparent);
-  color: var(--color-primary);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 13px;
-  font-weight: var(--font-weight-bold);
   flex-shrink: 0;
-  overflow: hidden;
+  display: inline-flex;
+  color: var(--vc-tone);
 }
 
-.dock-avatar.in-voice {
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-success) 70%, transparent);
+.voice-connection-icon .pylon-signal-arc {
+  transition: opacity 0.3s ease;
 }
 
-.dock-avatar-img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
+/* Lock badge tucked into the signal icon's lower-right corner while the call
+   is end-to-end encrypted. The ring matches the dock so it reads as cut out. */
+.voice-connection-lock {
+  position: absolute;
+  right: -4px;
+  bottom: -3px;
+  padding: 1px;
+  border-radius: 50%;
+  background: var(--color-background-mute);
+  color: var(--color-success);
 }
 
-.dock-user-text {
+.voice-connection-lock.warning {
+  color: var(--color-danger);
+}
+
+.voice-connection-encrypted {
+  color: var(--color-success);
+}
+
+.voice-connection-text {
+  flex: 1;
   display: flex;
   flex-direction: column;
   min-width: 0;
 }
 
-.dock-user-name {
+.voice-connection-label {
   font-size: var(--font-size-sm);
   font-weight: var(--font-weight-semibold);
-  color: var(--color-text);
+  color: var(--vc-tone);
   line-height: 1.3;
-  overflow: hidden;
   white-space: nowrap;
-  text-overflow: ellipsis;
 }
 
-.dock-user-status {
+.voice-connection-channel {
   font-size: var(--font-size-xs);
   color: var(--color-text-tertiary);
   line-height: 1.3;
@@ -277,8 +328,50 @@ html[data-transparency='true'] .control-dock {
   text-overflow: ellipsis;
 }
 
-.dock-user-status.voice {
-  color: var(--color-success);
+.voice-connection-ping {
+  flex-shrink: 0;
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-tertiary);
+}
+
+.voice-connection-info-btn {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    color 0.15s;
+}
+
+.voice-connection-info-btn:hover {
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.voice-connection-info-btn.active {
+  background: color-mix(in srgb, var(--color-primary) 16%, transparent);
+  color: var(--color-primary);
+}
+
+.voice-connection-info-btn.warning,
+.voice-connection-info-btn.warning:hover {
+  background: color-mix(in srgb, var(--color-danger) 16%, transparent);
+  color: var(--color-danger);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .voice-connection-bar {
+    animation: none;
+  }
 }
 
 .dock-actions {
@@ -385,6 +478,11 @@ html[data-transparency='true'] .control-dock {
   z-index: 10;
 }
 
+html[data-client-panel-position='right'] .sidebar-resize-handle {
+  right: auto;
+  left: calc(-1 * (10px + 6px) / 2);
+}
+
 .sidebar-resize-handle::after {
   content: '';
   position: absolute;
@@ -432,6 +530,12 @@ html[data-transparency='true'] .control-dock {
   transition:
     background 0.12s,
     color 0.12s;
+}
+
+/* In the channel, but its media session isn't up (VoiceStateApiObject.connected).
+   Dimmed on the children, so the row's enter/exit animations keep its opacity. */
+.client-indicator.connecting > * {
+  opacity: 0.55;
 }
 
 .client-indicator:hover {

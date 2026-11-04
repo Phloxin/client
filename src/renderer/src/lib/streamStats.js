@@ -267,23 +267,35 @@ export function extractRecvVideoMetrics(report, previous) {
   }
 }
 
+// Windowed delta of a monotonic cumulative counter. Null when either end is
+// missing or the counter went backwards (a reset, or a stat the browser stopped
+// reporting) — a negative "delta" would read as a healthy zero on a chart.
+function counterDelta(current, previous) {
+  if (!Number.isFinite(current) || !Number.isFinite(previous)) return null
+  return current >= previous ? current - previous : null
+}
+
+// Average delay in ms AFTER the jitter buffer: how long an emitted sample sat in
+// the render path before it was actually played. Paired with jitterBufferMs it
+// says WHERE latency lives — NetEq (jitterBufferMs) or the playout path
+// (playoutMs), which for us is the track -> Web Audio FIFO plus the device
+// buffer. Both are needed; either alone can look fine while the other bloats.
+function playoutAvgMs(playout, previous) {
+  if (!playout) return null
+  const deltaDelay = counterDelta(playout.totalPlayoutDelay, previous?.totalPlayoutDelay)
+  const deltaSamples = counterDelta(playout.totalSamplesCount, previous?.totalSamplesCount)
+  if (deltaDelay == null || !deltaSamples) return null
+  return (deltaDelay / deltaSamples) * 1000
+}
+
 export function extractRecvAudioMetrics(report, previous) {
   let inbound = null
+  let playout = null
   for (const stat of report.values()) {
-    if (stat.type === 'inbound-rtp' && stat.kind === 'audio') {
-      inbound = stat
-      break
-    }
+    if (stat.type === 'inbound-rtp' && stat.kind === 'audio') inbound = stat
+    else if (stat.type === 'media-playout') playout = stat
   }
   if (!inbound) return { metrics: {}, snapshot: previous ?? null }
-
-  const concealedSamplesDelta =
-    previous &&
-    Number.isFinite(inbound.concealedSamples) &&
-    Number.isFinite(previous.concealedSamples) &&
-    inbound.concealedSamples >= previous.concealedSamples
-      ? inbound.concealedSamples - previous.concealedSamples
-      : null
 
   return {
     metrics: {
@@ -296,7 +308,26 @@ export function extractRecvAudioMetrics(report, previous) {
         inbound.jitterBufferEmittedCount,
         previous
       ),
-      concealedSamplesDelta,
+      playoutMs: playoutAvgMs(playout, previous),
+      // Packets NetEq threw away rather than played: a buffer overflow flush, or
+      // a retransmit that arrived past its playout deadline. Discards are how a
+      // bloated buffer shrinks WITHOUT the accel counter moving — speech at
+      // normal speed with pieces cut out, which also sounds rushed.
+      packetsDiscardedDelta: counterDelta(inbound.packetsDiscarded, previous?.packetsDiscarded),
+      concealedSamplesDelta: counterDelta(inbound.concealedSamples, previous?.concealedSamples),
+      // NetEq's two time-scaling operations, in samples per tick. Accelerate
+      // DELETES samples to drain an over-full buffer faster than realtime — that
+      // is exactly the "delayed, then sped up to catch up" complaint, and this
+      // counter is the only thing that distinguishes it from plain concealment.
+      // Decelerate INSERTS samples to stretch audio while the buffer refills.
+      acceleratedSamplesDelta: counterDelta(
+        inbound.removedSamplesForAcceleration,
+        previous?.removedSamplesForAcceleration
+      ),
+      deceleratedSamplesDelta: counterDelta(
+        inbound.insertedSamplesForDeceleration,
+        previous?.insertedSamplesForDeceleration
+      ),
       concealmentEvents: inbound.concealmentEvents ?? null,
       audioLevel: inbound.audioLevel ?? null
     },
@@ -305,7 +336,80 @@ export function extractRecvAudioMetrics(report, previous) {
       timestamp: inbound.timestamp,
       jitterBufferDelay: inbound.jitterBufferDelay,
       jitterBufferEmittedCount: inbound.jitterBufferEmittedCount,
-      concealedSamples: inbound.concealedSamples
+      concealedSamples: inbound.concealedSamples,
+      packetsDiscarded: inbound.packetsDiscarded,
+      removedSamplesForAcceleration: inbound.removedSamplesForAcceleration,
+      insertedSamplesForDeceleration: inbound.insertedSamplesForDeceleration,
+      totalPlayoutDelay: playout?.totalPlayoutDelay,
+      totalSamplesCount: playout?.totalSamplesCount
     }
   }
+}
+
+// Transport-wide health for the voice connection indicator. Takes one
+// transport-level getStats() report (the whole peer connection, so every
+// stream on it plus the ICE candidate pair) and returns the selected pair's
+// RTT and audio packet loss in both directions. inboundLoss is the fraction of
+// audio packets lost since `previous` (summed across every received mic);
+// outboundLoss is the worst receiver-reported fractionLost on what we send.
+export function extractTransportHealth(report, previous) {
+  let selectedPairId = null
+  for (const stat of report.values()) {
+    if (stat.type === 'transport' && stat.selectedCandidatePairId) {
+      selectedPairId = stat.selectedCandidatePairId
+    }
+  }
+  let pair = selectedPairId ? report.get(selectedPairId) : null
+  let lost = 0
+  let received = 0
+  let hasInbound = false
+  let outboundLoss = null
+  for (const stat of report.values()) {
+    if (!pair && stat.type === 'candidate-pair' && stat.nominated && stat.state === 'succeeded') {
+      pair = stat
+    } else if (stat.type === 'inbound-rtp' && stat.kind === 'audio') {
+      hasInbound = true
+      lost += stat.packetsLost ?? 0
+      received += stat.packetsReceived ?? 0
+    } else if (
+      stat.type === 'remote-inbound-rtp' &&
+      stat.kind === 'audio' &&
+      typeof stat.fractionLost === 'number'
+    ) {
+      outboundLoss = Math.max(outboundLoss ?? 0, stat.fractionLost)
+    }
+  }
+
+  let inboundLoss = null
+  if (hasInbound && previous) {
+    // A consumer leaving shrinks the sums; treat that tick as no data rather
+    // than a negative delta.
+    const dLost = lost - previous.lost
+    const dReceived = received - previous.received
+    if (dLost >= 0 && dReceived >= 0 && dLost + dReceived > 0) {
+      inboundLoss = dLost / (dLost + dReceived)
+    }
+  }
+
+  const rtt = pair?.currentRoundTripTime
+  return {
+    metrics: {
+      rttMs: typeof rtt === 'number' ? rtt * 1000 : null,
+      inboundLoss,
+      outboundLoss
+    },
+    snapshot: hasInbound ? { lost, received } : null
+  }
+}
+
+// Bucket a voice connection sample into good / fair / poor for the indicator.
+// 'unknown' until there is an RTT to judge by. Thresholds are rules of thumb:
+// past ~150ms conversation starts to feel laggy, past ~2% loss Opus
+// concealment becomes audible.
+export function voiceConnectionQuality({ rttMs, lossFraction } = {}) {
+  if (rttMs == null) return 'unknown'
+  const loss = lossFraction ?? 0
+  if (rttMs > 300 || loss > 0.08) return 'poor'
+  if (rttMs > 150 || loss > 0.02) return 'fair'
+  return 'good'
 }

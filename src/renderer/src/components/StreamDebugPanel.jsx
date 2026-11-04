@@ -1,24 +1,20 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { IconGripVertical, IconX } from '@tabler/icons-react'
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import uPlot from 'uplot'
 import 'uplot/dist/uPlot.min.css'
 import { startStreamDebugStats } from '../lib/soup'
+import { e2eeListeners, getE2eeStatus, subscribeE2ee } from '../lib/e2ee'
 import './StreamDebugPanel.css'
 
 // ── Tunables ────────────────────────────────────────────────────────────────
 const CAP = 120 // ring-buffer length: 2 min at 1 sample/s
 const MISS_LIMIT = 10 // consecutive absent ticks before a stream's history is dropped
 const POLL_MS = 1000
-const PANEL_W = 380
-const PANEL_MIN_W = 300 // resize floor — charts stay readable down to here
-const PANEL_MIN_H = 220 // header + filters + one chart
-const DRAG_MARGIN = 40 // keep at least this much of the panel on-screen while dragging
 const CHART_FALLBACK_W = 320 // used only if the canvas reports zero width at mount
 
 // Heuristic "should not be this high" limits: each draws a dashed guide line on
 // its chart and turns into a red badge while the latest sample exceeds it.
 // They're rules of thumb for spotting trouble, not hard protocol limits. The
-// audio jitter-buffer limit matches soup.js AUDIO_HEALTH_BAD_DELAY_SEC (0.4s),
+// audio jitter-buffer limit matches soup.js AUDIO_HEALTH_BAD_DELAY_SEC (1.0s),
 // the point where the inbound self-heal machinery calls audio degraded.
 const LIMITS = {
   rttMs: 150,
@@ -26,11 +22,11 @@ const LIMITS = {
   fractionLost: 0.02, // 2% — video artifacts / audio dropouts get likely above this
   encodeMsPerFrame: 33, // one 30fps frame interval: encoder can't keep realtime
   videoJitterBufferMs: 250,
-  audioJitterBufferMs: 400,
-  concealedPerTick: 2400 // 50ms of 48kHz audio concealed per 1s tick — audible PLC
+  audioJitterBufferMs: 1000,
+  audioPlayoutMs: 400, // same bar, applied after the jitter buffer instead of inside it
+  concealedPerTick: 2400, // 50ms of 48kHz audio concealed per 1s tick — audible PLC
+  acceleratedPerTick: 2400 // 50ms/s deleted by NetEq Accelerate — audible as sped-up speech
 }
-
-const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi)
 
 const TYPE_LABELS = {
   Audio: 'Microphone',
@@ -50,8 +46,8 @@ const fmtFixed = (v, d = 1) => (v == null ? '—' : v.toFixed(d))
 
 // Resolve theme tokens to concrete color strings once, at mount. uPlot needs
 // real colors (it can't read CSS custom properties), so we snapshot them.
-// KNOWN LIMITATION: switching themes while the panel is open keeps these old
-// chart colors until the panel is closed and reopened.
+// KNOWN LIMITATION: switching themes while the tab is showing keeps these old
+// chart colors until it is shown again (it remounts on each activation).
 function readTheme() {
   const cs = getComputedStyle(document.documentElement)
   const v = (name, fallback) => (cs.getPropertyValue(name) || '').trim() || fallback
@@ -109,8 +105,14 @@ function activeWarnings(meta) {
     const bufLimit = meta.kind === 'audio' ? LIMITS.audioJitterBufferMs : LIMITS.videoJitterBufferMs
     if (over(m.jitterBufferMs, bufLimit)) out.push(`jitbuf ${Math.round(m.jitterBufferMs)}ms`)
     if (over(m.jitterMs, LIMITS.jitterMs)) out.push(`jitter ${Math.round(m.jitterMs)}ms`)
+    if (meta.kind === 'audio' && over(m.playoutMs, LIMITS.audioPlayoutMs))
+      out.push(`playout ${Math.round(m.playoutMs)}ms`)
     if (meta.kind === 'audio' && over(m.concealedSamplesDelta, LIMITS.concealedPerTick))
       out.push(`plc ${Math.round(m.concealedSamplesDelta)}`)
+    if (meta.kind === 'audio' && over(m.acceleratedSamplesDelta, LIMITS.acceleratedPerTick))
+      out.push(`accel ${Math.round(m.acceleratedSamplesDelta)}`)
+    if (meta.kind === 'audio' && over(m.packetsDiscardedDelta, 0))
+      out.push(`discard ${Math.round(m.packetsDiscardedDelta)}`)
   }
   return out
 }
@@ -185,7 +187,7 @@ function UplotChart({ title, data, series, theme, height = 70, unit, threshold }
     const u = new uPlot(opts, withThresholdData(data, threshold), el)
     uRef.current = u
 
-    // Panel width is fixed, but keep the canvas honest if layout shifts.
+    // Follow the pane's width (window resize, the split divider).
     const ro = new ResizeObserver(() => {
       const w = el.clientWidth
       if (w) u.setSize({ width: w, height })
@@ -461,13 +463,19 @@ function RecvCard({ buf, theme, clients }) {
             series={[{ label: 'recv', color: theme.primary }]}
             data={buildData(buf, [(x) => num(x.recvKbps)])}
           />
+          {/* Two delays on one chart on purpose: 'buf' is latency inside NetEq,
+              'playout' is latency after it (Web Audio FIFO + device buffer).
+              Which line climbs during a lag spike says which one to fix. */}
           <UplotChart
-            title="Jitter buffer"
+            title="Delay"
             unit="ms"
             theme={theme}
             threshold={{ value: LIMITS.audioJitterBufferMs }}
-            series={[{ label: 'buf', color: theme.blue }]}
-            data={buildData(buf, [(x) => num(x.jitterBufferMs)])}
+            series={[
+              { label: 'buf', color: theme.blue },
+              { label: 'playout', color: theme.primary }
+            ]}
+            data={buildData(buf, [(x) => num(x.jitterBufferMs), (x) => num(x.playoutMs)])}
           />
           <UplotChart
             title="Concealed"
@@ -477,10 +485,27 @@ function RecvCard({ buf, theme, clients }) {
             series={[{ label: 'concealed', color: theme.amber }]}
             data={buildData(buf, [(x) => num(x.concealedSamplesDelta)])}
           />
+          {/* NetEq time-scaling. 'accel' spiking is the sped-up catch-up
+              playback; 'decel' is the stretch that precedes it. */}
+          <UplotChart
+            title="Time stretch"
+            unit="samples"
+            theme={theme}
+            threshold={{ value: LIMITS.acceleratedPerTick }}
+            series={[
+              { label: 'accel', color: theme.amber },
+              { label: 'decel', color: theme.blue }
+            ]}
+            data={buildData(buf, [
+              (x) => num(x.acceleratedSamplesDelta),
+              (x) => num(x.deceleratedSamplesDelta)
+            ])}
+          />
           <StatRow
             items={[
               { label: 'recv', value: fmtInt(m.packetsReceived) },
               { label: 'lost', value: fmtInt(m.packetsLost) },
+              { label: 'discard', value: fmtInt(m.packetsDiscardedDelta) },
               { label: 'jitter', value: fmtFixed(num(m.jitterMs)) },
               { label: 'conceal ev', value: fmtInt(m.concealmentEvents) },
               { label: 'level', value: fmtFixed(num(m.audioLevel), 2) }
@@ -492,7 +517,64 @@ function RecvCard({ buf, theme, clients }) {
   )
 }
 
-export default function StreamDebugPanel({ clients, onClose }) {
+// The call's encryption (PLAN-e2ee.md 5.7). The call code is the same for everyone in the call:
+// comparing it out of band rules out a server in the middle. Everyone who can decrypt the call is
+// in the MLS roster; anyone in it we don't recognise is flagged.
+function EncryptionCard({ e2ee, clients, selfId }) {
+  const failed = e2ee.status === 'failed'
+  const { listeners, unknown } = e2eeListeners(e2ee, clients, selfId)
+  const warn = failed || unknown.length > 0
+
+  return (
+    <div className={`sdp-card${warn ? ' sdp-card-warn' : ''}`}>
+      <div className="sdp-card-head">
+        <span className="sdp-card-title">End-to-end encryption</span>
+        {failed ? (
+          <Badge tone="danger">Failed</Badge>
+        ) : e2ee.callCode ? (
+          <Badge tone="ok">Encrypted</Badge>
+        ) : (
+          <Badge tone="warn">Setting up</Badge>
+        )}
+        {unknown.length > 0 && (
+          <Badge tone="danger">
+            {unknown.length} unknown listener{unknown.length > 1 ? 's' : ''}
+          </Badge>
+        )}
+      </div>
+      {e2ee.callCode && !failed && (
+        <>
+          <div className="sdp-call-code-label">Call code</div>
+          <div className="sdp-call-code">{e2ee.callCode}</div>
+          <div className="sdp-card-sub">Everyone in the call should see the same code.</div>
+        </>
+      )}
+      {listeners.length > 0 && (
+        <div className="sdp-listeners">
+          <span className="sdp-stat-label">Can decrypt:</span>
+          {listeners.map((l) => (
+            <span
+              key={l.id}
+              className={`sdp-listener${l.name == null ? ' sdp-listener-unknown' : ''}`}
+            >
+              {l.name ?? `Unknown user ${l.id}`}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// The Connection Info tab's body: WebRTC stats per produced and consumed
+// stream, plus the call's encryption state, filling its pane.
+// Theme colors are snapshotted at mount (readTheme), so a theme switch shows on
+// the next activation.
+// Only an active tab renders, so an inactive one costs no polling and its ring
+// buffers restart when it is shown again.
+export default function StreamDebugPanel({ clients, selfId }) {
+  const e2ee = useSyncExternalStore(subscribeE2ee, getE2eeStatus)
+  const showEncryption = e2ee.status !== 'idle'
   // Theme colors snapshotted once at mount (see readTheme's known-limitation
   // note). Lazy initializer runs a single time.
   const [theme] = useState(readTheme)
@@ -503,22 +585,6 @@ export default function StreamDebugPanel({ clients, onClose }) {
   // rebuild their data arrays from these buffers.
   const bufsRef = useRef(new Map())
   const [buffers, setBuffers] = useState([])
-
-  const rootRef = useRef(null)
-  const dragRef = useRef(null)
-  const resizeRef = useRef(null)
-  const [dragging, setDragging] = useState(false)
-
-  // Initial position ≈ top-right (top:56, right:24). Drag writes left/top, so
-  // derive the starting left from the current viewport width.
-  const [pos, setPos] = useState(() => ({
-    left: Math.max(DRAG_MARGIN, window.innerWidth - PANEL_W - 24),
-    top: 56
-  }))
-
-  // height === null means "auto, capped by the CSS max-height" until the user
-  // resizes; after that the explicit size wins.
-  const [size, setSize] = useState({ width: PANEL_W, height: null })
 
   // 'all' | 'self' (our produced streams) | a clientId (that user's consumed
   // streams only).
@@ -575,68 +641,6 @@ export default function StreamDebugPanel({ clients, onClose }) {
     }
   }, [])
 
-  // ── Drag (header only; charts + body scrolling never initiate it) ───────────
-  const onPointerDown = (e) => {
-    if (e.target.closest('button')) return // never drag from the close button
-    const rect = rootRef.current.getBoundingClientRect()
-    dragRef.current = { dx: e.clientX - rect.left, dy: e.clientY - rect.top }
-    e.currentTarget.setPointerCapture(e.pointerId)
-    setDragging(true)
-  }
-
-  const onPointerMove = (e) => {
-    if (!dragRef.current) return
-    const root = rootRef.current
-    const w = root.offsetWidth
-    // Keep at least DRAG_MARGIN of the panel/header on-screen so it can't be lost.
-    const left = clamp(
-      e.clientX - dragRef.current.dx,
-      DRAG_MARGIN - w,
-      window.innerWidth - DRAG_MARGIN
-    )
-    const top = clamp(e.clientY - dragRef.current.dy, 0, window.innerHeight - DRAG_MARGIN)
-    root.style.left = `${left}px`
-    root.style.top = `${top}px`
-  }
-
-  const onPointerUp = (e) => {
-    if (!dragRef.current) return
-    dragRef.current = null
-    e.currentTarget.releasePointerCapture?.(e.pointerId)
-    const root = rootRef.current
-    setPos({ left: parseFloat(root.style.left), top: parseFloat(root.style.top) })
-    setDragging(false)
-  }
-
-  // ── Resize (bottom-right grip; same write-through-ref pattern as drag) ──────
-  // Charts follow along on their own: each UplotChart has a ResizeObserver on
-  // its wrapper calling setSize.
-  const onResizeDown = (e) => {
-    const rect = rootRef.current.getBoundingClientRect()
-    resizeRef.current = { startX: e.clientX, startY: e.clientY, w: rect.width, h: rect.height }
-    e.currentTarget.setPointerCapture(e.pointerId)
-  }
-
-  const onResizeMove = (e) => {
-    const r = resizeRef.current
-    if (!r) return
-    const root = rootRef.current
-    const rect = root.getBoundingClientRect()
-    const width = clamp(r.w + e.clientX - r.startX, PANEL_MIN_W, window.innerWidth - rect.left - 8)
-    const height = clamp(r.h + e.clientY - r.startY, PANEL_MIN_H, window.innerHeight - rect.top - 8)
-    root.style.width = `${width}px`
-    root.style.height = `${height}px`
-    root.style.maxHeight = 'none'
-  }
-
-  const onResizeUp = (e) => {
-    if (!resizeRef.current) return
-    resizeRef.current = null
-    e.currentTarget.releasePointerCapture?.(e.pointerId)
-    const rect = rootRef.current.getBoundingClientRect()
-    setSize({ width: Math.round(rect.width), height: Math.round(rect.height) })
-  }
-
   const sends = buffers.filter((b) => b.meta.direction === 'send')
   const recvs = buffers.filter((b) => b.meta.direction === 'recv')
   const empty = sends.length === 0 && recvs.length === 0
@@ -670,29 +674,7 @@ export default function StreamDebugPanel({ clients, onClose }) {
         : recvs.filter((b) => b.meta.clientId === filter)
 
   return (
-    <div
-      ref={rootRef}
-      className={`stream-debug-panel${dragging ? ' sdp-dragging' : ''}`}
-      style={{
-        left: pos.left,
-        top: pos.top,
-        width: size.width,
-        ...(size.height != null ? { height: size.height, maxHeight: 'none' } : {})
-      }}
-    >
-      <div
-        className="sdp-header"
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-      >
-        <IconGripVertical size={16} className="sdp-grip" />
-        <span className="sdp-header-title">Stream Debug</span>
-        <button type="button" className="sdp-close" onClick={onClose} title="Close">
-          <IconX size={16} />
-        </button>
-      </div>
-
+    <div className="stream-debug-panel">
       {groups.length > 1 && (
         <div className="sdp-filters">
           {[{ id: 'all', label: 'All', warn: false }, ...groups].map((g) => (
@@ -710,6 +692,12 @@ export default function StreamDebugPanel({ clients, onClose }) {
       )}
 
       <div className="sdp-body">
+        {showEncryption && (
+          <>
+            <div className="sdp-section">Encryption</div>
+            <EncryptionCard e2ee={e2ee} clients={clients} selfId={selfId} />
+          </>
+        )}
         {empty ? (
           <div className="sdp-empty">No active streams</div>
         ) : (
@@ -733,14 +721,6 @@ export default function StreamDebugPanel({ clients, onClose }) {
           </>
         )}
       </div>
-
-      <div
-        className="sdp-resize"
-        onPointerDown={onResizeDown}
-        onPointerMove={onResizeMove}
-        onPointerUp={onResizeUp}
-        title="Resize"
-      />
     </div>
   )
 }

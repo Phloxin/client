@@ -1,5 +1,5 @@
 {
-  description = "Pylon desktop client — development shell";
+  description = "Pylon desktop client";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -14,6 +14,15 @@
         f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
     in
     {
+      packages = forAllSystems (pkgs: rec {
+        pylon = pkgs.callPackage ./nix/package.nix { };
+        default = pylon;
+      });
+
+      overlays.default = final: prev: {
+        pylon = final.callPackage ./nix/package.nix { };
+      };
+
       devShells = forAllSystems (
         pkgs:
         let

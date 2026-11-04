@@ -249,8 +249,11 @@ function AudioSettings({ micSettings, updateMicSettings }) {
           <div className="settings-toggle-copy">
             <label htmlFor="hifiVoice">Hi-Fi Voice</label>
             <p className="settings-section-desc">
-              Higher-quality stereo audio for music (uses more bandwidth). Echo cancellation, noise
-              suppression, and auto gain control are bypassed while this is on.
+              Higher-quality stereo audio for music (uses more bandwidth).{' '}
+              <strong>
+                Echo cancellation, noise suppression, and auto gain control are bypassed while this
+                is on.
+              </strong>
             </p>
           </div>
           <label className="toggle-switch">

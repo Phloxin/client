@@ -154,6 +154,39 @@
   padding: 4px 24px;
 }
 
+/* A call message: a real message (reactions, replies) drawn as a system line. */
+.chat-message.chat-call-message {
+  margin-top: 4px;
+}
+
+.chat-call-entry {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex-basis: 100%;
+}
+
+.chat-call-time {
+  opacity: 0.7;
+}
+
+.chat-call-message .chat-reactions {
+  justify-content: center;
+}
+
+/* "X poked you" above a poke's note. */
+.chat-poke {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-text-muted);
+}
+
+.chat-poke strong {
+  color: var(--color-text);
+}
+
 /* Day divider: centered date chip between hairlines. */
 .chat-day-divider {
   display: flex;
@@ -764,12 +797,82 @@
   display: flex;
   align-items: center;
   gap: var(--spacing-sm);
-  padding: 10px 14px;
+  width: 380px;
+  max-width: 100%;
+  padding: 10px 8px 10px 12px;
   background: var(--color-background-mute);
   border: 1px solid var(--hairline);
   border-radius: var(--radius-md);
   color: var(--color-text-secondary);
   font-size: var(--font-size-sm);
+}
+
+.chat-attachment-file-icon {
+  flex-shrink: 0;
+  color: var(--color-text-tertiary);
+}
+
+.chat-attachment-file-info {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.chat-attachment-file-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--color-text);
+}
+
+.chat-attachment-file-link {
+  align-self: flex-start;
+  max-width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  text-align: left;
+  color: var(--color-primary);
+  cursor: pointer;
+}
+
+.chat-attachment-file-link:hover {
+  text-decoration: underline;
+}
+
+.chat-attachment-file-size {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+
+.chat-attachment-file-action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
+}
+
+.chat-attachment-file-action:hover:not(:disabled) {
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.chat-attachment-file-action:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 /* ── Link/media embeds: card with an accent signal bar. ────────────────── */
@@ -1059,6 +1162,38 @@ button.chat-reply-preview:focus-visible {
   color: var(--color-danger);
 }
 
+/* "Create public link" row under the pending attachments: one quiet line in
+   the reply bar's tone, applying to every file in the message. */
+.chat-share-public {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  margin: 6px 20px 0;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+
+.chat-share-public input {
+  margin: 0;
+  accent-color: var(--color-primary);
+  cursor: pointer;
+}
+
+.chat-share-public:hover {
+  color: var(--color-text);
+}
+
+/* Body of a message whose only content was a file that has since been deleted. */
+.chat-message-removed {
+  font-size: var(--font-size-md);
+  font-style: italic;
+  color: var(--color-text-muted);
+}
+
 /* ── Typing indicator ──────────────────────────────────────────────────── */
 
 .chat-typing-indicator {
@@ -1116,12 +1251,21 @@ button.chat-reply-preview:focus-visible {
 
 /* ── Composer: floating field docked at the canvas bottom ──────────────── */
 
+/* The field, and in a DM the call button beside it. */
+.chat-composer {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  margin: 8px 20px 16px;
+}
+
 .chat-input-bar {
   position: relative; /* anchors the @mention autocomplete popup */
   display: flex;
   align-items: flex-end;
   gap: 4px;
-  margin: 8px 20px 16px;
+  flex: 1 1 auto;
+  min-width: 0;
   padding: 6px;
   background: color-mix(in srgb, var(--color-background-mute) 85%, transparent);
   border: 1px solid var(--hairline);
@@ -1230,6 +1374,61 @@ button.chat-reply-preview:focus-visible {
 
 .chat-icon-btn:active:not(:disabled) {
   transform: scale(0.9);
+}
+
+/* A DM's call button: a square in the field's chrome at the field's one-line
+   height (34px row + 6px padding + 1px border, each side), so the two read as
+   one row. Bottom-aligned, it stays put as the field grows. */
+.chat-call-btn {
+  --call-bg: color-mix(in srgb, var(--color-background-mute) 85%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  flex-shrink: 0;
+  padding: 0;
+  background: var(--call-bg);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease,
+    transform 0.12s ease;
+}
+
+.chat-call-btn.start,
+.chat-call-btn.join,
+.chat-call-btn.joining {
+  color: var(--color-success);
+}
+
+.chat-call-btn.join,
+.chat-call-btn.start:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-success) 16%, var(--call-bg));
+}
+
+.chat-call-btn.join:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-success) 26%, var(--call-bg));
+}
+
+.chat-call-btn.leave {
+  color: var(--color-danger);
+}
+
+.chat-call-btn.leave:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-danger) 16%, var(--call-bg));
+}
+
+.chat-call-btn:active:not(:disabled) {
+  transform: scale(0.9);
+}
+
+.chat-call-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 /* ── Emoji picker popover ──────────────────────────────────────────────── */

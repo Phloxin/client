@@ -2,6 +2,18 @@
 // Keep this logger safe to leave enabled: credentials and auth material are
 // redacted before anything reaches the console.
 
+import { API_VERSION, apiBase } from './serverConfig.js'
+
+const API_VERSION_HEADER = 'Pylon-Api-Version'
+
+let updateRequiredHandler = null
+
+// Called on any 426: the server no longer accepts this client's API version.
+// One handler at a time. Passing null removes it.
+export function setUpdateRequiredHandler(cb) {
+  updateRequiredHandler = cb
+}
+
 const SENSITIVE_KEY =
   /(authorization|cookie|password|passphrase|refresh[_-]?token|access[_-]?token|id[_-]?token|secret|api[_-]?key)/i
 const MAX_BODY_LOG_LENGTH = 4000
@@ -66,9 +78,36 @@ async function logResponse(response, method, url, startedAt) {
 
 // Drop-in fetch wrapper. Packaged builds skip body cloning entirely and retain
 // only compact method/status/URL metadata when a request actually fails.
-export function httpFetch(input, options = {}) {
-  if (!HTTP_LOGGING_ENABLED) return productionHttpFetch(input, options)
-  return loggedHttpFetch(input, options)
+export async function httpFetch(input, options = {}) {
+  const versioned = withApiVersion(input, options)
+  const response = HTTP_LOGGING_ENABLED
+    ? await loggedHttpFetch(input, versioned)
+    : await productionHttpFetch(input, versioned)
+  if (response.status === 426 && isActiveServer(input)) updateRequiredHandler?.()
+  return response
+}
+
+// A 426 from a server we are not connected to, such as the register form's, is
+// reported by its caller instead.
+function isActiveServer(input) {
+  try {
+    const raw =
+      typeof Request !== 'undefined' && input instanceof Request
+        ? input.url
+        : (input?.url ?? String(input))
+    return new URL(raw).origin === new URL(apiBase()).origin
+  } catch {
+    return false
+  }
+}
+
+// A caller-supplied version wins.
+function withApiVersion(input, options) {
+  const request = typeof Request !== 'undefined' && input instanceof Request ? input : null
+  const headers = new Headers(options.headers ?? request?.headers)
+  if (headers.has(API_VERSION_HEADER)) return options
+  headers.set(API_VERSION_HEADER, String(API_VERSION))
+  return { ...options, headers }
 }
 
 function productionSafeUrl(input) {

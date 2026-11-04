@@ -9,6 +9,8 @@ import {
 } from '../lib/sounds'
 import { applyAppearanceSettings, applyAnimationSettings, UI_FONTS } from '../lib/uiSettings'
 import { prefersReducedMotion } from '../lib/animation'
+import { normalizeAutoIdleSettings } from '../lib/autoIdle'
+import { DEFAULT_APP_SHORTCUTS } from '../lib/useAppShortcuts'
 
 const SettingsContext = createContext(null)
 
@@ -50,6 +52,7 @@ const DEFAULT_APPEARANCE = {
   gradientsEnabled: true,
   shadowsEnabled: true,
   fontFamily: 'inter',
+  clientPanelPosition: 'left',
   // 'cozy' = avatar + name + time + message (default); 'compact' = name + time + message, no avatar.
   messageDisplay: 'cozy',
   // Server-group decorations on client rows (tag pills / icon badges).
@@ -72,7 +75,9 @@ const DEFAULT_ANIMATIONS = {
   userJoin: 'pop', // 'pop' | 'off'
   channelList: 'pop', // 'pop' | 'off'
   overlays: 'on', // modals, menus, toasts — 'on' | 'off'
-  messages: 'slide' // new chat messages — 'slide' | 'off'
+  messages: 'slide', // new chat messages — 'slide' | 'off'
+  streamFocus: 'on', // stream tiles moving into/out of focus — 'on' | 'off'
+  tabs: 'on' // tabs sliding aside for a dragged tab, drop zones — 'on' | 'off'
 }
 
 // 'slide' was retired for user-join / channel-list (only 'pop' read well there)
@@ -109,6 +114,26 @@ function migrateMicSettings(saved) {
 }
 
 export function SettingsProvider({ children }) {
+  const [autoIdleSettings, setAutoIdleSettings] = useState(() => {
+    try {
+      return normalizeAutoIdleSettings(JSON.parse(localStorage.getItem('autoIdleSettings')))
+    } catch {
+      return normalizeAutoIdleSettings()
+    }
+  })
+
+  const updateAutoIdleSettings = (changes) => {
+    setAutoIdleSettings((prev) => normalizeAutoIdleSettings({ ...prev, ...changes }))
+  }
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('autoIdleSettings', JSON.stringify(autoIdleSettings))
+    } catch (err) {
+      console.warn('Could not save auto idle settings:', err)
+    }
+  }, [autoIdleSettings])
+
   const [appearanceSettings, setAppearanceSettings] = useState(() => {
     try {
       const saved = localStorage.getItem('appearanceSettings')
@@ -183,6 +208,26 @@ export function SettingsProvider({ children }) {
   useEffect(() => {
     window.electron?.ipcRenderer?.send('keybinds:set', keybindSettings)
   }, [keybindSettings])
+
+  // In-app shortcuts (tab navigation). Kept apart from keybindSettings because
+  // main registers every entry of that object globally; these stay in the
+  // renderer. A cleared shortcut is stored as null.
+  const [appShortcutSettings, setAppShortcutSettings] = useState(() => {
+    try {
+      const saved = localStorage.getItem('appShortcutSettings')
+      return saved ? { ...DEFAULT_APP_SHORTCUTS, ...JSON.parse(saved) } : DEFAULT_APP_SHORTCUTS
+    } catch {
+      return DEFAULT_APP_SHORTCUTS
+    }
+  })
+
+  const updateAppShortcutSettings = (changes) => {
+    setAppShortcutSettings((prev) => {
+      const merged = { ...prev, ...changes }
+      localStorage.setItem('appShortcutSettings', JSON.stringify(merged))
+      return merged
+    })
+  }
 
   const [micSettings, setMicSettings] = useState(() => {
     try {
@@ -304,6 +349,8 @@ export function SettingsProvider({ children }) {
   return (
     <SettingsContext.Provider
       value={{
+        autoIdleSettings,
+        updateAutoIdleSettings,
         micSettings,
         updateMicSettings,
         soundState,
@@ -319,7 +366,9 @@ export function SettingsProvider({ children }) {
         animationSettings,
         updateAnimationSettings,
         keybindSettings,
-        updateKeybindSettings
+        updateKeybindSettings,
+        appShortcutSettings,
+        updateAppShortcutSettings
       }}
     >
       {children}

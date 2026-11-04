@@ -16,6 +16,17 @@ let getDevice = () => null
 let getProducerTransport = () => null
 let getCallbacks = () => ({})
 let closeServerProducer = async () => {}
+// Whether the channel takes video in this mime type (see VoiceChannelState).
+let videoCodecAllowed = () => true
+// A screen share publishes into a stream the backend authorized: createStream
+// asks for one and resolves with its key, and releaseStream hands it back when
+// the share stops (soup/index.js, "Our own stream"). Cameras need neither.
+let createStream = async () => {
+  throw new Error('Screen streams are not configured')
+}
+let releaseStream = () => {}
+// The owner's pause of one of our sources on the server (SetSourcePaused).
+let setSourcePaused = async () => false
 let localProducerIds = new Set()
 
 export function configureScreenShare(dependencies = {}) {
@@ -23,10 +34,16 @@ export function configureScreenShare(dependencies = {}) {
   if (dependencies.getProducerTransport) getProducerTransport = dependencies.getProducerTransport
   if (dependencies.getCallbacks) getCallbacks = dependencies.getCallbacks
   if (dependencies.closeServerProducer) closeServerProducer = dependencies.closeServerProducer
+  if (dependencies.videoCodecAllowed) videoCodecAllowed = dependencies.videoCodecAllowed
+  if (dependencies.createStream) createStream = dependencies.createStream
+  if (dependencies.releaseStream) releaseStream = dependencies.releaseStream
+  if (dependencies.setSourcePaused) setSourcePaused = dependencies.setSourcePaused
   if (dependencies.localProducerIds) localProducerIds = dependencies.localProducerIds
 }
 
-let screenShareCtx = null
+// One live share per kind: a screen share and a camera can run side by side.
+// Both slots share the claim and produce queues, so the two never produce at once.
+const shares = { screen: null, camera: null }
 const enqueueShareClaim = createSerialQueue()
 const enqueueShareProduce = createSerialQueue()
 
@@ -35,8 +52,8 @@ const enqueueShareProduce = createSerialQueue()
 // close the audio producer, surface the reason to the active channel UI.
 onScreenAudioError(({ message }) => {
   console.error('[Soup] Screen audio capture failed:', message)
-  const ctx = screenShareCtx
-  if (!ctx || ctx.type !== 'screen') return
+  const ctx = shares.screen
+  if (!ctx) return
 
   const audioProducer = ctx.audioProducer
   ctx.audioProducer = null
@@ -101,10 +118,20 @@ function chromiumScreenEncodingFor(codec, rung, { width, height, fps, optimizeFo
 // rtpCapabilities getter aliases the receiving capabilities, whose H.264 profile
 // variants may not match what this device can send. undefined (no match)
 // preserves mediasoup's default (first router codec).
+//
+// A codec the channel doesn't allow counts as no match: the voice server
+// refuses video in a codec that some member can't decode.
 function findVideoCodec(mime) {
+  if (!videoCodecAllowed(mime)) return undefined
   return getDevice()?.sendRtpCapabilities?.codecs?.find(
     (c) => c.kind === 'video' && c.mimeType?.toLowerCase() === mime
   )
+}
+
+// The video codec a producer actually negotiated (its first non-RTX codec).
+function negotiatedVideoMime(producer) {
+  return producer?.rtpParameters?.codecs?.find((c) => !c.mimeType?.toLowerCase().endsWith('/rtx'))
+    ?.mimeType
 }
 
 // Set once a share's measured encoder came up software for AV1/VP9 (see
@@ -216,14 +243,15 @@ export function resetScreenCodecPreference() {
   clearScreenSvcRungStorage()
 }
 
-// User-forced screen codec from PREFER_SCREENSHARE_CODEC=H264|AV1|VP9 (normalized
+// User-forced screen codec from PREFER_SCREENSHARE_CODEC=H264|AV1|VP9|VP8 (normalized
 // in preload). When set, it overrides both the AV1-first default and the adaptive
 // H.264 downgrade — the user explicitly asked for this codec, so we keep it even
 // if it comes up software. undefined when unset/invalid.
 const SCREEN_CODEC_MIME = {
   H264: 'video/h264',
   AV1: 'video/av1',
-  VP9: 'video/vp9'
+  VP9: 'video/vp9',
+  VP8: 'video/vp8'
 }
 const FORCED_SCREEN_CODEC_MIME =
   SCREEN_CODEC_MIME[(typeof window !== 'undefined' && window.api?.preferScreenshareCodec) || '']
@@ -246,9 +274,17 @@ function pickVideoCodec(ctx) {
   const forced = forcedScreenCodec(ctx)
   if (forced) return forced
   if (hasScreenCodecPreference()) {
-    return findVideoCodec('video/h264') ?? findVideoCodec('video/vp9')
+    return (
+      findVideoCodec('video/h264') ?? findVideoCodec('video/vp9') ?? findVideoCodec('video/vp8')
+    )
   }
-  return findVideoCodec('video/av1') ?? findVideoCodec('video/vp9')
+  // H.264/VP8 only when the channel allows neither AV1 nor VP9.
+  return (
+    findVideoCodec('video/av1') ??
+    findVideoCodec('video/vp9') ??
+    findVideoCodec('video/h264') ??
+    findVideoCodec('video/vp8')
+  )
 }
 
 // Camera codec verdicts are deliberately independent from screen verdicts. A
@@ -278,16 +314,14 @@ function pickCameraCodec() {
   const h264 = findVideoCodec('video/h264')
   const av1 = findVideoCodec('video/av1')
   if (hasCameraCodecPreference() && h264) return h264
-  return vp9 ?? h264 ?? av1
+  return vp9 ?? h264 ?? av1 ?? findVideoCodec('video/vp8')
 }
 
 // Log the codec the SFU actually negotiated, and warn when it's one without
 // spatial SVC. VP8/H264 have no spatial layers, so 'L3T3_KEY' degrades to
 // temporal-only and setVideoStreamRoles() can't tier thumbnail/focus resolution.
 function logNegotiatedVideoCodec(producer, scalabilityMode) {
-  const mimeType = producer.rtpParameters?.codecs?.find(
-    (c) => !c.mimeType?.toLowerCase().endsWith('/rtx')
-  )?.mimeType
+  const mimeType = negotiatedVideoMime(producer)
   console.log('[Soup] Video codec negotiated:', mimeType)
 
   // Spatial layer count is the 'L' number in the mode (e.g. 'L3T3_KEY' → 3).
@@ -304,11 +338,9 @@ function logNegotiatedVideoCodec(producer, scalabilityMode) {
 // codec + whether the encoder is hardware or software (encoderImplementation, e.g.
 // 'libaom' = software AV1) for the sharer's HW/SW tile badge, and qualityLimitationReason
 // ('cpu' = the encoder can't keep up) which drives maybeDowngradeScreenCodec.
-// Also logged in dev. Returns a stop function; only the most recent share is
-// polled.
-let encoderStatsStop = null
+// Also logged in dev. Returns a stop function, which the share keeps as
+// ctx.statsStop.
 function startEncoderStatsLog(producer, onStats) {
-  encoderStatsStop?.()
   const sender = producer.rtpSender
   if (!sender?.getStats) return
   const previousByOutboundId = new Map()
@@ -338,12 +370,7 @@ function startEncoderStatsLog(producer, onStats) {
       // getStats can reject transiently around teardown — ignore.
     }
   }, 3000)
-  const stop = () => {
-    clearInterval(id)
-    if (encoderStatsStop === stop) encoderStatsStop = null
-  }
-  encoderStatsStop = stop
-  return stop
+  return () => clearInterval(id)
 }
 
 // ─── Adaptive screen-share SVC fallback ──────────────────────────
@@ -366,8 +393,15 @@ function isShareSupersededError(error) {
   return error?.code === 'SCREEN_SHARE_SUPERSEDED'
 }
 
+// The voice server refused the source for want of a publish lease (the stream
+// expired, ended, or was never ours). No other rung or codec changes that, so
+// the fallbacks stop here instead of renegotiating every candidate.
+function isStreamDeniedError(error) {
+  return error?.denied === true
+}
+
 function isActiveShare(ctx) {
-  return screenShareCtx === ctx && !ctx.stopped
+  return shares[ctx.type] === ctx && !ctx.stopped
 }
 
 function screenRungKey(codec, rung) {
@@ -402,7 +436,7 @@ function screenFallbackIsCoolingDown(ctx) {
   return Date.now() < (ctx.fallbackCooldownUntil ?? 0)
 }
 
-// Serialize mediasoup produce operations for the single local video-share slot.
+// Serialize mediasoup produce operations across both local share slots.
 // If ownership changes during the await, close only the producer just created;
 // never call a global teardown that could belong to the successor share.
 function produceForShare(ctx, options) {
@@ -497,6 +531,9 @@ function screenProducerOptions(ctx, codec, encoding) {
     },
     appData: {
       produced: 'ScreenShare',
+      streamKey: ctx.streamKey,
+      // A fallback's candidate takes over the current source on the server.
+      replaces: ctx.producer?.id ?? null,
       beforeServerProduce: async (rtpParameters) => {
         await setSenderDegradationPreference(
           sender,
@@ -555,7 +592,7 @@ async function produceScreenWithFallback(ctx, codec, { startRung } = {}) {
       return { producer, codec, rung, encoding }
     } catch (error) {
       if (producer) await discardUnadoptedShareProducer(producer)
-      if (isShareSupersededError(error)) throw error
+      if (isShareSupersededError(error) || isStreamDeniedError(error)) throw error
       rejectScreenRung(ctx, codec, rung)
       lastError = error
       console.warn(
@@ -591,7 +628,7 @@ async function produceWithCodecFallback(codecs, attemptFn, { label, noCodecMessa
     try {
       return await attemptFn(codec)
     } catch (error) {
-      if (isShareSupersededError(error)) throw error
+      if (isShareSupersededError(error) || isStreamDeniedError(error)) throw error
       lastError = error
       console.warn(`[Soup] ${label} codec ${codec?.mimeType ?? 'default'} could not start:`, error)
     }
@@ -606,7 +643,14 @@ async function produceWithCodecFallback(codecs, attemptFn, { label, noCodecMessa
 function produceInitialScreenWithFallback(ctx, initialCodec) {
   const forced = forcedScreenCodec(ctx)
   const codecs = uniqueCodecsByMime(
-    forced ? [forced] : [initialCodec, findVideoCodec('video/vp9'), findVideoCodec('video/h264')]
+    forced
+      ? [forced]
+      : [
+          initialCodec,
+          findVideoCodec('video/vp9'),
+          findVideoCodec('video/h264'),
+          findVideoCodec('video/vp8')
+        ]
   )
   return produceWithCodecFallback(codecs, (codec) => produceScreenWithFallback(ctx, codec), {
     label: 'Screen',
@@ -616,9 +660,8 @@ function produceInitialScreenWithFallback(ctx, initialCodec) {
 
 // Make a freshly produced candidate the context's active producer: stop the old
 // stats poller, apply the caller's per-type ctx state, then close the previous
-// producer WITHOUT a server CloseProducer — producing a ScreenShare/Camera
-// atomically replaces its server-side predecessor, so an explicit close of
-// previous.id would return NotFound and desync the signaling FIFO.
+// producer locally. The candidate was produced with appData.replaces, so the
+// server already swapped it in for the previous source and closed that one.
 function adoptShareProducer(ctx, candidate, { applyState, scalabilityMode, onStats }) {
   const previous = ctx.producer
   ctx.statsStop?.()
@@ -635,6 +678,18 @@ function adoptShareProducer(ctx, candidate, { applyState, scalabilityMode, onSta
       producerId: candidate.producer.id,
       codec: codecLabel(candidate.producer.rtpParameters)
     })
+  }
+
+  // The server starts a replacement with its predecessor's pause, but a pause
+  // or resume that raced the swap reached the old source too late (the server
+  // drops a request on a closed source). Once the share has been paused at all,
+  // restate it on the successor.
+  if (ctx.paused != null) {
+    if (ctx.paused) candidate.producer.pause()
+    else candidate.producer.resume()
+    if (previous && previous !== candidate.producer) {
+      void setSourcePaused(candidate.producer.id, ctx.paused)
+    }
   }
 
   logNegotiatedVideoCodec(candidate.producer, scalabilityMode)
@@ -696,7 +751,7 @@ async function stepDownScreenSvcRung(ctx, reason) {
 async function stopShareContext(ctx, { notifyServer = true } = {}) {
   if (!ctx || ctx.stopped) return ctx?.stopPromise
   ctx.stopped = true
-  if (screenShareCtx === ctx) screenShareCtx = null
+  if (shares[ctx.type] === ctx) shares[ctx.type] = null
 
   // Remove the watchdogs first so stopping the tracks below doesn't look
   // like a capture failure and trigger recovery.
@@ -734,7 +789,12 @@ async function stopShareContext(ctx, { notifyServer = true } = {}) {
   ctx.nativeAudio = null
   for (const track of ownedTracks) track.stop()
 
-  if (notifyServer) void Promise.all(producerIds.map((id) => closeServerProducer(id)))
+  if (notifyServer) {
+    void Promise.all(producerIds.map((id) => closeServerProducer(id)))
+    // The stream is handed back with op 11. Without notifyServer the session
+    // is gone, and the stream with it.
+    if (ctx.streamKey) releaseStream(ctx.streamKey)
+  }
 
   ctx.stopPromise = (async () => {
     if (!nativeAudio) return
@@ -747,10 +807,12 @@ async function stopShareContext(ctx, { notifyServer = true } = {}) {
   return ctx.stopPromise
 }
 
+// Take ctx's slot, stopping the share of the same kind first; the other kind's
+// share keeps running.
 function claimShareContext(ctx) {
   return enqueueShareClaim(async () => {
-    if (screenShareCtx) await stopShareContext(screenShareCtx)
-    screenShareCtx = ctx
+    if (shares[ctx.type]) await stopShareContext(shares[ctx.type])
+    shares[ctx.type] = ctx
   })
 }
 
@@ -784,9 +846,12 @@ async function downgradeScreenCodecToH264(ctx, { softwareEncoder, reason }) {
 }
 
 async function maybeDowngradeScreenCodec(ctx, stats) {
+  // A paused share encodes a disabled track, so its stats say nothing about
+  // the encoder.
   if (
     !isActiveShare(ctx) ||
     !ctx.producer ||
+    ctx.paused ||
     ctx.screenTransition ||
     screenFallbackIsCoolingDown(ctx)
   )
@@ -1217,7 +1282,11 @@ export async function shareScreen({
     rejectedScreenRungs: new Set(),
     fallbackFailureCount: 0,
     fallbackCooldownUntil: 0,
-    onProducerReplaced
+    onProducerReplaced,
+    // The backend's stream this share publishes into (createStream).
+    streamKey: null,
+    // The owner's pause (setSharePaused); null until it's first used.
+    paused: null
   }
   await claimShareContext(ctx)
 
@@ -1254,6 +1323,18 @@ export async function shareScreen({
     ctx.width = settings.width > 0 ? settings.width : width
     ctx.height = settings.height > 0 ? settings.height : height
     ctx.fps = settings.frameRate > 0 ? Math.min(settings.frameRate, fps) : fps
+
+    // The backend's go-ahead (op 8 → op 12). Asked for only once there is a
+    // capture to publish: an OS picker can outlast the 30s the stream gives us
+    // to create its first source.
+    const streamKey = await createStream()
+    ctx.streamKey = streamKey
+    // A stop while we waited ran without the key, so hand it back here.
+    if (!isActiveShare(ctx)) {
+      releaseStream(streamKey)
+      throw shareSupersededError()
+    }
+
     const screenCodec = pickVideoCodec(ctx)
     const screenEncoding = screenEncodingFor({
       width: ctx.width,
@@ -1277,6 +1358,8 @@ export async function shareScreen({
       `[Soup] Screen sharing ${initialProducer.codec?.mimeType ?? 'default'} ` +
         `${initialProducer.rung} [id:${initialProducer.producer.id}]`
     )
+    // The channel's codecs may have changed while this was being produced.
+    applyChannelCodecsTo(ctx)
 
     // Screenshare audio: native capture for per-app/system modes, or the legacy
     // loopback track riding getDisplayMedia. Audio failure keeps video live.
@@ -1327,7 +1410,7 @@ export async function shareScreen({
             opusPtime: 20
           },
           encodings: [{ maxBitrate: MUSIC_AUDIO_BITRATE }],
-          appData: { produced: 'ScreenShareAudio' }
+          appData: { produced: 'ScreenShareAudio', streamKey: ctx.streamKey }
         })
 
         if (audioTrack.readyState === 'ended') {
@@ -1422,8 +1505,9 @@ function cameraEncodingsFor(codec, { simulcast = true } = {}) {
 function cameraCodecCandidates(initialCodec) {
   const h264 = findVideoCodec('video/h264')
   const av1 = findVideoCodec('video/av1')
+  const vp8 = findVideoCodec('video/vp8')
   return uniqueCodecsByMime(
-    hasCameraCodecPreference() && h264 ? [h264, av1] : [initialCodec, h264, av1]
+    hasCameraCodecPreference() && h264 ? [h264, av1, vp8] : [initialCodec, h264, av1, vp8]
   )
 }
 
@@ -1436,7 +1520,8 @@ function cameraProducerOptions(ctx, codec, encodings) {
     // stops the supplied track when produce() rejects, preventing the retry.
     stopTracks: false,
     codecOptions: { videoGoogleStartBitrate: 1500 },
-    appData: { produced: 'Camera' }
+    // A fallback's candidate takes over the current source on the server.
+    appData: { produced: 'Camera', replaces: ctx.producer?.id ?? null }
   }
 }
 
@@ -1470,6 +1555,23 @@ async function produceCameraWithFallback(ctx, codec) {
   }
 
   throw lastError ?? new Error(`No viable camera encoding for ${codec?.mimeType ?? 'default'}`)
+}
+
+// Produce the camera on the best codec it can use and make that the share's
+// producer, replacing the current one if there is one.
+async function produceCamera(ctx) {
+  const candidate = await produceWithCodecFallback(
+    cameraCodecCandidates(pickCameraCodec()),
+    (codec) => produceCameraWithFallback(ctx, codec),
+    { label: 'Camera', noCodecMessage: 'No supported camera video codec is available' }
+  )
+  await setDegradationPreference(candidate.producer, 'maintain-framerate')
+  if (!isActiveShare(ctx) || ctx.track?.readyState === 'ended') {
+    await discardUnadoptedShareProducer(candidate.producer)
+    throw shareSupersededError()
+  }
+  adoptCameraProducer(ctx, candidate)
+  return candidate
 }
 
 function adoptCameraProducer(ctx, candidate) {
@@ -1514,6 +1616,7 @@ function cameraStatsHandler(ctx, stats) {
   if (
     ctx.cameraTransition ||
     ctx.cameraFallbackAttempted ||
+    ctx.paused ||
     !ctx.producer ||
     !/^video\/vp9$/i.test(ctx.cameraCodec?.mimeType ?? '')
   )
@@ -1537,11 +1640,21 @@ function cameraStatsHandler(ctx, stats) {
 }
 
 // ─── Share webcam ────────────────────────────────────────────────
-// Streams a camera device into the same producer slot as screen share, so the
-// existing stop/preview/remote-render paths all apply. Camera capture is capped
+// Streams a camera device from its own slot, beside any screen share, through
+// the same stop/preview/remote-render paths. Camera capture is capped
 // at an HD/30fps ideal to avoid opening a 4K-native webcam that the sender would
 // immediately crush into its 2.5 Mbps ceiling.
-export async function shareCamera(deviceId, onEncoderStats, onProducerReplaced = undefined) {
+//
+// A webcam is not a stream: it publishes without a stream key, and anyone in
+// the channel may receive it without asking the backend first.
+export async function shareCamera(
+  deviceId,
+  onEncoderStats,
+  onProducerReplaced = undefined,
+  // Fires once with a reason when the server ends the share (see
+  // endShareFromServer).
+  onShareEnded = undefined
+) {
   const transport = getProducerTransport()
   if (!transport) throw new Error('Not connected to voice')
   const ctx = {
@@ -1558,6 +1671,9 @@ export async function shareCamera(deviceId, onEncoderStats, onProducerReplaced =
     stopped: false,
     onEncoderStats,
     onProducerReplaced,
+    onShareEnded,
+    streamKey: null,
+    paused: null,
     cameraCodec: null,
     cameraEncodings: null,
     cameraTransition: null,
@@ -1590,23 +1706,12 @@ export async function shareCamera(deviceId, onEncoderStats, onProducerReplaced =
     }
     track.contentHint = 'motion'
 
-    const cameraCodec = pickCameraCodec()
-    const candidateCodecs = cameraCodecCandidates(cameraCodec)
-    const initialCandidate = await produceWithCodecFallback(
-      candidateCodecs,
-      (codec) => produceCameraWithFallback(ctx, codec),
-      { label: 'Camera', noCodecMessage: 'No supported camera video codec is available' }
-    )
-
-    await setDegradationPreference(initialCandidate.producer, 'maintain-framerate')
-    if (!isActiveShare(ctx) || ctx.track !== track || track.readyState === 'ended') {
-      await discardUnadoptedShareProducer(initialCandidate.producer)
-      throw shareSupersededError()
-    }
-    adoptCameraProducer(ctx, initialCandidate)
+    const initialCandidate = await produceCamera(ctx)
     if (isH264Codec(initialCandidate.codec) && initialCandidate.encodings.length > 1) {
       console.log('[Soup] Camera sharing with H264 simulcast (thumbnail + full layers)')
     }
+    // The channel's codecs may have changed while this was being produced.
+    applyChannelCodecsTo(ctx)
 
     const previewStream = new MediaStream([track])
     return {
@@ -1621,25 +1726,122 @@ export async function shareCamera(deviceId, onEncoderStats, onProducerReplaced =
   }
 }
 
-// ─── Stop screen share ───────────────────────────────────────────
-export async function stopScreenShare() {
-  return enqueueShareClaim(async () => {
-    const ctx = screenShareCtx
-    if (!ctx) return
-    await stopShareContext(ctx)
-    console.log('[Soup] Screen share stopped')
+// ─── Channel codec changes ───────────────────────────────────────
+// The voice server only takes video in a codec every member of the channel can
+// decode, and that set shrinks when someone joins who can't decode what we're
+// sending. Move each live share onto a codec still allowed. Its producer
+// replaces the old source, so viewers keep the tile and move to the new stream.
+// Called on every Codecs event and Channel snapshot; a no-op while the codec is
+// allowed.
+export function applyChannelCodecs() {
+  for (const ctx of Object.values(shares)) applyChannelCodecsTo(ctx)
+}
+
+function applyChannelCodecsTo(ctx) {
+  if (!ctx?.producer || !isActiveShare(ctx) || shareCodecAllowed(ctx)) return
+  // The same slot the encoder fallbacks use, so the two never produce at once.
+  const slot = ctx.type === 'camera' ? 'cameraTransition' : 'screenTransition'
+  const previous = ctx[slot]
+  const transition = (async () => {
+    // A fallback already under way may land on an allowed codec by itself.
+    await previous?.catch(() => {})
+    if (!ctx.producer || !isActiveShare(ctx) || shareCodecAllowed(ctx)) return
+    console.warn(
+      `[Soup] ${negotiatedVideoMime(ctx.producer)} is no longer allowed in this channel; ` +
+        `moving the ${ctx.type} share`
+    )
+    if (ctx.type === 'camera') {
+      await produceCamera(ctx)
+      return
+    }
+    const candidate = await produceInitialScreenWithFallback(ctx, pickVideoCodec(ctx))
+    if (!isActiveShare(ctx)) {
+      await discardUnadoptedShareProducer(candidate.producer)
+      throw shareSupersededError()
+    }
+    adoptScreenProducer(ctx, candidate)
+  })().catch((error) => {
+    if (isShareSupersededError(error)) return
+    // The share keeps running; whoever can't decode it can't watch it.
+    console.error(`[Soup] Could not move the ${ctx.type} share to an allowed codec:`, error)
+  })
+  ctx[slot] = transition
+  void transition.finally(() => {
+    if (ctx[slot] === transition) ctx[slot] = null
   })
 }
 
-export function getScreenShareContext() {
-  return screenShareCtx
+function shareCodecAllowed(ctx) {
+  const mime = negotiatedVideoMime(ctx.producer)
+  return mime == null || videoCodecAllowed(mime)
+}
+
+// ─── Pause a share ───────────────────────────────────────────────
+// The owner's pause: the share stays published, but its sources stop
+// forwarding to every viewer, who sees a paused frame (SourceUpdated) rather
+// than the last one. Local producers pause too, so nothing is encoded or sent.
+// The capture keeps running and the self preview shares its track, so the
+// preview goes dark with it. Resolves false when there's no share of that type
+// ('screen' | 'camera') to pause.
+export async function setSharePaused(type, paused) {
+  const ctx = shares[type]
+  if (!ctx || !isActiveShare(ctx) || !ctx.producer) return false
+  ctx.paused = paused === true
+  const shareProducers = [ctx.producer, ctx.audioProducer].filter(Boolean)
+  for (const producer of shareProducers) {
+    if (ctx.paused) producer.pause()
+    else producer.resume()
+  }
+  await Promise.all(shareProducers.map((producer) => setSourcePaused(producer.id, ctx.paused)))
+  console.log(
+    `[Soup] ${ctx.type === 'camera' ? 'Camera' : 'Screen'} share ${ctx.paused ? 'paused' : 'resumed'}`
+  )
+  return true
+}
+
+// ─── Stop a share ────────────────────────────────────────────────
+// Stops the share of that type ('screen' | 'camera'), or both without one.
+export async function stopShare(type) {
+  return enqueueShareClaim(async () => {
+    for (const slot of type ? [type] : ['screen', 'camera']) {
+      const ctx = shares[slot]
+      if (!ctx) continue
+      await stopShareContext(ctx)
+      console.log(`[Soup] ${slot === 'camera' ? 'Camera' : 'Screen'} share stopped`)
+    }
+  })
+}
+
+// The live shares, screen and camera (zero to two).
+export function getShareContexts() {
+  return Object.values(shares).filter((ctx) => ctx && !ctx.stopped)
 }
 
 export function resetActiveScreenShare() {
-  const activeShare = screenShareCtx
-  if (activeShare) void stopShareContext(activeShare, { notifyServer: false })
+  for (const ctx of Object.values(shares)) {
+    if (ctx) void stopShareContext(ctx, { notifyServer: false })
+  }
+}
+
+// The voice server closed one of a share's sources on its own: a channel
+// switch, or the backend ending our stream. Stop that share and tell its owner.
+// The share's other source is closed on the server too, unless the same Closed
+// already took it (closeServerProducer then finds nothing to close).
+export function endShareFromServer(producerId) {
+  const ctx = Object.values(shares).find(
+    (share) =>
+      share && (share.producer?.id === producerId || share.audioProducer?.id === producerId)
+  )
+  if (!ctx) return
+  const notify = isActiveShare(ctx)
+  void stopShareContext(ctx)
+  if (notify) ctx.onShareEnded?.('server-closed')
 }
 
 export function stopScreenEncoderStats() {
-  encoderStatsStop?.()
+  for (const ctx of Object.values(shares)) {
+    if (!ctx) continue
+    ctx.statsStop?.()
+    ctx.statsStop = null
+  }
 }

@@ -1,0 +1,3 @@
+[submodule "pylon-e2ee"]
+	path = pylon-e2ee
+	url = https://github.com/Phloxin/pylon-e2ee-v1.git

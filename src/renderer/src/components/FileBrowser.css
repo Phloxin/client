@@ -1,0 +1,158 @@
+/* ============================================================================
+   FILE BROWSER — the Files tab: a channel's files with search, type chips, and
+   per-file actions. Built on the Ban List tab's bl-* classes (BanListMenu.css);
+   only the file-specific pieces live here.
+   ============================================================================ */
+
+.fb-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 18px 0;
+}
+
+.fb-chip {
+  padding: 5px 12px;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-family: var(--font-family-primary);
+  font-size: var(--font-size-base);
+  cursor: pointer;
+}
+
+.fb-chip:hover {
+  color: var(--color-text);
+  border-color: var(--hairline-strong);
+}
+
+.fb-chip.active {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: var(--color-accent-contrast);
+}
+
+.fb-thumb {
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+  background: var(--color-background-mute);
+  color: var(--color-text-secondary);
+}
+
+.fb-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.fb-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.fb-badge {
+  flex-shrink: 0;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-primary) 18%, transparent);
+  color: var(--color-primary);
+  font-size: var(--font-size-xs);
+  font-weight: 500;
+}
+
+.fb-actions,
+.fb-confirm {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.fb-action {
+  display: flex;
+  padding: 5px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.fb-action:hover:not(:disabled) {
+  background: var(--color-background-soft);
+  color: var(--color-text);
+}
+
+.fb-action.danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-danger) 15%, transparent);
+  color: var(--color-danger);
+}
+
+/* Empty stand-in for Open on rows that can't be previewed: the size of an
+   .fb-action (16px icon + 5px padding each side). */
+.fb-action-slot {
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+}
+
+.fb-action:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.fb-confirm {
+  gap: 6px;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-base);
+}
+
+.fb-confirm-btn {
+  padding: 4px 11px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--color-background-mute);
+  color: var(--color-text-secondary);
+  font-family: var(--font-family-primary);
+  font-size: var(--font-size-base);
+  cursor: pointer;
+}
+
+.fb-confirm-btn:hover:not(:disabled) {
+  color: var(--color-text);
+  border-color: var(--hairline-strong);
+}
+
+.fb-confirm-btn.danger {
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+}
+
+.fb-confirm-btn.danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-danger) 15%, transparent);
+  color: var(--color-danger);
+}
+
+.fb-confirm-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.fb-error {
+  padding: 8px 6px;
+  color: var(--color-danger);
+  font-size: var(--font-size-sm);
+}
+
+.fb-more {
+  justify-content: center;
+  margin: 8px auto 0;
+}
