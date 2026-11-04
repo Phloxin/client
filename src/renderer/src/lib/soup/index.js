@@ -33,6 +33,7 @@ import {
   configurePlayback,
   getPlaybackContext,
   playbackDiagnostics,
+  setSoundMuted as setPlaybackSoundMuted,
   teardownAudioGraph
 } from './playback'
 import {
@@ -103,7 +104,6 @@ export {
   setClientAudioState,
   setMasterVolume,
   setOutputDevice,
-  setSoundMuted,
   setStreamAudioState,
   subscribeStreamAudio
 } from './playback'
@@ -207,6 +207,10 @@ let sentSpeakingFlags = null
 // Our client id (setVoiceSelf), and whether our own ring is shown.
 let selfId = null
 let ownRingShown = false
+// Deafened: remote audio is silenced, so remote speaking rings are hidden too.
+// channelState.speakers keeps tracking the server's set so undeafening can
+// restore whoever is mid-sentence.
+let soundMuted = false
 // Sinks we hold, keyed by the id of the *source* they receive: its NodeId
 // string, which is what mediasoup-client and the UI call a producer id (see
 // "Remote sources").
@@ -1271,11 +1275,25 @@ function removeRemoteSources(sources, { replaced = false } = {}) {
 // Speakers is the full set of speaking members, including us. channelState
 // turns it into a diff so each client's ring only changes when it should.
 function applySpeakers({ started, stopped }) {
+  if (soundMuted) return
   for (const clientId of stopped) {
     if (clientId !== selfId) activeCallbacks.onClientSpeaking?.(clientId, false)
   }
   for (const clientId of started) {
     if (clientId !== selfId) activeCallbacks.onClientSpeaking?.(clientId, true)
+  }
+}
+
+// Deafen. Silences remote mic playback and hides remote speaking rings (you
+// can't hear them, so they shouldn't look like they're talking to you). Our own
+// ring is unaffected here; deafen also mutes the mic, which clears it.
+export function setSoundMuted(muted) {
+  muted = !!muted
+  setPlaybackSoundMuted(muted)
+  if (muted === soundMuted) return
+  soundMuted = muted
+  for (const clientId of channelState.speakers) {
+    if (clientId !== selfId) activeCallbacks.onClientSpeaking?.(clientId, !muted)
   }
 }
 
