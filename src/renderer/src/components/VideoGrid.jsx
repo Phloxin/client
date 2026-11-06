@@ -632,8 +632,10 @@ function VideoGrid({
   }
 
   // Focus toggling only exists with two or more streams: a grid tile or
-  // thumbnail focuses, the focused tile goes back to the grid. A click that
-  // ends a drag-pan, or that dismissed the menu, does neither.
+  // thumbnail focuses, the focused tile goes back to the grid. Clicking a
+  // stream we aren't watching always starts watching it — the focused (or
+  // sole) tile stays focused rather than toggling back to the grid. A click
+  // that ends a drag-pan, or that dismissed the menu, does none of these.
   const handleTileMouseDown = (s, e) => {
     if (e.button === 0) swallowClickRef.current = menuOpen
     if (s.tileId === focusedTileId) handlePanStart(e)
@@ -646,7 +648,9 @@ function VideoGrid({
         suppressClickRef.current = false
         return
       }
-      if (!dismissedMenu && canToggleFocus) onSelect?.(null)
+      if (dismissedMenu) return
+      if (isStopped(s)) onSetStreamWatched?.(s.tileId, true)
+      else if (canToggleFocus) onSelect?.(null)
       return
     }
     if (!dismissedMenu && canToggleFocus) focusStream(s)
