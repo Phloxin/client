@@ -1,5 +1,5 @@
 import { useEffect, useState, useSyncExternalStore } from 'react'
-import { IconChartLine, IconLockFilled, IconShieldExclamation } from '@tabler/icons-react'
+import { IconDoorExit, IconLockFilled, IconShieldExclamation } from '@tabler/icons-react'
 import { startVoiceConnectionStats } from '../lib/soup'
 import { e2eeListeners, getE2eeStatus, subscribeE2ee } from '../lib/e2ee'
 import { voiceConnectionQuality } from '../lib/streamStats'
@@ -27,19 +27,17 @@ const pct = (fraction) => (fraction == null ? '—' : `${(fraction * 100).toFixe
 // Voice connection strip at the top of the control dock, shown while we're in a
 // voice channel. Polls transport-level stats (RTT + audio loss) on its own
 // light timer for the signal bars and ping readout; the full per-stream graphs
-// live in the Connection Info tab this strip opens.
-// connectionInfoOpen: that tab exists in some pane (the button is lit);
-// connectionInfoActive: it is the active pane's tab, so the button closes it.
-// onToggleConnectionInfo({ show }) opens, brings forward or closes it; with
-// `show` it never closes.
+// live in the Connection Info tab that clicking the status opens.
+// onToggleConnectionInfo({ show }) opens, brings forward or closes that tab;
+// with `show` it never closes. onLeave leaves the voice channel (the button at
+// the strip's right end).
 export default function VoiceConnectionBar({
   channelName,
   clients,
   selfId,
   mediaState,
-  connectionInfoOpen,
-  connectionInfoActive,
-  onToggleConnectionInfo
+  onToggleConnectionInfo,
+  onLeave
 }) {
   const [sample, setSample] = useState(null)
 
@@ -128,12 +126,11 @@ export default function VoiceConnectionBar({
       )}
       <button
         type="button"
-        className={`voice-connection-info-btn${connectionInfoOpen ? ' active' : ''}`}
-        title={connectionInfoActive ? 'Hide Connection Info' : 'Connection Info'}
-        aria-pressed={!!connectionInfoOpen}
-        onClick={() => onToggleConnectionInfo()}
+        className="voice-connection-info-btn leave"
+        title="Leave Channel"
+        onClick={onLeave}
       >
-        <IconChartLine size={16} />
+        <IconDoorExit size={16} />
       </button>
     </div>
   )

@@ -3641,11 +3641,10 @@ function Main() {
   // Right-click a channel → Files: open that channel's Files tab.
   const handleOpenFiles = (channelId) => openTab('files', channelId)
 
-  // Connection Info, from the voice bar's button or its e2ee badge and the self
-  // context menu: opens as the active pane's preview, brings an open one to the
-  // front (with its pane), or closes it when it is already in front. `show`
+  // Connection Info, from the voice bar's status strip or its e2ee badge and the
+  // self context menu: opens as the active pane's preview, brings an open one to
+  // the front (with its pane), or closes it when it is already in front. `show`
   // (the badge, the context menu) never closes.
-  const connectionInfoOpen = Object.values(layout.tabs).some((t) => t.kind === 'connection-info')
   const connectionInfoActive = currentTab?.kind === 'connection-info'
   const handleConnectionInfo = ({ show = false } = {}) => {
     if (connectionInfoActive) {
@@ -4559,8 +4558,6 @@ function Main() {
               onToggleMic={toggleMic}
               onToggleDeafen={toggleDeafen}
               voiceMediaState={voiceMediaRecovery}
-              connectionInfoOpen={connectionInfoOpen}
-              connectionInfoActive={connectionInfoActive}
               onToggleConnectionInfo={handleConnectionInfo}
               onViewServerTraffic={handleViewServerTraffic}
               onViewServerSummary={handleViewServerSummary}

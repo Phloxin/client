@@ -357,9 +357,10 @@ html[data-transparency='true'] .control-dock {
   color: var(--color-text);
 }
 
-.voice-connection-info-btn.active {
-  background: color-mix(in srgb, var(--color-primary) 16%, transparent);
-  color: var(--color-primary);
+/* Leave Channel: neutral at rest, danger-tinted on hover. */
+.voice-connection-info-btn.leave:hover {
+  background: color-mix(in srgb, var(--color-danger) 16%, transparent);
+  color: var(--color-danger);
 }
 
 .voice-connection-info-btn.warning,
