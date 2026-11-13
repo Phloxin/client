@@ -81,6 +81,15 @@ export const Request = Object.freeze({
   connectTransport: (direction, dtlsParameters) => ({
     ConnectTransport: { transport_parameters: { dtlsParameters }, direction }
   }),
+  // Asks for the session's third transport, SendAux, the only one made on
+  // request. Answered with Transport { direction, parameters }, the node's
+  // transport parameters (snake_case at the top like RoutingParams'). Only sent
+  // to a node whose RoutingParams said aux_send: an older one closes the socket
+  // on a message it doesn't know.
+  createTransport: (direction) => ({ CreateTransport: { direction } }),
+  // Closes SendAux and every source on it. Answered with Closed { nodes } for
+  // those sources (only if there were any), then TransportClosed { direction }.
+  closeTransport: (direction) => ({ CloseTransport: { direction } }),
   // New local ICE parameters for one transport, after a network change.
   // Answered with IceRestarted { direction, ice_parameters }, which go to
   // mediasoup-client's transport.restartIce(). Allowed before the session is
@@ -96,13 +105,24 @@ export const Request = Object.freeze({
   // source belongs to, and must be null for Microphone and Webcam. A
   // replacement inherits its predecessor's stream, so it may pass null; a
   // different key is refused.
-  createSource: (newNode, kind, rtpParameters, replaces = null, streamKey = null) => ({
+  //
+  // `transport` is the sending transport the source comes in on. Send is left
+  // out of the message, so a node without SendAux gets what it always got.
+  createSource: (
+    newNode,
+    kind,
+    rtpParameters,
+    replaces = null,
+    streamKey = null,
+    transport = null
+  ) => ({
     CreateSource: {
       new_node: localId('new_node', newNode),
       kind,
       rtp_parameters: rtpParameters,
       replaces: replaces == null ? null : localId('replaces', replaces),
-      stream_key: streamKey
+      stream_key: streamKey,
+      ...(transport == null || transport === Direction.Send ? {} : { transport })
     }
   }),
   // Names the new sink `newNode`, on another client's source. Refused before
@@ -221,7 +241,8 @@ export const EVENT_TYPES = new Set([
   'Closed'
 ])
 
-export const Direction = Object.freeze({ Send: 'Send', Receive: 'Receive' })
+// SendAux is a second sending transport, made on request (Request.createTransport).
+export const Direction = Object.freeze({ Send: 'Send', Receive: 'Receive', SendAux: 'SendAux' })
 
 export const SourceType = Object.freeze({
   Microphone: 'Microphone',
@@ -339,7 +360,7 @@ export const ErrorCode = Object.freeze({
 })
 
 // A request the server answered with Error. Not fatal: the socket stays open.
-//   object: "Session" | { Transport: "Send" | "Receive" } | { Source: n } | { Sink: n },
+//   object: "Session" | { Transport: "Send" | "Receive" | "SendAux" } | { Source: n } | { Sink: n },
 //           n being one of our LocalIds. A failed create names its new node.
 //   code:   one of ErrorCode
 export class VoiceRequestError extends Error {
@@ -405,6 +426,8 @@ export class VoiceProtocolError extends Error {
 //   Sync { callback }               Done { callback }
 //   ConnectTransport { direction }  TransportConnected { direction }
 //   RestartIce { direction }        IceRestarted { direction, ice_parameters }
+//   CreateTransport { direction }   Transport { direction, parameters }
+//   CloseTransport { direction }    TransportClosed { direction }, after a Closed for its sources
 //   CreateSource { new_node }       Source { node: new_node }
 //   CreateSink { new_node }         Sink { node: new_node }
 //   Close { node }                  Closed { nodes: [node] }, if the node was still alive
@@ -850,6 +873,8 @@ const SUCCESS_ANSWER = Object.freeze({
   Sync: 'Done',
   ConnectTransport: 'TransportConnected',
   RestartIce: 'IceRestarted',
+  CreateTransport: 'Transport',
+  CloseTransport: 'TransportClosed',
   CreateSource: 'Source',
   CreateSink: 'Sink'
 })
@@ -860,6 +885,8 @@ const ANSWER_TYPES = new Set([
   'Done',
   'TransportConnected',
   'IceRestarted',
+  'Transport',
+  'TransportClosed',
   'Source',
   'Sink'
 ])
@@ -872,6 +899,8 @@ function requestKey(type, body) {
       return body.callback
     case 'ConnectTransport':
     case 'RestartIce':
+    case 'CreateTransport':
+    case 'CloseTransport':
       return body.direction
     case 'CreateSource':
     case 'CreateSink':
@@ -887,6 +916,8 @@ function answerKey(type, data) {
       return data?.callback ?? null
     case 'TransportConnected':
     case 'IceRestarted':
+    case 'Transport':
+    case 'TransportClosed':
       return data?.direction ?? null
     case 'Source':
     case 'Sink':
@@ -905,6 +936,12 @@ function errorObjects(type, body) {
       return ['Session']
     case 'ConnectTransport':
     case 'RestartIce':
+      return [{ Transport: body.direction }]
+    // Only the transport. Before SetCapabilities the node refuses either on the
+    // session, and claiming that could take another request's error. They are
+    // only sent to a ready session.
+    case 'CreateTransport':
+    case 'CloseTransport':
       return [{ Transport: body.direction }]
     // Every create failure names the new node: not the source a sink was for,
     // not the source being replaced, not the send transport.

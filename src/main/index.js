@@ -24,6 +24,8 @@ import { setupGlobalKeybinds, stopGlobalKeybinds } from './keybinds'
 import { matchScreenSource } from './screenSourceMatch'
 import { appRoot, pickFollowTarget } from './windowFollow'
 import { setupAudioCapture, stopAudioCaptureHost } from './audioCapture'
+import { setupMediaEngine } from './mediaEngine'
+import { captureTarget } from './captureTarget'
 import { setupUpdater } from './updater'
 import { setupTray, setTrayVoiceState, destroyTray } from './tray'
 import {
@@ -126,6 +128,8 @@ const DEFAULT_APP_SETTINGS = {
   // Silent update check on launch; the popup lets the user opt out ("don't show
   // me again"), which flips this off.
   checkUpdatesOnLaunch: true
+  // nativeScreenShare (absent means off): screen shares through the native media engine
+  // where it can run (main/mediaEngine.js). Read at each share, not only at startup.
 }
 
 function readAppSettings() {
@@ -1086,6 +1090,24 @@ app.whenReady().then(() => {
 
   // Native per-app screenshare audio capture (audiocapture:* IPC).
   setupAudioCapture()
+
+  // The native media engine's sidecar (mediaengine:* IPC), behind the "Native screen share"
+  // setting (nativeScreenShare in app-settings.json, absent means off), with
+  // PYLON_NATIVE_SHARE as the override (main/nativeShareSource.js). The setting is read at
+  // each share, so a change needs no relaunch.
+  // On Windows it captures the source the picker chose, as this process holds it.
+  setupMediaEngine({
+    nativeShareEnabled: () => readAppSettings().nativeScreenShare === true,
+    captureTarget: () =>
+      captureTarget({
+        sourceId: selectedScreenSourceId,
+        sources: cachedScreenSources,
+        displays: screen.getAllDisplays().map((display) => ({
+          id: display.id,
+          bounds: screen.dipToScreenRect(null, display.bounds)
+        }))
+      })
+  })
 
   app.on('activate', function () {
     // On macOS it's common to re-create a window in the app when the

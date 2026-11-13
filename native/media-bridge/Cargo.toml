@@ -1,0 +1,13 @@
+# A stdin and stdout bridge over a local TCP port, so that the probe (native/media-probe/) on Linux
+# can drive a sidecar that lives in the Windows desktop session while ssh lands in session 0
+# (.plans/native-media-engine-m7-5-windows-capture.md, C14). The standard library only. Test
+# tooling, not shipped.
+[package]
+name = "media-bridge"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]

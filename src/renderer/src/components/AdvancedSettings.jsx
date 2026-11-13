@@ -11,12 +11,17 @@ const supportsIdleInhibitor = window.api?.platform === 'win32' || window.api?.pl
 // values instead of null — otherwise the async load flashes the `?? fallback`
 // state for a frame before it resolves. Updated on every successful load/toggle.
 let cachedSettings = null
+// Whether main said the native screen share's row belongs here (Windows or Wayland, and a
+// sidecar binary): asked at each mount, cached like the settings above.
+let cachedNativeShareShown = null
 
 // Advanced settings. Two kinds live here:
 //   - Codec badge: a renderer-only appearance pref (localStorage via context).
 //   - Hardware acceleration: a Chromium startup flag the MAIN process applies
 //     before app 'ready', so it's persisted main-side and needs a relaunch.
 //   - Keep system awake: a power-save blocker main starts/stops on the fly.
+//   - Native screen share: main reads it at each share (main/mediaEngine.js), so it applies
+//     to the next share with no relaunch. Shown only where main says it can work.
 function AdvancedSettings() {
   const { appearanceSettings, updateAppearanceSettings } = useSettings()
 
@@ -30,6 +35,10 @@ function AdvancedSettings() {
   const [preventSleep, setPreventSleep] = useState(
     cachedSettings ? cachedSettings.preventSleep === true : null
   )
+  const [nativeShare, setNativeShare] = useState(
+    cachedSettings ? cachedSettings.nativeScreenShare === true : null
+  )
+  const [nativeShareShown, setNativeShareShown] = useState(cachedNativeShareShown === true)
   const [diagnosticsAvailable, setDiagnosticsAvailable] = useState(false)
   const [exportStatus, setExportStatus] = useState('idle')
   const [exportError, setExportError] = useState('')
@@ -45,6 +54,7 @@ function AdvancedSettings() {
         setHwAccel(enabled)
         setAppliedHwAccel(enabled)
         setPreventSleep(settings?.preventSleep === true)
+        setNativeShare(settings?.nativeScreenShare === true)
       })
       .catch((error) => {
         console.error('[AdvancedSettings] Failed to load app settings:', error)
@@ -52,6 +62,23 @@ function AdvancedSettings() {
         setHwAccel(true)
         setAppliedHwAccel(true)
         setPreventSleep(false)
+        setNativeShare(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    window.api?.mediaEngine
+      ?.available()
+      .then((status) => {
+        cachedNativeShareShown = status?.settingShown === true
+        if (!cancelled) setNativeShareShown(cachedNativeShareShown)
+      })
+      .catch((error) => {
+        console.error('[AdvancedSettings] Failed to ask about the native screen share:', error)
       })
     return () => {
       cancelled = true
@@ -77,6 +104,12 @@ function AdvancedSettings() {
     setPreventSleep(enabled)
     if (cachedSettings) cachedSettings.preventSleep = enabled
     window.electron?.ipcRenderer?.send('set-idle-inhibitor', enabled)
+  }
+
+  const toggleNativeShare = (enabled) => {
+    setNativeShare(enabled)
+    if (cachedSettings) cachedSettings.nativeScreenShare = enabled
+    window.electron?.ipcRenderer?.send('set-app-settings', { nativeScreenShare: enabled })
   }
 
   const toggleHwAccel = (enabled) => {
@@ -192,6 +225,29 @@ function AdvancedSettings() {
                 checked={preventSleep ?? false}
                 disabled={preventSleep == null}
                 onChange={(e) => togglePreventSleep(e.target.checked)}
+              />
+              <span className="toggle-slider" />
+            </label>
+          </div>
+        )}
+
+        {nativeShareShown && (
+          <div className="settings-section settings-toggle-row">
+            <div className="settings-toggle-copy">
+              <label htmlFor="native-share-toggle">Native screen share (experimental)</label>
+              <p className="settings-section-desc">
+                Screen shares are captured and encoded outside the browser engine, which keeps the
+                frame rate up while a game uses the GPU. If it cannot start, the share falls back to
+                the normal path by itself.
+              </p>
+            </div>
+            <label className="toggle-switch">
+              <input
+                type="checkbox"
+                id="native-share-toggle"
+                checked={nativeShare ?? false}
+                disabled={nativeShare == null}
+                onChange={(e) => toggleNativeShare(e.target.checked)}
               />
               <span className="toggle-slider" />
             </label>

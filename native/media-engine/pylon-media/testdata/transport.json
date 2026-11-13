@@ -1,0 +1,43 @@
+{
+  "id": "5ab0b66c-87d1-46f3-b441-f8c36336b440",
+  "ice_parameters": {
+    "iceLite": true,
+    "password": "en8zibszzjtbk4burerkc9lavhec19l5",
+    "usernameFragment": "kef0zoir3oudxfrpr4zod2sdjjvo93ti"
+  },
+  "ice_candidates": [
+    {
+      "address": "127.0.0.1",
+      "foundation": "udpcandidate",
+      "port": 39627,
+      "priority": 1076558079,
+      "protocol": "udp",
+      "type": "host"
+    }
+  ],
+  "dtls_parameters": {
+    "fingerprints": [
+      {
+        "algorithm": "sha-1",
+        "value": "65:8B:87:8E:9E:3A:BF:61:E8:8B:F0:0C:DF:F9:4A:20:88:97:E8:3D"
+      },
+      {
+        "algorithm": "sha-224",
+        "value": "51:61:35:99:BF:E7:9F:59:20:57:DB:24:FE:FA:4F:9B:C6:53:8A:7D:C2:95:8B:3D:FB:28:DD:53"
+      },
+      {
+        "algorithm": "sha-256",
+        "value": "DB:0D:4E:F9:97:F1:53:E5:5C:2D:54:B7:4C:4C:7A:AB:31:50:18:D4:0C:81:EC:2C:93:BA:D0:5E:9D:1C:41:64"
+      },
+      {
+        "algorithm": "sha-384",
+        "value": "98:E4:60:01:E6:13:4B:DA:E1:11:5A:4E:48:E6:77:78:7C:49:2A:E1:0B:5A:59:7A:99:3D:B5:E6:7A:84:C2:1C:49:9D:EC:86:86:41:8A:A3:CB:B0:0C:C3:BC:1C:58:B2"
+      },
+      {
+        "algorithm": "sha-512",
+        "value": "97:9B:CB:BB:66:E6:D4:11:89:21:C2:64:45:09:F4:01:64:E5:7C:27:FA:96:80:12:BF:8B:6C:3D:A5:2D:87:C3:C0:AF:B1:CF:DE:70:6A:42:DD:D4:D5:5D:7E:7D:68:32:52:90:42:19:44:37:1E:FC:8D:F9:44:39:0A:0A:C0:8F"
+      }
+    ],
+    "role": "auto"
+  }
+}

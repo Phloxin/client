@@ -1,0 +1,85 @@
+[package]
+name = "pylon-media"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[features]
+default = ["crypto-aws-lc"]
+# str0m's crypto backend. Exactly one must be on.
+crypto-aws-lc = ["str0m/aws-lc-rs"]
+crypto-rust = ["str0m/rust-crypto"]
+# The video pipeline's hardware encoder and the test pattern producer: on Linux libavcodec's
+# VA-API H264 encoder. Needs FFmpeg 9 with ffmpeg-vaapi-rate-change.patch, libva and clang
+# (shell.nix). On Windows libavcodec's Quick Sync or NVENC encoder fed D3D11 textures. Needs
+# FFmpeg 9 with nvenc-reconfig-no-idr.patch (FFMPEG_DIR, windows/ffmpeg.md) and LLVM's libclang
+# (LIBCLANG_PATH). The pipeline's portable parts build without it.
+encode = ["dep:ffmpeg-sys-next", "dep:windows"]
+# Screen capture: on Linux through the desktop portal's ScreenCast and PipeWire, frames handed
+# to the encoder as the compositor's DMA-BUFs. Needs PipeWire's development files and libEGL
+# (shell.nix) besides what encode needs. On Windows through Windows Graphics Capture of the window
+# or monitor the host names, frames handed to the encoder as the capture's D3D11 textures
+# (video/windows/capture/), nothing besides what encode needs.
+capture = [
+    "encode",
+    "dep:ashpd",
+    "dep:pipewire",
+    "dep:async-io",
+    "dep:futures-util",
+    "windows?/Foundation",
+    "windows?/Graphics_Capture",
+    "windows?/Graphics_DirectX_Direct3D11",
+    "windows?/System",
+    "windows?/Win32_System_Com",
+    "windows?/Win32_Graphics_Gdi",
+    "windows?/Win32_System_WinRT_Direct3D11",
+    "windows?/Win32_System_WinRT_Graphics_Capture",
+    "windows?/Win32_UI_HiDpi",
+    "windows?/Win32_UI_WindowsAndMessaging",
+]
+
+[dependencies]
+str0m = { version = "=0.25.0", default-features = false }
+pylon-e2ee = { path = "../../../pylon-e2ee", default-features = false, features = ["frame"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+getrandom = "0.3"
+ffmpeg-sys-next = { version = "9.1.0", default-features = false, features = ["avcodec", "avfilter"], optional = true }
+
+# Linux's screen capture.
+[target.'cfg(target_os = "linux")'.dependencies]
+ashpd = { version = "0.14", default-features = false, features = ["async-io", "screencast"], optional = true }
+pipewire = { version = "0.10.0", features = ["v0_3_44"], optional = true }
+async-io = { version = "2", optional = true }
+futures-util = { version = "0.3", default-features = false, features = ["std"], optional = true }
+
+# Windows' D3D11 device, textures and video processor for the encoder (encode), and with
+# `capture` the features for Windows Graphics Capture.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62.2", default-features = false, features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+], optional = true }
+
+[dev-dependencies]
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "std"] }
+
+[[example]]
+name = "pattern_encode"
+required-features = ["encode"]
+
+[[example]]
+name = "capture_encode"
+required-features = ["capture"]
+
+[[example]]
+name = "resize_encode"
+required-features = ["encode"]
+
+[[example]]
+name = "capture_encode_windows"
+required-features = ["capture"]

@@ -1,0 +1,161 @@
+{
+  "codecs": [
+    {
+      "clockRate": 90000,
+      "kind": "video",
+      "mimeType": "video/H264",
+      "parameters": {
+        "level-asymmetry-allowed": 1,
+        "packetization-mode": 1,
+        "profile-level-id": "420034"
+      },
+      "preferredPayloadType": 100,
+      "rtcpFeedback": [
+        {
+          "parameter": "",
+          "type": "nack"
+        },
+        {
+          "parameter": "pli",
+          "type": "nack"
+        },
+        {
+          "parameter": "fir",
+          "type": "ccm"
+        },
+        {
+          "parameter": "",
+          "type": "goog-remb"
+        },
+        {
+          "parameter": "",
+          "type": "transport-cc"
+        }
+      ]
+    },
+    {
+      "clockRate": 90000,
+      "kind": "video",
+      "mimeType": "video/rtx",
+      "parameters": {
+        "apt": 100
+      },
+      "preferredPayloadType": 101,
+      "rtcpFeedback": []
+    }
+  ],
+  "headerExtensions": [
+    {
+      "direction": "sendrecv",
+      "kind": "audio",
+      "preferredEncrypt": false,
+      "preferredId": 1,
+      "uri": "urn:ietf:params:rtp-hdrext:sdes:mid"
+    },
+    {
+      "direction": "sendrecv",
+      "kind": "video",
+      "preferredEncrypt": false,
+      "preferredId": 1,
+      "uri": "urn:ietf:params:rtp-hdrext:sdes:mid"
+    },
+    {
+      "direction": "recvonly",
+      "kind": "video",
+      "preferredEncrypt": false,
+      "preferredId": 2,
+      "uri": "urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id"
+    },
+    {
+      "direction": "recvonly",
+      "kind": "video",
+      "preferredEncrypt": false,
+      "preferredId": 3,
+      "uri": "urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id"
+    },
+    {
+      "direction": "sendrecv",
+      "kind": "video",
+      "preferredEncrypt": false,
+      "preferredId": 4,
+      "uri": "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time"
+    },
+    {
+      "direction": "sendrecv",
+      "kind": "audio",
+      "preferredEncrypt": false,
+      "preferredId": 5,
+      "uri": "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01"
+    },
+    {
+      "direction": "sendrecv",
+      "kind": "video",
+      "preferredEncrypt": false,
+      "preferredId": 5,
+      "uri": "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01"
+    },
+    {
+      "direction": "sendrecv",
+      "kind": "audio",
+      "preferredEncrypt": false,
+      "preferredId": 6,
+      "uri": "urn:ietf:params:rtp-hdrext:ssrc-audio-level"
+    },
+    {
+      "direction": "recvonly",
+      "kind": "video",
+      "preferredEncrypt": false,
+      "preferredId": 7,
+      "uri": "https://aomediacodec.github.io/av1-rtp-spec/#dependency-descriptor-rtp-header-extension"
+    },
+    {
+      "direction": "sendrecv",
+      "kind": "video",
+      "preferredEncrypt": false,
+      "preferredId": 8,
+      "uri": "urn:3gpp:video-orientation"
+    },
+    {
+      "direction": "sendrecv",
+      "kind": "audio",
+      "preferredEncrypt": false,
+      "preferredId": 9,
+      "uri": "http://www.webrtc.org/experiments/rtp-hdrext/abs-capture-time"
+    },
+    {
+      "direction": "sendrecv",
+      "kind": "video",
+      "preferredEncrypt": false,
+      "preferredId": 9,
+      "uri": "http://www.webrtc.org/experiments/rtp-hdrext/abs-capture-time"
+    },
+    {
+      "direction": "sendrecv",
+      "kind": "audio",
+      "preferredEncrypt": false,
+      "preferredId": 10,
+      "uri": "http://www.webrtc.org/experiments/rtp-hdrext/playout-delay"
+    },
+    {
+      "direction": "sendrecv",
+      "kind": "video",
+      "preferredEncrypt": false,
+      "preferredId": 10,
+      "uri": "http://www.webrtc.org/experiments/rtp-hdrext/playout-delay"
+    },
+    {
+      "direction": "sendrecv",
+      "kind": "audio",
+      "preferredEncrypt": false,
+      "preferredId": 11,
+      "uri": "urn:mediasoup:params:rtp-hdrext:packet-id"
+    },
+    {
+      "direction": "sendrecv",
+      "kind": "video",
+      "preferredEncrypt": false,
+      "preferredId": 11,
+      "uri": "urn:mediasoup:params:rtp-hdrext:packet-id"
+    }
+  ]
+}

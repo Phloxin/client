@@ -42,6 +42,40 @@ const api = {
   voiceEndpointOverride,
   // Installs window.pylonTest (renderer lib/testHooks.js) for the e2e harness.
   isTestHarness: process.env.PYLON_TEST === '1',
+  // The native media engine's sidecar (main/mediaEngine.js). Whether a screen share goes
+  // through it (PYLON_NATIVE_SHARE, else the "Native screen share" setting) is main's call,
+  // told in available()'s reply. onEvent hears
+  // ice_state, connected, stats, error, capture_changed, preview, closed and exit, as
+  // { type, ...fields }.
+  mediaEngine: {
+    // { available, codecs, source, pattern, settingShown, preview }: codecs from the last
+    // sidecar's hello, null before the first; source the configured kind ('screen', 'file',
+    // 'pattern' or null), pattern its { width, height, fps } for 'pattern'; settingShown
+    // whether the setting's row belongs in Advanced settings; preview, in development,
+    // PYLON_NATIVE_PREVIEW's { fps, max_width, max_height } or null.
+    available: () => ipcRenderer.invoke('mediaengine:available'),
+    // Starts a sidecar and asks it for the screen (on Wayland the portal, on
+    // Windows the source main holds for this share), at most options.maxFps
+    // frames a second. Resolves with capture_ready's fields and codecs, or
+    // { cancelled: true } when the person said no in the portal.
+    // cancelCapture(options.id) closes it while it is still pending.
+    capture: (options) => ipcRenderer.invoke('mediaengine:capture', options),
+    cancelCapture: (id) => ipcRenderer.invoke('mediaengine:cancel-capture', id),
+    open: (params) => ipcRenderer.invoke('mediaengine:open', params),
+    // These name the sidecar (open's or capture's pid). Main ignores them for any other.
+    start: (pid) => ipcRenderer.invoke('mediaengine:start', pid),
+    setKey: (pid, key) => ipcRenderer.invoke('mediaengine:set-key', pid, key),
+    close: (pid) => ipcRenderer.invoke('mediaengine:close', pid),
+    // Asks that sidecar for the sharer's preview: { fps, max_width, max_height } as in its
+    // protocol (fps 0 stops). Resolves false when refused. The pictures come as `preview`
+    // events: { width, height, jpeg (base64) }.
+    preview: (pid, request) => ipcRenderer.invoke('mediaengine:preview', pid, request),
+    onEvent: (cb) => {
+      const handler = (_e, event) => cb(event)
+      ipcRenderer.on('mediaengine:event', handler)
+      return () => ipcRenderer.removeListener('mediaengine:event', handler)
+    }
+  },
   screenAudio: {
     getCapabilities: () => ipcRenderer.invoke('audiocapture:get-capabilities'),
     listApps: () => ipcRenderer.invoke('audiocapture:list-apps'),

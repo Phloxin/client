@@ -29,7 +29,8 @@ import {
 import { setVideoStreamRoles, subscribeStreamViewers } from '../lib/soup'
 import { useImageColors } from '../lib/imageColors'
 import { useWheelSlider } from '../lib/useWheelSlider'
-import { shouldPauseSelfPreview, syncSelfPreviewPlayback } from '../lib/selfPreviewPlayback'
+import { syncSelfPreviewPlayback } from '../lib/selfPreviewPlayback'
+import { useSelfPreviewPaused } from '../lib/useSelfPreviewWindow'
 import { resolveStreamFocus } from '../lib/streamView'
 import { sortTiles } from '../lib/streamTiles'
 import { spring } from '../lib/motionPresets'
@@ -131,36 +132,6 @@ function StreamAvatar({ avatar, name, small = false }) {
       )}
     </span>
   )
-}
-
-function readSelfPreviewPaused() {
-  if (typeof window === 'undefined' || typeof document === 'undefined') return false
-  const documentVisible =
-    document.visibilityState == null
-      ? document.hidden !== true
-      : document.visibilityState === 'visible'
-  const windowFocused = typeof document.hasFocus === 'function' ? document.hasFocus() : true
-  return shouldPauseSelfPreview({ windowFocused, documentVisible })
-}
-
-function useSelfPreviewPaused() {
-  const [selfPreviewPaused, setSelfPreviewPaused] = useState(readSelfPreviewPaused)
-
-  useEffect(() => {
-    if (typeof window === 'undefined' || typeof document === 'undefined') return undefined
-    const update = () => setSelfPreviewPaused(readSelfPreviewPaused())
-    window.addEventListener('focus', update)
-    window.addEventListener('blur', update)
-    document.addEventListener('visibilitychange', update)
-    update()
-    return () => {
-      window.removeEventListener('focus', update)
-      window.removeEventListener('blur', update)
-      document.removeEventListener('visibilitychange', update)
-    }
-  }, [])
-
-  return selfPreviewPaused
 }
 
 // eslint-disable-next-line react/prop-types -- The renderer does not use runtime PropTypes.

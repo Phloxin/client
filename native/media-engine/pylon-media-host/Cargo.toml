@@ -1,0 +1,35 @@
+[package]
+name = "pylon-media-host"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[features]
+default = ["crypto-aws-lc"]
+crypto-aws-lc = ["pylon-media/crypto-aws-lc"]
+crypto-rust = ["pylon-media/crypto-rust"]
+# The `pattern` source and the hardware encoder (pylon-media's `encode`, see shell.nix, and on
+# Windows pylon-media/src/video/windows/). Linux and Windows: elsewhere the sidecar refuses the
+# source.
+encode = ["pylon-media/encode"]
+# The `screen` source (pylon-media's `capture`): on Linux through the desktop portal and PipeWire,
+# on Windows through Windows Graphics Capture of the window or monitor `capture` names. Elsewhere
+# the sidecar refuses the source.
+capture = ["encode", "pylon-media/capture"]
+
+[dependencies]
+pylon-media = { path = "../pylon-media", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "std"] }
+
+# The exit watchdog's hard exit, which must not wait on anything a hung thread holds.
+[target.'cfg(unix)'.dependencies]
+# `_exit`.
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+# `TerminateProcess`. The C runtime's `_exit` takes its exit lock and calls `ExitProcess` there.
+windows = { version = "0.62.2", default-features = false, features = ["Win32_System_Threading"] }

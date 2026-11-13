@@ -34,6 +34,8 @@ let nextWorkerRequest = 1
 const workerRequests = new Map()
 // Receive transform id -> sink node, for the keyframe requests decryption asks for.
 const transformSinks = new Map()
+// Native encoder (engine) id -> what to tell it when the sending key changes.
+const engineListeners = new Map()
 
 let handlers = {}
 let status = {
@@ -81,8 +83,13 @@ function onWorkerMessage({ data }) {
     }
     case 'formats':
     case 'stats':
+    case 'engine-key':
       workerRequests.get(data.request)?.(data)
       workerRequests.delete(data.request)
+      break
+    case 'engine-key-changed':
+    case 'engine-key-lost':
+      engineListeners.get(data.engine)?.(data)
       break
     case 'capture':
       saveCapture(data)
@@ -200,6 +207,42 @@ export function e2eeGroupEvent(event) {
 // that includes us, so the first keyframe a sink asks for is one we can decrypt (plan 5.5).
 export function e2eeMediaReady() {
   return status.mediaReady
+}
+
+// ─── Native encoders ─────────────────────────────────────────────
+// A native encoder seals this client's frames with its own sender key and a kid of its own
+// (.plans/native-media-engine.md, decision 11). The key is secret: it goes to the encoder and
+// nowhere else, never into a log or an error.
+
+// Registers an engine with the worker. Resolves with { engine, format, epoch, key, kid, counter }
+// (`key` base64), or rejects when the worker isn't sending under a key or has no kid left.
+// `onChange` hears of every later change: { type: 'engine-key-changed', format, epoch, key },
+// or { type: 'engine-key-lost' } once the worker sends under no key at all.
+export async function e2eeEngineKey(onChange) {
+  const request = nextWorkerRequest++
+  const reply = await new Promise((resolve) => {
+    workerRequests.set(request, (data) => {
+      // Registered before anything else runs, so no change can come in between.
+      if (data.ok) engineListeners.set(data.engine, onChange)
+      resolve(data)
+    })
+    ensureWorker().postMessage({ type: 'engine-key', request })
+  })
+  if (!reply.ok) {
+    const error = new Error(`No key for a native encoder (${reply.reason})`)
+    error.code = 'E2EE_NO_ENGINE_KEY'
+    throw error
+  }
+  const { engine, format, epoch, key, kid, counter } = reply
+  return { engine, format, epoch, key, kid, counter }
+}
+
+// The engine is gone: the worker stops telling it of changes and its kid stays used until the
+// key changes.
+export function e2eeReleaseEngineKey(engine) {
+  if (engine == null) return
+  engineListeners.delete(engine)
+  worker?.postMessage({ type: 'engine-release', engine })
 }
 
 // ─── UI ──────────────────────────────────────────────────────────

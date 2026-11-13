@@ -1,5 +1,7 @@
 // window.pylonTest, the e2e harness's handle (client/e2e). Installed only when the preload says
 // the app was launched with PYLON_TEST=1. soup hands in its state through configureTestHooks.
+import { nativePreviewTally } from './soup/nativeShare'
+
 let getRemoteConsumers = () => new Map()
 let getProducers = () => []
 let getShareContexts = () => []
@@ -100,10 +102,45 @@ async function rtcStats() {
   return { consumers: consumerList, producers: producerList }
 }
 
+// The live screen share's native engine (soup/nativeShare.js): whether the share is native, its
+// source id, the sidecar's pid, its last stats and its event history. No key material.
+function nativeShare() {
+  const ctx = getShareContexts().find((share) => share.type === 'screen')
+  if (!ctx) return { sharing: false, native: false }
+  const info = ctx.producer?.native ? ctx.producer.testInfo() : null
+  return info ? { sharing: true, ...info } : { sharing: true, native: false }
+}
+
+// The native shares' preview pictures (soup/nativeShare.js): per share its requests, counts and
+// canvas size, kept past its end, and how many preview events reached this window per sidecar
+// pid and when the last one did (heard here too, so a picture after a share's end is seen).
+// Counts and times only, never a picture.
+const previewEvents = new Map()
+
+function listenForPreviews() {
+  window.api?.mediaEngine?.onEvent?.((event) => {
+    if (event?.type !== 'preview') return
+    const entry = previewEvents.get(event.pid) ?? { count: 0, lastAt: null }
+    entry.count++
+    entry.lastAt = Date.now()
+    previewEvents.set(event.pid, entry)
+  })
+}
+
+function nativePreview() {
+  return {
+    shares: nativePreviewTally(),
+    events: [...previewEvents].map(([pid, entry]) => ({ pid, ...entry }))
+  }
+}
+
 if (typeof window !== 'undefined' && window.api?.isTestHarness) {
+  listenForPreviews()
   window.pylonTest = {
     consumers,
     rtcStats,
+    nativeShare,
+    nativePreview,
     dropVoiceSocket: () => dropVoiceSocket()
   }
 }

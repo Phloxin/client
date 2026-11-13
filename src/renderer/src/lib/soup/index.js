@@ -45,6 +45,7 @@ import {
   stopScreenEncoderStats
 } from './screenShare'
 import { configureStreamDiagnostics } from './streamDiagnostics'
+import { requestAuxTransport } from './auxTransport'
 import { configureTestHooks } from '../testHooks'
 import {
   e2eeFormats,
@@ -110,6 +111,7 @@ export {
 export {
   resetCameraCodecPreference,
   resetScreenCodecPreference,
+  setSelfScreenPreviewSeen,
   setSharePaused,
   shareCamera,
   shareScreen,
@@ -237,7 +239,12 @@ configureScreenShare({
   createStream: createOwnStream,
   releaseStream: releaseOwnStream,
   setSourcePaused: setServerSourcePaused,
-  localProducerIds
+  localProducerIds,
+  auxTransport: {
+    available: auxTransportAvailable,
+    routerCapabilities: () => signal?.routerCapabilities ?? null,
+    create: createAuxTransport
+  }
 })
 configureStreamDiagnostics({
   getProducerTransport: () => producerTransport,
@@ -1930,6 +1937,10 @@ async function establishSession(current, ticket) {
   const sendParams = mapTransportParams(routing?.producer_transport)
   const recvParams = mapTransportParams(routing?.consumer_transport)
   if (!sendParams || !recvParams) throw connectFailure('Voice server sent no transports')
+  // Whether the node makes a third transport on request, and the router's
+  // capabilities as it sent them, for the native media engine (auxTransport).
+  current.auxSend = routing?.aux_send === true
+  current.routerCapabilities = routing?.router_capabilities ?? null
   // Never publish a half-loaded Device: a reset can land while it loads.
   const candidate = new Device()
   await candidate.load({ routerRtpCapabilities: routing.router_capabilities })
@@ -2510,7 +2521,12 @@ function connectTransport(direction, dtlsParameters, isCurrentTransport, callbac
 // appData.streamKey is the stream (createOwnStream) a Stream or StreamAudio
 // source publishes into. A replacement carries it too: the server would take
 // it without, but sending the same key keeps every stream CreateSource alike.
-async function createSource(rtpParameters, appData, isCurrentTransport) {
+async function createSource(
+  rtpParameters,
+  appData,
+  isCurrentTransport,
+  transport = Direction.Send
+) {
   if (!isCurrentTransport()) throw mediaResetError()
   const type = sourceTypeForAppData(appData)
   if (!type) throw new Error(`No voice source type for producer "${appData?.produced}"`)
@@ -2532,7 +2548,7 @@ async function createSource(rtpParameters, appData, isCurrentTransport) {
   let created
   try {
     created = await requestCreate((node) =>
-      Request.createSource(node, type, rtpParameters, replaces, streamKey)
+      Request.createSource(node, type, rtpParameters, replaces, streamKey, transport)
     )
   } catch (err) {
     // Nothing was handed over, so a Closed for the old source meanwhile (say,
@@ -2555,6 +2571,59 @@ async function createSource(rtpParameters, appData, isCurrentTransport) {
   )
   if (type === SourceType.Stream) publishStreamViewers()
   return node
+}
+
+// ─── The third transport (SendAux) ──────────────────────────────
+// A second sending transport on the session, made on request, for the native
+// media engine (soup/nativeShare.js). Nothing here is sent to a node whose
+// RoutingParams didn't say aux_send: an older node closes the socket on a
+// message it doesn't know. The engine gets the node's parameters and the
+// router's capabilities as the node sent them, and what it answers goes back
+// to the node untouched.
+function auxTransportAvailable() {
+  return signal?.ready === true && !signal.detached && signal.auxSend === true
+}
+
+function auxRefusal() {
+  return signal?.auxSend === true ? null : new Error('The voice node has no third transport')
+}
+
+// Resolves with { parameters, connect, createSource, closeSource, close }:
+// the node's transport parameters and what is done with them, bound to this
+// session and media generation. Once either has changed, connect and
+// createSource fail and the closers do nothing.
+async function createAuxTransport() {
+  const refused = auxRefusal()
+  if (refused) throw refused
+  const current = signal
+  const generation = mediaStateGeneration
+  const isCurrent = () => signal === current && generation === mediaStateGeneration
+  const answer = await requestAuxTransport(request)
+  if (!isCurrent()) throw mediaResetError()
+  return {
+    parameters: answer?.parameters ?? null,
+    connect: (dtlsParameters) =>
+      isCurrent()
+        ? request(Request.connectTransport(Direction.SendAux, dtlsParameters))
+        : Promise.reject(mediaResetError()),
+    // A Stream source on SendAux, through createSource like every source of
+    // ours. Resolves with its id (the LocalId as a string, like a producer's).
+    createSource: async (rtpParameters, streamKey) => {
+      const node = await createSource(
+        rtpParameters,
+        { produced: 'ScreenShare', streamKey },
+        isCurrent,
+        Direction.SendAux
+      )
+      return ownId(node)
+    },
+    closeSource: (id) => {
+      if (isCurrent()) closeServerProducer(id)
+    },
+    // Closes SendAux and whatever source is still on it.
+    close: () =>
+      isCurrent() ? request(Request.closeTransport(Direction.SendAux)) : Promise.resolve(null)
+  }
 }
 
 function watchTransportConnectivity(transport, label, isCurrentTransport) {

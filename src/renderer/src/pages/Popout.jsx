@@ -3,6 +3,7 @@ import './Popout.css'
 import VideoGrid from '../components/VideoGrid'
 import TitleBar from '../components/TitleBar'
 import { resolveStreamFocus } from '../lib/streamView'
+import { usePreviewWindow } from '../lib/useSelfPreviewWindow'
 
 // The popped-out video window. It renders the same VideoGrid as the main app,
 // but its data comes from the opener window's bridge (window.opener.__videoPopout)
@@ -33,6 +34,22 @@ function Popout() {
     const update = () => setData(bridge.getData())
     update()
     return bridge.subscribe(update)
+  }, [bridge])
+
+  // This window's focus and visibility go to the opener, which works out whether the sharer's
+  // own screen tile is seen (a native share's preview pictures depend on it).
+  const previewWindow = usePreviewWindow()
+  useEffect(() => {
+    bridge?.setPreviewWindow?.(previewWindow)
+  }, [bridge, previewWindow])
+  useEffect(() => {
+    if (!bridge) return undefined
+    const gone = () => bridge.setPreviewWindow?.(null)
+    window.addEventListener('pagehide', gone)
+    return () => {
+      window.removeEventListener('pagehide', gone)
+      gone()
+    }
   }, [bridge])
 
   // Escape unfocuses the focused stream, as the main window's Escape cascade

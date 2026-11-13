@@ -1,3 +1,7 @@
 [submodule "pylon-e2ee"]
 	path = pylon-e2ee
 	url = https://github.com/Phloxin/pylon-e2ee-v1.git
+[submodule "native/media-engine/vendor/str0m"]
+	path = native/media-engine/vendor/str0m
+	url = https://github.com/Phloxin/str0m.git
+	branch = pylon-0.25.0
