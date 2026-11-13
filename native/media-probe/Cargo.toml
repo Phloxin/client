@@ -1,0 +1,24 @@
+# Interop probes for the native media engine (.plans/native-media-engine.md, section 7): the
+# engine, now the `pylon-media-host` sidecar of native/media-engine/, against a real mediasoup
+# worker set up the way the node sets up a client's send transport.
+#
+# Standalone on purpose (own workspace, own lock), and native/media-engine/ never depends on it.
+# mediasoup-sys needs the backend's dev shell, the sidecar the client's. Build both into one
+# target dir so the probe finds the sidecar beside itself:
+#   export CARGO_TARGET_DIR=/tmp/media-probe-target
+#   nix develop ~/dev/pylon/client -c cargo build --release --manifest-path native/media-engine/Cargo.toml
+#   nix develop ~/dev/pylon/server/backend -c cargo run --release --manifest-path native/media-probe/Cargo.toml
+# Probe 2 (.plans/native-media-engine-probe2.md) is `media-probe viewer`, driven by viewer/run.mjs.
+# Keep the mediasoup version equal to the one in the backend's crates/pylon-sfu/Cargo.toml.
+[package]
+name = "media-probe"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+mediasoup = "=0.33.1"
+tokio = { version = "1", features = ["full"] }
+serde_json = "1"

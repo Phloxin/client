@@ -1,0 +1,85 @@
+FFmpeg 9.0.2 for the engine on Windows (.plans/native-media-engine-m7-4-windows-encoder.md, N2),
+from the M7 encoder spike (native/encoder-spike/windows/scripts/nvenc-reconfig-no-idr.patch,
+measured in the NVENC container). Adds h264_nvenc option reconfig_idr (default 1 = FFmpeg's own
+behaviour). With 0, a bitrate change on the open encoder is sent through nvEncReconfigureEncoder
+without resetEncoder and forceIDR, and a change of avctx->framerate is sent the same way (FFmpeg
+itself ignores it). The engine opens h264_nvenc with reconfig_idr=0. Applied by
+windows/ffmpeg-build.sh.
+diff --git a/libavcodec/nvenc.c b/libavcodec/nvenc.c
+--- a/libavcodec/nvenc.c
++++ b/libavcodec/nvenc.c
+@@ -2798,7 +2798,7 @@ static void reconfig_encoder(AVCodecContext *avctx, const AVFrame *frame)
+     NV_ENC_RECONFIGURE_PARAMS params = { 0 };
+     int needs_reconfig = 0;
+     int needs_encode_config = 0;
+-    int reconfig_bitrate = 0, reconfig_dar = 0;
++    int reconfig_bitrate = 0, reconfig_dar = 0, reconfig_fr = 0;
+     int dw, dh;
+ 
+     params.version = NV_ENC_RECONFIGURE_PARAMS_VER;
+@@ -2850,14 +2850,29 @@ static void reconfig_encoder(AVCodecContext *avctx, const AVFrame *frame)
+         }
+ 
+         if (reconfig_bitrate) {
+-            params.resetEncoder = 1;
+-            params.forceIDR = 1;
++            params.resetEncoder = ctx->reconfig_idr;
++            params.forceIDR = ctx->reconfig_idr;
+ 
+             needs_encode_config = 1;
+             needs_reconfig = 1;
+         }
+     }
+ 
++    if (avctx->framerate.num > 0 && avctx->framerate.den > 0 &&
++        (avctx->framerate.num != ctx->init_encode_params.frameRateNum ||
++         avctx->framerate.den != ctx->init_encode_params.frameRateDen)) {
++        av_log(avctx, AV_LOG_VERBOSE, "frame rate change: %d/%d -> %d/%d\n",
++               ctx->init_encode_params.frameRateNum, ctx->init_encode_params.frameRateDen,
++               avctx->framerate.num, avctx->framerate.den);
++        params.reInitEncodeParams.frameRateNum = avctx->framerate.num;
++        params.reInitEncodeParams.frameRateDen = avctx->framerate.den;
++        params.resetEncoder = ctx->reconfig_idr;
++        params.forceIDR = ctx->reconfig_idr;
++        needs_reconfig = 1;
++        reconfig_fr = 1;
++        needs_encode_config = 1;
++    }
++
+     if (!needs_encode_config)
+         params.reInitEncodeParams.encodeConfig = NULL;
+ 
+@@ -2871,6 +2886,11 @@ static void reconfig_encoder(AVCodecContext *avctx, const AVFrame *frame)
+                 ctx->init_encode_params.darWidth = dw;
+             }
+ 
++            if (reconfig_fr) {
++                ctx->init_encode_params.frameRateNum = params.reInitEncodeParams.frameRateNum;
++                ctx->init_encode_params.frameRateDen = params.reInitEncodeParams.frameRateDen;
++            }
++
+             if (reconfig_bitrate) {
+                 ctx->encode_config.rcParams.averageBitRate = params.reInitEncodeParams.encodeConfig->rcParams.averageBitRate;
+                 ctx->encode_config.rcParams.maxBitRate = params.reInitEncodeParams.encodeConfig->rcParams.maxBitRate;
+diff --git a/libavcodec/nvenc.h b/libavcodec/nvenc.h
+--- a/libavcodec/nvenc.h
++++ b/libavcodec/nvenc.h
+@@ -273,6 +273,7 @@ typedef struct NvencContext
+     int split_encode_mode;
+     int mdm, cll;
+     int cbr_padding;
++    int reconfig_idr;
+     int multiview, multiview_supported;
+     int display_sei_sent;
+ } NvencContext;
+diff --git a/libavcodec/nvenc_h264.c b/libavcodec/nvenc_h264.c
+--- a/libavcodec/nvenc_h264.c
++++ b/libavcodec/nvenc_h264.c
+@@ -174,6 +174,8 @@ static const AVOption options[] = {
+                                                             OFFSET(max_slice_size), AV_OPT_TYPE_INT, { .i64 = 0 }, 0, INT_MAX, VE },
+     { "constrained-encoding", "Enable constrainedFrame encoding where each slice in the constrained picture is independent of other slices",
+                                                             OFFSET(constrained_encoding), AV_OPT_TYPE_BOOL,  { .i64 = 0 }, 0, 1, VE },
++    { "reconfig_idr", "Reset the encoder and force an IDR when bitrate or frame rate change on the open encoder",
++                                                            OFFSET(reconfig_idr), AV_OPT_TYPE_BOOL,  { .i64 = 1 }, 0, 1, VE },
+     { "cbr_padding",  "Pad the bitstream to ensure bitrate does not drop below the target in CBR mode",
+                                                             OFFSET(cbr_padding),  AV_OPT_TYPE_BOOL,  { .i64 = 0 }, 0, 1, VE },

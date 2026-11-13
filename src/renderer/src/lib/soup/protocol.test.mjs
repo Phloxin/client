@@ -1529,3 +1529,163 @@ test('snapshots keep the group params', () => {
   state.reset()
   assert.equal(state.group, null)
 })
+
+// ─── The third transport (SendAux) ───────────────────────────────
+
+test('CreateTransport and CloseTransport encode with their direction', () => {
+  assert.equal(Direction.SendAux, 'SendAux')
+  assert.equal(
+    JSON.stringify(Request.createTransport(Direction.SendAux)),
+    '{"CreateTransport":{"direction":"SendAux"}}'
+  )
+  assert.equal(
+    JSON.stringify(Request.closeTransport(Direction.SendAux)),
+    '{"CloseTransport":{"direction":"SendAux"}}'
+  )
+  assert.deepEqual(Request.connectTransport(Direction.SendAux, { role: 'client' }), {
+    ConnectTransport: {
+      transport_parameters: { dtlsParameters: { role: 'client' } },
+      direction: 'SendAux'
+    }
+  })
+})
+
+test('CreateSource names SendAux, and leaves Send out byte for byte', () => {
+  const today = JSON.stringify(Request.createSource(2, 'Stream', { codecs: [] }, null, 'k'))
+  assert.equal(
+    today,
+    '{"CreateSource":{"new_node":2,"kind":"Stream","rtp_parameters":{"codecs":[]},' +
+      '"replaces":null,"stream_key":"k"}}'
+  )
+  assert.equal(
+    JSON.stringify(Request.createSource(2, 'Stream', { codecs: [] }, null, 'k', Direction.Send)),
+    today
+  )
+  assert.equal(
+    JSON.stringify(Request.createSource(2, 'Stream', { codecs: [] }, null, 'k', null)),
+    today
+  )
+  assert.deepEqual(Request.createSource(3, 'Stream', { codecs: [] }, 1, 'k', Direction.SendAux), {
+    CreateSource: {
+      new_node: 3,
+      kind: 'Stream',
+      rtp_parameters: { codecs: [] },
+      replaces: 1,
+      stream_key: 'k',
+      transport: 'SendAux'
+    }
+  })
+})
+
+test('Transport answers CreateTransport and TransportClosed answers CloseTransport', async () => {
+  const { matcher, sent, protocolErrors, reply } = matcherHarness()
+  const created = matcher.request(Request.createTransport(Direction.SendAux))
+  assert.deepEqual(sent, [{ CreateTransport: { direction: 'SendAux' } }])
+  const parameters = {
+    id: 't1',
+    ice_parameters: { usernameFragment: 'u', password: 'p', iceLite: true },
+    ice_candidates: [{ protocol: 'udp', ip: '1.2.3.4', port: 4000 }],
+    dtls_parameters: { role: 'auto', fingerprints: [] }
+  }
+  assert.equal(reply({ Transport: { direction: 'SendAux', parameters } }), true)
+  // The node's parameters come back untouched.
+  assert.deepEqual(await created, { direction: 'SendAux', parameters })
+
+  const closed = matcher.request(Request.closeTransport(Direction.SendAux))
+  // The sources on it close first, as events.
+  assert.equal(reply({ Closed: { nodes: [4] } }), false)
+  assert.equal(matcher.size, 1)
+  assert.equal(reply({ TransportClosed: { direction: 'SendAux' } }), true)
+  assert.deepEqual(await closed, { direction: 'SendAux' })
+  assert.equal(matcher.size, 0)
+  assert.equal(protocolErrors.length, 0)
+})
+
+test('Transport and TransportClosed are keyed by direction', async () => {
+  const { matcher, protocolErrors, reply } = matcherHarness()
+  const created = matcher.request(Request.createTransport(Direction.SendAux))
+  // Nothing waits for one of another direction, or for a close.
+  assert.equal(reply({ Transport: { direction: 'Send', parameters: {} } }), true)
+  assert.equal(reply({ TransportClosed: { direction: 'SendAux' } }), true)
+  assert.equal(protocolErrors.length, 2)
+  assert.ok(protocolErrors.every((error) => error instanceof VoiceProtocolError))
+  assert.equal(matcher.size, 1)
+  reply({ Transport: { direction: 'SendAux', parameters: { id: 't' } } })
+  assert.equal((await created).parameters.id, 't')
+})
+
+test('the node refuses CreateTransport and CloseTransport on the transport', async () => {
+  const { matcher, protocolErrors, reply } = matcherHarness()
+  const twice = matcher.request(Request.createTransport(Direction.SendAux))
+  const missing = matcher.request(Request.closeTransport(Direction.SendAux))
+  assert.equal(
+    reply({
+      Error: {
+        object: { Transport: 'SendAux' },
+        code: 'InvalidState',
+        message: 'transport already exists'
+      }
+    }),
+    true
+  )
+  assert.equal(
+    reply({
+      Error: {
+        object: { Transport: 'SendAux' },
+        code: 'NotFound',
+        message: 'transport not created'
+      }
+    }),
+    true
+  )
+  const errors = await Promise.all([twice, missing].map((p) => p.catch((e) => e)))
+  assert.ok(errors.every((err) => err instanceof VoiceRequestError))
+  assert.deepEqual(
+    errors.map((err) => [err.request, err.code]),
+    [
+      ['CreateTransport', 'InvalidState'],
+      ['CloseTransport', 'NotFound']
+    ]
+  )
+  assert.deepEqual(errors[1].object, { Transport: 'SendAux' })
+  assert.equal(matcher.size, 0)
+  assert.equal(protocolErrors.length, 0)
+})
+
+test('an Error on the session is not claimed by CreateTransport or CloseTransport', async () => {
+  const { matcher, reply } = matcherHarness()
+  const created = matcher.request(Request.createTransport(Direction.SendAux))
+  const closed = matcher.request(Request.closeTransport(Direction.SendAux))
+  const group = matcher.requestSynced(Request.group({ Ready: { epoch: 2 } }))
+  // The group request's error goes to it, not to the older transport requests.
+  assert.equal(
+    reply({ Error: { object: 'Session', code: 'InvalidState', message: 'not in a group' } }),
+    true
+  )
+  // Its Sync settles it as failed.
+  reply({ Done: { callback: 1 } })
+  const groupError = await group.catch((e) => e)
+  assert.ok(groupError instanceof VoiceRequestError)
+  assert.equal(groupError.request, 'Group')
+  // With nothing else waiting on the session, its error is no one's.
+  assert.equal(
+    reply({ Error: { object: 'Session', code: 'InvalidState', message: 'session not ready' } }),
+    false
+  )
+  assert.equal(matcher.size, 2)
+  reply({ Transport: { direction: 'SendAux', parameters: { id: 't' } } })
+  reply({ TransportClosed: { direction: 'SendAux' } })
+  assert.equal((await created).parameters.id, 't')
+  assert.deepEqual(await closed, { direction: 'SendAux' })
+})
+
+test('ConnectTransport on SendAux is answered for that direction', async () => {
+  const { matcher, reply } = matcherHarness()
+  const send = matcher.request(Request.connectTransport(Direction.Send, {}))
+  const aux = matcher.request(Request.connectTransport(Direction.SendAux, {}))
+  assert.equal(reply({ TransportConnected: { direction: 'SendAux' } }), true)
+  assert.deepEqual(await aux, { direction: 'SendAux' })
+  assert.equal(matcher.size, 1)
+  reply({ TransportConnected: { direction: 'Send' } })
+  await send
+})

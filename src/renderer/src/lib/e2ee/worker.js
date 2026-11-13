@@ -18,6 +18,7 @@ import init, {
   supportedFormats
 } from './pkg/pylon_e2ee.js'
 import wasmUrl from './pkg/pylon_e2ee_bg.wasm?url'
+import { createEngineKids, sendingKeyHash } from './engineKids.js'
 
 const KID = 0
 // A client that isn't keyed this long after asking to join sends a fresh key package (5.3).
@@ -76,6 +77,16 @@ let joinedEpoch = null
 let mediaReady = false
 let fatal = null
 const retireTimers = new Set()
+
+// ─── Native encoders ─────────────────────────────────────────────
+// A native encoder seals this client's frames itself, with the client's own sender key and a kid
+// of its own (.plans/native-media-engine.md, decision 11). Registered engines are told whenever
+// that key changes, found by comparing after everything that can change it.
+const engineKids = createEngineKids()
+let nextEngine = 1
+// The hash (sendingKeyHash) of the sending key engines were last told of, or null when not
+// sending. The key itself is not kept.
+let engineKeySeen = null
 
 // ─── Static test mode ────────────────────────────────────────────
 let staticSender = null
@@ -425,6 +436,81 @@ function staticReceiverFor(owner) {
   return receiver
 }
 
+// ─── Native encoder keys ─────────────────────────────────────────
+
+// { format, epoch, key } this client sends under now, or null. `epoch` is the trailer's byte.
+function currentSendingKey() {
+  if (mode === 'passthrough') return null
+  if (mode === 'static') {
+    const key = staticKey(selfId)
+    return key ? { format: STATIC_FORMAT, epoch: STATIC_EPOCH, key } : null
+  }
+  const sending = session?.sendingKey()
+  if (!sending) return null
+  const current = { format: sending.format, epoch: sending.epoch, key: sending.key }
+  sending.free()
+  return current
+}
+
+// Tells every registered engine about a change of the sending key, or that there is none now.
+// It runs after everything that can change the key, for every user, so nothing it throws may
+// get out.
+function checkEngineKey() {
+  try {
+    notifyEngineKey()
+  } catch (err) {
+    console.warn('[E2EE] native encoder key check failed:', errorName(err))
+  }
+}
+
+function notifyEngineKey() {
+  const current = currentSendingKey()
+  const seen = sendingKeyHash(current)
+  if (seen === engineKeySeen) return
+  engineKeySeen = seen
+  engineKids.keyChanged(seen)
+  for (const engine of engineKids.engines()) {
+    if (current) {
+      post({
+        type: 'engine-key-changed',
+        engine,
+        format: current.format,
+        epoch: current.epoch,
+        key: toBase64(current.key)
+      })
+    } else {
+      post({ type: 'engine-key-lost', engine })
+    }
+  }
+}
+
+// Registers an engine and hands it the key, a kid and a counter start, or refuses.
+function registerEngine(request) {
+  checkEngineKey()
+  const current = currentSendingKey()
+  if (!current) {
+    post({ type: 'engine-key', request, ok: false, reason: 'not-sending' })
+    return
+  }
+  const engine = nextEngine++
+  const kid = engineKids.take(engine, sendingKeyHash(current))
+  if (kid == null) {
+    post({ type: 'engine-key', request, ok: false, reason: 'no-kid' })
+    return
+  }
+  post({
+    type: 'engine-key',
+    request,
+    ok: true,
+    engine,
+    format: current.format,
+    epoch: current.epoch,
+    key: toBase64(current.key),
+    kid,
+    counter: crypto.getRandomValues(new Uint32Array(1))[0] >>> 1
+  })
+}
+
 // ─── Messages from the main thread ───────────────────────────────
 
 self.onmessage = async ({ data }) => {
@@ -441,6 +527,7 @@ self.onmessage = async ({ data }) => {
         selfId = data.selfId
       }
       rekeyStatic()
+      checkEngineKey()
       break
     }
     case 'formats':
@@ -448,9 +535,11 @@ self.onmessage = async ({ data }) => {
       break
     case 'join':
       joinVoice(data.params, data.move === true)
+      checkEngineKey()
       break
     case 'leave':
       leaveVoice()
+      checkEngineKey()
       break
     case 'suspend':
       // The socket session ended. Nothing can be sent until the next one joins again.
@@ -468,6 +557,13 @@ self.onmessage = async ({ data }) => {
       break
     case 'group':
       handleGroupEvent(data.event)
+      checkEngineKey()
+      break
+    case 'engine-key':
+      registerEngine(data.request)
+      break
+    case 'engine-release':
+      engineKids.release(data.engine)
       break
     case 'request-failed':
       // A key package the session refused fails like a join: retry, then give up.

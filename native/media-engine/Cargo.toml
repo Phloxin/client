@@ -1,0 +1,20 @@
+# The native media engine (.plans/native-media-engine-m2-engine.md): the `pylon-media` library
+# and the `pylon-media-host` sidecar around it. Own workspace and lock. Builds in the client's
+# dev shell:
+#   nix develop ~/dev/pylon/client -c cargo build --release
+# The str0m crypto backend is a feature: `crypto-aws-lc` (default) or
+#   --no-default-features --features crypto-rust
+[workspace]
+resolver = "3"
+members = ["pylon-media", "pylon-media-host"]
+
+[profile.release]
+debug = false
+# A panic on any thread ends the sidecar, instead of leaving one that captures and sends nothing.
+panic = "abort"
+
+# Our fork of str0m 0.25.0 with the four line fix to the delay controller's timing
+# (.plans/native-media-engine-m5a-encoder.md, section 10), a submodule pinned to cfb77a1c. Its
+# helper crates are path dependencies inside it, so they come from the fork too.
+[patch.crates-io]
+str0m = { path = "vendor/str0m" }
