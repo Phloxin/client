@@ -883,8 +883,13 @@ function ChatPanel({
     return () => document.removeEventListener('mousedown', close)
   }, [reactPicker])
 
-  // Release object URLs for any attachments still pending on unmount
-  useEffect(() => () => attachments.forEach((a) => URL.revokeObjectURL(a.url)), [])
+  // Release object URLs for any attachments still pending on unmount. The
+  // cleanup reads a ref because a closure would only see the mount-time list.
+  const attachmentsRef = useRef(attachments)
+  useEffect(() => {
+    attachmentsRef.current = attachments
+  }, [attachments])
+  useEffect(() => () => attachmentsRef.current.forEach((a) => URL.revokeObjectURL(a.url)), [])
 
   // Escape closes the delete-confirmation dialog while it's open.
   useEffect(() => {
