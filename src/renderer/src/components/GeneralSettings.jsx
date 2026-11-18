@@ -229,7 +229,8 @@ function GeneralSettings() {
         <div className="settings-section">
           <label htmlFor="auto-idle-minutes">Idle after (minutes)</label>
           <p className="settings-section-desc" id="auto-idle-description">
-            System inactivity before switching from Online to Away. Default: 15 minutes.
+            Time without keyboard or mouse input, or talking unmuted in voice, before switching from
+            Online to Away. Default: 15 minutes.
           </p>
           <input
             className="settings-idle-minutes"

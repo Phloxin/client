@@ -3,6 +3,7 @@ import test from 'node:test'
 import {
   createAutoIdleController,
   DEFAULT_AUTO_IDLE_SETTINGS,
+  idleSecondsWithVoice,
   normalizeAutoIdleSettings
 } from './autoIdle.js'
 
@@ -175,5 +176,34 @@ test('activity while disconnected is reconciled on the next successful connectio
   tick('away', 901)
   tick('away', 0, { send: () => false })
   tick('away', 5)
+  assert.deepEqual(sent, [{ status: 'away' }, { status: 'online' }])
+})
+
+test('talking unmuted in voice counts as activity', () => {
+  const now = 1_000_000
+  // Speaking right now: never idle, whatever the mouse/keyboard say.
+  assert.equal(idleSecondsWithVoice(5000, { speaking: true, lastSpokeAt: null, now }), 0)
+  // Spoke 60s ago with no input for 20 minutes: idle for 60s.
+  assert.equal(idleSecondsWithVoice(1200, { speaking: false, lastSpokeAt: now - 60_000, now }), 60)
+  // Recent input still wins over older speech.
+  assert.equal(idleSecondsWithVoice(10, { speaking: false, lastSpokeAt: now - 60_000, now }), 10)
+  // Never spoke: system idle as-is.
+  assert.equal(idleSecondsWithVoice(900, { speaking: false, lastSpokeAt: null, now }), 900)
+  // Invalid system readings pass through so tick() still ignores them.
+  for (const bad of [undefined, NaN, -1]) {
+    const out = idleSecondsWithVoice(bad, { speaking: true, lastSpokeAt: now, now })
+    assert.ok(Object.is(out, bad), String(bad))
+  }
+})
+
+test('speaking keeps an at-desk user Online and restores one gone Away', () => {
+  const { tick, sent } = setup()
+  const idle = (system, voice) => idleSecondsWithVoice(system, { now: 0, ...voice })
+  tick('online', idle(1200, { speaking: true }))
+  tick('online', idle(1800, { speaking: false, lastSpokeAt: -600_000 })) // 10 min since speech
+  assert.deepEqual(sent, [])
+  tick('online', idle(1800, { speaking: false, lastSpokeAt: -900_000 })) // 15 min since speech
+  tick('away', idle(1805, { speaking: false, lastSpokeAt: -905_000 }))
+  tick('away', idle(1810, { speaking: true }))
   assert.deepEqual(sent, [{ status: 'away' }, { status: 'online' }])
 })

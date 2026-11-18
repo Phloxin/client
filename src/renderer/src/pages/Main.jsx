@@ -3822,7 +3822,9 @@ function Main() {
     scope: token ? JSON.stringify([connectedServer?.host, client?.id]) : null,
     connected: !!token && connectionStatus === 'connected',
     status: statusOf(presences[client?.id]),
-    send: sendAutoPresence
+    send: sendAutoPresence,
+    // Talking unmuted in voice counts as activity (no mouse/keyboard needed).
+    speaking: voice.selfSpeaking && !micMuted && !deafened
   })
 
   // Manual presence (op 6) is a patch: omitted fields are preserved server-side.
