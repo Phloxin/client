@@ -30,6 +30,7 @@ import {
   previewFps,
   previewRequest
 } from './nativePreview'
+import { SHARE_RATE_INTERVAL_MS, createShareRateLog, nativeRateSample } from './shareRate'
 
 // The file source's rate and the size its maximum bitrate is worked out for.
 const FILE_FPS = 30
@@ -239,10 +240,14 @@ export async function startNativeShare({
   let source = pattern
     ? { pattern: { width: pattern.width, height: pattern.height, fps: pattern.fps } }
     : { file: { fps: FILE_FPS } }
+  // The size the sidecar sends, for the frame rate line (shareRate.js): the pattern's, the
+  // fitted capture's (following capture_changed), none for a file (its size is not known here).
+  let sentSize = pattern ? { width: pattern.width, height: pattern.height } : null
   if (configured.screen) {
     const fitted = fittedSize(capture.width, capture.height, video.width, video.height)
     shape = { ...fitted, fps: video.fps }
     source = { screen: { fps: video.fps, max_width: video.width, max_height: video.height } }
+    sentSize = fitted
   }
 
   const history = []
@@ -261,6 +266,9 @@ export async function startNativeShare({
   let connected = false
   let disconnectedTimer = null
   let statsTimer = null
+  // The frame rate line every 5 seconds while live (shareRate.js), and its interval.
+  let rateTimer = null
+  let rateLog = null
   let keyEngine = null
   let sourceId = null
   // What aux.create() gave: SendAux on the session it was made on.
@@ -297,6 +305,8 @@ export async function startNativeShare({
     if (tally) tally.failedAt = Date.now()
     clearTimeout(disconnectedTimer)
     clearTimeout(statsTimer)
+    clearInterval(rateTimer)
+    rateTimer = null
     // The capture ended by itself: the share ends, Chromium would only ask again.
     if (reason === CAPTURE_ENDED) {
       console.log('[Soup] Native screen share: the capture ended')
@@ -334,6 +344,8 @@ export async function startNativeShare({
     if (event.type === 'stats') {
       lastStats = event
       if (connected && !failed) watchStats()
+      // The interval starts at the first stats once live, when there were none at that moment.
+      if (rateLog && !rateLog.started && !failed) rateLog.offer(nativeRateSample(event, sentSize))
       return
     }
     // The sharer's screen: drawn on the canvas only, never logged or kept in the history.
@@ -352,6 +364,11 @@ export async function startNativeShare({
             : {}
     )
     switch (event.type) {
+      case 'capture_changed':
+        if (configured.screen && video) {
+          sentSize = fittedSize(event.width, event.height, video.width, video.height)
+        }
+        break
       case 'connected':
         connected = true
         watchStats()
@@ -412,6 +429,8 @@ export async function startNativeShare({
     closed = true
     clearTimeout(disconnectedTimer)
     clearTimeout(statsTimer)
+    clearInterval(rateTimer)
+    rateTimer = null
     unsubscribe()
     previewGate?.close()
     if (keyEngine != null) e2eeReleaseEngineKey(keyEngine)
@@ -576,6 +595,12 @@ export async function startNativeShare({
     previewCanvas = placeholder.canvas
     placeholderTrack = preview.getVideoTracks()[0] ?? null
     console.log(`[Soup] Native screen share live: source ${sourceId}, engine pid ${pid}, ${codec}`)
+    rateLog = createShareRateLog({ path: 'native', codec })
+    if (lastStats) rateLog.offer(nativeRateSample(lastStats, sentSize))
+    rateTimer = setInterval(() => {
+      if (closed || failed || !lastStats) return
+      rateLog.offer(nativeRateSample(lastStats, sentSize))
+    }, SHARE_RATE_INTERVAL_MS)
     // The preview never costs the share.
     try {
       startPreview()

@@ -43,7 +43,8 @@
 import { app, ipcMain } from 'electron'
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { isAbsolute, join } from 'node:path'
+import { isAbsolute } from 'node:path'
+import { mediaEngineHostPath } from './mediaEngineHost'
 import { previewOverride, previewRequestBody } from './previewRequest'
 import {
   nativeShareSettingApplies,
@@ -167,14 +168,17 @@ function openBody(params, source) {
   }
 }
 
-// PYLON_MEDIA_HOST, else the workspace build under the app's root in
-// development (pylon-media-host.exe on Windows). Packaged builds have none yet.
+// PYLON_MEDIA_HOST, else the app's resources when packaged, else beside the app when it is
+// there, else the workspace build under the app's root (mediaEngineHost.js).
 function hostBinary() {
-  const override = process.env.PYLON_MEDIA_HOST?.trim()
-  if (override) return override
-  if (app.isPackaged) return null
-  const name = isWindows ? 'pylon-media-host.exe' : 'pylon-media-host'
-  return join(app.getAppPath(), 'native/media-engine/target/release', name)
+  return mediaEngineHostPath({
+    env: process.env.PYLON_MEDIA_HOST,
+    platform: process.platform,
+    isPackaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+    appPath: app.getAppPath(),
+    exists: existsSync
+  })
 }
 
 // Whether the setting's row is shown: where the setting can work, and a sidecar binary is

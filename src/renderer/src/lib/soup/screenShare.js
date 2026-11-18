@@ -19,6 +19,7 @@ import {
   startNativeShare
 } from './nativeShare'
 import { nativeShareCodec } from './nativeCodec'
+import { SHARE_RATE_INTERVAL_MS, chromiumRateSample, createShareRateLog } from './shareRate'
 
 let getDevice = () => null
 let getProducerTransport = () => null
@@ -350,15 +351,21 @@ function logNegotiatedVideoCodec(producer, scalabilityMode) {
 // codec + whether the encoder is hardware or software (encoderImplementation, e.g.
 // 'libaom' = software AV1) for the sharer's HW/SW tile badge, and qualityLimitationReason
 // ('cpu' = the encoder can't keep up) which drives maybeDowngradeScreenCodec.
-// Also logged in dev. Returns a stop function, which the share keeps as
+// Also logged in dev. onReport, when given, gets each report as it is (the screen share's
+// frame rate line, shareRate.js). Returns a stop function, which the share keeps as
 // ctx.statsStop.
-function startEncoderStatsLog(producer, onStats) {
+function startEncoderStatsLog(producer, onStats, onReport) {
   const sender = producer.rtpSender
   if (!sender?.getStats) return
   const previousByOutboundId = new Map()
   const id = setInterval(async () => {
     try {
       const stats = await sender.getStats()
+      try {
+        onReport?.(stats)
+      } catch {
+        // The line never costs the share's own statistics.
+      }
       const sample = computeOutboundVideoSample(stats, previousByOutboundId)
       if (!sample) return
 
@@ -674,7 +681,7 @@ function produceInitialScreenWithFallback(ctx, initialCodec) {
 // stats poller, apply the caller's per-type ctx state, then close the previous
 // producer locally. The candidate was produced with appData.replaces, so the
 // server already swapped it in for the previous source and closed that one.
-function adoptShareProducer(ctx, candidate, { applyState, scalabilityMode, onStats }) {
+function adoptShareProducer(ctx, candidate, { applyState, scalabilityMode, onStats, rateLine }) {
   const previous = ctx.producer
   ctx.statsStop?.()
   ctx.statsStop = null
@@ -705,13 +712,31 @@ function adoptShareProducer(ctx, candidate, { applyState, scalabilityMode, onSta
   }
 
   logNegotiatedVideoCodec(candidate.producer, scalabilityMode)
-  ctx.statsStop = startEncoderStatsLog(candidate.producer, (stats) => {
-    // A getStats() call already in flight for the replaced producer may finish
-    // after its interval is cleared. Do not let that stale software verdict skip
-    // a freshly selected SVC rung.
-    if (ctx.producer !== candidate.producer) return
-    onStats(ctx, stats)
-  })
+  // The screen share's frame rate line (shareRate.js), from the same poll's reports: a line
+  // once 5 seconds have passed since the last one. Each producer starts its own.
+  const rate = rateLine
+    ? createShareRateLog({
+        path: 'Chromium',
+        codec: codecLabel(candidate.producer.rtpParameters),
+        minIntervalMs: SHARE_RATE_INTERVAL_MS
+      })
+    : null
+  ctx.statsStop = startEncoderStatsLog(
+    candidate.producer,
+    (stats) => {
+      // A getStats() call already in flight for the replaced producer may finish
+      // after its interval is cleared. Do not let that stale software verdict skip
+      // a freshly selected SVC rung.
+      if (ctx.producer !== candidate.producer) return
+      onStats(ctx, stats)
+    },
+    rate &&
+      ((report) => {
+        // The same for the line: none for a replaced producer or a share that stopped.
+        if (ctx.producer !== candidate.producer || !isActiveShare(ctx)) return
+        rate.offer(chromiumRateSample(report))
+      })
+  )
 }
 
 function adoptScreenProducer(ctx, candidate) {
@@ -723,7 +748,8 @@ function adoptScreenProducer(ctx, candidate) {
       resetScreenFallbackCooldown(share)
     },
     scalabilityMode: candidate.encoding.scalabilityMode,
-    onStats: screenStatsHandler
+    onStats: screenStatsHandler,
+    rateLine: true
   })
 }
 
