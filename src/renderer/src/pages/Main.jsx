@@ -128,8 +128,6 @@ import {
   IconX
 } from '@tabler/icons-react'
 
-const APP_TITLE = 'Pylon'
-
 //Various Timing Definitions
 const MAX_LOG_ENTRIES = 500
 const HISTORY_LIMIT = 50
@@ -3970,7 +3968,7 @@ function Main() {
 
   const connected = !!token
   const serverDisplayName = serverName ?? connectedServer?.nickname ?? 'Connected'
-  const titleText = connectedServer ? `${APP_TITLE} — ${serverDisplayName}` : APP_TITLE
+  const titleText = connectedServer ? serverDisplayName : ''
 
   // The joined voice channel or DM call.
   const joinedChannel = channels.find((c) => c.id === selfChannelId)
@@ -4541,7 +4539,6 @@ function Main() {
           )}
           <TitleBar
             title={titleText}
-            icon={IconUsersGroup}
             notifications={notifications}
             onClearNotifications={() => setNotifications([])}
             onOpenNotification={handleOpenNotification}
