@@ -1474,16 +1474,12 @@ function ChatPanel({
                     <>
                       {entry.kind === 'poke' && (
                         <div className="chat-poke">
-                          <IconHandFinger size={15} stroke={2} />
-                          {isOwn ? (
-                            <span>
-                              <strong>You</strong> poked{pokeTargetName ? ` ${pokeTargetName}` : ''}
-                            </span>
-                          ) : (
-                            <span>
-                              <strong>{resolveName(entry)}</strong> poked you
-                            </span>
-                          )}
+                          <IconHandFinger size={13} stroke={2} />
+                          <span>
+                            {isOwn
+                              ? `You poked${pokeTargetName ? ` ${pokeTargetName}` : ''}`
+                              : `${resolveName(entry)} poked you`}
+                          </span>
                         </div>
                       )}
                       {entry.text && (
