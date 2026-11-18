@@ -316,7 +316,9 @@ html[data-transparency='true'] .control-dock {
   font-weight: var(--font-weight-semibold);
   color: var(--vc-tone);
   line-height: 1.3;
+  overflow: hidden;
   white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .voice-connection-channel {
