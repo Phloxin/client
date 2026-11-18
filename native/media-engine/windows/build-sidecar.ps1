@@ -8,6 +8,7 @@
 #
 # Run from anywhere: it builds the workspace this script belongs to (native/media-engine). FFmpeg
 # is the build of ffmpeg.md. The sidecar ends up in <TargetDir>\release with the DLLs.
+# stage-sidecar.ps1 (npm run build:media-engine:win) runs this and stages the result for the installer.
 param(
     [Parameter(Mandatory = $true)][string]$FfmpegDir,
     [Parameter(Mandatory = $true)][string]$TargetDir,

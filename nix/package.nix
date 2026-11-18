@@ -18,8 +18,11 @@
   libxt,
   lld,
   buildPackages,
+  callPackage,
   # Source of the pylon-e2ee crate (the flake's pylon-e2ee input)
   pylonE2eeSrc,
+  # Source of our str0m fork for the media engine (the flake's str0m input)
+  str0mSrc,
   preferScreenshareCodec ? null,
   # disableHardwareEncode: true turns VA-API video encoding off entirely
   disableHardwareEncode ? false,
@@ -116,6 +119,9 @@ let
 
     doCheck = false;
   };
+
+  # The native media engine's sidecar (native screen share)
+  mediaEngine = callPackage ./media-engine.nix { inherit pylonE2eeSrc str0mSrc; };
 in
 assert lib.assertMsg
   (preferScreenshareCodec == null || builtins.elem preferScreenshareCodec screenshareCodecs)
@@ -193,6 +199,9 @@ buildNpmPackage {
     # The app loads icons from ../../resources relative to out/main
     cp -r package.json out resources node_modules $appDir/
 
+    # The app looks for its sidecar at media-engine/ beside itself
+    install -Dm755 ${lib.getExe mediaEngine} $appDir/media-engine/pylon-media-host
+
     install -Dm644 resources/icon.png $out/share/icons/hicolor/512x512/apps/pylon.png
 
     # Add libva for hardware video, mark the app as packaged, and bake in the
@@ -225,7 +234,14 @@ buildNpmPackage {
     })
   ];
 
-  passthru = { inherit audioCapture e2eeWasm electron; };
+  passthru = {
+    inherit
+      audioCapture
+      e2eeWasm
+      mediaEngine
+      electron
+      ;
+  };
 
   meta = {
     description = packageJson.description;

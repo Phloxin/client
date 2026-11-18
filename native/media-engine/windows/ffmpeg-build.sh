@@ -4,15 +4,26 @@
 # (native/encoder-spike/windows/scripts/), with ../nvenc-reconfig-no-idr.patch applied before the
 # build and without the spike's Quick Sync patch. How to run it: ffmpeg.md beside this script.
 #
-# LGPL only (no --enable-gpl, no --enable-nonfree). Shared libraries, h264_qsv (libvpl, linked
-# statically), h264_nvenc (ffnvcodec headers), D3D11VA, ffmpeg.exe and ffprobe.exe, and MSVC
-# import libraries (.lib, made by dlltool; FFmpeg's mingw rules install them next to the DLLs,
-# this script moves them to lib as BtbN's builds have them). The result is the engine's
-# FFMPEG_DIR; its bin goes on PATH when the sidecar runs.
+# Lean (.plans/native-media-engine-packaging.md, W1): --disable-everything, and only what the
+# engine calls on Windows is enabled again (pylon-media/src/video/windows/, jpeg.rs, ffi.rs):
+#   - libavcodec, libavutil, and libavfilter with no filter in it (ffmpeg-sys-next links all three:
+#     pylon-media's Cargo.toml asks for its avcodec and avfilter features; Windows calls no filter);
+#   - the encoders h264_qsv (libvpl, linked statically) and h264_nvenc (ffnvcodec headers, the
+#     driver is loaded at run time), and mjpeg for the sharer's preview (jpeg.rs);
+#   - the D3D11VA hardware context (device.rs, convert.rs) and the QSV one derived from it
+#     (encoder.rs), which libvpl brings; no DXVA2 (the QSV context needs only one of the two);
+#   - w32threads.
+# No programs (ffmpeg.exe and ffprobe.exe are not shipped), no libavformat, libavdevice,
+# libswscale, libswresample, no network. LGPL only (no --enable-gpl, no --enable-nonfree). Shared
+# libraries, and MSVC import libraries (.lib, made by dlltool; FFmpeg's mingw rules install them
+# next to the DLLs, this script moves them to lib as BtbN's builds have them). The result is the
+# engine's FFMPEG_DIR; its bin goes on PATH when the sidecar runs, or its DLLs beside it
+# (build-sidecar.ps1). The licence texts of FFmpeg and of what is linked into its DLLs go to
+# <prefix>/share/licenses (stage-sidecar.ps1 ships them).
 #
 #   ffmpeg-build.sh <work directory> <install prefix>
 #     both as MSYS2 paths, for example /c/pylon/ffbuild-engine /c/pylon/ffmpeg-9.0.2-engine
-set -e
+set -e -o pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 patch_file=$here/../nvenc-reconfig-no-idr.patch
 top=${1:?usage: ffmpeg-build.sh <work directory> <install prefix>}
@@ -53,9 +64,12 @@ export PKG_CONFIG_PATH=$top/deps/lib/pkgconfig:/ucrt64/lib/pkgconfig
 t0=$(date +%s)
 ../src/configure --prefix="$pfx" \
   --enable-shared --disable-static --disable-doc --disable-autodetect \
-  --enable-w32threads --enable-d3d11va --enable-dxva2 \
+  --disable-everything --disable-programs \
+  --disable-avformat --disable-avdevice --disable-swscale --disable-swresample --disable-network \
+  --enable-w32threads --enable-d3d11va \
   --enable-libvpl --enable-ffnvcodec --enable-nvenc \
-  "--extra-ldflags=-static-libgcc -L$top/deps/lib"
+  --enable-encoder=h264_qsv,h264_nvenc,mjpeg \
+  "--extra-ldflags=-static-libgcc -L$top/deps/lib" | tee configure.out
 echo "configure took $(( $(date +%s) - t0 )) s"
 t1=$(date +%s)
 make -j8
@@ -63,17 +77,26 @@ t2=$(date +%s); echo "make took $((t2 - t1)) s"
 rm -rf "$pfx"
 make install
 mv "$pfx"/bin/*.lib "$pfx"/lib/
+# Licence texts: FFmpeg's LGPL, and those of the code linked statically into its DLLs (libvpl's
+# dispatcher, MIT; winpthreads, MIT and BSD) and of the NVENC headers compiled in (MIT).
+lic=$pfx/share/licenses
+mkdir -p "$lic"
+cp ../src/COPYING.LGPLv2.1 "$lic/"
+for p in libvpl winpthreads ffnvcodec-headers; do
+  for f in /ucrt64/share/licenses/$p/*; do [ -f "$f" ] && cp "$f" "$lic/$p-$(basename "$f")"; done
+done
+grep -E '^(Enabled|External|Hardware)' -A12 configure.out > "$pfx/share/configure-summary.txt" || true
 echo "install took $(( $(date +%s) - t2 )) s"
 
 echo "--- installed $pfx"
-ls "$pfx" "$pfx/bin" "$pfx/lib"
+ls -l "$pfx" "$pfx/bin" "$pfx/lib" "$lic"
 echo "--- DLLs each file imports"
-for f in "$pfx"/bin/*.dll "$pfx"/bin/*.exe; do
+for f in "$pfx"/bin/*.dll; do
   echo "$(basename "$f"): $(objdump -p "$f" | sed -n 's/^\s*DLL Name: //p' | grep -v -i -E '^(api-ms-win-crt-|kernel32|advapi32|user32|gdi32|ole32|oleaut32|shell32|shlwapi|ws2_32|bcrypt|avicap32)' | tr '\n' ' ')"
 done
 echo "(system DLLs and the UCRT left out of that list)"
-echo "--- buildconf"
-PATH=$pfx/bin:$PATH ffmpeg -hide_banner -version | head -3
-PATH=$pfx/bin:$PATH ffmpeg -hide_banner -encoders 2>/dev/null | grep -E 'h264_(qsv|nvenc)'
-PATH=$pfx/bin:$PATH ffmpeg -hide_banner -h encoder=h264_nvenc 2>/dev/null | grep -E 'reconfig_idr'
+echo "--- buildconf (no ffmpeg.exe: from configure's output and the DLLs)"
+grep -A3 -E '^Enabled encoders' configure.out || true
+grep -A3 -E '^Enabled hwaccels|^External libraries providing hardware' configure.out || true
+echo "avcodec strings reconfig_idr: $(grep -c -a reconfig_idr "$pfx"/bin/avcodec-*.dll || true)"
 echo "done $(date -Is)"

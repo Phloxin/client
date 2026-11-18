@@ -1,0 +1,17 @@
+FFmpeg in Pylon's media engine (Windows)
+
+The DLLs in this folder (avcodec, avfilter, avutil) are FFmpeg 9.0.2, licensed under the
+GNU Lesser General Public License version 2.1 or later (COPYING.LGPLv2.1 in licenses\).
+They were built without --enable-gpl and without --enable-nonfree. pylon-media-host.exe links
+them dynamically and loads them from this folder; they may be replaced by a compatible build.
+
+The build carries one patch, nvenc-reconfig-no-idr.patch (h264_nvenc's reconfig_idr option).
+The source is the release tarball https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz
+(SHA-256 8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e) with that patch
+applied. The patch, and the recipe that configures and builds it (windows/ffmpeg-build.sh and
+windows/ffmpeg.md), are in the Pylon client's repository under native/media-engine/:
+https://github.com/Phloxin/client
+
+Linked statically into the DLLs, with their licence texts in licenses\: Intel's libvpl
+dispatcher (MIT) and mingw-w64's winpthreads (MIT and BSD). The NVENC interface headers of
+nv-codec-headers (MIT) are compiled in.

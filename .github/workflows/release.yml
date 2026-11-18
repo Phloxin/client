@@ -33,13 +33,17 @@ jobs:
         include:
           - os: ubuntu-latest
             script: build:linux
+            timeout: 30
+          # 60: the media engine's FFmpeg (about 20 minutes when its cache misses) and sidecar.
           - os: windows-latest
             script: build:win
+            timeout: 60
           - os: macos-latest
             script: build:mac
+            timeout: 30
 
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: ${{ matrix.timeout }}
 
     steps:
       - name: Checkout
@@ -88,6 +92,7 @@ jobs:
           workspaces: |
             native/audio-capture
             pylon-e2ee
+            native/media-engine
 
       # build:e2ee needs the wasm-bindgen CLI at the version pylon-e2ee's Cargo.lock pins.
       - name: Read wasm-bindgen version
@@ -113,8 +118,76 @@ jobs:
         shell: bash
         run: node -e "require('./native/audio-capture/index.js'); console.log('audio-capture addon loaded')"
 
+      # The media engine's sidecar for the Windows installer (.plans/native-media-engine-packaging.md,
+      # W3): our lean LGPL FFmpeg from native/media-engine/windows/ffmpeg-build.sh, cached on the
+      # recipe and its patch (a hit skips MSYS2 and the build), then the sidecar built against it
+      # and staged with its DLLs and licence texts into native/media-engine/dist, which
+      # electron-builder.yml ships as resources/media-engine.
+      - name: Restore the media engine's FFmpeg (Windows)
+        id: ffmpeg-cache
+        if: runner.os == 'Windows'
+        uses: actions/cache/restore@v5
+        with:
+          path: native/media-engine/ffmpeg-win
+          key: ffmpeg-win-${{ hashFiles('native/media-engine/windows/ffmpeg-build.sh', 'native/media-engine/nvenc-reconfig-no-idr.patch') }}
+
+      - name: Setup MSYS2 for FFmpeg (Windows, FFmpeg not cached)
+        if: runner.os == 'Windows' && steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          # The packages of native/media-engine/windows/ffmpeg.md.
+          install: >-
+            make diffutils patch tar xz curl
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-nasm
+            mingw-w64-ucrt-x86_64-libvpl
+            mingw-w64-ucrt-x86_64-ffnvcodec-headers
+
+      - name: Build the media engine's FFmpeg (Windows, FFmpeg not cached)
+        if: runner.os == 'Windows' && steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        shell: msys2 {0}
+        run: |
+          bash native/media-engine/windows/ffmpeg-build.sh \
+            "$(cygpath -u "$RUNNER_TEMP")/ffbuild" \
+            "$(cygpath -u "$GITHUB_WORKSPACE")/native/media-engine/ffmpeg-win"
+
+      # Saved at once, so a later failure in the job does not lose the build.
+      - name: Save the media engine's FFmpeg (Windows, FFmpeg not cached)
+        if: runner.os == 'Windows' && steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: native/media-engine/ffmpeg-win
+          key: ${{ steps.ffmpeg-cache.outputs.cache-primary-key }}
+
+      - name: Build and stage the media engine's sidecar (Windows)
+        if: runner.os == 'Windows'
+        env:
+          FFMPEG_DIR: ${{ github.workspace }}\native\media-engine\ffmpeg-win
+          # LLVM's libclang for the FFmpeg bindings, from the runner's own LLVM.
+          LIBCLANG_PATH: C:\Program Files\LLVM\bin
+        run: npm run build:media-engine:win
+
       - name: Build + Package
         run: npm run ${{ matrix.script }} -- --publish=never
+
+      # The unpacked app holds its sidecar, and the sidecar answers hello from there with no
+      # FFmpeg on PATH (its DLLs are found beside it).
+      - name: Check the packaged sidecar (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dir = 'dist\win-unpacked\resources\media-engine'
+          $exe = "$dir\pylon-media-host.exe"
+          if (-not (Test-Path $exe)) { throw "no $exe" }
+          Get-ChildItem $dir -Recurse -File | ForEach-Object { "$($_.FullName.Substring((Resolve-Path $dir).Path.Length + 1))  $($_.Length)" }
+          $env:PATH = (($env:PATH -split ';') | Where-Object { $_ -and -not (Test-Path -Path (Join-Path $_ 'avcodec-*.dll') -ErrorAction SilentlyContinue) }) -join ';'
+          $answer = cmd /c "echo {""hello"":{""protocol"":1}}| ""$((Resolve-Path $exe).Path)"" 2>nul"
+          $hello = @($answer) | Where-Object { $_ -like '{"hello"*' } | Select-Object -First 1
+          if (-not $hello) { throw "the packaged sidecar did not answer hello (exit $LASTEXITCODE): $answer" }
+          "hello: $hello"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7

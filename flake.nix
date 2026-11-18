@@ -8,7 +8,15 @@
     # don't include git submodules, so this pins the same commit as the
     # pylon-e2ee submodule. Bump the rev whenever the submodule moves.
     pylon-e2ee = {
-      url = "github:Phloxin/pylon-e2ee-v1/1521dc03f0e3dd4757028cd08bf1fe9859f45d6d";
+      url = "github:Phloxin/pylon-e2ee-v1/b07608e5e4e801b8d76cfac759c397426d7e54c8";
+      flake = false;
+    };
+
+    # Our str0m fork for the native media engine's sidecar, the same commit as the
+    # native/media-engine/vendor/str0m submodule (flakes don't carry git submodules,
+    # as above). Bump the rev whenever the submodule moves.
+    str0m = {
+      url = "github:Phloxin/str0m/cfb77a1cdb7279008c3b3c3a047b03e502dc6a57";
       flake = false;
     };
   };
@@ -18,6 +26,7 @@
       self,
       nixpkgs,
       pylon-e2ee,
+      str0m,
     }:
     let
       systems = [
@@ -29,12 +38,18 @@
     in
     {
       packages = forAllSystems (pkgs: rec {
-        pylon = pkgs.callPackage ./nix/package.nix { pylonE2eeSrc = pylon-e2ee; };
+        pylon = pkgs.callPackage ./nix/package.nix {
+          pylonE2eeSrc = pylon-e2ee;
+          str0mSrc = str0m;
+        };
         default = pylon;
       });
 
       overlays.default = final: prev: {
-        pylon = final.callPackage ./nix/package.nix { pylonE2eeSrc = pylon-e2ee; };
+        pylon = final.callPackage ./nix/package.nix {
+          pylonE2eeSrc = pylon-e2ee;
+          str0mSrc = str0m;
+        };
       };
 
       devShells = forAllSystems (

@@ -19,24 +19,42 @@
     "pylon-e2ee": {
       "flake": false,
       "locked": {
-        "lastModified": 1793039766,
-        "narHash": "sha256-cQxjAzxr3J7/LPG5Jc8ty3S+Z/LJdpQagShbJ7QNbDE=",
+        "lastModified": 1794426726,
+        "narHash": "sha256-NrzQ60iOONgyx9JJIfQ25qPt9WD+8rFeNKchxUhZbhI=",
         "owner": "Phloxin",
         "repo": "pylon-e2ee-v1",
-        "rev": "1521dc03f0e3dd4757028cd08bf1fe9859f45d6d",
+        "rev": "b07608e5e4e801b8d76cfac759c397426d7e54c8",
         "type": "github"
       },
       "original": {
         "owner": "Phloxin",
         "repo": "pylon-e2ee-v1",
-        "rev": "1521dc03f0e3dd4757028cd08bf1fe9859f45d6d",
+        "rev": "b07608e5e4e801b8d76cfac759c397426d7e54c8",
         "type": "github"
       }
     },
     "root": {
       "inputs": {
         "nixpkgs": "nixpkgs",
-        "pylon-e2ee": "pylon-e2ee"
+        "pylon-e2ee": "pylon-e2ee",
+        "str0m": "str0m"
+      }
+    },
+    "str0m": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1794434062,
+        "narHash": "sha256-yTwXa6RF2WDx3IIFQCHN3GWkK5fwc29Bf5TJQlgyOBA=",
+        "owner": "Phloxin",
+        "repo": "str0m",
+        "rev": "cfb77a1cdb7279008c3b3c3a047b03e502dc6a57",
+        "type": "github"
+      },
+      "original": {
+        "owner": "Phloxin",
+        "repo": "str0m",
+        "rev": "cfb77a1cdb7279008c3b3c3a047b03e502dc6a57",
+        "type": "github"
       }
     }
   },

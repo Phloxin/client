@@ -9,11 +9,8 @@
 # The patched FFmpeg alone: nix-build native/media-engine/shell.nix -A ffmpeg
 { pkgs ? import (builtins.getFlake "nixpkgs") { } }:
 let
-  ffmpeg = pkgs.ffmpeg-headless.overrideAttrs (old: {
-    pname = "ffmpeg-pylon";
-    patches = (old.patches or [ ]) ++ [ ./ffmpeg-vaapi-rate-change.patch ];
-    doCheck = false;
-  });
+  # Shared with the client's Nix package.
+  ffmpeg = import ../../nix/ffmpeg-pylon.nix { inherit (pkgs) ffmpeg-headless; };
 in
 pkgs.mkShell {
   packages = with pkgs; [ cargo rustc pkg-config clang ffmpeg ffmpeg.dev libva libdrm pipewire.dev libglvnd ];
