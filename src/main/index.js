@@ -42,8 +42,15 @@ import {
 } from './diagnostics'
 
 // `electron-vite dev` runs beside the installed app: its own userData keeps the
-// settings, session, and single-instance lock apart
-if (process.env['ELECTRON_RENDERER_URL']) app.setPath('userData', `${app.getPath('userData')}-dev`)
+// settings, session, and single-instance lock apart. PYLON_PROFILE=<name> gives a
+// further dev copy its own userData (`-dev-<name>`), so two dev clients run at once.
+if (process.env['ELECTRON_RENDERER_URL']) {
+  const profile = process.env.PYLON_PROFILE?.trim()
+  if (profile && !/^[A-Za-z0-9_-]+$/.test(profile)) {
+    throw new Error(`PYLON_PROFILE="${profile}" may only contain letters, digits, - and _`)
+  }
+  app.setPath('userData', `${app.getPath('userData')}-dev${profile ? `-${profile}` : ''}`)
+}
 
 // Install before startup settings are read so early persistence/configuration
 // failures are retained in packaged builds.

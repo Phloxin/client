@@ -1,0 +1,506 @@
+/* Uno: the seat plates, the table (top card in a ring of the colour in play, the deck), the
+   revealed hands a spectator sees, the status line, and the viewer's hand at the bottom, which
+   wraps. The page scrolls when ten seats and a long hand do not fit. */
+
+/* The card colours and the card back are the game's own and do not follow the theme. */
+:root {
+  --uno-red: #e0453a;
+  --uno-yellow: #f2c230;
+  --uno-green: #33a356;
+  --uno-blue: #2f6fd6;
+  --uno-black: #1e1e24;
+  --uno-back: #2a2d3c;
+  --uno-edge: #ffffff;
+  --uno-crown: #e2b12b;
+}
+
+.game {
+  position: relative;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+/* Up to ten plates: a wider row than the two-seat games, four plates across when wide and two at
+   320 px. */
+.seats {
+  grid-template-columns: repeat(auto-fit, minmax(min(160px, calc(50% - 4px)), 1fr));
+  max-width: 720px;
+}
+
+.game > * {
+  flex: none;
+}
+
+/* ── Cards ────────────────────────────────────────────────────────────────── */
+
+.card,
+.back {
+  --w: var(--card-w, 56px);
+  position: relative;
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: var(--w);
+  height: calc(var(--w) * 1.5);
+  padding: 0;
+  border: calc(var(--w) * 0.06) solid var(--uno-edge);
+  border-radius: calc(var(--w) * 0.14);
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 22%);
+  font: inherit;
+  line-height: 1;
+}
+
+.card {
+  color: #fff;
+  font-weight: 800;
+}
+
+.card.red {
+  background: var(--uno-red);
+}
+
+.card.yellow {
+  background: var(--uno-yellow);
+  color: var(--uno-black);
+}
+
+.card.green {
+  background: var(--uno-green);
+}
+
+.card.blue {
+  background: var(--uno-blue);
+}
+
+.card.wild {
+  background: var(--uno-black);
+}
+
+.card .face {
+  display: grid;
+  place-items: center;
+  font-size: calc(var(--w) * 0.52);
+  text-shadow: 0 1px 0 rgb(0 0 0 / 25%);
+}
+
+.card .corner {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  font-size: calc(var(--w) * 0.2);
+}
+
+.card .corner.top {
+  top: 5%;
+  left: 8%;
+}
+
+.card .corner.bottom {
+  right: 8%;
+  bottom: 5%;
+  transform: rotate(180deg);
+}
+
+/* A 6 and a 9 are underlined, so the turned corner does not read as the other. */
+.card[data-number='6'] :is(.face, .corner),
+.card[data-number='9'] :is(.face, .corner) {
+  text-decoration: underline;
+  text-decoration-thickness: 0.08em;
+  text-underline-offset: 0.08em;
+}
+
+.card svg {
+  display: block;
+  width: calc(var(--w) * 0.55);
+  height: calc(var(--w) * 0.55);
+}
+
+.card .corner svg {
+  width: calc(var(--w) * 0.2);
+  height: calc(var(--w) * 0.2);
+}
+
+.card[data-face='wild'] .face svg {
+  width: calc(var(--w) * 0.62);
+  height: calc(var(--w) * 0.83);
+}
+
+.card[data-face='wild'] .corner svg {
+  height: calc(var(--w) * 0.26);
+}
+
+.q-red {
+  fill: var(--uno-red);
+}
+
+.q-yellow {
+  fill: var(--uno-yellow);
+}
+
+.q-green {
+  fill: var(--uno-green);
+}
+
+.q-blue {
+  fill: var(--uno-blue);
+}
+
+/* The back: one plain design, a dark card with a ring in the middle. */
+.back {
+  background:
+    repeating-linear-gradient(135deg, transparent 0 6%, rgb(255 255 255 / 5%) 6% 12%),
+    var(--uno-back);
+}
+
+.back-mark {
+  display: grid;
+  place-items: center;
+  width: 70%;
+  aspect-ratio: 1;
+  border: calc(var(--w) * 0.05) solid rgb(255 255 255 / 55%);
+  border-radius: 50%;
+  color: #fff;
+  font-weight: 700;
+  font-size: calc(var(--w) * 0.18);
+}
+
+.back.mini {
+  --w: 12px;
+  border-width: 1px;
+  border-radius: 2px;
+}
+
+.back.mini .back-mark {
+  border-width: 1px;
+}
+
+/* ── Seat plates ──────────────────────────────────────────────────────────── */
+
+/* The open seat's plate is its label and Sit, without the empty avatar, so "Open seat" fits beside
+   Sit four plates across. */
+.seat.empty .avatar {
+  display: none;
+}
+
+/* The card count over the crown or Away. */
+.seat-extra {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.seat-marks {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.seat-cards {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.away {
+  padding: 0 6px;
+  border: 1px solid var(--color-border-light);
+  border-radius: 999px;
+  font-size: 11px;
+}
+
+.crown {
+  display: grid;
+  color: var(--uno-crown);
+}
+
+.crown svg {
+  width: 15px;
+  height: 15px;
+}
+
+/* Narrow plates put the card count under the name, in one line, rather than squeeze the name. */
+@media (max-width: 380px) {
+  .seat-text {
+    flex-basis: 60px;
+  }
+
+  .seat-extra {
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
+  }
+}
+
+/* The order of play runs along the plates, this way. */
+.direction {
+  display: flex;
+  justify-content: center;
+  margin: -6px 0;
+  color: var(--color-text-tertiary);
+}
+
+.direction svg {
+  width: 64px;
+  height: 12px;
+}
+
+.direction.backward svg {
+  transform: scaleX(-1);
+}
+
+.direction[hidden] {
+  display: none;
+}
+
+/* ── Table ────────────────────────────────────────────────────────────────── */
+
+.table {
+  --card-w: clamp(56px, 15vw, 84px);
+  display: flex;
+  flex: 1 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 32px;
+  min-height: calc(var(--card-w) * 1.5 + 40px);
+}
+
+.table[hidden] {
+  display: none;
+}
+
+/* The ring around the top card is the colour in play, which is how a wild's chosen colour
+   shows. */
+.pile {
+  padding: 5px;
+  border: 4px solid var(--ring, var(--color-border));
+  border-radius: calc(var(--card-w) * 0.14 + 9px);
+}
+
+.pile.red {
+  --ring: var(--uno-red);
+}
+
+.pile.yellow {
+  --ring: var(--uno-yellow);
+}
+
+.pile.green {
+  --ring: var(--uno-green);
+}
+
+.pile.blue {
+  --ring: var(--uno-blue);
+}
+
+.deck-spot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.deck {
+  padding: 0;
+  border: 0;
+  border-radius: calc(var(--card-w) * 0.14);
+  background: none;
+  cursor: default;
+  transition: transform 0.12s;
+}
+
+.deck.open:not(:disabled) {
+  cursor: pointer;
+}
+
+.deck.open:not(:disabled):hover {
+  transform: translateY(-3px);
+}
+
+.deck.open .back {
+  box-shadow:
+    0 0 0 1px rgb(0 0 0 / 22%),
+    0 0 0 4px var(--color-primary);
+}
+
+.deck:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 3px;
+}
+
+.deck-count {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Revealed hands, for spectators ───────────────────────────────────────── */
+
+.revealed {
+  --card-w: 26px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  max-width: 560px;
+  margin: 0 auto;
+}
+
+.revealed[hidden] {
+  display: none;
+}
+
+.revealed-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.revealed-name {
+  flex: none;
+  max-width: 30%;
+  overflow: hidden;
+  font-weight: 600;
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.revealed-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  min-width: 0;
+}
+
+/* ── Hand ─────────────────────────────────────────────────────────────────── */
+
+.hand {
+  --card-w: clamp(40px, 11vw, 60px);
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px 6px;
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+  padding-top: 10px;
+}
+
+.hand[hidden] {
+  display: none;
+}
+
+.hand .card {
+  cursor: default;
+  transition:
+    transform 0.12s,
+    opacity 0.12s;
+}
+
+.hand .card.playable {
+  transform: translateY(-8px);
+  box-shadow:
+    0 0 0 1px rgb(0 0 0 / 22%),
+    0 6px 12px rgb(0 0 0 / 30%);
+  cursor: pointer;
+}
+
+.hand .card.playable:hover {
+  transform: translateY(-11px);
+}
+
+.hand .card.dim {
+  opacity: 0.45;
+  filter: saturate(0.6);
+}
+
+.hand .card.choosing {
+  transform: translateY(-11px);
+  box-shadow:
+    0 0 0 1px rgb(0 0 0 / 22%),
+    0 0 0 4px var(--color-primary);
+}
+
+.hand .card:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.reveal {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.reveal[hidden] {
+  display: none;
+}
+
+.reveal input {
+  margin: 0;
+  accent-color: var(--color-primary);
+}
+
+/* ── The colour picker for a wild ─────────────────────────────────────────── */
+
+.colors {
+  position: absolute;
+  z-index: 5;
+  display: flex;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--color-border-light);
+  border-radius: var(--border-radius-md, 10px);
+  background: var(--color-surface);
+  box-shadow: 0 6px 18px rgb(0 0 0 / 35%);
+}
+
+.colors[hidden] {
+  display: none;
+}
+
+.swatch {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 3px solid var(--uno-edge);
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 25%);
+  cursor: pointer;
+}
+
+.swatch:hover {
+  transform: scale(1.08);
+}
+
+.swatch:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.swatch.red {
+  background: var(--uno-red);
+}
+
+.swatch.yellow {
+  background: var(--uno-yellow);
+}
+
+.swatch.green {
+  background: var(--uno-green);
+}
+
+.swatch.blue {
+  background: var(--uno-blue);
+}

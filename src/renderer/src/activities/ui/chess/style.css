@@ -1,0 +1,234 @@
+/* Chess: an 8 by 8 board that fills the space it has, square, with the coordinates on the edge
+   squares, the promotion picker over the target square, and the clocks in the seat plates. */
+
+/* The board colours are the game's own and do not follow the theme. */
+:root {
+  --square-light: #ecd9b9;
+  --square-dark: #ae8a68;
+  --picker-edge: #1c1c1f;
+  --mark-last: rgb(214 190 60 / 45%);
+  --mark-selected: rgb(96 160 90 / 55%);
+  --mark-target: rgb(20 30 20 / 28%);
+  --mark-check: rgb(225 40 40 / 85%);
+}
+
+.board {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  grid-template-rows: repeat(8, minmax(0, 1fr));
+  width: min(100cqw, 100cqh, 560px);
+  aspect-ratio: 1;
+  overflow: hidden;
+  border-radius: var(--border-radius-sm, 6px);
+  box-shadow: 0 0 0 1px var(--color-border);
+  container-type: inline-size;
+}
+
+.square {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: var(--square-light);
+  color: var(--square-dark);
+  font: inherit;
+  cursor: default;
+}
+
+.square.dark {
+  background: var(--square-dark);
+  color: var(--square-light);
+}
+
+.square.open {
+  cursor: pointer;
+}
+
+.square:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: -2px;
+  z-index: 1;
+}
+
+/* Marks sit between the square's colour and the piece. */
+.square::before,
+.square::after {
+  position: absolute;
+  content: '';
+  pointer-events: none;
+}
+
+.square.last::before {
+  inset: 0;
+  background: var(--mark-last);
+}
+
+.square.selected::before {
+  inset: 0;
+  background: var(--mark-selected);
+}
+
+.square.check::before {
+  inset: 0;
+  background: radial-gradient(
+    circle,
+    var(--mark-check) 0%,
+    var(--mark-check) 30%,
+    rgb(225 40 40 / 45%) 58%,
+    transparent 78%
+  );
+}
+
+/* A move to an empty square is a dot, a capture a ring. */
+.square.target::after {
+  width: 30%;
+  height: 30%;
+  border-radius: 50%;
+  background: var(--mark-target);
+}
+
+.square.capture::after {
+  inset: 3%;
+  border: 0.9cqw solid var(--mark-target);
+  border-radius: 50%;
+}
+
+.square.open.target:hover::after {
+  width: 38%;
+  height: 38%;
+}
+
+/* A piece is its cburnett SVG (pieces.js), filling the square it stands on. */
+.piece {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.piece svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.coord {
+  position: absolute;
+  font-size: max(8px, 2.2cqw);
+  font-weight: 700;
+  line-height: 1;
+  pointer-events: none;
+}
+
+.coord.rank {
+  top: 4%;
+  left: 5%;
+}
+
+.coord.file {
+  right: 5%;
+  bottom: 4%;
+}
+
+/* ── Promotion picker ─────────────────────────────────────────────────────── */
+
+.promo {
+  display: flex;
+  flex-direction: column;
+  z-index: 2;
+  overflow: hidden;
+  border-radius: var(--border-radius-sm, 6px);
+  background: var(--square-light);
+  box-shadow:
+    inset 0 0 0 2px var(--picker-edge),
+    0 6px 18px rgb(0 0 0 / 45%);
+}
+
+.promo.up {
+  flex-direction: column-reverse;
+}
+
+.promo[hidden] {
+  display: none;
+}
+
+.promo-choice {
+  display: grid;
+  flex: 1;
+  place-items: center;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+/* The picker is the board's own light colour on every theme, so both sides' pieces read. */
+.promo-choice:hover {
+  background: color-mix(in srgb, var(--square-light) 75%, var(--square-dark));
+}
+
+.promo-choice:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: -2px;
+}
+
+/* ── Seat plates: the king badge and the clock ────────────────────────────── */
+
+/* The king sits on a tile of the board's light colour, so both kings read on every theme. The
+   tile is the shared 22 px badge box, so the plate keeps its size. */
+.seat-mark {
+  border-radius: 5px;
+  background: var(--square-light);
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 15%);
+}
+
+.seat-mark .piece {
+  width: 18px;
+  height: 18px;
+}
+
+.clock {
+  flex: none;
+  padding: 2px 6px;
+  border: 1px solid var(--color-border-light);
+  border-radius: var(--border-radius-sm, 6px);
+  background: var(--color-background-mute);
+  color: var(--color-text-secondary);
+  font-weight: 600;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.clock.running {
+  border-color: var(--color-primary);
+  color: var(--color-text);
+}
+
+.clock.low {
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+}
+
+/* ── Offer draw and Resign ────────────────────────────────────────────────── */
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+
+.controls[hidden] {
+  display: none;
+}
+
+.btn.confirm {
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+}

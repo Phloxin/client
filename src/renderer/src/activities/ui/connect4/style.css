@@ -1,0 +1,132 @@
+/* Connect 4: 7 columns of 6 under a row where the ghost disc hovers. Each column is one button
+   spanning all seven rows, drawn over the frame. */
+
+.board {
+  --gap: 5px;
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  grid-template-rows: repeat(7, minmax(0, 1fr));
+  gap: var(--gap);
+  /* The frame reaches one gap past the slots on the sides and the bottom. */
+  width: min(calc(100cqw - 2 * var(--gap)), calc(100cqh - var(--gap)), 520px);
+  aspect-ratio: 1;
+}
+
+.frame {
+  grid-column: 1 / -1;
+  grid-row: 2 / -1;
+  margin: calc(var(--gap) * -1);
+  border: 1px solid var(--color-border-light);
+  border-radius: var(--border-radius-md, 10px);
+  background: var(--color-surface);
+}
+
+.column {
+  display: grid;
+  grid-row: 1 / -1;
+  grid-template-rows: repeat(7, minmax(0, 1fr));
+  gap: var(--gap);
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--border-radius-sm, 6px);
+  background: none;
+  font: inherit;
+  cursor: default;
+  z-index: 1;
+}
+
+.column.open {
+  cursor: pointer;
+}
+
+.column:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.slot {
+  position: relative;
+  min-height: 0;
+  border-radius: 50%;
+  background: var(--color-background-soft);
+  box-shadow: inset 0 1px 2px color-mix(in srgb, var(--color-background) 60%, transparent);
+}
+
+.slot.ghost-slot {
+  background: none;
+  box-shadow: none;
+}
+
+/* The disc colours are the game's own and do not follow the theme. Each disc has a thin darker
+   edge of its own colour, so the yellow reads on a light theme. */
+:root {
+  --disc-red: #e03e3e;
+  --disc-yellow: #f2c230;
+}
+
+.disc {
+  position: absolute;
+  inset: 0;
+  border: 2px solid;
+  border-radius: 50%;
+}
+
+.disc.red {
+  border-color: color-mix(in srgb, var(--disc-red) 70%, #000);
+  background: var(--disc-red);
+}
+
+.disc.yellow {
+  border-color: color-mix(in srgb, var(--disc-yellow) 70%, #000);
+  background: var(--disc-yellow);
+}
+
+/* The seat plate's disc. */
+.seat-mark .disc {
+  position: static;
+  width: 18px;
+  height: 18px;
+  border-width: 1px;
+}
+
+.ghost {
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+
+.column.open:hover .ghost,
+.column.open:focus-visible .ghost {
+  opacity: 0.55;
+}
+
+.disc.last {
+  box-shadow:
+    0 0 0 2px var(--color-background-soft),
+    0 0 0 3px var(--color-text-tertiary);
+}
+
+/* A winning disc is ringed in its own colour. */
+.disc.red.win {
+  box-shadow:
+    0 0 0 2px var(--color-background-soft),
+    0 0 0 4px var(--disc-red);
+}
+
+.disc.yellow.win {
+  box-shadow:
+    0 0 0 2px var(--color-background-soft),
+    0 0 0 4px var(--disc-yellow);
+}
+
+/* The newest disc falls from the ghost row to its place; --fall is how many slots. */
+.disc.drop {
+  animation: drop calc(110ms + var(--fall) * 35ms) cubic-bezier(0.45, 0, 1, 1);
+}
+
+@keyframes drop {
+  from {
+    transform: translateY(calc(var(--fall) * (-100% - var(--gap))));
+  }
+}

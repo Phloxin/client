@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useLayoutEffect, useMemo, memo } from 'react'
 import {
-  IconPaperclip,
+  IconDeviceGamepad2,
   IconMoodSmile,
   IconX,
   IconFileText,
@@ -31,8 +31,12 @@ import { motion, AnimatePresence } from 'motion/react'
 import ImageViewer from './ImageViewer'
 import FileViewer from './FileViewer'
 import EmojiPicker from './EmojiPicker'
+import ComposerPlusMenu from './ComposerPlusMenu'
 import { renderMarkdown } from '../lib/markdown'
 import { callMessageLabel, isCallMessage } from '../lib/callMessages'
+import { activityMessageLabel, isActivityMessage, winsTally } from '../lib/activities/cards'
+import { WATCH_TOGETHER } from '../lib/activities/watchTogether'
+import { isUnknownMessage, UNKNOWN_MESSAGE_TEXT } from '../lib/messageKinds'
 import { fitAttachments, formatBytes, previewKind } from '../lib/attachments'
 import { useClientMenu } from './ClientContextMenu'
 import { useClientActions } from '../context/ClientActionsContext'
@@ -383,11 +387,27 @@ function youtubeId(url) {
 // "video" URLs (e.g. YouTube) are iframe players, not files.
 const isDirectVideo = (url) => /\.(mp4|webm|mov|m4v)(\?|$)/i.test(url || '')
 
+// How long a Watch together button reads Added.
+const WATCH_ADDED_MS = 2000
+
 // A single embed card: link preview, image/video, or — for YouTube — a click-to-
 // play facade that swaps in the (cookieless) iframe player only when clicked.
-function MessageEmbed({ embed, onImageClick }) {
+// `onWatchTogether(videoId, title)`, when given, adds a Watch together button to a
+// YouTube embed; it resolves 'added' when the video went to a room this client was already in.
+function MessageEmbed({ embed, onImageClick, onWatchTogether }) {
   const [playing, setPlaying] = useState(false)
+  const [watch, setWatch] = useState('idle')
+  const watchTimer = useRef(null)
+  useEffect(() => () => clearTimeout(watchTimer.current), [])
   const ytId = youtubeId(embed.url)
+  const watchTogether = async () => {
+    setWatch('busy')
+    const result = await onWatchTogether(ytId, embed.title || '')
+    if (result !== 'added') return setWatch('idle')
+    setWatch('added')
+    clearTimeout(watchTimer.current)
+    watchTimer.current = setTimeout(() => setWatch('idle'), WATCH_ADDED_MS)
+  }
   const media = embed.image || embed.thumbnail
   const poster = media?.url || (ytId ? `https://i.ytimg.com/vi/${ytId}/hqdefault.jpg` : null)
 
@@ -443,6 +463,17 @@ function MessageEmbed({ embed, onImageClick }) {
           onClick={() => onImageClick({ url: media.url, name: embed.title || 'image' })}
         />
       ) : null}
+      {ytId && onWatchTogether && (
+        <button
+          type="button"
+          className="chat-embed-watch"
+          data-state={watch}
+          disabled={watch !== 'idle'}
+          onClick={watchTogether}
+        >
+          {watch === 'added' ? 'Added' : 'Watch together'}
+        </button>
+      )}
     </div>
   )
 }
@@ -581,9 +612,9 @@ function composerMentionNodes(text, clients) {
 // (a preview isn't the place to render it), but `<@id>` tokens are resolved the
 // same way the message body resolves them, and newlines collapse so a
 // multi-line quote can't push the preview open — CSS truncates the rest. Call
-// messages and pokes read as their label, a poke's note after it.
+// and activity messages and pokes read as their label, a poke's note after it.
 function previewText(msg, resolveMention, label) {
-  if (isCallMessage(msg)) return label
+  if (isCallMessage(msg) || isActivityMessage(msg)) return label
   const text = (msg.text || '')
     .replace(/<@(\d+)>/g, (raw, id) => `@${resolveMention(id) ?? 'unknown'}`)
     .replace(/\s+/g, ' ')
@@ -592,7 +623,8 @@ function previewText(msg, resolveMention, label) {
   if (text) return text
   const count = msg.attachments?.length || 0
   if (count) return `${count} attachment${count === 1 ? '' : 's'}`
-  return msg.embeds?.length ? 'Embed' : ''
+  if (msg.embeds?.length) return 'Embed'
+  return isUnknownMessage(msg) ? UNKNOWN_MESSAGE_TEXT : ''
 }
 
 // "Alice is typing", "Alice and Bob are typing", etc.
@@ -627,8 +659,26 @@ function ChatPanel({
   pokeTargetName,
   // A DM's call button beside the composer ({ state, title, disabled,
   // onClick }); null in a channel.
-  callAction
+  callAction,
+  // Activities: what can be started, this channel's open rooms, the room ids
+  // this client has a tab for, and 'ok', 'unsupported' or 'forbidden' (see
+  // ComposerPlusMenu).
+  activityCatalog = [],
+  channelRooms = [],
+  roomTabs,
+  activityAccess = 'ok',
+  onStartActivity,
+  onJoinRoom,
+  // Watch together on a YouTube embed (MessageEmbed).
+  onWatchTogether
 }) {
+  // The server has Watch Together, rooms protocol 1 is there, and the channel
+  // has a Watch Together room (one this client is in, or one to join) or the viewer may start one.
+  const watchTogetherShown =
+    !!onWatchTogether &&
+    activityAccess !== 'unsupported' &&
+    activityCatalog.some((a) => a.id === WATCH_TOGETHER) &&
+    (activityAccess === 'ok' || channelRooms.some((r) => r.activity_id === WATCH_TOGETHER))
   const [text, setText] = useState(() => drafts.get(channelKey) || '')
   const [attachments, setAttachments] = useState([])
   // "Create public link" for every attachment in the next message. Resets after
@@ -1086,9 +1136,14 @@ function ChatPanel({
 
   const resolveAvatar = (entry) => clients?.find((c) => c.id === entry.authorId)?.avatar
 
-  // The sentence a call message or a poke reads as, from the viewer's side.
+  // The sentence a call or activity message or a poke reads as, from the
+  // viewer's side.
   const kindLabel = (entry) => {
     if (isCallMessage(entry)) return callMessageLabel(entry, resolveName(entry))
+    if (isActivityMessage(entry)) {
+      const isOwn = selfId != null && entry.authorId === selfId
+      return activityMessageLabel(entry, resolveName(entry), { isOwn })
+    }
     if (entry.kind !== 'poke') return null
     if (selfId != null && entry.authorId === selfId) {
       return pokeTargetName ? `You poked ${pokeTargetName}` : 'You poked'
@@ -1271,9 +1326,9 @@ function ChatPanel({
           // first shows the avatar + author + time; the rest are bare lines.
           // A reply always starts its own group: its preview line needs the
           // header above it to make sense.
-          // Call messages are real messages (reactions, replies) drawn as a
-          // system line, so they neither join nor start a group.
-          const callEntry = isCallMessage(entry)
+          // Call and activity messages are real messages (reactions, replies)
+          // drawn as a system line, so they neither join nor start a group.
+          const callEntry = isCallMessage(entry) || isActivityMessage(entry)
           const grouped =
             !compact &&
             !dayDivider &&
@@ -1282,6 +1337,7 @@ function ChatPanel({
             prev &&
             prev.type === 'message' &&
             !isCallMessage(prev) &&
+            !isActivityMessage(prev) &&
             prev.authorId === entry.authorId &&
             entry.ts - prev.ts < GROUP_WINDOW_MS
           // An uploaded file referenced by an embed resolves to the same URL, so
@@ -1296,7 +1352,7 @@ function ChatPanel({
           const isEditing = editingId === entry.id
           // Only the author may edit, and only a plain message; the author or a
           // moderator (canModerate: MANAGE_MESSAGES outside DMs) may delete,
-          // except a call message, which nobody can. The server enforces both;
+          // except a call or activity message, which nobody can. The server enforces both;
           // hide the controls while that row is in edit mode.
           const isOwn = selfId != null && entry.authorId === selfId
           const canEdit = isOwn && entry.kind === 'default' && !disabled && !isEditing
@@ -1465,6 +1521,34 @@ function ChatPanel({
                     />
                   ) : removed ? (
                     <div className="chat-message-removed">File removed</div>
+                  ) : callEntry && isActivityMessage(entry) ? (
+                    <div className="chat-system-entry chat-call-entry chat-activity-entry">
+                      <IconDeviceGamepad2 size={14} stroke={2} />
+                      <span>{kindLabel(entry)}</span>
+                      {entry.kind === 'activity_ended' && winsTally(entry, resolveMention) && (
+                        <span className="chat-activity-tally">
+                          {winsTally(entry, resolveMention)}
+                        </span>
+                      )}
+                      <span className="chat-call-time">{formatTime(entry.ts)}</span>
+                      {/* Whether the room is open comes from the room list, never the card. */}
+                      {entry.kind === 'activity_started' &&
+                        channelRooms.some((r) => r.id === entry.activity?.room_id) && (
+                          <button
+                            type="button"
+                            className="chat-activity-join"
+                            disabled={activityAccess === 'unsupported'}
+                            title={
+                              activityAccess === 'unsupported'
+                                ? 'This server does not support activities'
+                                : undefined
+                            }
+                            onClick={() => onJoinRoom?.(entry.activity.room_id)}
+                          >
+                            {roomTabs?.has(entry.activity.room_id) ? 'Open' : 'Join'}
+                          </button>
+                        )}
+                    </div>
                   ) : callEntry ? (
                     <div className="chat-system-entry chat-call-entry">
                       {entry.kind === 'call_ended' ? (
@@ -1487,12 +1571,17 @@ function ChatPanel({
                           </span>
                         </div>
                       )}
-                      {entry.text && (
+                      {entry.text ? (
                         <MessageText
                           text={entry.text}
                           resolveMention={resolveMention}
                           onImageClick={setViewerImage}
                         />
+                      ) : (
+                        // A kind from a newer server, with no text to fall back on.
+                        isUnknownMessage(entry) && (
+                          <div className="chat-message-unsupported">{UNKNOWN_MESSAGE_TEXT}</div>
+                        )
                       )}
                     </>
                   )}
@@ -1532,7 +1621,12 @@ function ChatPanel({
                     </div>
                   )}
                   {(entry.embeds || []).map((embed, idx) => (
-                    <MessageEmbed key={idx} embed={embed} onImageClick={setViewerImage} />
+                    <MessageEmbed
+                      key={idx}
+                      embed={embed}
+                      onImageClick={setViewerImage}
+                      onWatchTogether={watchTogetherShown ? onWatchTogether : undefined}
+                    />
                   ))}
                   {/* Rendered even when empty (hidden via :empty) so chips can
                       play their exit animation as the last one is removed. */}
@@ -1699,15 +1793,17 @@ function ChatPanel({
             onChange={handleFiles}
             disabled={disabled}
           />
-          <button
-            type="button"
-            className="chat-icon-btn"
-            title="Attach files"
-            onClick={() => fileInputRef.current?.click()}
+          <ComposerPlusMenu
             disabled={disabled}
-          >
-            <IconPaperclip size={20} />
-          </button>
+            onAttach={() => fileInputRef.current?.click()}
+            catalog={activityCatalog}
+            rooms={channelRooms}
+            roomTabs={roomTabs}
+            access={activityAccess}
+            nameOf={resolveMention}
+            onStartActivity={onStartActivity}
+            onJoinRoom={onJoinRoom}
+          />
           <div className="chat-input-wrap">
             {/* Highlight backdrop: mirrors the textarea's text with mention
                 pills; the textarea above it types in transparent glyphs. */}
