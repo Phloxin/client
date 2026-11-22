@@ -3,14 +3,7 @@ import assert from 'node:assert/strict'
 import { isUnknownMessage } from './messageKinds.js'
 
 test('kinds this client draws are known', () => {
-  for (const kind of [
-    'default',
-    'poke',
-    'call_started',
-    'call_ended',
-    'activity_started',
-    'activity_ended'
-  ]) {
+  for (const kind of ['default', 'poke', 'call_started', 'call_ended', 'activity']) {
     assert.equal(isUnknownMessage({ kind }), false, kind)
   }
 })

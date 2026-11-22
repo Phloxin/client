@@ -1,6 +1,5 @@
 import { useState, useRef, useEffect, useLayoutEffect, useMemo, memo } from 'react'
 import {
-  IconDeviceGamepad2,
   IconMoodSmile,
   IconX,
   IconFileText,
@@ -34,7 +33,9 @@ import EmojiPicker from './EmojiPicker'
 import ComposerPlusMenu from './ComposerPlusMenu'
 import { renderMarkdown } from '../lib/markdown'
 import { callMessageLabel, isCallMessage } from '../lib/callMessages'
-import { activityMessageLabel, isActivityMessage, winsTally } from '../lib/activities/cards'
+import { activityMessageLabel, clientLookup, isActivityMessage } from '../lib/activities/cards'
+import { findRoom } from '../lib/activities/rooms'
+import ActivityCard from './ActivityCard'
 import { WATCH_TOGETHER } from '../lib/activities/watchTogether'
 import { isUnknownMessage, UNKNOWN_MESSAGE_TEXT } from '../lib/messageKinds'
 import { fitAttachments, formatBytes, previewKind } from '../lib/attachments'
@@ -1136,6 +1137,8 @@ function ChatPanel({
 
   const resolveAvatar = (entry) => clients?.find((c) => c.id === entry.authorId)?.avatar
 
+  const lookupClient = useMemo(() => clientLookup(clients), [clients])
+
   // The sentence a call or activity message or a poke reads as, from the
   // viewer's side.
   const kindLabel = (entry) => {
@@ -1327,7 +1330,7 @@ function ChatPanel({
           // A reply always starts its own group: its preview line needs the
           // header above it to make sense.
           // Call and activity messages are real messages (reactions, replies)
-          // drawn as a system line, so they neither join nor start a group.
+          // drawn without an author header, so they neither join nor start a group.
           const callEntry = isCallMessage(entry) || isActivityMessage(entry)
           const grouped =
             !compact &&
@@ -1403,7 +1406,7 @@ function ChatPanel({
             <div key={entry.id} data-mid={entry.id} data-anim-status={status}>
               {dayDivider}
               <div
-                className={`chat-message${grouped ? ' grouped' : ''}${callEntry ? ' chat-call-message' : ''}${mentionsMe ? ' mentioned' : ''}${entry.id === currentMatch ? ' search-match' : ''}`}
+                className={`chat-message${grouped ? ' grouped' : ''}${isCallMessage(entry) ? ' chat-call-message' : ''}${mentionsMe ? ' mentioned' : ''}${entry.id === currentMatch ? ' search-match' : ''}`}
                 onContextMenu={hasMenu ? (e) => openMessageMenu(e) : undefined}
               >
                 {!disabled && !isEditing && (
@@ -1521,34 +1524,17 @@ function ChatPanel({
                     />
                   ) : removed ? (
                     <div className="chat-message-removed">File removed</div>
-                  ) : callEntry && isActivityMessage(entry) ? (
-                    <div className="chat-system-entry chat-call-entry chat-activity-entry">
-                      <IconDeviceGamepad2 size={14} stroke={2} />
-                      <span>{kindLabel(entry)}</span>
-                      {entry.kind === 'activity_ended' && winsTally(entry, resolveMention) && (
-                        <span className="chat-activity-tally">
-                          {winsTally(entry, resolveMention)}
-                        </span>
-                      )}
-                      <span className="chat-call-time">{formatTime(entry.ts)}</span>
-                      {/* Whether the room is open comes from the room list, never the card. */}
-                      {entry.kind === 'activity_started' &&
-                        channelRooms.some((r) => r.id === entry.activity?.room_id) && (
-                          <button
-                            type="button"
-                            className="chat-activity-join"
-                            disabled={activityAccess === 'unsupported'}
-                            title={
-                              activityAccess === 'unsupported'
-                                ? 'This server does not support activities'
-                                : undefined
-                            }
-                            onClick={() => onJoinRoom?.(entry.activity.room_id)}
-                          >
-                            {roomTabs?.has(entry.activity.room_id) ? 'Open' : 'Join'}
-                          </button>
-                        )}
-                    </div>
+                  ) : entry.kind === 'activity' ? (
+                    <ActivityCard
+                      entry={entry}
+                      room={findRoom(channelRooms, entry.activity?.room_id)}
+                      lookup={lookupClient}
+                      selfId={selfId}
+                      hasTab={!!roomTabs?.has(entry.activity?.room_id)}
+                      access={activityAccess}
+                      onJoinRoom={onJoinRoom}
+                      formatTime={formatTime}
+                    />
                   ) : callEntry ? (
                     <div className="chat-system-entry chat-call-entry">
                       {entry.kind === 'call_ended' ? (

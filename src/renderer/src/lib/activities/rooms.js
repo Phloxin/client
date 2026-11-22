@@ -2,15 +2,21 @@
 // rules in docs/API.md "Activities": an Opened room already known replaces it, an Updated or Closed
 // room not known is ignored, a deleted channel takes its rooms with it, and a new Ready replaces
 // the list. Rooms keep the server's shape ({ id, channel_id, activity_id, creator, clients,
-// opened_at }). Pure; every function returns the same list when nothing changed.
+// opened_at, detail }). Pure; every function returns the same list when nothing changed.
 
 const isRoom = (room) =>
   !!room && typeof room === 'object' && typeof room.id === 'string' && room.id !== ''
 
-const withClients = (room) => ({
-  ...room,
-  clients: Array.isArray(room.clients) ? room.clients : []
-})
+// A room's detail is a display string or nothing.
+function withDetail(room, detail) {
+  const next = { ...room }
+  if (typeof detail === 'string') next.detail = detail
+  else delete next.detail
+  return next
+}
+
+const withClients = (room) =>
+  withDetail({ ...room, clients: Array.isArray(room.clients) ? room.clients : [] }, room.detail)
 
 export function roomsFromReady(rooms) {
   return Array.isArray(rooms) ? rooms.filter(isRoom).map(withClients) : []
@@ -28,7 +34,7 @@ export function roomUpdated(list, update) {
   const id = update?.room_id
   if (!list.some((r) => r.id === id)) return list
   const clients = Array.isArray(update.clients) ? update.clients : []
-  return list.map((r) => (r.id === id ? { ...r, clients } : r))
+  return list.map((r) => (r.id === id ? withDetail({ ...r, clients }, update.detail) : r))
 }
 
 export function roomClosed(list, update) {

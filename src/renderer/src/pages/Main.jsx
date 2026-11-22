@@ -279,9 +279,8 @@ function messageFromApi(msg) {
     type: 'message',
     channelId: msg.channel_id,
     authorId: msg.author,
-    // 'default' | 'poke' | 'call_started' | 'call_ended' | 'activity_started' |
-    // 'activity_ended'; `call` only on call_ended, `activity` (an ActivityCard)
-    // only on the two activity kinds.
+    // 'default' | 'poke' | 'call_started' | 'call_ended' | 'activity';
+    // `call` only on call_ended, `activity` (an ActivityCard) only on activity.
     kind: msg.kind ?? 'default',
     call: msg.call ?? null,
     activity: msg.activity ?? null,
@@ -3122,9 +3121,8 @@ function Main() {
         // Written by the server when a DM call starts or ends: unread like any
         // message, but not chat (no chime, and the author isn't done typing).
         const callKind = isCallMessage(data)
-        // Written by the server when an activity room opens or closes. A
-        // started card chimes and alerts like a message, an ended one raises
-        // nothing, and neither means the author is done typing.
+        // Written by the server when an activity room opens. It chimes and
+        // alerts like a message, but does not mean the author is done typing.
         const activityKind = isActivityMessage(data)
         setFeed((prev) => appendFeed(prev, messageFromApi(data)))
         // New files: refresh a file browser on screen for this channel.
@@ -3148,7 +3146,6 @@ function Main() {
         if (
           !callKind &&
           kind !== 'poke' &&
-          kind !== 'activity_ended' &&
           data.author !== selfIdRef.current &&
           chatChannelIdsRef.current.has(data.channel_id) &&
           !dndRef.current
@@ -3190,11 +3187,11 @@ function Main() {
           )
         }
         // A call that ended raises nothing, and one that started only while
-        // we're not in it. An ended activity raises nothing either.
+        // we're not in it.
         const alerts =
           kind === 'call_started'
             ? data.channel_id !== serverVoiceChannelRef.current
-            : kind !== 'call_ended' && kind !== 'activity_ended'
+            : kind !== 'call_ended'
         if (data.author !== selfIdRef.current && !readingHere && alerts) {
           const dmChannel = channelsRef.current.find((c) => c.id === data.channel_id)
           if (dmChannel?.type === 'dm') {
@@ -3209,7 +3206,7 @@ function Main() {
                     ? `${name} started a call`
                     : kind === 'poke'
                       ? `${name} poked you`
-                      : kind === 'activity_started'
+                      : kind === 'activity'
                         ? activityAlertText(data, name)
                         : `${name} sent you a direct message`,
                 timestamp: Date.now()

@@ -1,0 +1,253 @@
+/* One card per activity room in chat: header, an optional detail line, then a footer. */
+.activity-card {
+  /* Halfway between the chat canvas and a raised surface, so the border reads in every theme. */
+  --activity-card-bg: color-mix(in srgb, var(--color-surface) 50%, var(--color-background-soft));
+  position: relative;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  max-width: 420px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-lg);
+  background: var(--activity-card-bg);
+  color: var(--color-text);
+}
+
+.activity-card-header {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.activity-card-tile {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-text) 8%, transparent);
+  color: var(--color-text-secondary);
+}
+
+.activity-card.is-live .activity-card-tile {
+  background: color-mix(in srgb, var(--color-primary) 16%, transparent);
+  color: var(--color-primary);
+}
+
+.activity-card-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.activity-card-name,
+.activity-card-meta,
+.activity-card-label,
+.activity-card-score-name,
+.activity-card-detail span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-card-name {
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text);
+}
+
+.activity-card-meta {
+  font-size: var(--font-size-base);
+  color: var(--color-text-secondary);
+}
+
+.activity-card-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-text) 8%, transparent);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.activity-card-pill.is-live {
+  background: color-mix(in srgb, var(--color-success) 16%, transparent);
+  color: var(--color-success);
+}
+
+.activity-card-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.activity-card-detail {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: var(--font-size-base);
+  color: var(--color-text-secondary);
+}
+
+.activity-card-detail svg {
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+}
+
+.activity-card-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--hairline);
+}
+
+.activity-card-label {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--font-size-base);
+  color: var(--color-text-secondary);
+}
+
+.activity-card-stack {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  /* Room for the first avatar's overlap. */
+  padding-left: 8px;
+}
+
+.activity-card-avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  overflow: hidden;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--color-primary) 16%, var(--activity-card-bg));
+  color: var(--color-primary);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-bold);
+  user-select: none;
+}
+
+.activity-card-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.activity-card-stack .activity-card-avatar {
+  margin-left: -8px;
+  box-shadow: 0 0 0 2px var(--activity-card-bg);
+}
+
+.activity-card-more {
+  background: color-mix(in srgb, var(--color-text) 12%, var(--activity-card-bg));
+  color: var(--color-text-secondary);
+  font-weight: var(--font-weight-semibold);
+}
+
+.activity-card-join {
+  flex-shrink: 0;
+  padding: 5px 14px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--color-primary);
+  color: var(--color-accent-contrast);
+  font-family: var(--font-family-primary);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.activity-card-join:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+}
+
+.activity-card-join:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.activity-card-scores {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+
+.activity-card-score-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-self: stretch;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.activity-card-score {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: var(--font-size-base);
+}
+
+.activity-card-score-name {
+  flex: 1;
+  min-width: 0;
+  color: var(--color-text);
+}
+
+.activity-card-trophy {
+  flex-shrink: 0;
+  color: var(--color-primary);
+}
+
+.activity-card-score-value {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text);
+}
+
+.activity-card-toggle {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--color-primary);
+  font-family: var(--font-family-primary);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+}
+
+.activity-card-toggle:hover {
+  text-decoration: underline;
+}

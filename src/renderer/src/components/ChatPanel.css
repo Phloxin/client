@@ -175,39 +175,6 @@
   justify-content: center;
 }
 
-/* An activity card: started (with Join while the room is open) or ended (with the tally). */
-.chat-activity-entry {
-  flex-wrap: wrap;
-}
-
-.chat-activity-tally {
-  color: var(--color-text-secondary);
-}
-
-.chat-activity-join {
-  padding: 2px 10px;
-  border: 1px solid var(--hairline-strong);
-  border-radius: var(--radius-sm);
-  background: var(--color-surface);
-  color: var(--color-text);
-  font-family: var(--font-family-primary);
-  font-size: var(--font-size-xs);
-  font-weight: var(--font-weight-semibold);
-  cursor: pointer;
-  transition:
-    background 0.12s ease,
-    border-color 0.12s ease;
-}
-
-.chat-activity-join:hover:not(:disabled) {
-  border-color: var(--color-primary);
-}
-
-.chat-activity-join:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
 /* "X poked you" above a poke's note. */
 .chat-poke {
   display: flex;

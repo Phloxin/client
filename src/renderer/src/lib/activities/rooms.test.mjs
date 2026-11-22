@@ -91,3 +91,32 @@ test('a channel lists its own rooms, oldest first', () => {
   assert.deepEqual(roomsInChannel(list, 'c9'), [])
   assert.equal(findRoom(list, 'r9'), null)
 })
+
+test('a room keeps its detail from Ready and from Opened', () => {
+  const withDetail = room('r1', 'c1', { detail: 'Now playing: Clocks' })
+  assert.equal(roomsFromReady([withDetail])[0].detail, 'Now playing: Clocks')
+  assert.equal(roomOpened([], withDetail)[0].detail, 'Now playing: Clocks')
+  assert.equal('detail' in roomsFromReady([room('r1')])[0], false)
+})
+
+test('Updated replaces the detail, and a missing one clears it', () => {
+  const list = [room('r1', 'c1', { detail: 'old' })]
+  const replaced = roomUpdated(list, {
+    room_id: 'r1',
+    channel_id: 'c1',
+    clients: [],
+    detail: 'new'
+  })
+  assert.equal(findRoom(replaced, 'r1').detail, 'new')
+  const cleared = roomUpdated(list, { room_id: 'r1', channel_id: 'c1', clients: ['u2'] })
+  assert.equal('detail' in findRoom(cleared, 'r1'), false)
+  assert.deepEqual(findRoom(cleared, 'r1').clients, ['u2'])
+})
+
+test('a detail that is not a string is dropped', () => {
+  assert.equal('detail' in roomsFromReady([room('r1', 'c1', { detail: 5 })])[0], false)
+  assert.equal('detail' in roomOpened([], room('r1', 'c1', { detail: null }))[0], false)
+  const list = [room('r1', 'c1', { detail: 'old' })]
+  const next = roomUpdated(list, { room_id: 'r1', channel_id: 'c1', clients: [], detail: {} })
+  assert.equal('detail' in findRoom(next, 'r1'), false)
+})
