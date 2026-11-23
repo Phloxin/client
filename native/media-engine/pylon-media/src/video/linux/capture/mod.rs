@@ -81,6 +81,8 @@ pub(crate) struct BufferId {
 pub(crate) struct Held {
     pub buffer: Option<BufferId>,
     pub raw: Raw,
+    /// The frame's capture time: when the compositor composed it, or when it arrived when the
+    /// compositor gave no usable time (smooth T1, T2).
     pub arrived: Instant,
 }
 
@@ -102,6 +104,8 @@ pub(crate) struct State {
     pub taken: u64,
     pub dropped: u64,
     pub path: &'static str,
+    /// Frames timed by their arrival (smooth T2), in all.
+    pub untimed: u64,
 }
 
 /// Between the PipeWire loop and the pipeline.
@@ -288,6 +292,7 @@ impl CaptureProducer {
             frames_taken: state.taken,
             frames_dropped_rate: state.dropped,
             buffer_path: state.path,
+            frames_untimed: state.untimed,
         };
         control.update_report(|r| r.capture = Some(report));
     }

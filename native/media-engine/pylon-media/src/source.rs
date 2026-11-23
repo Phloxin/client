@@ -30,6 +30,9 @@ pub trait Source: Send {
     fn attach_preview(&mut self, _preview: Arc<crate::video::Preview>) -> bool {
         false
     }
+    /// Tells the source what gives way first on a tight link, before it runs (smooth S1).
+    /// Sources without an encoder have nothing to give way and ignore it.
+    fn set_degrade(&mut self, _degrade: crate::Degrade) {}
 }
 
 /// What a source that encodes reports for the engine's statistics.
@@ -54,6 +57,18 @@ pub struct SourceReport {
     /// From a capture's frame arriving to the encoder taking it, each frame since the
     /// statistics last took them.
     pub capture_delay_ms: Vec<f64>,
+    /// The time between frames sent, by their capture times (the timeline a viewer plays back),
+    /// each frame since the statistics last took them. Not for the first frame (smooth A1.1).
+    pub frame_interval_ms: Vec<f64>,
+    /// Of those, intervals over 1.5 times the producer's interval times the frame rate divisor
+    /// in force, in all (smooth A1.2).
+    pub frame_gaps_long: u64,
+    /// The size the encoder runs at now, `None` before it opened or for an encoder that does
+    /// not say (smooth S10).
+    pub encoded_size: Option<(u32, u32)>,
+    /// Steps of the picture's size down and up on a tight link, in all (smooth S10).
+    pub size_steps_down: u64,
+    pub size_steps_up: u64,
     /// A screen capture's own counters.
     pub capture: Option<CaptureReport>,
 }
@@ -69,12 +84,18 @@ pub struct CaptureReport {
     pub frames_dropped_rate: u64,
     /// `dmabuf` or `memory`.
     pub buffer_path: &'static str,
+    /// Frames timed by their arrival, because the compositor gave no usable time (smooth T2).
+    pub frames_untimed: u64,
 }
 
 /// What the engine tells a running source, and what the source tells it back.
 #[derive(Debug, Default)]
 pub struct SourceControl {
     target_bps: AtomicU64,
+    /// The rate the transport is to sustain with padding, 0 for none (smooth U2).
+    sustain_bps: AtomicU64,
+    /// The share's maximum bitrate, 0 until the engine sets it (fix E2).
+    max_bps: AtomicU64,
     key_frame_wanted: AtomicBool,
     stop: AtomicBool,
     queued_bytes: AtomicU64,
@@ -103,6 +124,26 @@ impl SourceControl {
         self.queued_bytes.load(Ordering::Relaxed)
     }
 
+    /// Asks the transport to sustain `bps` in all, media and padding, 0 for none (smooth U1, U2).
+    pub fn set_sustain_bitrate(&self, bps: u64) {
+        self.sustain_bps.store(bps, Ordering::Relaxed);
+    }
+
+    /// What the source asked the transport to sustain.
+    pub(crate) fn sustain_bitrate(&self) -> u64 {
+        self.sustain_bps.load(Ordering::Relaxed)
+    }
+
+    /// The share's maximum bitrate (set at open and by `set_max_bitrate`), 0 when not set
+    /// (fix E2).
+    pub fn max_bitrate(&self) -> u64 {
+        self.max_bps.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn set_max_bitrate(&self, bps: u64) {
+        self.max_bps.store(bps, Ordering::Relaxed);
+    }
+
     /// Changes what the source reports.
     pub fn update_report(&self, change: impl FnOnce(&mut SourceReport)) {
         if let Ok(mut report) = self.report.lock() {
@@ -125,13 +166,14 @@ impl SourceControl {
         self.failure.lock().ok().and_then(|f| f.clone())
     }
 
-    /// The report, with the encode times taken out.
+    /// The report, with the encode times, capture delays and frame intervals taken out.
     pub(crate) fn take_report(&self) -> SourceReport {
         match self.report.lock() {
             Ok(mut report) => {
                 let taken = report.clone();
                 report.encode_ms.clear();
                 report.capture_delay_ms.clear();
+                report.frame_interval_ms.clear();
                 taken
             }
             Err(_) => SourceReport::default(),

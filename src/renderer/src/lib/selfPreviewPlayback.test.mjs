@@ -103,3 +103,30 @@ test('popped out, the pop-out window decides, whatever the main window shows', (
   assert.equal(selfScreenTileSeen({ ...out, popoutWindow: HIDDEN }), false)
   assert.equal(selfScreenTileSeen({ ...out, popoutWindow: SEEN, watchedTileIds: new Set() }), false)
 })
+
+// Fix C8: whether the self screen tile is watched (Stop previewing not chosen).
+import { selfScreenTileWatched } from './selfPreviewPlayback.js'
+
+test('selfScreenTileWatched: the self screen tile there and watched (C8)', () => {
+  const streams = [
+    { tileId: 'a', isSelf: false, source: 'screen' },
+    { tileId: 's', isSelf: true, source: 'screen' },
+    { tileId: 'c', isSelf: true, source: 'camera' }
+  ]
+  assert.equal(selfScreenTileWatched({ streams, watchedTileIds: new Set(['s']) }), true)
+  assert.equal(selfScreenTileWatched({ streams, watchedTileIds: new Set(['a', 'c']) }), false)
+  assert.equal(selfScreenTileWatched({ streams: [], watchedTileIds: new Set(['s']) }), false)
+  assert.equal(selfScreenTileWatched({ streams, watchedTileIds: null }), false)
+  // Watched but out of sight: not seen, still watched (held, not stopped at once).
+  const focusLost = { windowFocused: false, documentVisible: true }
+  const args = {
+    streams,
+    watchedTileIds: new Set(['s']),
+    streamsShown: true,
+    poppedOut: false,
+    mainWindow: focusLost,
+    popoutWindow: null
+  }
+  assert.equal(selfScreenTileSeen(args), false)
+  assert.equal(selfScreenTileWatched(args), true)
+})

@@ -4,6 +4,7 @@ import {
   SHARE_RATE_INTERVAL_MS,
   chromiumRateSample,
   createShareRateLog,
+  frameGapSummary,
   nativeRateSample,
   shareRateLine
 } from './shareRate.js'
@@ -166,6 +167,10 @@ test('nativeRateSample: from the sidecar stats and the size sent', () => {
     ms_since_open: 2019,
     frames_sent: 60,
     capture_frames_delivered: 240,
+    frame_interval_ms_median: 16.667,
+    frame_interval_ms_p95: 17.1,
+    frame_interval_ms_max: 33.4,
+    frame_gaps_long: 3,
     t_ms: 2042.5
   }
   assert.deepEqual(nativeRateSample(stats, { width: 1920, height: 1080 }), {
@@ -174,17 +179,93 @@ test('nativeRateSample: from the sidecar stats and the size sent', () => {
     ms: 2019,
     width: 1920,
     height: 1080,
-    capturedFrames: 240
+    capturedFrames: 240,
+    frameGap: { median: 16.667, p95: 17.1, max: 33.4, long: 3 }
   })
+  // A sidecar from before smooth A1: no intervals.
   assert.deepEqual(nativeRateSample({ ms_since_open: 1, frames_sent: 2 }, null), {
     id: null,
     frames: 2,
     ms: 1,
     width: null,
     height: null,
-    capturedFrames: null
+    capturedFrames: null,
+    frameGap: { median: null, p95: null, max: null, long: null }
   })
   assert.equal(nativeRateSample(null, null), null)
+})
+
+test('nativeRateSample: the size the engine encodes at wins over the size asked for (smooth S10)', () => {
+  const stats = { ms_since_open: 5000, frames_sent: 300, encoded_width: 1280, encoded_height: 720 }
+  const sample = nativeRateSample(stats, { width: 1920, height: 1080 })
+  assert.equal(sample.width, 1280)
+  assert.equal(sample.height, 720)
+  assert.equal(
+    shareRateLine(at(0, 0), sample, NATIVE),
+    '[Soup] Screen share: 60.0 fps sent, 1280x720, native H264'
+  )
+  // Not reported (before the encoder opened, an older sidecar): the size the renderer knows.
+  const none = { ms_since_open: 5000, frames_sent: 300, encoded_width: null, encoded_height: null }
+  assert.equal(nativeRateSample(none, { width: 1920, height: 1080 }).width, 1920)
+  assert.equal(nativeRateSample(none, { width: 1920, height: 1080 }).height, 1080)
+})
+
+// One second of a native share's stats as nativeRateSample makes it.
+const second = (ms, frames, median, p95, max, long) =>
+  at(ms, frames, { frameGap: { median, p95, max, long } })
+
+test('frameGapSummary: median of the medians, highest p95 and max, long gaps since the start', () => {
+  const start = second(1000, 60, 16.7, 16.8, 17.0, 1)
+  const seconds = [
+    second(2000, 120, 16.7, 17.0, 17.2, 1),
+    second(3000, 180, 16.6, 17.4, 20.0, 1),
+    second(4000, 240, 16.8, 17.1, 33.4, 2),
+    second(5000, 300, 16.7, 16.9, 17.0, 3),
+    second(6000, 360, 33.4, 33.4, 33.4, 3)
+  ].map((s) => s.frameGap)
+  assert.deepEqual(frameGapSummary(start, seconds), { median: 16.7, p95: 33.4, max: 33.4, long: 2 })
+  // Seconds with fewer than two frames have no interval: left out of the median.
+  const sparse = [{ median: null, p95: null, max: null, long: 3 }, ...seconds.slice(0, 2)]
+  assert.deepEqual(frameGapSummary(start, sparse), { median: 16.7, p95: 17.4, max: 20.0, long: 0 })
+  // No interval in any second: none.
+  assert.equal(frameGapSummary(start, [{ median: null, p95: null, max: null, long: 4 }]), null)
+  assert.equal(frameGapSummary(start, []), null)
+  // A start without a total counts no long gaps rather than guessing.
+  assert.equal(frameGapSummary(at(1000, 60), seconds).long, 0)
+})
+
+test('native: the frame gap over the line, from every second between start and line', () => {
+  const lines = []
+  const rate = createShareRateLog({ ...NATIVE, log: (l) => lines.push(l) })
+  // Observed before the start: not part of any window.
+  rate.observe(second(0, 0, 50, 50, 50, 0))
+  rate.offer(second(1000, 60, 16.7, 16.8, 17.0, 0))
+  rate.observe(second(2000, 120, 16.7, 17.0, 17.2, 0))
+  rate.observe(second(3000, 180, 16.6, 17.4, 20.0, 1))
+  rate.observe(second(4000, 240, 16.8, 17.1, 33.4, 2))
+  rate.observe(second(5000, 300, 16.7, 16.9, 17.0, 2))
+  const last = second(6000, 360, 16.7, 16.9, 17.0, 2)
+  rate.observe(last)
+  assert.equal(
+    rate.offer(last),
+    '[Soup] Screen share: 60.0 fps sent, 1280x720, native H264, frame gap 16.7/17.4/33.4 ms, 2 long'
+  )
+  // The next window starts empty: a sidecar that sends no intervals gives no part.
+  rate.observe(second(7000, 420, null, null, null, 2))
+  assert.equal(
+    rate.offer(second(11000, 660, null, null, null, 2)),
+    '[Soup] Screen share: 60.0 fps sent, 1280x720, native H264'
+  )
+  assert.equal(lines.length, 2)
+})
+
+test("Chromium's line has no frame gap part", () => {
+  const rate = createShareRateLog({ ...CHROMIUM, log: () => {} })
+  rate.offer(at(0, 0, { id: 'o' }))
+  assert.equal(
+    rate.offer(at(5000, 300, { id: 'o' })),
+    '[Soup] Screen share: 60.0 fps sent, 1280x720, Chromium AV1'
+  )
 })
 
 const report = (stats) => new Map(stats.map((s) => [s.id, s]))

@@ -216,6 +216,8 @@ impl Device {
             )
             .map_err(|e| Error::Media(format!("D3D11 device on {name}: {e}")))?;
             let device = device.ok_or_else(|| Error::Media(format!("D3D11 device on {name}: none made")))?;
+            // The GPU's priority for the capture's device (smooth B3).
+            crate::priority::gpu(&device);
             // As FFmpeg's own D3D11VA device does it. Quick Sync refuses the device without it.
             let multithread: ID3D11Multithread = device.cast().map_err(|e| Error::Media(format!("{name}: ID3D11Multithread: {e}")))?;
             let _ = multithread.SetMultithreadProtected(true);

@@ -26,6 +26,7 @@ import {
   createStreamRequests,
   decodeFrame,
   decodeMessage,
+  isEndOfGoneStream,
   mapTransportParams,
   messageType,
   producedTypeForSource,
@@ -1688,4 +1689,18 @@ test('ConnectTransport on SendAux is answered for that direction', async () => {
   assert.equal(matcher.size, 1)
   reply({ TransportConnected: { direction: 'Send' } })
   await send
+})
+
+test('an EndStream refused as stream_not_found is a stream already gone, nothing else is (smooth P10)', () => {
+  assert.equal(
+    isEndOfGoneStream({ op: 11, code: 'stream_not_found', message: 'Stream not found' }),
+    true
+  )
+  // Every other code for op 11, and that code for any other op, stays a refusal.
+  assert.equal(isEndOfGoneStream({ op: 11, code: 'forbidden', message: 'No' }), false)
+  assert.equal(isEndOfGoneStream({ op: StreamOp.WATCH_STREAM, code: 'stream_not_found' }), false)
+  assert.equal(isEndOfGoneStream({ op: StreamOp.CREATE_STREAM, code: 'stream_not_found' }), false)
+  assert.equal(isEndOfGoneStream({ op: '11', code: 'stream_not_found' }), false)
+  for (const odd of [null, undefined, {}, 'stream_not_found'])
+    assert.equal(isEndOfGoneStream(odd), false)
 })

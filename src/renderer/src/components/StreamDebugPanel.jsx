@@ -442,6 +442,14 @@ function RecvCard({ buf, theme, clients }) {
             series={[{ label: 'freezes', color: theme.red }]}
             data={buildData(buf, [(x) => num(x.freezeCount)])}
           />
+          {/* How unevenly the frames come (smooth A2.3): the spread of the time between them. */}
+          <UplotChart
+            title="Frame jitter"
+            unit="ms"
+            theme={theme}
+            series={[{ label: 'stddev', color: theme.amber }]}
+            data={buildData(buf, [(x) => num(x.frameJitterMs)])}
+          />
           <StatRow
             items={[
               { label: 'decoded', value: fmtInt(m.framesDecoded) },

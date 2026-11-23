@@ -3,19 +3,25 @@
 //   [Soup] Screen share: <sent> fps sent, <width>x<height>, <path> <codec>
 // <path> is `native` or `Chromium`. A Chromium share adds the encoder in brackets after the
 // codec when the statistics name it, either share adds `, <n> captured` when the statistics
-// carry what the capture delivered. The rate is the frames sent between two samples divided by
-// the real time between them. Pure: the callers sample (nativeShare.js from the sidecar's
-// `stats`, screenShare.js from the sender's outbound-rtp) and log.
+// carry what the capture delivered. A native share adds `, frame gap <median>/<p95>/<max> ms,
+// <n> long` when the engine sent the time between frames (smooth A2.1, frameGapSummary). The
+// rate is the frames sent between two samples divided by the real time between them. Pure: the
+// callers sample (nativeShare.js from the sidecar's `stats`, screenShare.js from the sender's
+// outbound-rtp) and log.
 //
-// A sample: { id, frames, ms, width, height, capturedFrames, capturedFps, encoder }
+// A sample: { id, frames, ms, width, height, capturedFrames, capturedFps, encoder, frameGap }
 //   id              what the counters belong to (an outbound-rtp's id); samples of different
 //                   ids are not compared
 //   frames          frames sent, a total
 //   ms              when, in milliseconds (the sidecar's ms_since_open, a report's timestamp)
-//   width, height   the size sent; missing prints ?x?
+//   width, height   the size sent (native: the engine's encoded size when it reports one,
+//                   smooth S10); missing prints ?x?
 //   capturedFrames  frames the capture delivered, a total (native), or
 //   capturedFps     the capture's own rate (Chromium's media-source)
 //   encoder         the encoder's name (Chromium)
+//   frameGap        one second's { median, p95, max } time between frames and the total of
+//                   long gaps (native, from the sidecar's frame_interval_ms_* and
+//                   frame_gaps_long)
 
 export const SHARE_RATE_INTERVAL_MS = 5_000
 
@@ -28,7 +34,8 @@ function sizeText(width, height) {
 // The line for the interval from `previous` to `current`, or null: no previous sample, samples
 // of different counters, no time between them, or a counter that went backwards (a
 // replacement or a restart): never a negative rate.
-export function shareRateLine(previous, current, { path, codec } = {}) {
+// `frameGap`: frameGapSummary() over the interval, a native share's only; none adds nothing.
+export function shareRateLine(previous, current, { path, codec, frameGap = null } = {}) {
   if (!previous || !current) return null
   if ((previous.id ?? null) !== (current.id ?? null)) return null
   if (![previous.frames, current.frames, previous.ms, current.ms].every(finite)) return null
@@ -50,22 +57,61 @@ export function shareRateLine(previous, current, { path, codec } = {}) {
   return (
     `[Soup] Screen share: ${sent.toFixed(1)} fps sent, ` +
     `${sizeText(current.width, current.height)}, ${path} ${codec || '?'}${encoder}` +
-    (captured != null ? `, ${captured.toFixed(1)} captured` : '')
+    (captured != null ? `, ${captured.toFixed(1)} captured` : '') +
+    frameGapText(frameGap)
   )
 }
 
 // A sample from the sidecar's `stats` event (native/media-engine/PROTOCOL.md) and the size the
-// renderer knows is sent (the stats carry none), or null.
+// renderer knows is sent, or null. The size the engine encodes at wins when the stats carry it
+// (a share for motion gets smaller on a tight link, smooth S10).
 export function nativeRateSample(stats, size) {
   if (!stats) return null
+  const encoded = finite(stats.encoded_width) && finite(stats.encoded_height)
   return {
     id: null,
     frames: stats.frames_sent,
     ms: stats.ms_since_open,
-    width: size?.width ?? null,
-    height: size?.height ?? null,
-    capturedFrames: stats.capture_frames_delivered ?? null
+    width: encoded ? stats.encoded_width : (size?.width ?? null),
+    height: encoded ? stats.encoded_height : (size?.height ?? null),
+    capturedFrames: stats.capture_frames_delivered ?? null,
+    frameGap: {
+      median: stats.frame_interval_ms_median ?? null,
+      p95: stats.frame_interval_ms_p95 ?? null,
+      max: stats.frame_interval_ms_max ?? null,
+      long: stats.frame_gaps_long ?? null
+    }
   }
+}
+
+// The frame gap over a line's window (smooth A2.1), from `seconds`, the per-second frameGap of
+// the native samples after `start`: the median of their medians, the highest p95, the highest
+// max, and the long gaps since `start` (the engine's count is a total). Null when no second
+// had an interval.
+export function frameGapSummary(start, seconds) {
+  const inWindow = (seconds ?? []).filter((gap) => finite(gap?.median))
+  if (inWindow.length === 0) return null
+  const medians = inWindow.map((gap) => gap.median).sort((a, b) => a - b)
+  const highest = (key) => {
+    const values = inWindow.map((gap) => gap[key]).filter(finite)
+    return values.length > 0 ? Math.max(...values) : null
+  }
+  const totals = (seconds ?? []).map((gap) => gap?.long).filter(finite)
+  const from = start?.frameGap?.long
+  const long = totals.length > 0 && finite(from) ? Math.max(0, totals.at(-1) - from) : 0
+  return {
+    median: medians[Math.floor(medians.length / 2)],
+    p95: highest('p95'),
+    max: highest('max'),
+    long
+  }
+}
+
+// `, frame gap <median>/<p95>/<max> ms, <n> long`, or '' without a summary.
+function frameGapText(gap) {
+  if (!gap) return ''
+  const ms = (value) => (finite(value) ? value.toFixed(1) : '?')
+  return `, frame gap ${ms(gap.median)}/${ms(gap.p95)}/${ms(gap.max)} ms, ${gap.long} long`
 }
 
 // A sample from a sender's getStats() report: the video outbound-rtp with the largest frame
@@ -108,17 +154,27 @@ export function chromiumRateSample(report) {
 // One share's lines: `offer(sample)` keeps the first sample as the start of the interval and,
 // once at least minIntervalMs have passed since it, logs the line and starts the next interval
 // there. A sample that cannot follow the start (another counter, a counter that went
-// backwards, no time passed) starts the interval anew without a line.
+// backwards, no time passed) starts the interval anew without a line. `observe(sample)` takes
+// each native per-second sample between the start and the line, for the line's frame gap.
 export function createShareRateLog({ path, codec, minIntervalMs = 0, log = console.log }) {
   let start = null
+  // The frameGap of the samples observed since `start`.
+  let seconds = []
+  const restart = (sample) => {
+    start = sample
+    seconds = []
+  }
   return {
     get started() {
       return start != null
     },
+    observe(sample) {
+      if (start && sample?.frameGap) seconds.push(sample.frameGap)
+    },
     offer(sample) {
       if (!sample) return null
       if (!start) {
-        start = sample
+        restart(sample)
         return null
       }
       const follows =
@@ -127,12 +183,13 @@ export function createShareRateLog({ path, codec, minIntervalMs = 0, log = conso
         sample.ms > start.ms &&
         sample.frames >= start.frames
       if (!follows) {
-        start = sample
+        restart(sample)
         return null
       }
       if (sample.ms - start.ms < minIntervalMs) return null
-      const line = shareRateLine(start, sample, { path, codec })
-      start = sample
+      const frameGap = frameGapSummary(start, seconds)
+      const line = shareRateLine(start, sample, { path, codec, frameGap })
+      restart(sample)
       if (line) log(line)
       return line
     }

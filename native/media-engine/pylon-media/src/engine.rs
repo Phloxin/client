@@ -82,6 +82,29 @@ const STATS_INTERVAL: Duration = Duration::from_secs(1);
 /// The longest the I/O loop sleeps.
 const MAX_SLEEP: Duration = Duration::from_micros(200);
 
+/// The minimum passed to the estimator for a share whose source asked to sustain `sustain` toward a
+/// larger picture (smooth U1): that, never over the share's maximum; zero when nothing is asked.
+fn minimum(sustain: u64, max: u64) -> Bitrate {
+    if sustain == 0 { MIN_BITRATE } else { Bitrate::bps(sustain.min(max)) }
+}
+
+/// What the source asks the transport to sustain, as last handed to str0m (smooth U2).
+#[derive(Debug, Default)]
+struct Sustain {
+    asked: u64,
+}
+
+impl Sustain {
+    /// The minimum to hand to str0m when `asked` changed, `None` when it is as before.
+    fn changed(&mut self, asked: u64, max: u64) -> Option<Bitrate> {
+        if asked == self.asked {
+            return None;
+        }
+        self.asked = asked;
+        Some(minimum(asked, max))
+    }
+}
+
 /// The ICE connection state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -124,6 +147,11 @@ pub struct Stats {
     pub media_packets_sent: u64,
     pub media_bytes_sent: u64,
     pub rtx_packets_sent: u64,
+    /// Bytes of those on the socket, retransmissions and padding (smooth U3): str0m does not count
+    /// its padding on its own.
+    pub rtx_bytes_sent: u64,
+    /// The rate str0m is asked to sustain with media and padding, 0 for none (smooth U1, U3).
+    pub sustain_bitrate_bps: u64,
     /// Packets in str0m's send queue (media, resends, padding), from `StreamTx::queue_info`.
     pub queued_packets: u64,
     /// The highest `queued_packets` since the last statistics.
@@ -141,6 +169,12 @@ pub struct Stats {
     /// (one frame in N encoded).
     pub frames_skipped_rate: u64,
     pub frame_rate_divisor: Option<u32>,
+    /// The size the encoder runs at now, `None` for sources without an encoder or before it
+    /// opened, and the steps of that size down and up on a tight link, in all (smooth S10).
+    pub encoded_width: Option<u32>,
+    pub encoded_height: Option<u32>,
+    pub size_steps_down: u64,
+    pub size_steps_up: u64,
     /// The encoder's configured bitrate and what it produced over the last second.
     pub encoder_bitrate_bps: Option<u64>,
     pub encoder_output_bps: Option<u64>,
@@ -161,6 +195,21 @@ pub struct Stats {
     pub capture_buffer_path: Option<&'static str>,
     pub capture_delay_ms_median: Option<f64>,
     pub capture_delay_ms_max: Option<f64>,
+    /// The time between frames sent by their capture times since the last statistics (the
+    /// timeline a viewer plays back), `None` with fewer than two (smooth A1.4).
+    pub frame_interval_ms_median: Option<f64>,
+    pub frame_interval_ms_p95: Option<f64>,
+    pub frame_interval_ms_max: Option<f64>,
+    /// Of those intervals, ones over 1.5 times the producer's interval times the divisor in
+    /// force, in all.
+    pub frame_gaps_long: u64,
+    /// The time between frames handed to str0m since the last statistics, `None` with fewer
+    /// than two.
+    pub send_interval_ms_p95: Option<f64>,
+    pub send_interval_ms_max: Option<f64>,
+    /// Frames the capture timed by their arrival because the compositor gave no usable time
+    /// (smooth T2), `None` for sources that do not capture.
+    pub capture_frames_untimed: Option<u64>,
     pub rtt_ms: Option<f64>,
     pub loss_fraction: Option<f32>,
     pub nacks: u64,
@@ -180,11 +229,94 @@ pub enum Event {
     Closed(CloseReason),
 }
 
+/// One encoded frame for the sharer's own preview, in the clear (smooth P2). It is the sharer's
+/// screen: no `Debug`, never logged.
+pub struct PreviewFrame {
+    pub codec: VideoCodec,
+    pub key: bool,
+    /// The frame's capture time since the engine opened.
+    pub t_ms: f64,
+    pub data: Vec<u8>,
+}
+
+/// Takes the stream preview's frames on the transport thread (smooth P2). It must never wait:
+/// false when it did not take the frame, which is then dropped for the preview only.
+pub type PreviewTap = Box<dyn FnMut(PreviewFrame) -> bool + Send>;
+
+/// After a frame the stream preview's tap did not take, a key frame is asked for at most this
+/// often (fix E6).
+const PREVIEW_ASK_SPACING: Duration = Duration::from_secs(5);
+
+/// The stream preview's gate (smooth P3): nothing is handed over before a key frame, and after
+/// a frame the tap did not take, nothing until the next key frame.
+struct StreamPreview {
+    tap: PreviewTap,
+    waiting_for_key: bool,
+    /// When a frame the tap did not take last asked for a key frame (fix E6).
+    asked: Option<Instant>,
+}
+
+impl StreamPreview {
+    /// Turned on: it waits for a key frame, and asks the source for one at once.
+    fn on(tap: PreviewTap, control: &SourceControl) -> Self {
+        control.want_key_frame();
+        StreamPreview { tap, waiting_for_key: true, asked: None }
+    }
+
+    /// Whether a frame (a key frame or not) is to be handed over.
+    fn wants(&self, key: bool) -> bool {
+        key || !self.waiting_for_key
+    }
+
+    /// Hands a wanted frame over at `now`. One the tap did not take asks for a key frame, at
+    /// most once every `PREVIEW_ASK_SPACING` (fix E6), under the source's 500 ms spacing.
+    fn hand(&mut self, frame: PreviewFrame, control: &SourceControl, now: Instant) {
+        let taken = (self.tap)(frame);
+        self.waiting_for_key = !taken;
+        if !taken && self.asked.is_none_or(|at| now.saturating_duration_since(at) >= PREVIEW_ASK_SPACING) {
+            self.asked = Some(now);
+            control.want_key_frame();
+        }
+    }
+}
+
+/// The RTP timestamps of one stream, from the frames' capture times.
+#[derive(Debug)]
+struct RtpClock {
+    base: u32,
+    first: Option<Instant>,
+    /// 90 kHz ticks since `first` of the timestamp handed out last.
+    last: Option<u128>,
+}
+
+impl RtpClock {
+    fn new(base: u32) -> Self {
+        RtpClock { base, first: None, last: None }
+    }
+
+    /// The RTP timestamp of a frame captured at `capture`: never one that is not after the last
+    /// (fix E1, a second line of defence behind the pipeline's rule).
+    fn at(&mut self, capture: Instant) -> u32 {
+        let first = *self.first.get_or_insert(capture);
+        let nanos = capture.saturating_duration_since(first).as_nanos();
+        let mut ticks = (nanos * 90_000 + 500_000_000) / 1_000_000_000;
+        if let Some(last) = self.last
+            && ticks <= last
+        {
+            ticks = last + 1;
+        }
+        self.last = Some(ticks);
+        self.base.wrapping_add(ticks as u32)
+    }
+}
+
 enum Command {
     Start(Box<dyn Source>),
     SetKey(pylon_e2ee::Format, u8, [u8; KEY_LEN]),
     SetMaxBitrate(u64),
     DropMedia(u64),
+    /// The stream preview on (with its tap) or off (smooth P2).
+    StreamPreview(Option<PreviewTap>),
     Close,
 }
 
@@ -363,6 +495,8 @@ impl Engine {
         let encrypted = encryption.is_some();
         let control = Arc::new(SourceControl::default());
         control.set_target_bitrate(target(start.as_u64(), max.as_u64()));
+        // The ladder steps up only to sizes the maximum carries (fix E2).
+        control.set_max_bitrate(max.as_u64());
         let transport = Transport {
             rtc,
             socket,
@@ -370,8 +504,7 @@ impl Engine {
             wire,
             ssrc: Ssrc::from(numbers.ssrc),
             seq: numbers.seq,
-            rtp_base: numbers.rtp_base,
-            first_capture: None,
+            rtp_clock: RtpClock::new(numbers.rtp_base),
             frame_number: 0,
             encryption,
             commands: command_rx,
@@ -392,10 +525,17 @@ impl Engine {
             queue: QueueSample::default(),
             queue_max: QueueSample::default(),
             encrypt_errors_logged: Vec::new(),
+            last_send: None,
+            send_intervals: Vec::new(),
+            stream_preview: None,
+            sustain: Sustain::default(),
         };
         let thread = std::thread::Builder::new()
             .name("pylon-media transport".into())
-            .spawn(move || transport.run())
+            .spawn(move || {
+                let _priority = crate::priority::media_thread();
+                transport.run()
+            })
             .map_err(|e| Error::io("transport thread", e))?;
 
         Ok((
@@ -443,6 +583,13 @@ impl Engine {
         self.send(Command::DropMedia(count))
     }
 
+    /// Hands every frame sent from the next key frame on to `tap` in the clear, before
+    /// encryption, or stops that with `None` (smooth P2, P3). Turning it on, again too, asks the
+    /// source for a key frame.
+    pub fn set_stream_preview(&self, tap: Option<PreviewTap>) -> Result<(), Error> {
+        self.send(Command::StreamPreview(tap))
+    }
+
     /// Stops the engine and waits for its threads.
     pub fn close(&mut self) {
         let _ = self.commands.send(Command::Close);
@@ -471,8 +618,7 @@ struct Transport {
     wire: Wire,
     ssrc: Ssrc,
     seq: u64,
-    rtp_base: u32,
-    first_capture: Option<Instant>,
+    rtp_clock: RtpClock,
     /// The Dependency Descriptor's frame number: frames sent so far, wrapping (AV1, Q6).
     frame_number: u16,
     encryption: Option<(Encryptor, pylon_e2ee::Source)>,
@@ -495,6 +641,14 @@ struct Transport {
     queue: QueueSample,
     queue_max: QueueSample,
     encrypt_errors_logged: Vec<pylon_e2ee::FrameError>,
+    /// When a frame was last handed to str0m, and the times between since the last statistics
+    /// (smooth A1.3).
+    last_send: Option<Instant>,
+    send_intervals: Vec<f64>,
+    /// The sharer's preview as the share itself, while it is on (smooth P2).
+    stream_preview: Option<StreamPreview>,
+    /// The rate to sustain with padding, as handed to str0m (smooth U2).
+    sustain: Sustain,
 }
 
 /// One reading of str0m's send queue.
@@ -542,6 +696,19 @@ fn median_max(values: &mut [f64]) -> (Option<f64>, Option<f64>) {
     values.sort_by(f64::total_cmp);
     let round = |v: f64| (v * 1000.0).round() / 1000.0;
     (Some(round(values[values.len() / 2])), Some(round(values[values.len() - 1])))
+}
+
+/// Median, 95th percentile (nearest rank) and largest of `intervals`, `None` with fewer than
+/// two (smooth A1.4).
+fn interval_summary(intervals: &mut [f64]) -> Option<(f64, f64, f64)> {
+    let n = intervals.len();
+    if n < 2 {
+        return None;
+    }
+    intervals.sort_by(f64::total_cmp);
+    let round = |v: f64| (v * 1000.0).round() / 1000.0;
+    let p95 = intervals[(n * 95).div_ceil(100) - 1];
+    Some((round(intervals[n / 2]), round(p95), round(intervals[n - 1])))
 }
 
 impl Transport {
@@ -600,6 +767,7 @@ impl Transport {
                 return Err(format!("source: {failure}"));
             }
             self.sample_queue();
+            self.follow_sustain();
 
             let now = Instant::now();
             if self.connected && now >= self.next_stats {
@@ -636,7 +804,7 @@ impl Transport {
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     let wait = timeout.saturating_duration_since(now);
-                    std::thread::sleep(wait.min(MAX_SLEEP));
+                    crate::wait::until(&self.socket, now + wait.min(MAX_SLEEP));
                 }
                 // An ICMP error from an earlier send. The node may come back, ICE decides. Windows
                 // reports a port unreachable as `ConnectionReset` (WSAECONNRESET).
@@ -657,11 +825,17 @@ impl Transport {
             }
             Command::SetMaxBitrate(bps) => {
                 self.max = bps;
-                self.rtc.bwe().set_bitrate(MIN_BITRATE, Bitrate::bps(bps));
+                self.control.set_max_bitrate(bps);
+                self.rtc.bwe().set_bitrate(minimum(self.sustain.asked, bps), Bitrate::bps(bps));
                 self.update_target();
                 tracing::info!(bps, "max bitrate");
             }
             Command::DropMedia(count) => self.drop_media = self.drop_media.saturating_add(count),
+            // Each time it is turned on it waits for a key frame and asks for one (smooth P3).
+            Command::StreamPreview(tap) => {
+                self.stream_preview = tap.map(|tap| StreamPreview::on(tap, &self.control));
+                tracing::info!(on = self.stream_preview.is_some(), "stream preview");
+            }
             Command::Close => {}
         }
     }
@@ -676,11 +850,23 @@ impl Transport {
         let control = self.control.clone();
         let thread = std::thread::Builder::new()
             .name("pylon-media source".into())
-            .spawn(move || source.run(sink, &control))
+            .spawn(move || {
+                let _priority = crate::priority::media_thread();
+                source.run(sink, &control)
+            })
             .map_err(|e| format!("source thread: {e}"))?;
         self.source_thread = Some(thread);
         tracing::info!("source started");
         Ok(())
+    }
+
+    /// Hands a changed sustain rate to str0m, keeping the desired rate (smooth U2).
+    fn follow_sustain(&mut self) {
+        if let Some(minimum) = self.sustain.changed(self.control.sustain_bitrate(), self.max) {
+            self.rtc.bwe().set_bitrate(minimum, Bitrate::bps(self.max));
+            // At debug: the pipeline hands a change on only when it matters (fix E8).
+            tracing::debug!(bps = minimum.as_u64(), "sustain bitrate");
+        }
     }
 
     fn update_target(&mut self) {
@@ -702,6 +888,7 @@ impl Transport {
                 self.stats.media_bytes_sent += data.len() as u64;
             } else if pt == self.wire.rtx_pt {
                 self.stats.rtx_packets_sent += 1;
+                self.stats.rtx_bytes_sent += data.len() as u64;
             }
         }
         let _ = self.socket.send_to(data, transmit.destination);
@@ -796,9 +983,14 @@ impl Transport {
         stats.queued_ms_max = self.queue_max.ms;
         stats.bandwidth_estimate_bps = self.estimate;
         stats.target_bitrate_bps = self.control.target_bitrate();
+        stats.sustain_bitrate_bps = minimum(self.sustain.asked, self.max).as_u64();
         stats.frames_skipped_backlog = report.frames_skipped_backlog;
         stats.frames_skipped_rate = report.frames_skipped_rate;
         stats.frame_rate_divisor = report.frame_rate_divisor;
+        stats.encoded_width = report.encoded_size.map(|(width, _)| width);
+        stats.encoded_height = report.encoded_size.map(|(_, height)| height);
+        stats.size_steps_down = report.size_steps_down;
+        stats.size_steps_up = report.size_steps_up;
         stats.encoder_bitrate_bps = report.encoder_bitrate_bps;
         stats.encoder_output_bps = report.encoder_output_bps;
         stats.encode_ms_median = encode_ms_median;
@@ -814,16 +1006,30 @@ impl Transport {
             stats.capture_buffer_path = Some(capture.buffer_path);
             stats.capture_delay_ms_median = median;
             stats.capture_delay_ms_max = max;
+            stats.capture_frames_untimed = Some(capture.frames_untimed);
         }
+        let mut intervals = report.frame_interval_ms;
+        let frame = interval_summary(&mut intervals);
+        stats.frame_interval_ms_median = frame.map(|(median, _, _)| median);
+        stats.frame_interval_ms_p95 = frame.map(|(_, p95, _)| p95);
+        stats.frame_interval_ms_max = frame.map(|(_, _, max)| max);
+        stats.frame_gaps_long = report.frame_gaps_long;
+        let send = interval_summary(&mut self.send_intervals);
+        stats.send_interval_ms_p95 = send.map(|(_, p95, _)| p95);
+        stats.send_interval_ms_max = send.map(|(_, _, max)| max);
+        self.send_intervals.clear();
         self.queue_max = self.queue;
         self.emit(Event::Stats(stats));
     }
 
-    fn rtp_time(&mut self, capture: Instant) -> u32 {
-        let first = *self.first_capture.get_or_insert(capture);
-        let nanos = capture.saturating_duration_since(first).as_nanos();
-        let ticks = (nanos * 90_000 + 500_000_000) / 1_000_000_000;
-        self.rtp_base.wrapping_add(ticks as u32)
+    /// Hands a frame to the stream preview (smooth P2, P3).
+    fn preview_frame(&mut self, data: Vec<u8>, key: bool, capture_time: Instant) {
+        let Some(preview) = &mut self.stream_preview else {
+            return;
+        };
+        let t_ms = capture_time.saturating_duration_since(self.opened_at).as_secs_f64() * 1000.0;
+        let frame = PreviewFrame { codec: self.wire.codec, key, t_ms: (t_ms * 1000.0).round() / 1000.0, data };
+        preview.hand(frame, &self.control, Instant::now());
     }
 
     fn send_frame(&mut self, frame: EncodedFrame) -> Result<(), String> {
@@ -831,10 +1037,10 @@ impl Transport {
             VideoCodec::H264 => Codec::H264,
             VideoCodec::Av1 => Codec::Av1,
         };
-        let data = match &mut self.encryption {
-            None => frame.data,
+        let sealed = match &mut self.encryption {
+            None => None,
             Some((encryptor, source)) => match encryptor.encrypt(codec, source, &frame.data) {
-                Ok(sealed) => sealed,
+                Ok(sealed) => Some(sealed),
                 Err(error) => {
                     // Dropped, never sent in the clear. The frames after it refer to it, so a
                     // key frame is asked for.
@@ -847,6 +1053,23 @@ impl Transport {
                     return Ok(());
                 }
             },
+        };
+        // The sharer's preview gets the frame in the clear as it goes to the packetizer (smooth
+        // P2): the plaintext itself when it was encrypted, a copy when it is sent plain.
+        let wanted = self.stream_preview.as_ref().is_some_and(|preview| preview.wants(frame.key));
+        let data = match sealed {
+            Some(sealed) => {
+                if wanted {
+                    self.preview_frame(frame.data, frame.key, frame.capture_time);
+                }
+                sealed
+            }
+            None => {
+                if wanted {
+                    self.preview_frame(frame.data.clone(), frame.key, frame.capture_time);
+                }
+                frame.data
+            }
         };
         let payloads = match self.wire.codec {
             VideoCodec::H264 => h264::packetize(&data, PAYLOAD_LIMIT),
@@ -863,9 +1086,14 @@ impl Transport {
                 VideoCodec::H264 => tracing::warn!(bytes = data.len(), "frame without NAL units dropped"),
                 VideoCodec::Av1 => tracing::warn!(bytes = data.len(), "frame without OBUs to send dropped"),
             }
+            // The frames after it refer to it, as after an encryption failure (fix E11).
+            self.control.want_key_frame();
             return Ok(());
         }
-        let rtp_time = self.rtp_time(frame.capture_time);
+        let rtp_time = self.rtp_clock.at(frame.capture_time);
+        // str0m is never handed a wallclock in the future: a sender report made before it would
+        // carry RTP time 0 (fix E4). The RTP timestamp keeps the capture time.
+        let wallclock = frame.capture_time.min(Instant::now());
         let pt = self.wire.pt.into();
         let last = payloads.len() - 1;
         // AV1: a Dependency Descriptor on every packet (Q6).
@@ -877,7 +1105,7 @@ impl Transport {
         let mut api = self.rtc.direct_api();
         let stream = api.stream_tx(&self.ssrc).ok_or("the declared stream is gone")?;
         for (index, payload) in payloads.into_iter().enumerate() {
-            let mut write = RtpWrite::new(pt, SeqNo::from(self.seq), rtp_time, frame.capture_time, payload)
+            let mut write = RtpWrite::new(pt, SeqNo::from(self.seq), rtp_time, wallclock, payload)
                 .marker(index == last)
                 .nackable(true);
             if let Some(descriptor) = descriptors.get(index) {
@@ -889,6 +1117,10 @@ impl Transport {
             self.seq += 1;
         }
         self.frame_number = self.frame_number.wrapping_add(1);
+        let now = Instant::now();
+        if let Some(last) = self.last_send.replace(now) {
+            self.send_intervals.push(now.saturating_duration_since(last).as_secs_f64() * 1000.0);
+        }
         self.stats.frames_sent += 1;
         self.stats.key_frames_sent += u64::from(frame.key);
         Ok(())
@@ -1003,6 +1235,128 @@ mod tests {
             assert!(n.ssrc != 0 && n.rtx_ssrc != 0 && n.ssrc != n.rtx_ssrc);
             assert!((1..=32767).contains(&n.seq));
         }
+    }
+
+    #[test]
+    fn interval_summaries() {
+        // Fewer than two: none.
+        assert_eq!(interval_summary(&mut []), None);
+        assert_eq!(interval_summary(&mut [16.7]), None);
+        // 1 to 20 in any order: median the 11th, p95 the 19th by nearest rank, max 20.
+        let mut list: Vec<f64> = (1..=20).rev().map(f64::from).collect();
+        assert_eq!(interval_summary(&mut list), Some((11.0, 19.0, 20.0)));
+        // 59 steady frames and one stall: the median and p95 stay, the max shows it.
+        let mut list = vec![16.6667; 59];
+        list.push(100.0);
+        assert_eq!(interval_summary(&mut list), Some((16.667, 16.667, 100.0)));
+        // Alternating 17 and 33 ms: the p95 shows what the mean of 25 hides.
+        let mut list: Vec<f64> = (0..60).map(|n| if n % 2 == 0 { 17.0 } else { 33.0 }).collect();
+        assert_eq!(interval_summary(&mut list), Some((33.0, 33.0, 33.0)));
+        let mut two = [40.0, 10.0];
+        assert_eq!(interval_summary(&mut two), Some((40.0, 40.0, 40.0)));
+    }
+
+    #[test]
+    fn the_stream_preview_waits_for_a_key_frame_and_a_drop_asks_for_one() {
+        use std::sync::{Mutex, atomic::AtomicBool};
+        let control = SourceControl::default();
+        let handed = Arc::new(Mutex::new(Vec::new()));
+        let takes = Arc::new(AtomicBool::new(true));
+        let tap: PreviewTap = {
+            let (handed, takes) = (handed.clone(), takes.clone());
+            Box::new(move |frame: PreviewFrame| {
+                if !takes.load(Ordering::Relaxed) {
+                    return false;
+                }
+                handed.lock().unwrap().push((frame.key, frame.data));
+                true
+            })
+        };
+        let frame = |key, n| PreviewFrame { codec: VideoCodec::H264, key, t_ms: 0.0, data: vec![n] };
+        let now = Instant::now();
+        // Turned on: a key frame is asked for, and nothing goes before one.
+        let mut preview = StreamPreview::on(tap, &control);
+        assert!(control.take_key_frame_wanted());
+        assert!(!preview.wants(false));
+        assert!(preview.wants(true));
+        preview.hand(frame(true, 1), &control, now);
+        assert!(preview.wants(false));
+        preview.hand(frame(false, 2), &control, now);
+        assert!(!control.take_key_frame_wanted());
+        // The host does not take one: dropped for the preview, a key frame asked for, and the
+        // frames after it wait for that key frame.
+        takes.store(false, Ordering::Relaxed);
+        preview.hand(frame(false, 3), &control, now);
+        assert!(control.take_key_frame_wanted());
+        assert!(!preview.wants(false));
+        takes.store(true, Ordering::Relaxed);
+        assert!(preview.wants(true));
+        preview.hand(frame(true, 4), &control, now);
+        assert!(preview.wants(false));
+        assert!(!control.take_key_frame_wanted());
+        assert_eq!(*handed.lock().unwrap(), vec![(true, vec![1]), (false, vec![2]), (true, vec![4])]);
+    }
+
+    #[test]
+    fn a_stream_preview_the_host_is_not_taking_asks_for_a_key_frame_at_most_every_5_s() {
+        // Fix E6: the host's stdout stalls, every frame offered is refused.
+        let control = SourceControl::default();
+        let mut preview = StreamPreview::on(Box::new(|_| false), &control);
+        // The ask on turning it on is at once.
+        assert!(control.take_key_frame_wanted());
+        let t = Instant::now();
+        let ms = |v: u64| t + Duration::from_millis(v);
+        let key = || PreviewFrame { codec: VideoCodec::H264, key: true, t_ms: 0.0, data: vec![1] };
+        // The first refusal asks.
+        preview.hand(key(), &control, ms(100));
+        assert!(control.take_key_frame_wanted());
+        // Each key frame refused in the next 5 s asks for nothing more: ten at 500 ms apart.
+        for n in 1..10 {
+            preview.hand(key(), &control, ms(100 + n * 500));
+            assert!(!control.take_key_frame_wanted(), "at {} ms", 100 + n * 500);
+        }
+        // From 5 s after the last ask, one ask again, then quiet again.
+        preview.hand(key(), &control, ms(5100));
+        assert!(control.take_key_frame_wanted());
+        preview.hand(key(), &control, ms(5600));
+        assert!(!control.take_key_frame_wanted());
+        // Turned on again: the ask is at once, whatever the time.
+        let _preview = StreamPreview::on(Box::new(|_| false), &control);
+        assert!(control.take_key_frame_wanted());
+    }
+
+    #[test]
+    fn rtp_timestamps_never_go_back() {
+        // Fix E1: the transport's own rule, behind the pipeline's.
+        let t = Instant::now() + Duration::from_secs(10);
+        let ms = |v: u64| t + Duration::from_millis(v);
+        let mut clock = RtpClock::new(u32::MAX - 1000);
+        assert_eq!(clock.at(t), u32::MAX - 1000);
+        // 10 ms is 900 ticks, wrapping past u32::MAX.
+        assert_eq!(clock.at(ms(10)), (u32::MAX - 1000).wrapping_add(900));
+        // A capture time before the last, the same one, one before the first: one tick each.
+        assert_eq!(clock.at(ms(4)), (u32::MAX - 1000).wrapping_add(901));
+        assert_eq!(clock.at(ms(4)), (u32::MAX - 1000).wrapping_add(902));
+        assert_eq!(clock.at(t - Duration::from_millis(5)), (u32::MAX - 1000).wrapping_add(903));
+        // Later again: from the capture time as before.
+        assert_eq!(clock.at(ms(20)), (u32::MAX - 1000).wrapping_add(1800));
+    }
+
+    #[test]
+    fn the_sustain_rate_reaches_str0m_once_per_change_and_never_over_the_maximum() {
+        // U2, U4: nothing asked, nothing handed over (the open set the zero minimum).
+        let mut sustain = Sustain::default();
+        assert_eq!(sustain.changed(0, 8_000_000), None);
+        // A change is handed over once.
+        assert_eq!(sustain.changed(2_073_600, 8_000_000), Some(Bitrate::bps(2_073_600)));
+        assert_eq!(sustain.changed(2_073_600, 8_000_000), None);
+        // Never over the share's maximum (U1).
+        assert_eq!(sustain.changed(4_665_600, 3_000_000), Some(Bitrate::bps(3_000_000)));
+        assert_eq!(minimum(4_665_600, 3_000_000), Bitrate::bps(3_000_000));
+        // Back on the top rung: zero again, once.
+        assert_eq!(sustain.changed(0, 8_000_000), Some(Bitrate::ZERO));
+        assert_eq!(sustain.changed(0, 8_000_000), None);
+        assert_eq!(minimum(0, 8_000_000), MIN_BITRATE);
     }
 
     #[test]

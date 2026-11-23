@@ -76,6 +76,17 @@ impl Resizes {
         (running, false)
     }
 
+    /// Records that `size` is asked for at `now`, the encoder running at `running`, without
+    /// taking it up: `due` then says when it will be, as for a frame that asked for it (a new cap
+    /// of the size ladder on a still screen, smooth S8).
+    pub(crate) fn want(&mut self, now: Instant, size: (u32, u32), running: (u32, u32)) {
+        if size == running {
+            self.wanted = None;
+        } else if !matches!(self.wanted, Some((wanted, _)) if wanted == size) {
+            self.wanted = Some((size, now));
+        }
+    }
+
     /// When a size asked for and not yet taken up will be, if it stays the same.
     pub(crate) fn due(&self) -> Option<Instant> {
         let (_, since) = self.wanted?;
@@ -127,6 +138,27 @@ mod tests {
         assert_eq!(r.decide(ms(4800), a, Some(b)), (a, true));
         // Not open again (an encoder dropped for an error): opens at once.
         assert_eq!(r.decide(ms(4810), c, None), (c, true));
+    }
+
+    #[test]
+    fn a_size_wanted_without_a_frame_is_due_as_one_asked_by_a_frame() {
+        let t = Instant::now();
+        let ms = |v: u64| t + Duration::from_millis(v);
+        let mut r = Resizes::default();
+        let (a, b) = ((1920, 1080), (1280, 720));
+        assert_eq!(r.decide(ms(0), a, None), (a, true));
+        // Wanted at 2 s: due 300 ms later, and asking again does not move that.
+        r.want(ms(2000), b, a);
+        assert_eq!(r.due(), Some(ms(2300)));
+        r.want(ms(2100), b, a);
+        assert_eq!(r.due(), Some(ms(2300)));
+        // A frame then takes it up when due, as D14 says.
+        assert_eq!(r.decide(ms(2299), b, Some(a)), (a, false));
+        assert_eq!(r.decide(ms(2300), b, Some(a)), (b, true));
+        // The running size wanted: nothing pending.
+        r.want(ms(5000), a, b);
+        r.want(ms(5001), b, b);
+        assert_eq!(r.due(), None);
     }
 
     #[test]

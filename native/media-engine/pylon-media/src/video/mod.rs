@@ -34,6 +34,10 @@ mod preview_cpu;
 // Used by the Linux and Windows encoders (on Windows with fixed limits, M7.5 C8).
 #[cfg_attr(not(all(any(target_os = "linux", target_os = "windows"), feature = "encode")), allow(dead_code))]
 mod sizing;
+// The compositor's time for a frame (smooth T1 to T3): used by the Linux and Windows captures,
+// elsewhere only by its tests.
+#[cfg_attr(not(all(any(target_os = "linux", target_os = "windows"), feature = "capture")), allow(dead_code))]
+mod timing;
 #[cfg(all(target_os = "windows", feature = "encode"))]
 mod windows;
 
@@ -148,6 +152,25 @@ pub trait FrameEncoder: Send {
     fn offer_preview(&mut self, _preview: &Arc<Preview>) -> bool {
         false
     }
+    /// Caps the encoded picture at `cap` (`None`: the share's own maximum), fitted keeping its
+    /// shape and taken up as a new size is (D14). A no-op for an encoder without the size ladder
+    /// (smooth S2, S8).
+    fn set_size_cap(&mut self, _cap: Option<(u32, u32)>) {}
+    /// The size the newest frame is, or would be, encoded at under `cap`. `None` before a frame
+    /// came, and always for an encoder without the size ladder (smooth S8).
+    fn size_under(&self, _cap: Option<(u32, u32)>) -> Option<(u32, u32)> {
+        None
+    }
+    /// The codec's bits per pixel a size needs (smooth S3), `None` for an encoder without the
+    /// size ladder.
+    fn size_floor(&self) -> Option<f64> {
+        None
+    }
+    /// The size the open encoder runs at, `None` when it is not open or does not say (smooth
+    /// S9, S10).
+    fn running_size(&self) -> Option<(u32, u32)> {
+        None
+    }
 }
 
 /// Above this much of the target bitrate waiting in the send queue, frames are skipped (D10).
@@ -202,6 +225,13 @@ impl KeyFrames {
             return (true, true);
         }
         (false, false)
+    }
+
+    /// The encoder made a key frame at `at`, asked for or not (an encoder opened again makes
+    /// one): the spacing starts from it and a pending request is met by it (fix E5).
+    fn made(&mut self, at: Instant) {
+        self.last = Some(at);
+        self.pending = false;
     }
 }
 
@@ -295,8 +325,16 @@ impl Cadence {
     }
 
     /// Steps N after an encoded frame, from the output over the last second and the scale the
-    /// encoder runs at (configured bitrate over target).
+    /// encoder runs at (configured bitrate over target). Today's rule: `update_with` free to
+    /// slow, which the pipeline calls.
+    #[cfg(test)]
     fn update(&mut self, now: Instant, output: Option<u64>, target: u64, scale: f64) {
+        self.update_with(now, output, target, scale, true);
+    }
+
+    /// As `update`, with N stepping up only when `may_slow` (smooth S7: with the size ladder,
+    /// only on its lowest rung). Without it the time over the target is not counted.
+    fn update_with(&mut self, now: Instant, output: Option<u64>, target: u64, scale: f64, may_slow: bool) {
         let Some(output) = output else {
             return;
         };
@@ -304,6 +342,10 @@ impl Cadence {
         let floor = scale <= LOWEST_SHARE + 1e-6;
         if (output as f64) > target * OVER_SHARE && floor {
             self.met_since = None;
+            if !may_slow {
+                self.over_since = None;
+                return;
+            }
             let since = *self.over_since.get_or_insert(now);
             if now.saturating_duration_since(since) >= STEP_UP_AFTER && self.index + 1 < DIVISORS.len() {
                 self.step(1);
@@ -329,6 +371,194 @@ impl Cadence {
         self.seen = 0;
         tracing::info!(from, to = self.divisor(), "frame rate divisor");
     }
+
+    /// Its timers start afresh, N stays (smooth S9).
+    fn restart(&mut self) {
+        self.over_since = None;
+        self.met_since = None;
+    }
+}
+
+/// The caps on the encoded picture a share steps through on a tight link, from none (the
+/// share's own maximum) down (smooth S2).
+const RUNGS: [Option<(u32, u32)>; 3] = [None, Some((1280, 720)), Some((960, 540))];
+/// The bits per pixel a size needs at the producer's rate, H264 and AV1 (smooth S3). Fable's
+/// numbers, chosen and not measured for quality.
+#[cfg_attr(not(all(any(target_os = "linux", target_os = "windows"), feature = "encode")), allow(dead_code))]
+pub(crate) const FLOOR_H264: f64 = 0.030;
+#[cfg_attr(not(all(target_os = "linux", feature = "encode")), allow(dead_code))]
+pub(crate) const FLOOR_AV1: f64 = 0.020;
+/// One rung down after the target has been under what the size needs for this long (S4a).
+const UNDER_FOR: Duration = Duration::from_secs(2);
+/// One rung up after the target has been at or over `ROOM_OVER` times what the size of the rung
+/// above needs for `ROOM_FOR` (S5).
+const ROOM_OVER: f64 = 1.25;
+const ROOM_FOR: Duration = Duration::from_secs(5);
+/// At most one size change this often, up or down (S6).
+const SIZE_SPACING: Duration = Duration::from_secs(5);
+
+/// The bits per second `size` needs at `fps` with `floor` bits per pixel (S3).
+fn needed(size: (u32, u32), fps: f64, floor: f64) -> f64 {
+    f64::from(size.0) * f64::from(size.1) * fps * floor
+}
+
+fn area(size: (u32, u32)) -> u64 {
+    u64::from(size.0) * u64::from(size.1)
+}
+
+/// Gives way on the picture's size before the frame rate, for a share that asked for it
+/// (smooth S1 to S7). Pure: the pipeline hands it the sizes the content is encoded at under
+/// each rung and the loops' figures.
+#[derive(Debug, Default)]
+struct SizeLadder {
+    /// The share asked for the size to give way first (S1).
+    on: bool,
+    /// The index into `RUNGS` in force.
+    rung: usize,
+    /// Since when the target has been under what the current size needs (S4a).
+    under_since: Option<Instant>,
+    /// Since when the output has been over the target with the scale at its floor (S4b).
+    over_since: Option<Instant>,
+    /// Since when there has been room for the size of the rung above (S5).
+    room_since: Option<Instant>,
+    /// When the last change was decided (S6).
+    changed: Option<Instant>,
+    steps_down: u64,
+    steps_up: u64,
+    /// The share's maximum bitrate, set by the pipeline before each turn, `None` when not known
+    /// (fix E2).
+    max: Option<u64>,
+}
+
+impl SizeLadder {
+    /// The rung to step down to: the first below the one in force that makes the picture
+    /// smaller (S2, a rung that would not is skipped).
+    fn below(&self, sizes: &[(u32, u32); 3]) -> Option<usize> {
+        (self.rung + 1..RUNGS.len()).find(|&i| area(sizes[i]) < area(sizes[self.rung]))
+    }
+
+    /// The rung to step up to: the nearest above the one in force that makes the picture larger.
+    fn above(&self, sizes: &[(u32, u32); 3]) -> Option<usize> {
+        (0..self.rung).rev().find(|&i| area(sizes[i]) > area(sizes[self.rung]))
+    }
+
+    /// Whether the rung in force is the lowest there is for this content (S7).
+    fn lowest(&self, sizes: &[(u32, u32); 3]) -> bool {
+        self.below(sizes).is_none()
+    }
+
+    /// What the target must reach for a step up to `size` (S5): `ROOM_OVER` times what it needs,
+    /// at most the share's maximum. `None` when it needs more than the maximum: never stepped up
+    /// to (fix E2).
+    fn room(&self, size: (u32, u32), fps: f64, floor: f64) -> Option<f64> {
+        let need = needed(size, fps, floor);
+        match self.max {
+            Some(max) if need > max as f64 => None,
+            Some(max) => Some((ROOM_OVER * need).min(max as f64)),
+            None => Some(ROOM_OVER * need),
+        }
+    }
+
+    /// The rate the transport is to sustain with padding toward the step up: what S5 asks of the
+    /// size of the rung above, 0 with no rung above or none that may be stepped up to (smooth
+    /// U1, fix E2).
+    fn sustain(&self, sizes: &[(u32, u32); 3], fps: f64, floor: f64) -> u64 {
+        self.above(sizes).and_then(|up| self.room(sizes[up], fps, floor)).map_or(0, |room| room.round() as u64)
+    }
+
+    /// Its timers start afresh, the rung stays (S9).
+    fn restart(&mut self) {
+        self.under_since = None;
+        self.over_since = None;
+        self.room_since = None;
+    }
+
+    /// After an encoded frame: the rung to change to, if one is due. `sizes` are the sizes the
+    /// newest frame is encoded at under each of `RUNGS`, `fps` the producer's rate, `floor` the
+    /// codec's bits per pixel, then the target, the output over the last second, the scale the
+    /// encoder runs at and the frame rate divisor.
+    #[allow(clippy::too_many_arguments)]
+    fn update(
+        &mut self,
+        now: Instant,
+        sizes: &[(u32, u32); 3],
+        fps: f64,
+        floor: f64,
+        target: u64,
+        output: Option<u64>,
+        scale: f64,
+        divisor: u32,
+    ) -> Option<usize> {
+        let target_f = target as f64;
+        let held = |since: Option<Instant>, d: Duration| since.is_some_and(|s| now.saturating_duration_since(s) >= d);
+        let below = self.below(sizes);
+        let above = self.above(sizes);
+
+        // S4a: the target under what the size in force needs.
+        if below.is_some() && target_f < needed(sizes[self.rung], fps, floor) {
+            self.under_since.get_or_insert(now);
+        } else {
+            self.under_since = None;
+        }
+        // S4b: what makes the cadence step today, the output over the target at the scale's floor.
+        if let Some(output) = output {
+            if below.is_some() && (output as f64) > target_f * OVER_SHARE && scale <= LOWEST_SHARE + 1e-6 {
+                self.over_since.get_or_insert(now);
+            } else {
+                self.over_since = None;
+            }
+        }
+        // S5: room for the size above, at the full frame rate, under the share's maximum (fix E2).
+        match above.and_then(|up| self.room(sizes[up], fps, floor)) {
+            Some(room) if divisor == 1 && target_f >= room => {
+                self.room_since.get_or_insert(now);
+            }
+            _ => self.room_since = None,
+        }
+
+        // S6: a change the spacing holds back waits for its end, if its condition still holds.
+        if self.changed.is_some_and(|at| now.saturating_duration_since(at) < SIZE_SPACING) {
+            return None;
+        }
+        let to = match (below, above) {
+            (Some(down), _) if held(self.under_since, UNDER_FOR) || held(self.over_since, STEP_UP_AFTER) => {
+                self.steps_down += 1;
+                down
+            }
+            (_, Some(up)) if held(self.room_since, ROOM_FOR) => {
+                self.steps_up += 1;
+                up
+            }
+            _ => return None,
+        };
+        tracing::info!(from = ?sizes[self.rung], to = ?sizes[to], cap = ?RUNGS[to], target, "picture size step");
+        self.rung = to;
+        self.changed = Some(now);
+        self.restart();
+        Some(to)
+    }
+}
+
+/// An interval between frames sent over this many times the producer's interval times the
+/// divisor in force is a long gap (smooth A1.2).
+const LONG_GAP: f64 = 1.5;
+
+/// The time between frames sent, by their capture times (smooth A1.1, A1.2).
+#[derive(Debug, Default)]
+struct FrameIntervals {
+    last: Option<Instant>,
+}
+
+impl FrameIntervals {
+    /// A frame sent with `capture_time`: the time since the frame sent before it in
+    /// milliseconds, and whether that is longer than `LONG_GAP` times `interval` times
+    /// `divisor`. `None` for the first frame.
+    fn sent(&mut self, capture_time: Instant, interval: Duration, divisor: u32) -> Option<(f64, bool)> {
+        let last = self.last.replace(capture_time)?;
+        let gap = capture_time.saturating_duration_since(last).as_secs_f64();
+        let long = gap > interval.as_secs_f64() * f64::from(divisor) * LONG_GAP;
+        Some((gap * 1000.0, long))
+    }
 }
 
 /// A key frame is made from the kept frame when no new frame came for this many intervals
@@ -336,6 +566,13 @@ impl Cadence {
 const KEPT_AFTER_INTERVALS: u32 = 2;
 /// The shortest wait for the producer, so that nothing spins while it waits for a deadline.
 const MIN_WAIT: Duration = Duration::from_millis(5);
+/// A frame sent is at least this far after the frame sent before it (fix E1, as T3).
+const SENT_STEP: Duration = Duration::from_millis(1);
+/// With no frame encoded for this long the sustain rate is 0 (fix E3).
+const SUSTAIN_IDLE: Duration = Duration::from_secs(1);
+/// The sustain rate is handed on when the rung changed or it moved by more than this share
+/// (fix E8).
+const SUSTAIN_MOVE: f64 = 0.05;
 
 /// A `Source` made of a frame producer and an encoder.
 ///
@@ -363,6 +600,16 @@ pub struct VideoPipeline<P: FrameProducer, E: FrameEncoder<Frame = P::Frame>> {
     preview_rate: PreviewRate,
     /// A new picture came from the producer since the preview was last offered a frame.
     preview_new: bool,
+    /// The time between frames sent (smooth A1).
+    intervals: FrameIntervals,
+    /// The picture's size giving way first, when the share asked for it (smooth S1 to S9).
+    ladder: SizeLadder,
+    /// The size the encoder ran at after the frame encoded last (S9).
+    running: Option<(u32, u32)>,
+    /// The capture time of the frame sent last (fix E1).
+    sent_last: Option<Instant>,
+    /// The rung and the sustain rate last handed to the transport (fix E8).
+    sustained: (usize, u64),
 }
 
 impl<P: FrameProducer, E: FrameEncoder<Frame = P::Frame>> VideoPipeline<P, E> {
@@ -380,7 +627,36 @@ impl<P: FrameProducer, E: FrameEncoder<Frame = P::Frame>> VideoPipeline<P, E> {
             preview: None,
             preview_rate: PreviewRate::default(),
             preview_new: false,
+            intervals: FrameIntervals::default(),
+            ladder: SizeLadder::default(),
+            running: None,
+            sent_last: None,
+            sustained: (0, 0),
         }
+    }
+
+    /// Hands the transport `bps` to sustain on `rung` when the rung changed or the rate moved by
+    /// more than `SUSTAIN_MOVE` since it was last handed on (fix E8).
+    fn sustain(&mut self, control: &SourceControl, rung: usize, bps: u64) {
+        let (was_rung, was) = self.sustained;
+        if rung != was_rung || was.abs_diff(bps) as f64 > was as f64 * SUSTAIN_MOVE {
+            self.sustained = (rung, bps);
+            control.set_sustain_bitrate(bps);
+        }
+    }
+
+    /// The sizes the newest frame is encoded at under each rung and the codec's bits per pixel,
+    /// `None` when the share did not ask for the size to give way or the encoder has no ladder.
+    fn ladder_sizes(&self) -> Option<([(u32, u32); 3], f64)> {
+        if !self.ladder.on {
+            return None;
+        }
+        let floor = self.encoder.size_floor()?;
+        let mut sizes = [(0, 0); 3];
+        for (size, cap) in sizes.iter_mut().zip(RUNGS) {
+            *size = self.encoder.size_under(cap)?;
+        }
+        Some((sizes, floor))
     }
 
     /// Takes up what the preview asks for, and offers it the kept frame for the first picture
@@ -484,6 +760,11 @@ impl<P: FrameProducer, E: FrameEncoder<Frame = P::Frame>> VideoPipeline<P, E> {
     /// frame from the kept one.
     fn idle(&mut self, sink: &FrameSink, control: &SourceControl, interval: Duration) -> Result<bool, Error> {
         let now = Instant::now();
+        // No padding for a still picture: the next encoded frame's ladder turn brings it back
+        // (fix E3).
+        if self.last_encoded.is_none_or(|at| now.saturating_duration_since(at) >= SUSTAIN_IDLE) {
+            self.sustain(control, self.ladder.rung, 0);
+        }
         let target = control.target_bitrate();
         if self.last.is_some() && !backlogged(control.queued_bytes(), target) {
             let skipped = self.last_skipped && now >= self.skipped_due(now, interval);
@@ -555,6 +836,8 @@ impl<P: FrameProducer, E: FrameEncoder<Frame = P::Frame>> VideoPipeline<P, E> {
         let bitrate = self.meter.bitrate_for(now, target);
         let began = Instant::now();
         let divisor = self.cadence.divisor();
+        // What counts as a long gap for this frame: the divisor it was encoded under (A1.2).
+        let (interval, in_force) = (self.producer.interval(), divisor);
         let Some((packet, key)) = encode(&mut self.encoder, bitrate, divisor)? else {
             return Ok(true);
         };
@@ -562,14 +845,43 @@ impl<P: FrameProducer, E: FrameEncoder<Frame = P::Frame>> VideoPipeline<P, E> {
         let done = Instant::now();
         self.last_encoded = Some(done);
         self.meter.record(done, packet.data.len() as u64, bitrate);
+        let running = self.encoder.running_size();
+        if self.ladder.on && self.running.is_some() && running != self.running {
+            // S9: a new size starts the loops afresh, its key frame and the old size's frames
+            // do not count against it.
+            self.meter = OutputMeter::default();
+            self.cadence.restart();
+            self.ladder.restart();
+        }
+        self.running = running;
         let output = self.meter.output_bps(done);
         let scale = if target > 0 { bitrate as f64 / target as f64 } else { 1.0 };
-        self.cadence.update(done, output, target, scale);
+        let ladder = self.ladder_sizes();
+        // S7: with the size ladder N steps up only on its lowest rung. Without it, as before.
+        let may_slow = ladder.as_ref().is_none_or(|(sizes, _)| self.ladder.lowest(sizes));
+        self.cadence.update_with(done, output, target, scale, may_slow);
+        if let Some((sizes, floor)) = ladder {
+            let fps = 1.0 / interval.as_secs_f64();
+            // The share's maximum, 0 when the engine did not set one (fix E2).
+            self.ladder.max = Some(control.max_bitrate()).filter(|&max| max > 0);
+            if let Some(rung) = self.ladder.update(done, &sizes, fps, floor, target, output, scale, self.cadence.divisor()) {
+                self.encoder.set_size_cap(RUNGS[rung]);
+                // The time over the target was the old size's (S9).
+                self.cadence.restart();
+            }
+            // Below the top rung the transport pads toward the step up's rate (smooth U1).
+            let sustain = self.ladder.sustain(&sizes, fps, floor);
+            self.sustain(control, self.ladder.rung, sustain);
+        }
         let divisor = self.cadence.divisor();
+        let (steps_down, steps_up) = (self.ladder.steps_down, self.ladder.steps_up);
         control.update_report(|r| {
             r.encoder_bitrate_bps = Some(bitrate);
             r.encoder_output_bps = output;
             r.frame_rate_divisor = Some(divisor);
+            r.encoded_size = running;
+            r.size_steps_down = steps_down;
+            r.size_steps_up = steps_up;
             r.key_frames_forced += u64::from(forced);
             r.key_frames_repeated += u64::from(kept);
             r.encode_ms.push(encode_ms);
@@ -577,13 +889,33 @@ impl<P: FrameProducer, E: FrameEncoder<Frame = P::Frame>> VideoPipeline<P, E> {
         if packet.key && !key {
             tracing::warn!(bytes = packet.data.len(), "key frame that was not asked for");
         }
+        if packet.key {
+            // Any key frame restarts the spacing and meets a pending request (fix E5).
+            self.keys.made(done);
+        }
 
+        // Capture times of frames sent never go back, whatever turn made the frame (fix E1): an
+        // idle turn's `now` can be behind a frame stamped ahead of its arrival (Windows), and a
+        // compositor's time behind an idle turn's `now` (Linux).
+        let capture_time = self.sent_last.map_or(capture_time, |last| capture_time.max(last + SENT_STEP));
         let frame = EncodedFrame {
             data: packet.data,
             key: packet.key,
             capture_time,
         };
         let pushed = sink.push(frame);
+        if pushed.is_ok() {
+            self.sent_last = Some(capture_time);
+        }
+        if pushed.is_ok()
+            && let Some((ms, long)) = self.intervals.sent(capture_time, interval, in_force)
+        {
+            // Only frames that went: one dropped on a full queue is a gap for the viewer (A1.1).
+            control.update_report(|r| {
+                r.frame_interval_ms.push(ms);
+                r.frame_gaps_long += u64::from(long);
+            });
+        }
         if !kept {
             // Once the frame is on its way, so the preview never holds it up (R4).
             self.preview_encoded();
@@ -604,6 +936,10 @@ impl<P: FrameProducer, E: FrameEncoder<Frame = P::Frame>> Source for VideoPipeli
     fn attach_preview(&mut self, preview: Arc<Preview>) -> bool {
         self.preview = Some(preview);
         true
+    }
+
+    fn set_degrade(&mut self, degrade: crate::Degrade) {
+        self.ladder.on = degrade == crate::Degrade::Size;
     }
 
     fn run(&mut self, sink: FrameSink, control: &SourceControl) {
@@ -707,6 +1043,188 @@ mod tests {
             cadence.update(ms(20_000 + step * 1000), Some(9_000_000), 1_000_000, 0.7);
         }
         assert_eq!(cadence.divisor(), 10);
+    }
+
+    #[test]
+    fn cadence_does_not_slow_where_it_may_not_and_counts_no_time_there() {
+        let t = Instant::now();
+        let ms = |v: u64| t + Duration::from_millis(v);
+        let mut cadence = Cadence::default();
+        // Over at the floor for long, not free to slow (S7): N stays 1.
+        for step in 0..5 {
+            cadence.update_with(ms(step * 1000), Some(1_200_000), 1_000_000, 0.7, false);
+        }
+        assert_eq!(cadence.divisor(), 1);
+        assert_eq!(cadence.over_since, None);
+        // Free to slow from 5 s: a full second counted from then.
+        cadence.update_with(ms(5000), Some(1_200_000), 1_000_000, 0.7, true);
+        cadence.update_with(ms(5999), Some(1_200_000), 1_000_000, 0.7, true);
+        assert_eq!(cadence.divisor(), 1);
+        cadence.update_with(ms(6000), Some(1_200_000), 1_000_000, 0.7, true);
+        assert_eq!(cadence.divisor(), 2);
+        // It steps down as today whether free to slow or not.
+        cadence.update_with(ms(7000), Some(900_000), 1_000_000, 0.9, false);
+        cadence.update_with(ms(10_000), Some(900_000), 1_000_000, 0.9, false);
+        assert_eq!(cadence.divisor(), 1);
+        // A restart forgets the time over the target.
+        cadence.update_with(ms(11_000), Some(1_200_000), 1_000_000, 0.7, true);
+        cadence.restart();
+        cadence.update_with(ms(12_500), Some(1_200_000), 1_000_000, 0.7, true);
+        assert_eq!(cadence.divisor(), 1);
+    }
+
+    /// 1080p content under the three rungs, as `sizing::output_size` fits it.
+    const HD: [(u32, u32); 3] = [(1920, 1080), (1280, 720), (960, 540)];
+
+    #[test]
+    fn what_a_size_needs() {
+        // S3: 1080p at 60 in H264 3.73 Mbps, 720p 1.66, 540p 0.93.
+        assert_eq!(needed(HD[0], 60.0, FLOOR_H264).round(), 3_732_480.0);
+        assert_eq!(needed(HD[1], 60.0, FLOOR_H264).round(), 1_658_880.0);
+        assert_eq!(needed(HD[2], 60.0, FLOOR_H264).round(), 933_120.0);
+        assert_eq!(needed(HD[0], 60.0, FLOOR_AV1).round(), 2_488_320.0);
+    }
+
+    #[test]
+    fn the_size_steps_down_after_2_s_under_what_it_needs_and_spaced_by_5_s() {
+        let t = Instant::now();
+        let ms = |v: u64| t + Duration::from_millis(v);
+        let mut l = SizeLadder { on: true, ..SizeLadder::default() };
+        let at = |l: &mut SizeLadder, v, target| l.update(ms(v), &HD, 60.0, FLOOR_H264, target, Some(target), 1.0, 1);
+        // S4a: 3 Mbps is under 1080p's 3.73, for 2 s.
+        assert_eq!(at(&mut l, 0, 3_000_000), None);
+        assert_eq!(at(&mut l, 1999, 3_000_000), None);
+        assert_eq!(at(&mut l, 2000, 3_000_000), Some(1));
+        assert_eq!((l.rung, l.steps_down, l.steps_up), (1, 1, 0));
+        // 720p needs 1.66: 3 Mbps holds it, however long.
+        for v in (3000..20_000).step_by(1000) {
+            assert_eq!(at(&mut l, v, 3_000_000), None);
+        }
+        // S6: under 720p's need from 21 s, held 2 s at 23 s, taken at once (spacing long over).
+        assert_eq!(at(&mut l, 21_000, 1_200_000), None);
+        assert_eq!(at(&mut l, 23_000, 1_200_000), Some(2));
+        // The lowest rung: nothing further down, whatever the target.
+        assert!(l.lowest(&HD));
+        assert_eq!(at(&mut l, 30_000, 100_000), None);
+        assert_eq!(at(&mut l, 40_000, 100_000), None);
+        assert_eq!(l.steps_down, 2);
+
+        // S6: a change the spacing holds back is taken when it ends, if it still holds.
+        let mut l = SizeLadder { on: true, ..SizeLadder::default() };
+        assert_eq!(at(&mut l, 0, 3_000_000), None);
+        assert_eq!(at(&mut l, 2000, 3_000_000), Some(1));
+        assert_eq!(at(&mut l, 2500, 1_200_000), None);
+        assert_eq!(at(&mut l, 4500, 1_200_000), None);
+        assert_eq!(at(&mut l, 6999, 1_200_000), None);
+        assert_eq!(at(&mut l, 7000, 1_200_000), Some(2));
+        // And not when it no longer does.
+        let mut l = SizeLadder { on: true, ..SizeLadder::default() };
+        assert_eq!(at(&mut l, 0, 3_000_000), None);
+        assert_eq!(at(&mut l, 2000, 3_000_000), Some(1));
+        assert_eq!(at(&mut l, 2500, 1_200_000), None);
+        assert_eq!(at(&mut l, 6000, 3_000_000), None);
+        assert_eq!(at(&mut l, 7000, 1_200_000), None);
+        assert_eq!(l.rung, 1);
+    }
+
+    #[test]
+    fn the_size_steps_down_when_the_encoder_cannot_get_down_to_the_target() {
+        let t = Instant::now();
+        let ms = |v: u64| t + Duration::from_millis(v);
+        let mut l = SizeLadder { on: true, ..SizeLadder::default() };
+        // S4b: 4 Mbps is enough for 1080p's 3.73 (and no room for a step up, 4.67), but the
+        // output is over 1.15 times it with the scale at its floor, for 1 s.
+        let over = |l: &mut SizeLadder, v, scale| l.update(ms(v), &HD, 60.0, FLOOR_H264, 4_000_000, Some(5_000_000), scale, 1);
+        assert_eq!(over(&mut l, 0, 0.7), None);
+        assert_eq!(over(&mut l, 999, 0.7), None);
+        assert_eq!(over(&mut l, 1000, 0.7), Some(1));
+        // Not at the floor: no step (spacing over by 7 s).
+        assert_eq!(over(&mut l, 7000, 0.8), None);
+        assert_eq!(over(&mut l, 9000, 0.8), None);
+        // Within 15 % of the target: no step.
+        let near = l.update(ms(9500), &HD, 60.0, FLOOR_H264, 4_000_000, Some(4_500_000), 0.7, 1);
+        assert_eq!(near, None);
+        assert_eq!(l.update(ms(11_000), &HD, 60.0, FLOOR_H264, 4_000_000, Some(4_500_000), 0.7, 1), None);
+        assert_eq!(l.rung, 1);
+        // No output figure yet (the meter's first second): the time over is kept, not ended.
+        assert_eq!(over(&mut l, 12_000, 0.7), None);
+        assert_eq!(l.update(ms(12_500), &HD, 60.0, FLOOR_H264, 4_000_000, None, 0.7, 1), None);
+        assert_eq!(over(&mut l, 13_000, 0.7), Some(2));
+    }
+
+    #[test]
+    fn the_size_steps_up_after_5_s_of_room_at_the_full_frame_rate() {
+        let t = Instant::now();
+        let ms = |v: u64| t + Duration::from_millis(v);
+        let mut l = SizeLadder { on: true, rung: 2, ..SizeLadder::default() };
+        let at = |l: &mut SizeLadder, v, target, divisor| l.update(ms(v), &HD, 60.0, FLOOR_H264, target, Some(target), 1.0, divisor);
+        // S5: 720p needs 1.66, 1.25 times that is 2.07 Mbps. 2 Mbps is not room.
+        assert_eq!(at(&mut l, 0, 2_000_000, 1), None);
+        assert_eq!(at(&mut l, 10_000, 2_000_000, 1), None);
+        // Room, but not at the full frame rate: no step.
+        assert_eq!(at(&mut l, 11_000, 2_100_000, 2), None);
+        assert_eq!(at(&mut l, 17_000, 2_100_000, 2), None);
+        // Room at the full frame rate for 5 s.
+        assert_eq!(at(&mut l, 18_000, 2_100_000, 1), None);
+        assert_eq!(at(&mut l, 22_999, 2_100_000, 1), None);
+        assert_eq!(at(&mut l, 23_000, 2_100_000, 1), Some(1));
+        assert_eq!((l.rung, l.steps_up), (1, 1));
+        // 1080p needs 3.73, room is 4.67 Mbps: from 25 s, held at 30 s, spacing over at 28 s.
+        assert_eq!(at(&mut l, 25_000, 4_700_000, 1), None);
+        assert_eq!(at(&mut l, 29_999, 4_700_000, 1), None);
+        assert_eq!(at(&mut l, 30_000, 4_700_000, 1), Some(0));
+        // At full size there is nothing above.
+        assert_eq!(at(&mut l, 50_000, 20_000_000, 1), None);
+        assert_eq!((l.rung, l.steps_up, l.steps_down), (0, 2, 0));
+    }
+
+    #[test]
+    fn the_rate_sustained_is_what_the_step_up_needs_and_none_on_the_top_rung() {
+        // U1: 0 on the top rung, below it 1.25 times what the size of the rung above needs.
+        let on = |rung| SizeLadder { on: true, rung, ..SizeLadder::default() };
+        assert_eq!(on(0).sustain(&HD, 60.0, FLOOR_H264), 0);
+        assert_eq!(on(1).sustain(&HD, 60.0, FLOOR_H264), 4_665_600);
+        assert_eq!(on(2).sustain(&HD, 60.0, FLOOR_H264), 2_073_600);
+        assert_eq!(on(1).sustain(&HD, 60.0, FLOOR_AV1), 3_110_400);
+        // A rung that does not make the picture smaller is skipped on the way up too: 1280x720
+        // content at 540p pads toward 720p, at 720p it is full size and pads for nothing.
+        let small = [(1280, 720), (1280, 720), (960, 540)];
+        assert_eq!(on(2).sustain(&small, 60.0, FLOOR_H264), 2_073_600);
+        assert_eq!(on(1).sustain(&small, 60.0, FLOOR_H264), 0);
+        assert_eq!(on(0).sustain(&[(640, 480); 3], 60.0, FLOOR_H264), 0);
+    }
+
+    #[test]
+    fn a_rung_that_does_not_make_the_picture_smaller_is_skipped() {
+        let t = Instant::now();
+        let ms = |v: u64| t + Duration::from_millis(v);
+        // 1280x720 content: the 720p cap changes nothing, the way down is to 540p.
+        let small = [(1280, 720), (1280, 720), (960, 540)];
+        assert_eq!(output_size_under(1280, 720), small);
+        let mut l = SizeLadder { on: true, ..SizeLadder::default() };
+        assert_eq!(l.below(&small), Some(2));
+        assert_eq!(l.update(ms(0), &small, 60.0, FLOOR_H264, 1_500_000, None, 1.0, 1), None);
+        assert_eq!(l.update(ms(2000), &small, 60.0, FLOOR_H264, 1_500_000, None, 1.0, 1), Some(2));
+        // Back up it goes to the first rung that makes it larger.
+        assert_eq!(l.above(&small), Some(1));
+        // 640x480 content: no rung makes it smaller, it is the lowest at once (S7).
+        let tiny = output_size_under(640, 480);
+        assert_eq!(tiny, [(640, 480); 3]);
+        let mut l = SizeLadder { on: true, ..SizeLadder::default() };
+        assert!(l.lowest(&tiny));
+        assert_eq!(l.update(ms(0), &tiny, 60.0, FLOOR_H264, 100_000, Some(900_000), 0.7, 1), None);
+        assert_eq!(l.update(ms(10_000), &tiny, 60.0, FLOOR_H264, 100_000, Some(900_000), 0.7, 1), None);
+        // A tall window: each cap keeps its shape.
+        assert_eq!(output_size_under(1080, 1920), [(608, 1080), (404, 720), (304, 540)]);
+    }
+
+    /// The sizes content of `width` by `height` is encoded at under each rung, with the share's
+    /// maximum at 1920x1080, as the real encoders work them out.
+    fn output_size_under(width: u32, height: u32) -> [(u32, u32); 3] {
+        RUNGS.map(|cap| {
+            let (w, h) = cap.map_or((1920, 1080), |(w, h)| (w.min(1920), h.min(1080)));
+            sizing::output_size(width, height, w, h)
+        })
     }
 
     /// A raw frame for these tests, on any system.
@@ -1106,11 +1624,466 @@ mod tests {
     }
 
     #[test]
+    fn frame_intervals_skip_the_first_frame_and_scale_with_the_divisor() {
+        let t = Instant::now();
+        let ms = |v: u64| t + Duration::from_millis(v);
+        let interval = Duration::from_millis(16);
+        let mut intervals = FrameIntervals::default();
+        let mut sent = |at, divisor| intervals.sent(at, interval, divisor).map(|(ms, long)| ((ms * 1000.0).round() / 1000.0, long));
+        // The first frame has no interval.
+        assert_eq!(sent(ms(0), 1), None);
+        assert_eq!(sent(ms(16), 1), Some((16.0, false)));
+        // Over 1.5 intervals at one in one: long.
+        assert_eq!(sent(ms(46), 1), Some((30.0, true)));
+        // The same at one in two is the cadence, not a gap; past 1.5 times two intervals it is.
+        assert_eq!(sent(ms(76), 2), Some((30.0, false)));
+        assert_eq!(sent(ms(126), 2), Some((50.0, true)));
+        assert_eq!(sent(ms(149), 1), Some((23.0, false)));
+    }
+
+    #[test]
+    fn a_still_spell_gives_one_long_interval_and_one_long_gap() {
+        // Two frames, a still spell of about 30 ms (6 waits of the 5 ms interval), a frame.
+        let script = [true, true, false, false, false, false, false, false, true];
+        let mut pipeline = VideoPipeline::new(Script(VecDeque::from(script.to_vec())), Calls::default());
+        let control = SourceControl::default();
+        control.set_target_bitrate(1_000_000);
+        let (sink, frames, _) = frame_channel(16);
+        for _ in script {
+            assert!(pipeline.step(&sink, &control).unwrap());
+        }
+        assert_eq!(frames.try_iter().count(), 3);
+        let report = control.take_report();
+        // Three frames sent, two intervals: the first frame has none.
+        assert_eq!(report.frame_interval_ms.len(), 2, "{:?}", report.frame_interval_ms);
+        assert!(report.frame_interval_ms[0] < 7.5, "{:?}", report.frame_interval_ms);
+        assert!(report.frame_interval_ms[1] >= 25.0, "{:?}", report.frame_interval_ms);
+        assert_eq!(report.frame_gaps_long, 1);
+        // Taken by the statistics: the intervals go, the count of long gaps is a total.
+        let again = control.take_report();
+        assert!(again.frame_interval_ms.is_empty());
+        assert_eq!(again.frame_gaps_long, 1);
+    }
+
+    /// An encoder with the size ladder, for 1920x1080 content at a maximum of 1920x1080, whose
+    /// packets are `bytes` long. A new cap is taken up on the next frame (the real encoders wait
+    /// for D14), with a key frame. It records the caps it was given.
+    struct Laddered {
+        cap: Option<(u32, u32)>,
+        running: Option<(u32, u32)>,
+        bytes: usize,
+        caps: Arc<Mutex<Vec<Option<(u32, u32)>>>>,
+    }
+    impl Laddered {
+        fn new(bytes: usize) -> Self {
+            Laddered { cap: None, running: None, bytes, caps: Arc::default() }
+        }
+    }
+    impl FrameEncoder for Laddered {
+        type Frame = TestFrame;
+        fn encode(&mut self, _frame: &TestFrame, _bitrate: u64, _divisor: u32, key: bool) -> Result<Packet, Error> {
+            let size = self.size_under(self.cap).unwrap();
+            let opened = self.running != Some(size);
+            self.running = Some(size);
+            let key = key || opened;
+            let mut data = vec![0, 0, 0, 1, if key { 0x65 } else { 0x41 }];
+            data.resize(self.bytes.max(data.len()), 1);
+            Ok(Packet { data, key })
+        }
+
+        fn set_size_cap(&mut self, cap: Option<(u32, u32)>) {
+            self.cap = cap;
+            self.caps.lock().unwrap().push(cap);
+        }
+
+        fn size_under(&self, cap: Option<(u32, u32)>) -> Option<(u32, u32)> {
+            let (w, h) = cap.map_or((1920, 1080), |(w, h)| (w.min(1920), h.min(1080)));
+            Some(sizing::output_size(1920, 1080, w, h))
+        }
+
+        fn size_floor(&self) -> Option<f64> {
+            Some(FLOOR_H264)
+        }
+
+        fn running_size(&self) -> Option<(u32, u32)> {
+            self.running
+        }
+    }
+
+    /// Fills the meter with a second of output far over a 1 Mbps target, asked at it, so the next
+    /// frame is encoded with the scale at its floor and its output is still over: what makes
+    /// the cadence step (and, with the ladder, the size).
+    fn over_the_target<P: FrameProducer<Frame = TestFrame>, E: FrameEncoder<Frame = TestFrame>>(pipeline: &mut VideoPipeline<P, E>) {
+        let now = Instant::now();
+        pipeline.meter = OutputMeter::default();
+        pipeline.meter.record(now - Duration::from_millis(1500), 0, 1_000_000);
+        for n in 0..60u64 {
+            pipeline.meter.record(now - Duration::from_millis(980) + Duration::from_millis(n * 16), 100_000, 1_000_000);
+        }
+        // The cadence has seen that for 2 s.
+        pipeline.cadence.over_since = Some(now - Duration::from_secs(2));
+    }
+
+    #[test]
+    fn rate_slows_the_frame_rate_and_never_caps_the_size() {
+        let encoder = Laddered::new(100_000);
+        let caps = encoder.caps.clone();
+        let mut pipeline = VideoPipeline::new(Frames(20), encoder);
+        pipeline.set_degrade(crate::Degrade::Rate);
+        let control = SourceControl::default();
+        control.set_target_bitrate(1_000_000);
+        let (sink, _frames, _) = frame_channel(64);
+        over_the_target(&mut pipeline);
+        assert!(pipeline.step(&sink, &control).unwrap());
+        // Today's cadence: one in two.
+        assert_eq!(pipeline.cadence.divisor(), 2);
+        // However long it stays over, the size is never touched, nor the meter reset.
+        for _ in 0..10 {
+            over_the_target(&mut pipeline);
+            pipeline.ladder.under_since = Some(Instant::now() - Duration::from_secs(10));
+            assert!(pipeline.step(&sink, &control).unwrap());
+        }
+        assert!(caps.lock().unwrap().is_empty());
+        let report = control.take_report();
+        assert_eq!((report.size_steps_down, report.size_steps_up), (0, 0));
+        // U1: a `rate` share never asks for padding.
+        assert_eq!(control.sustain_bitrate(), 0);
+        assert_eq!(report.encoded_size, Some((1920, 1080)));
+        assert!(pipeline.cadence.divisor() > 2);
+    }
+
+    #[test]
+    fn with_size_the_frame_rate_gives_way_only_on_the_lowest_rung() {
+        let encoder = Laddered::new(100_000);
+        let caps = encoder.caps.clone();
+        let mut pipeline = VideoPipeline::new(Frames(20), encoder);
+        pipeline.set_degrade(crate::Degrade::Size);
+        let control = SourceControl::default();
+        control.set_target_bitrate(1_000_000);
+        let (sink, _frames, _) = frame_channel(64);
+        // 1080p, with two rungs below: the cadence does not step, the ladder starts its timers.
+        over_the_target(&mut pipeline);
+        assert!(pipeline.step(&sink, &control).unwrap());
+        assert_eq!(pipeline.cadence.divisor(), 1);
+        assert!(caps.lock().unwrap().is_empty());
+        // U1: on the top rung nothing is sustained.
+        assert_eq!(control.sustain_bitrate(), 0);
+        let fps = 1.0 / Duration::from_millis(16).as_secs_f64();
+        let toward = |size| (ROOM_OVER * needed(size, fps, FLOOR_H264)).round() as u64;
+        // Over at the floor for a second (S4b): down to 720p, the cadence's time forgotten.
+        over_the_target(&mut pipeline);
+        pipeline.ladder.over_since = Some(Instant::now() - Duration::from_secs(2));
+        assert!(pipeline.step(&sink, &control).unwrap());
+        assert_eq!(*caps.lock().unwrap(), vec![Some((1280, 720))]);
+        // U1: at 720p the rate the step up to 1080p needs.
+        assert_eq!(control.sustain_bitrate(), toward(HD[0]));
+        assert_eq!(pipeline.cadence.divisor(), 1);
+        assert_eq!(pipeline.cadence.over_since, None);
+        assert_eq!(control.take_report().size_steps_down, 1);
+        // On the lowest rung (540p) the cadence steps as today.
+        pipeline.ladder.rung = 2;
+        pipeline.encoder.cap = RUNGS[2];
+        assert!(pipeline.step(&sink, &control).unwrap());
+        over_the_target(&mut pipeline);
+        assert!(pipeline.step(&sink, &control).unwrap());
+        assert_eq!(pipeline.cadence.divisor(), 2);
+        assert_eq!(control.take_report().encoded_size, Some((960, 540)));
+        // At 540p (and slowed) the rate the step up to 720p needs.
+        assert_eq!(control.sustain_bitrate(), toward(HD[1]));
+    }
+
+    #[test]
+    fn after_a_size_change_the_meter_and_the_cadence_start_afresh() {
+        let encoder = Laddered::new(20_000);
+        let mut pipeline = VideoPipeline::new(Frames(20), encoder);
+        pipeline.set_degrade(crate::Degrade::Size);
+        let control = SourceControl::default();
+        control.set_target_bitrate(1_000_000);
+        let (sink, frames, _) = frame_channel(64);
+        assert!(pipeline.step(&sink, &control).unwrap());
+        assert_eq!(pipeline.running, Some((1920, 1080)));
+        // The old size's output and time over the target.
+        over_the_target(&mut pipeline);
+        let before = Instant::now();
+        pipeline.cadence.met_since = Some(before - Duration::from_secs(10));
+        pipeline.ladder.under_since = Some(before - Duration::from_secs(10));
+        pipeline.encoder.set_size_cap(RUNGS[1]);
+        // The next frame is the new size's key frame: none of it counts against the new size.
+        assert!(pipeline.step(&sink, &control).unwrap());
+        assert_eq!(pipeline.running, Some((1280, 720)));
+        assert!(pipeline.meter.frames.is_empty() && pipeline.meter.since.is_none());
+        assert_eq!((pipeline.cadence.over_since, pipeline.cadence.met_since), (None, None));
+        // The ladder's time under the need counts from the change at the earliest.
+        assert!(pipeline.ladder.under_since.is_none_or(|since| since >= before), "{:?}", pipeline.ladder.under_since);
+        let report = control.take_report();
+        assert_eq!(report.encoder_output_bps, None);
+        assert_eq!(report.encoded_size, Some((1280, 720)));
+        // The frame after it is asked for the target, as at a share's start.
+        assert!(pipeline.step(&sink, &control).unwrap());
+        assert_eq!(control.take_report().encoder_bitrate_bps, Some(1_000_000));
+        assert_eq!(frames.try_iter().filter(|f| f.key).count(), 2);
+
+        // With `rate` a new size (a window resized) leaves the loops as they are.
+        let mut pipeline = VideoPipeline::new(Frames(20), Laddered::new(20_000));
+        let (sink, _frames, _) = frame_channel(64);
+        assert!(pipeline.step(&sink, &control).unwrap());
+        over_the_target(&mut pipeline);
+        pipeline.encoder.set_size_cap(RUNGS[1]);
+        assert!(pipeline.step(&sink, &control).unwrap());
+        assert!(!pipeline.meter.frames.is_empty());
+        assert!(pipeline.cadence.over_since.is_none(), "it stepped, as today");
+        assert_eq!(pipeline.cadence.divisor(), 2);
+    }
+
+    #[test]
     fn producer_end_ends_the_source() {
         let mut pipeline = VideoPipeline::new(Frames(1), Calls::default());
         let control = SourceControl::default();
         let (sink, _frames, _) = frame_channel(4);
         pipeline.run(sink, &control);
         assert!(control.failure().is_none());
+    }
+
+    /// Frames at scripted times (ms after `start`, with their widths), each stamped `stamp_ms`
+    /// after (+) or before (-) its arrival, as a capture's compositor clock does (the review's
+    /// scratch producer, fix E1).
+    struct Timed {
+        start: Instant,
+        at_ms: VecDeque<(u64, u32)>,
+        stamp_ms: i64,
+    }
+    impl FrameProducer for Timed {
+        type Frame = TestFrame;
+        fn next_frame(&mut self, _control: &SourceControl, until: Instant) -> Result<Produced<TestFrame>, Error> {
+            if let Some(&(at, width)) = self.at_ms.front() {
+                let due = self.start + Duration::from_millis(at);
+                if due <= until {
+                    std::thread::sleep(due.saturating_duration_since(Instant::now()));
+                    self.at_ms.pop_front();
+                    let now = Instant::now();
+                    let stamp = Duration::from_millis(self.stamp_ms.unsigned_abs());
+                    let capture_time = if self.stamp_ms >= 0 { now + stamp } else { now - stamp };
+                    return Ok(Produced::Frame(TestFrame { width, height: 16, capture_time }));
+                }
+            }
+            std::thread::sleep(until.saturating_duration_since(Instant::now()));
+            Ok(Produced::Idle)
+        }
+
+        fn interval(&self) -> Duration {
+            Duration::from_millis(16)
+        }
+
+        fn captures(&self) -> bool {
+            true
+        }
+    }
+
+    /// (capture time in ms after `start`, rounded to 0.01, key) of each frame sent.
+    fn sent_times(start: Instant, frames: &std::sync::mpsc::Receiver<EncodedFrame>) -> Vec<(f64, bool)> {
+        frames
+            .try_iter()
+            .map(|f| {
+                let ms = if f.capture_time >= start {
+                    f.capture_time.duration_since(start).as_secs_f64() * 1000.0
+                } else {
+                    -(start.duration_since(f.capture_time).as_secs_f64() * 1000.0)
+                };
+                ((ms * 100.0).round() / 100.0, f.key)
+            })
+            .collect()
+    }
+
+    /// Each capture time at least `SENT_STEP` after the one before (to the rounding).
+    fn assert_forward(times: &[(f64, bool)]) {
+        assert!(times.windows(2).all(|w| w[1].0 - w[0].0 >= 0.98), "a capture time went back: {times:?}");
+    }
+
+    #[test]
+    fn future_stamps_and_a_resize_on_idle_never_send_a_capture_time_that_goes_back() {
+        // The review's H2 case (Windows): stamps 12 ms ahead of the arrival. A window resized at
+        // 990 ms, its last frame at 1284 ms, then still: the new size is due at 1290 ms and is
+        // taken up from the kept frame on an idle turn stamped `now`, before 1284 + 12 ms.
+        let start = Instant::now();
+        let producer = Timed { start, at_ms: VecDeque::from(vec![(0, 1000), (990, 1100), (1284, 1100)]), stamp_ms: 12 };
+        let mut pipeline = VideoPipeline::new(producer, Resizing::default());
+        let control = SourceControl::default();
+        control.set_target_bitrate(1_000_000);
+        let (sink, frames, _) = frame_channel(64);
+        while start.elapsed() < Duration::from_millis(1400) {
+            assert!(pipeline.step(&sink, &control).unwrap());
+        }
+        let times = sent_times(start, &frames);
+        // The three frames and the new size's key frame from the kept one.
+        assert_eq!(times.len(), 4, "{times:?}");
+        assert!(times[3].1, "{times:?}");
+        assert_forward(&times);
+        // No interval of 0 in the statistics either.
+        let report = control.take_report();
+        assert_eq!(report.frame_interval_ms.len(), 3);
+        assert!(report.frame_interval_ms.iter().all(|&ms| ms >= 0.999), "{:?}", report.frame_interval_ms);
+    }
+
+    #[test]
+    fn past_stamps_and_a_skipped_frame_on_idle_never_send_a_capture_time_that_goes_back() {
+        // The review's H2 case (Linux): stamps 4 ms before the arrival, one frame in two kept.
+        // The third frame is 4 ms late, so the skipped second one is encoded on idle at `now`
+        // just before it comes, after the third's compositor time.
+        let start = Instant::now();
+        let producer = Timed { start, at_ms: VecDeque::from(vec![(0, 16), (16, 16), (34, 16)]), stamp_ms: -4 };
+        let mut pipeline = VideoPipeline::new(producer, Calls::default());
+        pipeline.cadence.index = 1;
+        let control = SourceControl::default();
+        control.set_target_bitrate(1_000_000);
+        let (sink, frames, _) = frame_channel(64);
+        while start.elapsed() < Duration::from_millis(80) {
+            assert!(pipeline.step(&sink, &control).unwrap());
+        }
+        let times = sent_times(start, &frames);
+        assert_eq!(times.len(), 3, "{times:?}");
+        assert_forward(&times);
+    }
+
+    #[test]
+    fn a_key_frame_nobody_asked_for_restarts_the_spacing() {
+        // The review's M4 case: the encoder opens again for a new size on idle at about 1000 ms
+        // and makes a key frame nobody asked the pipeline for. A viewer's PLI comes 90 ms later:
+        // it waits for the 500 ms after that key frame, so no key frame follows at once.
+        let start = Instant::now();
+        let at_ms = VecDeque::from(vec![(0, 1000), (100, 1100), (1100, 1100), (1116, 1100), (1132, 1100)]);
+        let producer = Timed { start, at_ms, stamp_ms: 0 };
+        let mut pipeline = VideoPipeline::new(producer, Resizing::default());
+        let control = SourceControl::default();
+        control.set_target_bitrate(1_000_000);
+        let (sink, frames, _) = frame_channel(64);
+        while start.elapsed() < Duration::from_millis(1090) {
+            assert!(pipeline.step(&sink, &control).unwrap());
+        }
+        control.want_key_frame();
+        while start.elapsed() < Duration::from_millis(1200) {
+            assert!(pipeline.step(&sink, &control).unwrap());
+        }
+        let times = sent_times(start, &frames);
+        let keys: Vec<f64> = times.iter().filter(|(_, key)| *key).map(|(ms, _)| *ms).collect();
+        assert_eq!(keys.len(), 2, "key frames at {keys:?} of {times:?}");
+        assert!(keys[1] >= 990.0 && keys[1] < 1090.0, "the reopening's key frame at {keys:?}");
+        // The last turn waited for the spacing's end, where the request was decided: 500 ms
+        // after the reopening's key frame (this encoder has no kept frame, so nothing was sent).
+        assert!(!pipeline.keys.pending());
+        let decided = pipeline.keys.last.unwrap().duration_since(start).as_secs_f64() * 1000.0;
+        assert!(decided >= keys[1] + 499.0, "decided at {decided} ms, a key frame at {} ms", keys[1]);
+    }
+
+    #[test]
+    fn a_key_frame_the_encoder_made_meets_a_pending_request() {
+        // Fix E5: a request pending inside the spacing is met by a key frame made meanwhile.
+        let t = Instant::now();
+        let mut keys = KeyFrames::default();
+        assert_eq!(keys.decide(t), (true, false));
+        keys.request();
+        assert_eq!(keys.decide(t + Duration::from_millis(200)), (false, false));
+        keys.made(t + Duration::from_millis(300));
+        assert!(!keys.pending());
+        assert_eq!(keys.next_allowed(), Some(t + Duration::from_millis(800)));
+        assert_eq!(keys.decide(t + Duration::from_millis(900)), (false, false));
+    }
+
+    #[test]
+    fn the_ladder_steps_up_to_a_size_under_the_maximum_and_never_to_one_over_it() {
+        let t = Instant::now();
+        let ms = |v: u64| t + Duration::from_millis(v);
+        // Fix E2, the review's M1 case: a maximum of 4 Mbps, between what 1080p60 needs (3.73)
+        // and 1.25 times that (4.67). The target is never above the maximum.
+        let max = 4_000_000u64;
+        let mut l = SizeLadder { on: true, max: Some(max), ..SizeLadder::default() };
+        let mut now = 0u64;
+        let mut run = |l: &mut SizeLadder, frames: u64, target: u64| {
+            let mut changed = None;
+            for _ in 0..frames {
+                if let Some(rung) = l.update(ms(now), &HD, 60.0, FLOOR_H264, target, Some(target.min(1_700_000)), 1.0, 1) {
+                    changed = Some(rung);
+                }
+                now += 16;
+            }
+            changed
+        };
+        assert_eq!(run(&mut l, 300, max), None);
+        // One dip to 3.5 Mbps for 2.2 s: down to 720p, which pads toward the maximum.
+        assert_eq!(run(&mut l, 140, 3_500_000), Some(1));
+        assert_eq!(l.sustain(&HD, 60.0, FLOOR_H264), max);
+        // Back at the maximum: 5 s of room after the spacing, and back at 1080p.
+        assert_eq!(run(&mut l, 600, max), Some(0));
+        assert_eq!((l.rung, l.steps_up), (0, 1));
+        assert_eq!(l.sustain(&HD, 60.0, FLOOR_H264), 0);
+
+        // A maximum under what 1080p needs: 720p is never left, and nothing is padded for.
+        let max = 3_500_000u64;
+        let mut l = SizeLadder { on: true, rung: 1, max: Some(max), ..SizeLadder::default() };
+        assert_eq!(l.sustain(&HD, 60.0, FLOOR_H264), 0);
+        assert_eq!(run(&mut l, 600_000 / 16, max), None);
+        assert_eq!(l.rung, 1);
+        // From 540p it still steps up to 720p: 1.25 times 720p's 1.66 Mbps is under it.
+        let mut l = SizeLadder { on: true, rung: 2, max: Some(max), ..SizeLadder::default() };
+        assert_eq!(l.sustain(&HD, 60.0, FLOOR_H264), 2_073_600);
+        assert_eq!(run(&mut l, 400, max), Some(1));
+    }
+
+    #[test]
+    fn a_still_picture_sustains_nothing_until_the_next_frame() {
+        // Fix E3: Script's frames are 5 ms apart, so the ladder works at 200 frames a second.
+        let script = [true, true, false, false, true];
+        let mut pipeline = VideoPipeline::new(Script(VecDeque::from(script.to_vec())), Laddered::new(100_000));
+        pipeline.set_degrade(crate::Degrade::Size);
+        let control = SourceControl::default();
+        control.set_target_bitrate(1_000_000);
+        let (sink, _frames, _) = frame_channel(64);
+        let fps = 1.0 / Duration::from_millis(5).as_secs_f64();
+        let toward = (ROOM_OVER * needed(HD[0], fps, FLOOR_H264)).round() as u64;
+        assert!(pipeline.step(&sink, &control).unwrap());
+        // Down to 720p: the step up's rate is sustained.
+        over_the_target(&mut pipeline);
+        pipeline.ladder.over_since = Some(Instant::now() - Duration::from_secs(2));
+        assert!(pipeline.step(&sink, &control).unwrap());
+        assert_eq!(pipeline.ladder.rung, 1);
+        assert_eq!(control.sustain_bitrate(), toward);
+        // An idle turn within a second of the last frame leaves it.
+        assert!(pipeline.step(&sink, &control).unwrap());
+        assert_eq!(control.sustain_bitrate(), toward);
+        // A second without an encoded frame: nothing sustained.
+        pipeline.last_encoded = Some(Instant::now() - SUSTAIN_IDLE);
+        assert!(pipeline.step(&sink, &control).unwrap());
+        assert_eq!(control.sustain_bitrate(), 0);
+        // The next encoded frame's ladder turn brings it back.
+        assert!(pipeline.step(&sink, &control).unwrap());
+        assert_eq!(control.sustain_bitrate(), toward);
+    }
+
+    #[test]
+    fn the_sustain_rate_is_handed_on_when_the_rung_changes_or_it_moves_over_5_percent() {
+        // Fix E8.
+        let mut pipeline = VideoPipeline::new(Frames(0), Calls::default());
+        let control = SourceControl::default();
+        // Nothing on the top rung: nothing handed on.
+        pipeline.sustain(&control, 0, 0);
+        assert_eq!(pipeline.sustained, (0, 0));
+        pipeline.sustain(&control, 1, 1_000_000);
+        assert_eq!(control.sustain_bitrate(), 1_000_000);
+        // A window dragged: 4 % is not handed on, 6 % is, measured from what was.
+        pipeline.sustain(&control, 1, 1_040_000);
+        assert_eq!(control.sustain_bitrate(), 1_000_000);
+        pipeline.sustain(&control, 1, 960_000);
+        assert_eq!(control.sustain_bitrate(), 1_000_000);
+        pipeline.sustain(&control, 1, 1_060_000);
+        assert_eq!(control.sustain_bitrate(), 1_060_000);
+        pipeline.sustain(&control, 1, 1_100_000);
+        assert_eq!(control.sustain_bitrate(), 1_060_000);
+        // A new rung is handed on whatever the rate.
+        pipeline.sustain(&control, 2, 1_070_000);
+        assert_eq!(control.sustain_bitrate(), 1_070_000);
+        // To 0 and back.
+        pipeline.sustain(&control, 2, 0);
+        assert_eq!(control.sustain_bitrate(), 0);
+        pipeline.sustain(&control, 2, 1_070_000);
+        assert_eq!(control.sustain_bitrate(), 1_070_000);
     }
 }

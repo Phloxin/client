@@ -2,7 +2,7 @@
 // with snake_case names.
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use pylon_media::{E2eeParams, IceState, KEY_LEN, KeyFrameKind, SourceBinding, Stats, VideoCodec, VideoParams};
+use pylon_media::{Degrade, E2eeParams, IceState, KEY_LEN, KeyFrameKind, SourceBinding, Stats, VideoCodec, VideoParams};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -32,6 +32,21 @@ pub struct Preview {
     pub fps: u32,
     pub max_width: u32,
     pub max_height: u32,
+    /// JPEG pictures (the default) or the encoded share itself (smooth P1).
+    #[serde(default)]
+    pub mode: PreviewMode,
+}
+
+/// What the preview is made of (smooth P1).
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PreviewMode {
+    /// Small JPEGs, `preview` messages.
+    #[default]
+    Jpeg,
+    /// The frames the encoder made, `preview_frame` messages. `max_width` and `max_height` are
+    /// ignored, `fps` 0 stops it and any other turns it on.
+    Stream,
 }
 
 impl Preview {
@@ -48,6 +63,18 @@ pub struct Jpeg(pub String);
 impl std::fmt::Debug for Jpeg {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Jpeg({} base64 characters)", self.0.len())
+    }
+}
+
+/// An encoded frame of the stream preview as base64, in the clear, which is never printed
+/// (smooth P2).
+#[derive(Serialize)]
+#[serde(transparent)]
+pub struct FrameData(pub String);
+
+impl std::fmt::Debug for FrameData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "FrameData({} base64 characters)", self.0.len())
     }
 }
 
@@ -172,6 +199,28 @@ pub struct Video {
     /// makes `open` fail.
     #[serde(default)]
     pub codec: Codec,
+    /// What gives way first on a tight link: `"rate"` (when absent, the behaviour before) or
+    /// `"size"` (smooth S1). Anything else does not parse, which makes `open` fail.
+    #[serde(default)]
+    pub degrade: GiveWay,
+}
+
+/// What gives way first, as the protocol names it (smooth S1).
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GiveWay {
+    #[default]
+    Rate,
+    Size,
+}
+
+impl GiveWay {
+    pub fn to_engine(self) -> Degrade {
+        match self {
+            GiveWay::Rate => Degrade::Rate,
+            GiveWay::Size => Degrade::Size,
+        }
+    }
 }
 
 /// The session's video codec, as the protocol names it.
@@ -344,10 +393,19 @@ pub enum Reply {
         height: u32,
         jpeg: Jpeg,
     },
+    /// One encoded frame of the stream preview (smooth P2), only to the host. Its `t_ms` is the
+    /// frame's capture time since `open`, not when it was written.
+    PreviewFrame {
+        codec: &'static str,
+        key: bool,
+        t_ms: f64,
+        data: FrameData,
+    },
 }
 
 impl Reply {
-    /// The line for stdout, with `t_ms` added to the message's fields.
+    /// The line for stdout, with `t_ms` added to the message's fields, unless it has its own
+    /// (`preview_frame`).
     pub fn to_line(&self, t_ms: f64) -> String {
         let mut value = serde_json::to_value(self).unwrap_or(Value::Null);
         if let Some(fields) = value
@@ -356,7 +414,7 @@ impl Reply {
             .and_then(Value::as_object_mut)
         {
             let t_ms = (t_ms * 1000.0).round() / 1000.0;
-            fields.insert("t_ms".into(), t_ms.into());
+            fields.entry("t_ms").or_insert(t_ms.into());
         }
         value.to_string()
     }
@@ -403,7 +461,7 @@ mod tests {
         };
         assert_eq!(open.transport["id"], "5ab0b66c");
         assert_eq!(open.source, SourceSpec::File { path: "/tmp/testsrc2-720p30.h264".into(), fps: 30 });
-        assert_eq!(open.video, Video { start_bitrate: 1_500_000, max_bitrate: 8_000_000, codec: Codec::H264 });
+        assert_eq!(open.video, Video { start_bitrate: 1_500_000, max_bitrate: 8_000_000, codec: Codec::H264, degrade: GiveWay::Rate });
         let e2ee = open.e2ee.unwrap().to_params().unwrap();
         assert_eq!(e2ee.key, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
         assert_eq!((e2ee.format, e2ee.epoch, e2ee.kid, e2ee.counter), (1, 0, 1, 12345));
@@ -427,6 +485,28 @@ mod tests {
         // Anything else is an `open` that does not parse, which the host makes fatal.
         for other in [json!("av1"), json!("VP8"), json!(1), json!(null)] {
             open["open"]["video"]["codec"] = other;
+            assert_eq!(parsed(&open), Err(ParseError::Invalid { name: "open".into(), message: "the fields do not fit the message".into() }));
+        }
+    }
+
+    #[test]
+    fn the_frame_rate_gives_way_unless_size_is_said() {
+        let mut open: Value = serde_json::from_str(OPEN).unwrap();
+        let parsed = |open: &Value| match parse(&open.to_string()) {
+            Ok(Request::Open(parsed)) => Ok(parsed.video.degrade),
+            Ok(other) => panic!("{other:?}"),
+            Err(error) => Err(error),
+        };
+        assert_eq!(parsed(&open), Ok(GiveWay::Rate));
+        open["open"]["video"]["degrade"] = json!("rate");
+        assert_eq!(parsed(&open), Ok(GiveWay::Rate));
+        open["open"]["video"]["degrade"] = json!("size");
+        assert_eq!(parsed(&open), Ok(GiveWay::Size));
+        assert_eq!(GiveWay::Size.to_engine(), Degrade::Size);
+        assert_eq!(GiveWay::Rate.to_engine(), Degrade::Rate);
+        // Anything else is an `open` that does not parse, which the host makes fatal.
+        for other in [json!("Size"), json!("motion"), json!(1), json!(null)] {
+            open["open"]["video"]["degrade"] = other;
             assert_eq!(parsed(&open), Err(ParseError::Invalid { name: "open".into(), message: "the fields do not fit the message".into() }));
         }
     }
@@ -517,7 +597,7 @@ mod tests {
     fn preview_parses_and_prints() {
         assert_eq!(
             parse(r#"{"preview": {"fps": 5, "max_width": 480, "max_height": 270}}"#),
-            Ok(Request::Preview(Preview { fps: 5, max_width: 480, max_height: 270 }))
+            Ok(Request::Preview(Preview { fps: 5, max_width: 480, max_height: 270, mode: PreviewMode::Jpeg }))
         );
         // All three fields are needed, the limits are checked by the engine.
         assert!(matches!(parse(r#"{"preview": {"fps": 5}}"#), Err(ParseError::Invalid { .. })));
@@ -525,6 +605,31 @@ mod tests {
         let line = Reply::Preview { width: 480, height: 270, jpeg: Jpeg("/9j/".into()) }.to_line(5.0);
         assert_eq!(serde_json::from_str::<Value>(&line).unwrap(), json!({"preview": {"width": 480, "height": 270, "jpeg": "/9j/", "t_ms": 5.0}}));
         assert_eq!(format!("{:?}", Jpeg("/9j/4AAQ".into())), "Jpeg(8 base64 characters)");
+    }
+
+    #[test]
+    fn stream_preview_parses_and_its_frames_print() {
+        // The mode is optional, `jpeg` when left out (smooth P1).
+        assert_eq!(
+            parse(r#"{"preview": {"fps": 10, "max_width": 1280, "max_height": 720, "mode": "stream"}}"#),
+            Ok(Request::Preview(Preview { fps: 10, max_width: 1280, max_height: 720, mode: PreviewMode::Stream }))
+        );
+        assert_eq!(
+            parse(r#"{"preview": {"fps": 10, "max_width": 1280, "max_height": 720, "mode": "jpeg"}}"#),
+            parse(r#"{"preview": {"fps": 10, "max_width": 1280, "max_height": 720}}"#)
+        );
+        assert!(matches!(
+            parse(r#"{"preview": {"fps": 10, "max_width": 1280, "max_height": 720, "mode": "png"}}"#),
+            Err(ParseError::Invalid { .. })
+        ));
+        // The frame keeps its own t_ms, the capture time (smooth P2).
+        let frame = Reply::PreviewFrame { codec: "h264", key: true, t_ms: 1234.5, data: FrameData("AAAAAWdC".into()) };
+        let line = frame.to_line(9999.0);
+        assert_eq!(
+            serde_json::from_str::<Value>(&line).unwrap(),
+            json!({"preview_frame": {"codec": "h264", "key": true, "t_ms": 1234.5, "data": "AAAAAWdC"}})
+        );
+        assert!(!format!("{frame:?}").contains("AAAAAWdC"));
     }
 
     #[test]
@@ -634,7 +739,10 @@ mod tests {
             "encoder_output_bps", "encode_ms_median", "encode_ms_max", "key_frames_forced",
             "frames_skipped_rate", "frame_rate_divisor", "key_frames_repeated", "capture_frames_delivered",
             "capture_frames_taken", "capture_frames_dropped_rate", "capture_buffer_path",
-            "capture_delay_ms_median", "capture_delay_ms_max",
+            "capture_delay_ms_median", "capture_delay_ms_max", "frame_interval_ms_median",
+            "frame_interval_ms_p95", "frame_interval_ms_max", "frame_gaps_long", "send_interval_ms_p95",
+            "send_interval_ms_max", "capture_frames_untimed", "encoded_width", "encoded_height",
+            "size_steps_down", "size_steps_up", "rtx_bytes_sent", "sustain_bitrate_bps",
         ] {
             assert!(fields.contains_key(name), "{name}");
         }

@@ -45,8 +45,8 @@ const api = {
   // The native media engine's sidecar (main/mediaEngine.js). Whether a screen share goes
   // through it (PYLON_NATIVE_SHARE, else the "Native screen share" setting) is main's call,
   // told in available()'s reply. onEvent hears
-  // ice_state, connected, stats, error, capture_changed, preview, closed and exit, as
-  // { type, ...fields }.
+  // ice_state, connected, stats, error, capture_changed, preview, preview_frame, closed and
+  // exit, as { type, ...fields }.
   mediaEngine: {
     // { available, codecs, source, pattern, settingShown, preview }: codecs from the last
     // sidecar's hello, null before the first; source the configured kind ('screen', 'file',
@@ -66,9 +66,10 @@ const api = {
     start: (pid) => ipcRenderer.invoke('mediaengine:start', pid),
     setKey: (pid, key) => ipcRenderer.invoke('mediaengine:set-key', pid, key),
     close: (pid) => ipcRenderer.invoke('mediaengine:close', pid),
-    // Asks that sidecar for the sharer's preview: { fps, max_width, max_height } as in its
-    // protocol (fps 0 stops). Resolves false when refused. The pictures come as `preview`
-    // events: { width, height, jpeg (base64) }.
+    // Asks that sidecar for the sharer's preview: { fps, max_width, max_height, mode } as in
+    // its protocol (fps 0 stops). Resolves false when refused. The pictures come as `preview`
+    // events: { width, height, jpeg (base64) }; with mode 'stream' the encoded share comes as
+    // `preview_frame` events: { codec, key, t_ms, data (base64) }.
     preview: (pid, request) => ipcRenderer.invoke('mediaengine:preview', pid, request),
     onEvent: (cb) => {
       const handler = (_e, event) => cb(event)

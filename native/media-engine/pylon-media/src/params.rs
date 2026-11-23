@@ -43,6 +43,15 @@ impl VideoCodec {
     }
 }
 
+/// What gives way first when the link is tighter than the share needs (smooth S1): the frame
+/// rate (today's behaviour, the default) or the picture's size.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Degrade {
+    #[default]
+    Rate,
+    Size,
+}
+
 /// Bitrates for the video, in bits per second, and its codec.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VideoParams {

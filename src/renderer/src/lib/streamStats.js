@@ -226,6 +226,32 @@ export function extractSendAudioMetrics(report, previous) {
   return { metrics, snapshot }
 }
 
+// The standard deviation in milliseconds of the time between frames over a window (smooth
+// A2.2): from the deltas of totalInterFrameDelay and totalSquaredInterFrameDelay (seconds) and
+// of framesDecoded, the count Chromium records the delays over. Null when a field is missing
+// at either end, a counter went backwards, or fewer than two frames came. An even 60 is about
+// 0, frames alternating 17 and 33 ms are 8.
+export function frameJitterMs(current, previous) {
+  const sum = counterDelta(current?.totalInterFrameDelay, previous?.totalInterFrameDelay)
+  const squares = counterDelta(
+    current?.totalSquaredInterFrameDelay,
+    previous?.totalSquaredInterFrameDelay
+  )
+  const frames = counterDelta(current?.framesDecoded, previous?.framesDecoded)
+  if (sum == null || squares == null || frames == null || frames < 2) return null
+  const mean = sum / frames
+  return Math.sqrt(Math.max(0, squares / frames - mean * mean)) * 1000
+}
+
+// What frameJitterMs needs of an inbound-rtp at the start of the next window.
+export function interFrameSnapshot(inbound) {
+  return {
+    totalInterFrameDelay: inbound?.totalInterFrameDelay,
+    totalSquaredInterFrameDelay: inbound?.totalSquaredInterFrameDelay,
+    framesDecoded: inbound?.framesDecoded
+  }
+}
+
 export function extractRecvVideoMetrics(report, previous) {
   let inbound = null
   for (const stat of report.values()) {
@@ -246,6 +272,7 @@ export function extractRecvVideoMetrics(report, previous) {
       framesDropped: inbound.framesDropped ?? null,
       freezeCount: inbound.freezeCount ?? null,
       totalFreezesDuration: inbound.totalFreezesDuration ?? null,
+      frameJitterMs: frameJitterMs(inbound, previous),
       keyFramesDecoded: inbound.keyFramesDecoded ?? null,
       pliCount: inbound.pliCount ?? null,
       nackCount: inbound.nackCount ?? null,
@@ -262,7 +289,8 @@ export function extractRecvVideoMetrics(report, previous) {
       bytes: inbound.bytesReceived,
       timestamp: inbound.timestamp,
       jitterBufferDelay: inbound.jitterBufferDelay,
-      jitterBufferEmittedCount: inbound.jitterBufferEmittedCount
+      jitterBufferEmittedCount: inbound.jitterBufferEmittedCount,
+      ...interFrameSnapshot(inbound)
     }
   }
 }

@@ -10,7 +10,8 @@
 //   media-probe probe3 [--still] [--out <dir>]
 //
 // Env: PHASE_S (20), MAX_MBPS (8), START_KBPS (1500), PATTERN (1920x1080@60, others only to
-// diagnose), KIND (screen, or stress to diagnose), PROBE_CODEC (H264, or AV1).
+// diagnose), KIND (screen, or stress to diagnose), PROBE_CODEC (H264, or AV1), DEGRADE (unset, or
+// `size` or `rate` for the open request's `video.degrade`, smooth S1).
 
 use std::{
     collections::BTreeMap,
@@ -236,7 +237,7 @@ struct Row {
     node_bitrate: u64,
 }
 
-const COLUMNS: &str = "t_s,phase,limit_bps,estimate_bps,target_bps,encoder_bps,encoder_output_bps,sent_bps,media_sent_bps,node_received_bps,node_bitrate_bps,queued_packets,queued_packets_max,queued_bytes,queued_bytes_max,queued_ms_max,frames_sent,frames_skipped,frames_skipped_rate,frame_rate_divisor,key_frames_sent,key_frames_forced,encode_ms_median,encode_ms_max,relay_queued_ms_max,relay_dropped_over_limit,relay_dropped_loss,relay_in_packets,rtt_ms,loss_fraction";
+const COLUMNS: &str = "t_s,phase,limit_bps,estimate_bps,target_bps,encoder_bps,encoder_output_bps,sent_bps,media_sent_bps,node_received_bps,node_bitrate_bps,queued_packets,queued_packets_max,queued_bytes,queued_bytes_max,queued_ms_max,frames_sent,frames_skipped,frames_skipped_rate,frame_rate_divisor,key_frames_sent,key_frames_forced,encode_ms_median,encode_ms_max,relay_queued_ms_max,relay_dropped_over_limit,relay_dropped_loss,relay_in_packets,rtt_ms,loss_fraction,encoded_width,encoded_height,size_steps_down,size_steps_up,frame_interval_ms_median,frame_interval_ms_p95,frame_interval_ms_max,frame_gaps_long,sustain_bitrate_bps,rtx_sent_bps";
 
 fn delta(rows: &[Row], i: usize, f: impl Fn(&Row) -> u64) -> u64 {
     if i == 0 { f(&rows[0]) } else { f(&rows[i]).saturating_sub(f(&rows[i - 1])) }
@@ -268,7 +269,7 @@ fn csv(rows: &[Row], phases: &[Phase]) -> String {
         let opt = |v: &Value| if v.is_null() { String::new() } else { v.to_string() };
         let _ = writeln!(
             out,
-            "{:.3},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{:.1},{},{},{},{},{}",
+            "{:.3},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{:.1},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
             r.t.as_secs_f64(),
             phases[r.phase].name,
             phases[r.phase].limits.rate_bps.map(|v| v.to_string()).unwrap_or_default(),
@@ -299,6 +300,16 @@ fn csv(rows: &[Row], phases: &[Phase]) -> String {
             delta(rows, i, |r| r.relay.in_packets),
             opt(&s["rtt_ms"]),
             opt(&s["loss_fraction"]),
+            opt(&s["encoded_width"]),
+            opt(&s["encoded_height"]),
+            opt(&s["size_steps_down"]),
+            opt(&s["size_steps_up"]),
+            opt(&s["frame_interval_ms_median"]),
+            opt(&s["frame_interval_ms_p95"]),
+            opt(&s["frame_interval_ms_max"]),
+            opt(&s["frame_gaps_long"]),
+            stat(r, "sustain_bitrate_bps"),
+            rate(rows, i, |r| stat(r, "rtx_bytes_sent")),
         );
     }
     out
@@ -376,7 +387,10 @@ pub async fn run(args: &[String]) -> i32 {
     if codec != "H264" {
         video["codec"] = json!(codec);
     }
-    println!("codec {codec}");
+    if let Ok(degrade) = std::env::var("DEGRADE") {
+        video["degrade"] = json!(degrade);
+    }
+    println!("codec {codec}, degrade {:?}", video.get("degrade"));
     let opened = sidecar
         .hello_and_open(json!({
             "router_rtp_capabilities": capabilities,
@@ -496,7 +510,7 @@ pub async fn run(args: &[String]) -> i32 {
                 let i = rows.len() - 1;
                 let r = &rows[i];
                 println!(
-                    "  {:6.1} s  est {:>9}  target {:>8}  enc {:>8}  out {:>8}  sent {:>8}  queue {:>3} ms (max)  skipped {:>3}  N {}  relay drops {:>3}",
+                    "  {:6.1} s  est {:>9}  target {:>8}  enc {:>8}  out {:>8}  sent {:>8}  queue {:>3} ms (max)  skipped {:>3}  N {}  size {}x{}  relay drops {:>3}",
                     r.t.as_secs_f64(),
                     r.stats["bandwidth_estimate_bps"].as_u64().unwrap_or(0),
                     stat(r, "target_bitrate_bps"),
@@ -506,6 +520,8 @@ pub async fn run(args: &[String]) -> i32 {
                     stat(r, "queued_ms_max"),
                     delta(&rows, i, |r| stat(r, "frames_skipped_backlog")),
                     r.stats["frame_rate_divisor"].as_u64().unwrap_or(0),
+                    r.stats["encoded_width"].as_u64().unwrap_or(0),
+                    r.stats["encoded_height"].as_u64().unwrap_or(0),
                     delta(&rows, i, |r| r.relay.dropped_over_limit),
                 );
             }

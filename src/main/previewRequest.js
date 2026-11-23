@@ -1,12 +1,14 @@
 // The body of the sidecar's `preview` request (native/media-engine/PROTOCOL.md), from what
-// the renderer asked: only the protocol's three fields, each an integer in its range, or
-// null when one is not. Kept apart from mediaEngine.js, which imports Electron, so it can be
-// tested.
+// the renderer asked: only the protocol's three fields, each an integer in its range, and its
+// `mode` when one was given ('jpeg' or 'stream', smooth P1), or null when one is not. Kept
+// apart from mediaEngine.js, which imports Electron, so it can be tested.
 export const PREVIEW_LIMITS = {
   fps: [0, 10],
   max_width: [16, 1280],
   max_height: [16, 720]
 }
+// What the preview is made of: JPEG pictures (the default) or the encoded share (smooth P1).
+const PREVIEW_MODES = new Set(['jpeg', 'stream'])
 
 export function previewRequestBody(request) {
   const body = {}
@@ -14,6 +16,10 @@ export function previewRequestBody(request) {
     const value = request?.[field]
     if (!Number.isInteger(value) || value < min || value > max) return null
     body[field] = value
+  }
+  if (request?.mode !== undefined) {
+    if (!PREVIEW_MODES.has(request.mode)) return null
+    body.mode = request.mode
   }
   return body
 }

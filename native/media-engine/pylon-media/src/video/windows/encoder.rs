@@ -71,6 +71,9 @@ fn buffer_bits(bitrate: u64) -> i32 {
 /// The least Quick Sync's buffer is opened with (N6, M7 plan F5).
 const QUICK_SYNC_LEAST_BUFFER: u64 = 2_000_000;
 
+/// The least bitrate an encoder opened again at a new size is opened with (fix E7).
+const REOPEN_LEAST_BITRATE: u64 = 100_000;
+
 /// Quick Sync's rate control buffer, fixed at opening: a quarter of the opening bitrate, not
 /// less than `QUICK_SYNC_LEAST_BUFFER` (N6). It cannot change on the open encoder (F1).
 fn quick_sync_buffer_bits(bitrate: u64) -> i32 {
@@ -116,6 +119,11 @@ pub struct D3d11Encoder {
     /// The import and encoder `new` opened, for a first frame of the size it was given (N4, C7).
     provisional: bool,
     resizes: Resizes,
+    /// The cap on the encoded picture of the size ladder, `None` for the share's own maximum
+    /// (smooth S2, S8).
+    cap: Option<(u32, u32)>,
+    /// The newest input frame's size (the first one's from `new`).
+    input: Option<(u32, u32)>,
     open: Option<Open>,
     packet: ffi::Packet,
     pts: i64,
@@ -171,6 +179,8 @@ impl D3d11Encoder {
             import: None,
             provisional: false,
             resizes: Resizes::default(),
+            cap: None,
+            input: Some(first),
             open: None,
             packet,
             pts: 0,
@@ -193,11 +203,19 @@ impl D3d11Encoder {
         self.open.as_ref().map(|open| open.size)
     }
 
+    /// The size an input of `input` is encoded at under the smaller of the share's maximum and
+    /// `cap` (smooth S8).
+    fn wanted_under(&self, cap: Option<(u32, u32)>, input: (u32, u32)) -> (u32, u32) {
+        let (width, height) = cap.map_or((self.config.width, self.config.height), |(w, h)| (self.config.width.min(w), self.config.height.min(h)));
+        encoded_size(input.0, input.1, (width, height), LIMITS)
+    }
+
     /// The import for frames like `frame` and the size they are encoded at. A new size is taken
     /// up by opening the encoder again only as D14 allows, until then frames are scaled to the
-    /// size the encoder runs at.
-    fn import_for(&mut self, frame: &D3d11Frame) -> Result<(), Error> {
-        let wanted = encoded_size(frame.width, frame.height, (self.config.width, self.config.height), LIMITS);
+    /// size the encoder runs at. It opens again at `bitrate`, the bitrate in force (fix E7).
+    fn import_for(&mut self, frame: &D3d11Frame, bitrate: u64) -> Result<(), Error> {
+        self.input = Some((frame.width, frame.height));
+        let wanted = self.wanted_under(self.cap, (frame.width, frame.height));
         if std::mem::take(&mut self.provisional) {
             let fits = self
                 .import
@@ -221,9 +239,11 @@ impl D3d11Encoder {
             self.preview = None;
             self.kept = None;
             // The new encoder is opened before the running one goes, which stays if that fails.
+            // At the bitrate in force, not the share's start: Quick Sync's buffer is fixed at
+            // opening and is to fit the target (fix E7).
             match self
                 .build_import((frame.width, frame.height), size)
-                .and_then(|import| Ok((self.open_encoder(&import, self.config.start_bitrate)?, import)))
+                .and_then(|import| Ok((self.open_encoder(&import, bitrate)?, import)))
             {
                 Ok((open, import)) => {
                     tracing::info!(encoder = self.backend.name(), from = ?running, to = ?size, "encoder opened again at the new size");
@@ -357,7 +377,7 @@ impl D3d11Encoder {
 impl FrameEncoder for D3d11Encoder {
     type Frame = D3d11Frame;
     fn encode(&mut self, frame: &D3d11Frame, bitrate: u64, divisor: u32, key: bool) -> Result<Packet, Error> {
-        self.import_for(frame)?;
+        self.import_for(frame, bitrate.max(REOPEN_LEAST_BITRATE))?;
         let Some(import) = &self.import else {
             return Err(Error::Media("no import".into()));
         };
@@ -382,6 +402,31 @@ impl FrameEncoder for D3d11Encoder {
 
     fn resize_due(&self) -> Option<Instant> {
         self.open.as_ref().and(self.resizes.due())
+    }
+
+    fn set_size_cap(&mut self, cap: Option<(u32, u32)>) {
+        self.cap = cap;
+        // Asked for now, so a still screen takes it up too (D14's rule, through `resize_due`).
+        // Not before the first frame: that one decides on the provisional opening.
+        if !self.provisional
+            && let (Some(input), Some(open)) = (self.input, &self.open)
+        {
+            let wanted = self.wanted_under(cap, input);
+            self.resizes.want(Instant::now(), wanted, open.size);
+        }
+    }
+
+    fn size_under(&self, cap: Option<(u32, u32)>) -> Option<(u32, u32)> {
+        self.input.map(|input| self.wanted_under(cap, input))
+    }
+
+    fn size_floor(&self) -> Option<f64> {
+        // H264 only on Windows (AV1 step 2, Q2).
+        Some(crate::video::FLOOR_H264)
+    }
+
+    fn running_size(&self) -> Option<(u32, u32)> {
+        self.open.as_ref().map(|open| open.size)
     }
 
     fn offer_preview(&mut self, preview: &Arc<Preview>) -> bool {

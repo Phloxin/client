@@ -11,6 +11,7 @@ use std::{
     io::{BufRead, Write},
     sync::{
         Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
         mpsc::{self, Receiver, Sender},
     },
     time::{Duration, Instant},
@@ -18,11 +19,11 @@ use std::{
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use pylon_media::{
-    CloseReason, Engine, Event, FileSource, OpenParams, Source, SyntheticSource, VideoCodec,
+    CloseReason, Engine, Event, FileSource, OpenParams, PreviewFrame, PreviewTap, Source, SyntheticSource, VideoCodec,
     video::{Preview, PreviewEvent},
 };
 
-use protocol::{ParseError, Reply, Request, SourceSpec};
+use protocol::{ParseError, PreviewMode, Reply, Request, SourceSpec};
 
 #[cfg(all(feature = "capture", any(target_os = "linux", target_os = "windows")))]
 use pylon_media::video::capture::{CaptureEvent, ScreenCapture};
@@ -38,6 +39,9 @@ impl ScreenCapture {
 
 /// Once the process has decided to exit, it is gone this long after whatever its threads do.
 const EXIT_WATCHDOG: Duration = Duration::from_secs(2);
+/// Stream preview frames handed to the main loop and not yet written, at most: one more is dropped
+/// for the preview, never waited for (smooth P2).
+const PREVIEW_FRAMES_IN_FLIGHT: usize = 8;
 
 #[derive(Clone, Copy, Debug, Default)]
 struct Flags {
@@ -53,6 +57,9 @@ enum Input {
     #[cfg_attr(not(all(feature = "capture", any(target_os = "linux", target_os = "windows"))), allow(dead_code))]
     Capture(CaptureNews),
     Preview(PreviewNews),
+    /// A frame of the stream preview (smooth P2), with the generation of the tap it came through
+    /// (fix E12). Plaintext video: never logged.
+    PreviewFrame(u64, PreviewFrame),
 }
 
 /// What the sharer's preview reports (M6 preview step 1). No `Debug`: it holds the picture (R5).
@@ -98,6 +105,13 @@ struct Host<W: FnMut(&str) -> bool> {
     preview: Option<Arc<Preview>>,
     /// Why there is none, for a source without a picture (R6).
     preview_refused: Option<&'static str>,
+    /// Whether a JPEG preview or the stream preview was asked for last (smooth P1).
+    jpeg_preview_on: bool,
+    stream_preview_on: bool,
+    /// Stream preview frames handed over and not yet written.
+    preview_in_flight: Arc<AtomicUsize>,
+    /// The generation of the stream preview's tap now: only its frames are written (fix E12).
+    stream_generation: u64,
     /// Armed on the first decision to exit, `None` in tests.
     exit_watchdog: Option<Duration>,
     exiting: bool,
@@ -122,6 +136,10 @@ impl<W: FnMut(&str) -> bool> Host<W> {
             capture_ready: false,
             preview: None,
             preview_refused: None,
+            jpeg_preview_on: false,
+            stream_preview_on: false,
+            preview_in_flight: Arc::new(AtomicUsize::new(0)),
+            stream_generation: 0,
         }
     }
 
@@ -288,9 +306,11 @@ impl<W: FnMut(&str) -> bool> Host<W> {
                 if let Some(refused) = self.preview_refused {
                     return self.error(format!("preview: {refused}"));
                 }
-                let result = match &self.preview {
-                    Some(preview) => preview.request(asked.to_engine()).map_err(|e| e.to_string()),
-                    None => Err("this source has no picture to preview".into()),
+                let result = match asked.mode {
+                    PreviewMode::Jpeg => self.jpeg_preview(&asked),
+                    PreviewMode::Stream if asked.fps > 0 => self.stream_preview(true),
+                    // `fps` 0 in either mode stops both (fix E9).
+                    PreviewMode::Stream => self.stop_jpeg_preview().and_then(|()| self.stream_preview(false)),
                 };
                 match result {
                     Ok(()) => Next::Continue,
@@ -369,6 +389,8 @@ impl<W: FnMut(&str) -> bool> Host<W> {
                 }
             }
         };
+        // What gives way first on a tight link (smooth S1).
+        source.set_degrade(open.video.degrade.to_engine());
         let e2ee = match open.e2ee.as_ref().map(protocol::E2ee::to_params).transpose() {
             Ok(e2ee) => e2ee,
             Err(e) => return self.fatal(format!("open: e2ee: {e}")),
@@ -437,6 +459,69 @@ impl<W: FnMut(&str) -> bool> Host<W> {
             // The preview stopped, the share goes on (R4).
             PreviewNews::Failed(message) => self.error(message),
         }
+    }
+
+    /// Today's JPEG preview. Asking for it stops the stream preview (smooth P1).
+    fn jpeg_preview(&mut self, asked: &protocol::Preview) -> Result<(), String> {
+        let Some(preview) = &self.preview else {
+            return Err("this source has no picture to preview".into());
+        };
+        preview.request(asked.to_engine()).map_err(|e| e.to_string())?;
+        self.jpeg_preview_on = asked.fps > 0;
+        self.stream_preview(false)
+    }
+
+    /// The stream preview on or off (smooth P1, P2). On, again too, it waits for a key frame and
+    /// asks for one; it stops the JPEG preview.
+    fn stream_preview(&mut self, on: bool) -> Result<(), String> {
+        let Some(engine) = self.engine.as_ref() else {
+            return Err("before opened".into());
+        };
+        if on {
+            // A new tap each time: frames of an earlier one still on their way are not written
+            // (fix E12).
+            self.stream_generation += 1;
+            let tap = stream_preview_tap(self.inputs.clone(), self.preview_in_flight.clone(), self.stream_generation);
+            engine.set_stream_preview(Some(tap)).map_err(|e| e.to_string())?;
+            self.stream_preview_on = true;
+            self.stop_jpeg_preview()?;
+        } else if self.stream_preview_on {
+            engine.set_stream_preview(None).map_err(|e| e.to_string())?;
+            self.stream_preview_on = false;
+        }
+        Ok(())
+    }
+
+    /// Stops the JPEG preview if it is on.
+    fn stop_jpeg_preview(&mut self) -> Result<(), String> {
+        if self.jpeg_preview_on
+            && let Some(preview) = &self.preview
+        {
+            // A stop's sizes are not used: the smallest the protocol allows.
+            let stop = pylon_media::video::PreviewRequest { fps: 0, max_width: 16, max_height: 16 };
+            preview.request(stop).map_err(|e| e.to_string())?;
+            self.jpeg_preview_on = false;
+        }
+        Ok(())
+    }
+
+    /// Writes a stream preview frame of tap `generation`, only to stdout (smooth P2). One that
+    /// comes after the preview was turned off, or through an earlier tap (fix E12), is dropped.
+    fn preview_frame(&mut self, generation: u64, frame: PreviewFrame) -> Next {
+        self.preview_in_flight.fetch_sub(1, Ordering::AcqRel);
+        if !self.stream_preview_on || generation != self.stream_generation {
+            return Next::Continue;
+        }
+        let codec = match frame.codec {
+            VideoCodec::H264 => "h264",
+            VideoCodec::Av1 => "av1",
+        };
+        self.go_on(Reply::PreviewFrame {
+            codec,
+            key: frame.key,
+            t_ms: frame.t_ms,
+            data: protocol::FrameData(STANDARD.encode(&frame.data)),
+        })
     }
 
     fn end_of_input(&mut self) -> Next {
@@ -573,6 +658,24 @@ fn preview(inputs: Sender<Input>) -> Arc<Preview> {
     })
 }
 
+/// The stream preview's tap (smooth P2): frames go into the main loop, and from there only to
+/// stdout. While `PREVIEW_FRAMES_IN_FLIGHT` wait there, the main loop's writes are not keeping up
+/// and a frame is not taken (the engine then waits for a key frame and asks for one). Its frames
+/// carry its `generation` (fix E12).
+fn stream_preview_tap(inputs: Sender<Input>, in_flight: Arc<AtomicUsize>, generation: u64) -> PreviewTap {
+    Box::new(move |frame| {
+        if in_flight.fetch_add(1, Ordering::AcqRel) >= PREVIEW_FRAMES_IN_FLIGHT {
+            in_flight.fetch_sub(1, Ordering::AcqRel);
+            return false;
+        }
+        if inputs.send(Input::PreviewFrame(generation, frame)).is_err() {
+            in_flight.fetch_sub(1, Ordering::AcqRel);
+            return false;
+        }
+        true
+    })
+}
+
 /// Moves the engine's events into the main loop. Events that end without `Closed` mean the
 /// engine's thread is gone, which closes the engine as an error.
 fn forward(events: Receiver<Event>, inputs: Sender<Input>) {
@@ -691,6 +794,8 @@ fn main() {
     // (M7.5b Z2).
     #[cfg(all(feature = "capture", target_os = "windows"))]
     pylon_media::video::capture::init_runtime();
+    // Priority without elevation (smooth B3), a no-op off Windows.
+    pylon_media::priority::process();
 
     let (inputs, receiver) = mpsc::channel();
     read_stdin(inputs.clone());
@@ -702,6 +807,7 @@ fn main() {
             Ok(Input::Engine(event)) => host.engine_event(event),
             Ok(Input::Capture(news)) => host.capture_news(news),
             Ok(Input::Preview(news)) => host.preview_news(news),
+            Ok(Input::PreviewFrame(generation, frame)) => host.preview_frame(generation, frame),
             Ok(Input::EndOfInput) | Err(_) => host.end_of_input(),
         };
         if let Next::Exit(code) = next {
@@ -942,10 +1048,126 @@ mod tests {
             let wanted = format!("preview: the {name} source has no picture to preview");
             assert_eq!(lines.borrow()[3]["error"]["message"], wanted.as_str());
             assert_eq!(lines.borrow()[3]["error"]["fatal"], false);
+            // The stream preview the same (smooth P1).
+            assert_eq!(exit_code(host.line(STREAM)), None);
+            assert_eq!(lines.borrow()[4]["error"]["message"], wanted.as_str());
+            assert!(!host.stream_preview_on);
             assert!(host.engine.is_some());
             assert_eq!(exit_code(host.line(r#"{"close": {}}"#)), Some(0));
         }
         std::fs::remove_file(&path).unwrap();
+    }
+
+    const STREAM: &str = r#"{"preview": {"fps": 10, "max_width": 1280, "max_height": 720, "mode": "stream"}}"#;
+
+    #[test]
+    fn the_stream_preview_writes_frames_only_while_on_and_never_waits() {
+        let _serial = serial();
+        let path = std::env::temp_dir().join(format!("pylon-media-host-stream-{}.h264", std::process::id()));
+        std::fs::write(&path, [0, 0, 1, 0x65, 1]).unwrap();
+        let (mut host, lines) = make(Flags { insecure_plain: true, test_hooks: true });
+        host.line(r#"{"hello": {"protocol": 1}}"#);
+        let open = json!({ "open": {
+            "router_rtp_capabilities": serde_json::from_str::<Value>(include_str!("../../pylon-media/testdata/router_rtp_capabilities.json")).unwrap(),
+            "transport": serde_json::from_str::<Value>(include_str!("../../pylon-media/testdata/transport.json")).unwrap(),
+            "e2ee": null,
+            "source": { "file": { "path": path, "fps": 30 } },
+            "video": { "start_bitrate": 1_500_000, "max_bitrate": 8_000_000 },
+        }});
+        assert_eq!(exit_code(host.line(&open.to_string())), None);
+        std::fs::remove_file(&path).unwrap();
+        // As if the source had a picture: a JPEG preview not attached to anything.
+        host.preview_refused = None;
+        host.preview = Some(preview(host.inputs.clone()));
+        let written = lines.borrow().len();
+
+        // JPEG on, then the stream: the stream stops the JPEG preview.
+        assert_eq!(exit_code(host.line(r#"{"preview": {"fps": 10, "max_width": 1280, "max_height": 720}}"#)), None);
+        assert!(host.jpeg_preview_on && !host.stream_preview_on);
+        assert_eq!(exit_code(host.line(STREAM)), None);
+        assert!(host.stream_preview_on && !host.jpeg_preview_on);
+        assert_eq!(lines.borrow().len(), written, "no error: {:?}", lines.borrow().last());
+
+        // The tap takes up to PREVIEW_FRAMES_IN_FLIGHT not yet written, then refuses.
+        let (frames, taken) = mpsc::channel();
+        let mut tap = stream_preview_tap(frames, host.preview_in_flight.clone(), host.stream_generation);
+        let frame = |key, byte| PreviewFrame { codec: VideoCodec::H264, key, t_ms: 12.5, data: vec![0, 0, 0, 1, byte] };
+        for n in 0..PREVIEW_FRAMES_IN_FLIGHT {
+            assert!(tap(frame(n == 0, 0x65)), "frame {n}");
+        }
+        assert!(!tap(frame(false, 0x41)));
+        let Ok(Input::PreviewFrame(generation, first)) = taken.recv() else { panic!("no frame") };
+        assert_eq!(exit_code(host.preview_frame(generation, first)), None);
+        assert!(tap(frame(false, 0x41)));
+        let line = lines.borrow().last().unwrap().clone();
+        assert_eq!(line, json!({"preview_frame": {"codec": "h264", "key": true, "t_ms": 12.5, "data": "AAAAAWU="}}));
+
+        // Off: frames still on their way are not written, and none is counted as waiting.
+        assert_eq!(exit_code(host.line(STREAM_OFF)), None);
+        assert!(!host.stream_preview_on);
+        let before = lines.borrow().len();
+        while let Ok(Input::PreviewFrame(generation, frame)) = taken.try_recv() {
+            assert_eq!(exit_code(host.preview_frame(generation, frame)), None);
+        }
+        assert_eq!(lines.borrow().len(), before);
+        assert_eq!(host.preview_in_flight.load(Ordering::Acquire), 0);
+
+        // A JPEG stop also stops the stream preview.
+        assert_eq!(exit_code(host.line(STREAM)), None);
+        assert_eq!(exit_code(host.line(r#"{"preview": {"fps": 0, "max_width": 1280, "max_height": 720}}"#)), None);
+        assert!(!host.stream_preview_on && !host.jpeg_preview_on);
+        assert_eq!(lines.borrow().len(), before);
+
+        // And a stream stop stops a running JPEG preview (fix E9).
+        assert_eq!(exit_code(host.line(r#"{"preview": {"fps": 10, "max_width": 1280, "max_height": 720}}"#)), None);
+        assert!(host.jpeg_preview_on && !host.stream_preview_on);
+        assert_eq!(exit_code(host.line(STREAM_OFF)), None);
+        assert!(!host.stream_preview_on && !host.jpeg_preview_on);
+        assert_eq!(lines.borrow().len(), before, "no error: {:?}", lines.borrow().last());
+        assert_eq!(exit_code(host.line(r#"{"close": {}}"#)), Some(0));
+    }
+
+    const STREAM_OFF: &str = r#"{"preview": {"fps": 0, "max_width": 1280, "max_height": 720, "mode": "stream"}}"#;
+
+    #[test]
+    fn a_frame_of_an_earlier_stream_preview_tap_is_not_written() {
+        // Fix E12: off then on again, and a frame the transport handed to the old tap arrives
+        // after both lines were handled.
+        let _serial = serial();
+        let path = std::env::temp_dir().join(format!("pylon-media-host-generation-{}.h264", std::process::id()));
+        std::fs::write(&path, [0, 0, 1, 0x65, 1]).unwrap();
+        let (mut host, lines) = make(Flags { insecure_plain: true, test_hooks: true });
+        host.line(r#"{"hello": {"protocol": 1}}"#);
+        let open = json!({ "open": {
+            "router_rtp_capabilities": serde_json::from_str::<Value>(include_str!("../../pylon-media/testdata/router_rtp_capabilities.json")).unwrap(),
+            "transport": serde_json::from_str::<Value>(include_str!("../../pylon-media/testdata/transport.json")).unwrap(),
+            "e2ee": null,
+            "source": { "file": { "path": path, "fps": 30 } },
+            "video": { "start_bitrate": 1_500_000, "max_bitrate": 8_000_000 },
+        }});
+        assert_eq!(exit_code(host.line(&open.to_string())), None);
+        std::fs::remove_file(&path).unwrap();
+        host.preview_refused = None;
+        host.preview = Some(preview(host.inputs.clone()));
+
+        assert_eq!(exit_code(host.line(STREAM)), None);
+        let (frames, taken) = mpsc::channel();
+        let mut old = stream_preview_tap(frames.clone(), host.preview_in_flight.clone(), host.stream_generation);
+        assert_eq!(exit_code(host.line(STREAM_OFF)), None);
+        assert_eq!(exit_code(host.line(STREAM)), None);
+        let mut new = stream_preview_tap(frames, host.preview_in_flight.clone(), host.stream_generation);
+        let frame = |key, byte| PreviewFrame { codec: VideoCodec::H264, key, t_ms: 1.0, data: vec![0, 0, 0, 1, byte] };
+        assert!(old(frame(false, 0x41)));
+        assert!(new(frame(true, 0x65)));
+        let written = lines.borrow().len();
+        while let Ok(Input::PreviewFrame(generation, frame)) = taken.try_recv() {
+            assert_eq!(exit_code(host.preview_frame(generation, frame)), None);
+        }
+        // Only the new tap's key frame.
+        assert_eq!(lines.borrow().len(), written + 1);
+        assert_eq!(lines.borrow().last().unwrap()["preview_frame"]["key"], true);
+        assert_eq!(host.preview_in_flight.load(Ordering::Acquire), 0);
+        assert_eq!(exit_code(host.line(r#"{"close": {}}"#)), Some(0));
     }
 
     #[test]

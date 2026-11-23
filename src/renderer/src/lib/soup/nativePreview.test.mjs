@@ -249,3 +249,148 @@ test('a closed gate sends nothing, not even a change that was waiting', () => {
   gate.set(true)
   assert.deepEqual(sent, [{ seen: true, t: 1_000 }])
 })
+
+// Fix C2 (finding 2 of .plans/native-media-engine-smooth-review-client.md): the stream preview
+// is held for STREAM_PREVIEW_HOLD_MS after the tile stops being seen.
+import { STREAM_PREVIEW_HOLD_MS } from './nativePreview.js'
+
+// gateOnClock with a hold.
+function heldGate(holdMs) {
+  let t = 1_000
+  const timers = []
+  const sent = []
+  const gate = createPreviewGate({
+    send: (seen) => sent.push({ seen, t }),
+    holdMs: () => holdMs.value,
+    now: () => t,
+    setTimer: (fn, ms) => {
+      const timer = { fn, at: t + ms, done: false }
+      timers.push(timer)
+      return timer
+    },
+    clearTimer: (timer) => {
+      timer.done = true
+    }
+  })
+  const advance = (ms) => {
+    const end = t + ms
+    for (;;) {
+      const next = timers.filter((x) => !x.done && x.at <= end).sort((a, b) => a.at - b.at)[0]
+      if (!next) break
+      t = next.at
+      next.done = true
+      next.fn()
+    }
+    t = end
+  }
+  return { gate, sent, advance, pending: () => timers.filter((x) => !x.done).length }
+}
+
+test('a stream preview unseen for less than 5 s just goes on: nothing is sent (C2)', () => {
+  assert.equal(STREAM_PREVIEW_HOLD_MS, 5000)
+  const { gate, sent, advance, pending } = heldGate({ value: STREAM_PREVIEW_HOLD_MS })
+  gate.set(true)
+  advance(10_000)
+  gate.set(false)
+  assert.equal(gate.holding, true)
+  advance(2_000)
+  gate.set(true)
+  assert.equal(gate.holding, false)
+  advance(10_000)
+  assert.deepEqual(sent, [{ seen: true, t: 1_000 }], 'no stop and no new request')
+  assert.equal(pending(), 0)
+  // Unseen just under 5 s, twice with a glimpse between: still nothing.
+  gate.set(false)
+  advance(4_999)
+  gate.set(true)
+  gate.set(false)
+  advance(4_999)
+  gate.set(true)
+  assert.equal(sent.length, 1)
+})
+
+test('a stream preview unseen for 5 s is stopped, and asked for again when seen (C2)', () => {
+  const { gate, sent, advance } = heldGate({ value: STREAM_PREVIEW_HOLD_MS })
+  gate.set(true)
+  advance(1_000)
+  gate.set(false)
+  advance(4_999)
+  assert.equal(sent.length, 1)
+  advance(1)
+  assert.deepEqual(sent.at(-1), { seen: false, t: 7_000 })
+  assert.equal(gate.holding, false)
+  // Seen again: at once, as without the hold.
+  advance(2_000)
+  gate.set(true)
+  assert.deepEqual(sent.at(-1), { seen: true, t: 9_000 })
+  // The hold counts from the last time it stopped being seen, not the first.
+  gate.set(false)
+  advance(3_000)
+  gate.set(true)
+  advance(100)
+  gate.set(false)
+  advance(4_999)
+  assert.equal(sent.length, 3)
+  advance(1)
+  assert.deepEqual(sent.at(-1), { seen: false, t: 17_100 })
+})
+
+test('with no hold (the JPEG preview) the stop goes at once; endHold sends a held stop now (C2)', () => {
+  const hold = { value: 0 }
+  const { gate, sent, advance } = heldGate(hold)
+  gate.set(true)
+  advance(1_000)
+  gate.set(false)
+  assert.deepEqual(sent.at(-1), { seen: false, t: 2_000 })
+  // The hold is read at each change: on again, then a stream preview's stop is held.
+  gate.set(true)
+  advance(1_000)
+  hold.value = STREAM_PREVIEW_HOLD_MS
+  gate.set(false)
+  advance(1_000)
+  assert.equal(sent.length, 3)
+  // The stream preview fell back to the JPEGs meanwhile: they stop now.
+  gate.endHold()
+  assert.deepEqual(sent.at(-1), { seen: false, t: 4_000 })
+  assert.equal(gate.holding, false)
+  advance(10_000)
+  assert.equal(sent.length, 4)
+  // Nothing held: endHold does nothing.
+  gate.endHold()
+  assert.equal(sent.length, 4)
+})
+
+test('a closed gate drops a held stop (C2)', () => {
+  const { gate, sent, advance, pending } = heldGate({ value: STREAM_PREVIEW_HOLD_MS })
+  gate.set(true)
+  gate.set(false)
+  gate.close()
+  advance(10_000)
+  assert.deepEqual(sent, [{ seen: true, t: 1_000 }])
+  assert.equal(pending(), 0)
+})
+
+// Fix C8: a stop the person asked for is not held.
+test('set(false, { now: true }) stops a stream preview at once, and ends a hold (C8)', () => {
+  const { gate, sent, advance, pending } = heldGate({ value: STREAM_PREVIEW_HOLD_MS })
+  gate.set(true)
+  advance(1_000)
+  gate.set(false, { now: true })
+  assert.deepEqual(sent.at(-1), { seen: false, t: 2_000 })
+  assert.equal(gate.holding, false)
+  // Out of sight first (held), then the person stops it: at once.
+  gate.set(true)
+  advance(1_000)
+  gate.set(false)
+  advance(1_000)
+  assert.equal(gate.holding, true)
+  gate.set(false, { now: true })
+  assert.deepEqual(sent.at(-1), { seen: false, t: 4_000 })
+  assert.equal(gate.holding, false)
+  advance(10_000)
+  assert.equal(sent.length, 4)
+  assert.equal(pending(), 0)
+  // { now: true } with "seen" changes nothing: a start goes at once anyway.
+  gate.set(true, { now: true })
+  assert.deepEqual(sent.at(-1), { seen: true, t: 14_000 })
+})

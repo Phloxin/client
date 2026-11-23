@@ -31,6 +31,7 @@ capture = [
     "windows?/Graphics_DirectX_Direct3D11",
     "windows?/System",
     "windows?/Win32_System_Com",
+    "windows?/Win32_System_Performance",
     "windows?/Win32_Graphics_Gdi",
     "windows?/Win32_System_WinRT_Direct3D11",
     "windows?/Win32_System_WinRT_Graphics_Capture",
@@ -63,6 +64,11 @@ windows = { version = "0.62.2", default-features = false, features = [
     "Win32_Graphics_Direct3D11",
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
+    # Priority (smooth B3) and the I/O loop's wait (B4).
+    "Wdk_Graphics_Direct3D",
+    "Win32_Networking_WinSock",
+    "Win32_Security",
+    "Win32_System_Threading",
 ], optional = true }
 
 [dev-dependencies]

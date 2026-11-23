@@ -20,6 +20,7 @@ import {
 } from './nativeShare'
 import { nativeShareCodec } from './nativeCodec'
 import { SHARE_RATE_INTERVAL_MS, chromiumRateSample, createShareRateLog } from './shareRate'
+import { releaseShareStream, setShareStreamKey } from './shareStream'
 
 let getDevice = () => null
 let getProducerTransport = () => null
@@ -831,9 +832,9 @@ async function stopShareContext(ctx, { notifyServer = true } = {}) {
 
   if (notifyServer) {
     void Promise.all(producerIds.map((id) => closeServerProducer(id)))
-    // The stream is handed back with op 11. Without notifyServer the session
-    // is gone, and the stream with it.
-    if (ctx.streamKey) releaseStream(ctx.streamKey)
+    // The stream is handed back with op 11, once (smooth A5.2). Without
+    // notifyServer the session is gone, and the stream with it.
+    releaseShareStream(ctx, releaseStream)
   }
 
   ctx.stopPromise = (async () => {
@@ -1480,10 +1481,10 @@ export async function shareScreen({
     // capture to publish: an OS picker can outlast the 30s the stream gives us
     // to create its first source.
     const streamKey = await createStream()
-    ctx.streamKey = streamKey
+    setShareStreamKey(ctx, streamKey)
     // A stop while we waited ran without the key, so hand it back here.
     if (!isActiveShare(ctx)) {
-      releaseStream(streamKey)
+      releaseShareStream(ctx, releaseStream)
       throw shareSupersededError()
     }
 
@@ -1535,10 +1536,14 @@ export async function shareScreen({
 // it is (.plans/native-media-engine-preview-cost.md, B1 and B2).
 let selfScreenPreviewSeen = false
 
-export function setSelfScreenPreviewSeen(seen) {
+// `stopAsked`: the tile is not watched (the person chose Stop previewing), so a stream preview
+// stops at once instead of after its hold (fix C8).
+export function setSelfScreenPreviewSeen(seen, { stopAsked = false } = {}) {
   selfScreenPreviewSeen = seen === true
   const producer = shares.screen?.producer
-  if (producer?.native) producer.setPreviewSeen?.(selfScreenPreviewSeen)
+  if (producer?.native) {
+    producer.setPreviewSeen?.(selfScreenPreviewSeen, { stopAsked: stopAsked === true })
+  }
 }
 
 // With the "Native screen share" setting on (or PYLON_NATIVE_SHARE set), a screen share's
@@ -1602,7 +1607,7 @@ async function startNativeScreenShare(ctx, audioMode, audioTargets) {
   try {
     if (!isActiveShare(ctx)) throw shareSupersededError()
     const streamKey = await createStream()
-    ctx.streamKey = streamKey
+    setShareStreamKey(ctx, streamKey)
     if (!isActiveShare(ctx)) throw shareSupersededError()
     native = await startNativeShare({
       streamKey,
@@ -1622,8 +1627,9 @@ async function startNativeScreenShare(ctx, audioMode, audioTargets) {
   } catch (error) {
     // A capture startNativeShare did not take over is closed here.
     if (capture && !native) void window.api?.mediaEngine?.close?.(capture.pid).catch(() => {})
-    // Chromium's path asks for a stream of its own.
-    if (ctx.streamKey) releaseStream(ctx.streamKey)
+    // Chromium's path asks for a stream of its own. A stop meanwhile handed it back already,
+    // then this is a no-op (smooth A5.2).
+    releaseShareStream(ctx, releaseStream)
     ctx.streamKey = null
     if (isShareSupersededError(error) || !isActiveShare(ctx)) throw shareSupersededError()
     // The captured source went away: the share ends, Chromium would only ask again.

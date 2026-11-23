@@ -13,13 +13,15 @@ mod engine;
 mod error;
 pub mod h264;
 mod params;
+pub mod priority;
 mod source;
 pub mod video;
+mod wait;
 mod wire;
 
-pub use engine::{CloseReason, Engine, Event, IceState, KeyFrameKind, Stats};
+pub use engine::{CloseReason, Engine, Event, IceState, KeyFrameKind, PreviewFrame, PreviewTap, Stats};
 pub use error::Error;
-pub use params::{E2eeParams, KEY_LEN, OpenParams, Opened, SourceBinding, VideoCodec, VideoParams};
+pub use params::{Degrade, E2eeParams, KEY_LEN, OpenParams, Opened, SourceBinding, VideoCodec, VideoParams};
 pub use source::{CaptureReport, EncodedFrame, FileSource, FrameSink, PushError, Source, SourceControl, SourceReport, SyntheticSource};
 
 /// The crypto backend this build of str0m uses.

@@ -30,21 +30,24 @@
 //                   only when that sidecar's hello listed it, else the open fails
 //   start(pid), setKey(pid, key), close(pid)   the protocol's messages, for the
 //                   sidecar with that pid only
-//   preview(pid, { fps, max_width, max_height })   asks that sidecar for the sharer's
-//                   preview pictures; refused (false) outside the protocol's limits
+//   preview(pid, { fps, max_width, max_height, mode })   asks that sidecar for the sharer's
+//                   preview: JPEG pictures, or with mode 'stream' the encoded share itself;
+//                   refused (false) outside the protocol's limits
 // and gets 'mediaengine:event' messages: ice_state, connected, stats, error,
-// capture_changed, preview, closed, and exit once the process is gone. One sidecar per
-// window at a time.
+// capture_changed, preview, preview_frame, closed, and exit once the process is gone. One
+// sidecar per window at a time.
 //
 // `open` and `key` carry the frame key, so nothing written to a sidecar is ever
-// logged. `preview` messages are the sharer's screen: they go only to the window that
+// logged. `preview` and `preview_frame` messages are the sharer's screen: they go only to the window that
 // owns the sidecar and are never logged, nor their size. The portal's restore token stays here, in memory for the life of the
 // app, and is not logged either (Wayland only: Windows has none).
 import { app, ipcMain } from 'electron'
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { isAbsolute } from 'node:path'
+import { engineGone, failWaiters, settleWaiter, waitFor } from './engineWaiters'
 import { mediaEngineHostPath } from './mediaEngineHost'
+import { openBody } from './openRequest'
 import { previewOverride, previewRequestBody } from './previewRequest'
 import {
   nativeShareSettingApplies,
@@ -67,8 +70,13 @@ const EVENTS = new Set([
   'error',
   'capture_changed',
   'preview',
+  // The stream preview's encoded frames (smooth P4): relayed as they come, base64 and all, as
+  // the JPEGs are.
+  'preview_frame',
   'closed'
 ])
+// The events that carry the sharer's screen.
+const PICTURES = new Set(['preview', 'preview_frame'])
 // Sidecar messages that answer a request.
 const ANSWERS = new Set(['hello', 'opened', 'capture_ready', 'capture_cancelled'])
 
@@ -85,8 +93,6 @@ let quitting = false
 let restoreToken = null
 // hello.codecs of the last sidecar that said hello, or null before the first.
 let helloCodecs = null
-// The codecs `open` may ask for (PROTOCOL.md, video.codec).
-const OPEN_CODECS = new Set(['H264', 'AV1'])
 // webContents id -> the capture being started for it: { id, cancelled, engine }
 const captures = new Map()
 
@@ -134,38 +140,6 @@ function openSource(configured, requested) {
     isIntegerIn(fps, 1, 240) && isIntegerIn(maxWidth, 16, 4096) && isIntegerIn(maxHeight, 16, 4096)
   if (!inRange) throw new Error('open: the screen source is out of range')
   return { screen: { fps, max_width: maxWidth, max_height: maxHeight } }
-}
-
-// The body of `open`: the protocol's fields of the renderer's params and nothing more.
-function openBody(params, source) {
-  const e2ee = params?.e2ee
-  if (!e2ee || typeof e2ee !== 'object') throw new Error('open: no e2ee')
-  const transport = params?.transport ?? {}
-  const codec = params?.video?.codec ?? 'H264'
-  if (!OPEN_CODECS.has(codec)) throw new Error('open: the video codec is not H264 or AV1')
-  return {
-    router_rtp_capabilities: params?.router_rtp_capabilities,
-    transport: {
-      id: transport.id,
-      ice_parameters: transport.ice_parameters,
-      ice_candidates: transport.ice_candidates,
-      dtls_parameters: transport.dtls_parameters
-    },
-    e2ee: {
-      format: e2ee.format,
-      epoch: e2ee.epoch,
-      key: e2ee.key,
-      kid: e2ee.kid,
-      counter: e2ee.counter,
-      source: { tag: e2ee.source?.tag, stream_key: e2ee.source?.stream_key ?? null }
-    },
-    source,
-    video: {
-      start_bitrate: params?.video?.start_bitrate,
-      max_bitrate: params?.video?.max_bitrate,
-      codec
-    }
-  }
 }
 
 // PYLON_MEDIA_HOST, else the app's resources when packaged, else beside the app when it is
@@ -243,22 +217,6 @@ function sendEvent(engine, event) {
   }
 }
 
-function settleWaiter(engine, name, error, value) {
-  const waiter = engine.waiting.get(name)
-  if (!waiter) return
-  engine.waiting.delete(name)
-  if (error) waiter.reject(error)
-  else waiter.resolve(value)
-}
-
-function failWaiters(engine, error) {
-  for (const name of [...engine.waiting.keys()]) settleWaiter(engine, name, error)
-}
-
-function waitFor(engine, name) {
-  return new Promise((resolve, reject) => engine.waiting.set(name, { resolve, reject }))
-}
-
 function onLine(engine, line) {
   if (!line.trim()) return
   let message
@@ -278,6 +236,9 @@ function onLine(engine, line) {
     failWaiters(engine, new Error(body.message ?? 'media engine error'))
   }
   if (name === 'closed') failWaiters(engine, new Error(`media engine closed (${body.reason})`))
+  // Pictures of the screen stop once the sidecar is being closed: after a reload or a crashed
+  // renderer the page there does not own it (fix C4).
+  if (engine.closing && PICTURES.has(name)) return
   if (EVENTS.has(name)) sendEvent(engine, { type: name, ...body })
 }
 
@@ -303,6 +264,7 @@ function startEngine(sender) {
     sender,
     waiting: new Map(),
     gone: false,
+    exitError: null,
     killTimer: null,
     exited: null,
     onDestroyed: null,
@@ -312,7 +274,8 @@ function startEngine(sender) {
   engine.exited = new Promise((resolve) => {
     const gone = (code, signal) => {
       if (engine.gone) return
-      engine.gone = true
+      // Every request waiting on it fails now, and any made later at once (smooth A5.1).
+      engineGone(engine, new Error(`media engine exited (${signal ?? code})`))
       clearTimeout(engine.killTimer)
       if (engines.get(sender.id) === engine) engines.delete(sender.id)
       if (!sender.isDestroyed()) {
@@ -320,7 +283,6 @@ function startEngine(sender) {
         sender.off('did-start-navigation', engine.onNavigation)
         sender.off('render-process-gone', engine.onRendererGone)
       }
-      failWaiters(engine, new Error(`media engine exited (${signal ?? code})`))
       console.log(`[mediaEngine ${engine.pid}] Sidecar exited (${signal ?? `status ${code}`})`)
       sendEvent(engine, { type: 'exit', code, signal })
       resolve()

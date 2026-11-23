@@ -22,7 +22,7 @@ use pw::spa::{
 };
 
 use super::{BufferId, CaptureEvent, CaptureInfo, Events, Held, Raw, Shared, ToLoop, egl, fourcc_text};
-use crate::video::{DmaBufFrame, DmaBufObject, DmaBufPlane, EncoderConfig, VaapiEncoder};
+use crate::video::{DmaBufFrame, DmaBufObject, DmaBufPlane, EncoderConfig, VaapiEncoder, timing::CaptureClock};
 
 /// What the portal said, for `capture_ready`.
 pub(super) struct Context {
@@ -203,6 +203,49 @@ struct Local {
     format_at: Option<Instant>,
     /// What the capture ended with, once it has.
     over: Option<CaptureEvent>,
+    /// The frames' capture times, DMA-BUF and memory frames alike (smooth T1 to T3), and
+    /// whether the first frame said which clock it is timed by (T4).
+    clock: CaptureClock,
+    clock_logged: bool,
+}
+
+/// How long before `now` (both CLOCK_MONOTONIC, in nanoseconds) the compositor composed a
+/// frame whose header says `pts` (smooth T1), negative for a `pts` after `now`: the capture
+/// clock's window decides whether it is trusted (fix E10). `None` for a `pts` of 0 or less (T2).
+fn frame_age(pts: i64, now: u64) -> Option<i64> {
+    let now = i64::try_from(now).ok()?;
+    if pts <= 0 {
+        return None;
+    }
+    Some(now - pts)
+}
+
+/// The compositor's time for a frame that arrived at `arrived` and is `age_ns` old (ahead of
+/// the arrival when negative), as Windows does (fix E10).
+fn composed_at(arrived: Instant, age_ns: i64) -> Option<Instant> {
+    let span = Duration::from_nanos(age_ns.unsigned_abs());
+    if age_ns >= 0 { arrived.checked_sub(span) } else { arrived.checked_add(span) }
+}
+
+/// The `pts` of `buffer`'s header, `None` without one.
+///
+/// # Safety
+/// `buffer` is a buffer just dequeued from the stream.
+unsafe fn header_pts(buffer: *mut pw::sys::pw_buffer) -> Option<i64> {
+    // SAFETY: a dequeued pw_buffer points to its spa_buffer and its metas.
+    unsafe {
+        let spa = (*buffer).buffer;
+        if spa.is_null() || (*spa).metas.is_null() {
+            return None;
+        }
+        let metas = std::slice::from_raw_parts((*spa).metas, (*spa).n_metas as usize);
+        metas
+            .iter()
+            .find(|meta| {
+                meta.type_ == spa_sys::SPA_META_Header && !meta.data.is_null() && meta.size as usize >= size_of::<spa_sys::spa_meta_header>()
+            })
+            .map(|meta| (*(meta.data as *const spa_sys::spa_meta_header)).pts)
+    }
 }
 
 /// Frames the compositor flagged or left empty are given straight back.
@@ -363,6 +406,8 @@ pub(super) fn run(remote: OwnedFd, node_id: u32, context: Context, shared: Arc<S
         connected_at: Instant::now(),
         format_at: None,
         over: None,
+        clock: CaptureClock::default(),
+        clock_logged: false,
     }));
     let context = Rc::new(context);
 
@@ -537,6 +582,9 @@ pub(super) fn run(remote: OwnedFd, node_id: u32, context: Context, shared: Arc<S
                         break;
                     }
                     let arrived = Instant::now();
+                    // The compositor's time for the frame against the same clock now (smooth T1).
+                    // SAFETY: just dequeued; the stream is this callback's own.
+                    let age = unsafe { header_pts(buffer).and_then(|pts| frame_age(pts, pw::sys::pw_stream_get_nsec(stream.as_raw_ptr()))) };
                     // SAFETY: just dequeued.
                     let queue = || unsafe { stream.queue_raw_buffer(buffer) };
                     let (Some(format), Some(generation)) = ({
@@ -604,9 +652,26 @@ pub(super) fn run(remote: OwnedFd, node_id: u32, context: Context, shared: Arc<S
                         queue();
                         continue;
                     };
+                    // The frame's capture time: when the compositor composed it, else its
+                    // arrival (smooth T1 to T3), the clock said once (T4).
+                    let mut held = held;
+                    let untimed = {
+                        let mut l = l5.borrow_mut();
+                        let before = l.clock.untimed;
+                        held.arrived = l.clock.stamp(arrived, age.and_then(|age| composed_at(arrived, age)));
+                        if !std::mem::replace(&mut l.clock_logged, true) {
+                            tracing::info!(
+                                clock = if l.clock.untimed == before { "compositor" } else { "arrival" },
+                                age_us = ?age.map(|age| age / 1000),
+                                "capture clock"
+                            );
+                        }
+                        l.clock.untimed
+                    };
 
                     let replaced = match s3.state.lock() {
                         Ok(mut state) => {
+                            state.untimed = untimed;
                             state.delivered += 1;
                             let replaced = state.pending.replace(held);
                             state.dropped += u64::from(replaced.is_some());
@@ -767,6 +832,39 @@ mod tests {
             eprintln!("{w}x{h} checked in {:.1} ms", began.elapsed().as_secs_f64() * 1000.0);
         }
         assert!(checker.is_some());
+    }
+
+    #[test]
+    fn a_frame_age_comes_from_a_positive_pts_before_or_after_now() {
+        let now = 5_000_000_000u64;
+        assert_eq!(frame_age(4_996_000_000, now), Some(4_000_000));
+        assert_eq!(frame_age(now as i64, now), Some(0));
+        // A pts of 0 or less is no time (T2).
+        assert_eq!(frame_age(0, now), None);
+        assert_eq!(frame_age(-1, now), None);
+        assert_eq!(frame_age(1, u64::MAX), None);
+        // Old, but an age: the capture clock decides it is too old (T2).
+        assert_eq!(frame_age(1, now), Some(now as i64 - 1));
+        // After now: an age ahead, for the capture clock to judge (fix E10).
+        assert_eq!(frame_age(now as i64 + 1, now), Some(-1));
+        assert_eq!(frame_age(5_010_000_000, now), Some(-10_000_000));
+    }
+
+    #[test]
+    fn a_pts_ahead_of_now_is_trusted_within_the_capture_clocks_window() {
+        // Fix E10: a compositor that stamps the time a frame is shown, as Windows does.
+        let arrived = Instant::now() + Duration::from_secs(10);
+        let ms = |v: u64| Duration::from_millis(v);
+        assert_eq!(composed_at(arrived, 4_000_000), Some(arrived - ms(4)));
+        assert_eq!(composed_at(arrived, -10_000_000), Some(arrived + ms(10)));
+        let mut clock = CaptureClock::default();
+        // 10 ms ahead: the capture time as such.
+        assert_eq!(clock.stamp(arrived, composed_at(arrived, -10_000_000)), arrived + ms(10));
+        assert_eq!(clock.untimed, 0);
+        // 60 ms ahead: past the 50 ms window, timed by the arrival.
+        let later = arrived + ms(100);
+        assert_eq!(clock.stamp(later, composed_at(later, -60_000_000)), later);
+        assert_eq!(clock.untimed, 1);
     }
 
     #[test]

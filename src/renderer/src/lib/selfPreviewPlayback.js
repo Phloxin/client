@@ -36,8 +36,15 @@ export function selfScreenTileSeen({
   mainWindow,
   popoutWindow
 }) {
-  const tile = (streams ?? []).find((s) => s?.isSelf && s.source === 'screen')
-  if (!tile || !watchedTileIds?.has?.(tile.tileId)) return false
+  if (!selfScreenTileWatched({ streams, watchedTileIds })) return false
   const window = poppedOut ? popoutWindow : streamsShown ? mainWindow : null
   return window != null && !shouldPauseSelfPreview(window)
+}
+
+// Whether the sharer's own screen tile is there and watched: false once the person chose "Stop
+// previewing" on it. A native stream preview stops at once then, not after the hold it gets when
+// the tile only went out of sight (fix C8).
+export function selfScreenTileWatched({ streams, watchedTileIds }) {
+  const tile = (streams ?? []).find((s) => s?.isSelf && s.source === 'screen')
+  return tile != null && watchedTileIds?.has?.(tile.tileId) === true
 }

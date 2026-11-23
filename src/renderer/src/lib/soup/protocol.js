@@ -1312,6 +1312,13 @@ export const StreamRequest = Object.freeze({
   end: (streamKey) => ({ op: StreamOp.END_STREAM, data: { stream_key: streamKey } })
 })
 
+// Whether an op 0 error ({ op, code, message }) is an EndStream refused as stream_not_found: the
+// stream is gone, which is what was asked for. At the end of a native share the backend can end
+// the stream before our op 11 reaches it (smooth P10). Nothing to show.
+export function isEndOfGoneStream(error) {
+  return error?.op === StreamOp.END_STREAM && error?.code === 'stream_not_found'
+}
+
 // A stream request that failed (op 0), timed out, or never went out. `code`
 // is the server's error code, null when the server never answered.
 export class StreamRequestError extends Error {

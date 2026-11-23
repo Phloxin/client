@@ -471,11 +471,15 @@ async fn stats(
     })
 }
 
-/// `open.video`: as before AV1 for H264, with `codec` for AV1.
+/// `open.video`: as before AV1 for H264, with `codec` for AV1, and DEGRADE
+/// (`size` or `rate`) as `degrade` when set, as probe 3 (smooth U3).
 fn video(start_bps: u64, max_bps: u64, codec: &str) -> Value {
     let mut video = json!({ "start_bitrate": start_bps, "max_bitrate": max_bps });
     if codec != "H264" {
         video["codec"] = json!(codec);
+    }
+    if let Ok(degrade) = std::env::var("DEGRADE") {
+        video["degrade"] = json!(degrade);
     }
     video
 }

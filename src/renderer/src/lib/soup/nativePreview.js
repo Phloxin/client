@@ -28,15 +28,23 @@ export function previewFps(override = null) {
 
 // How often a change of "the self tile is seen" may reach the sidecar (B2).
 export const PREVIEW_GATE_MS = 250
+// How long the tile stays unseen before a stream preview is stopped: stopping and starting it
+// again costs every viewer a key frame, so a short loss of focus (an alt-tab) costs nothing (fix
+// C2). The JPEG preview stops at once.
+export const STREAM_PREVIEW_HOLD_MS = 5000
 
 // Turns "the self tile is seen" into preview requests (B2): send(true) asks for pictures,
 // send(false) stops them. Nothing is sent until set(true), a state equal to the last one sent is
 // not sent again, and changes go out at most once in intervalMs: one that comes sooner waits,
-// and the last state set by then is the one sent. close() drops a change still waiting.
+// and the last state set by then is the one sent. A change to "not seen" after "seen" was sent
+// is held for holdMs() first (read at that change; 0: not held), and dropped if the tile is seen
+// again meanwhile (C2). set(false, { now: true }) is not held, and ends a hold (a stop the person
+// asked for, fix C8). endHold() sends a held change now. close() drops a change still waiting.
 //   now(), setTimer(fn, ms), clearTimer(id)   the clock, for tests
 export function createPreviewGate({
   send,
   intervalMs = PREVIEW_GATE_MS,
+  holdMs = () => 0,
   now = () => Date.now(),
   setTimer = (fn, ms) => setTimeout(fn, ms),
   clearTimer = (id) => clearTimeout(id)
@@ -45,6 +53,7 @@ export function createPreviewGate({
   let wanted = false
   let lastSentAt = -Infinity
   let timer = null
+  let hold = null
   let closed = false
   const flush = () => {
     timer = null
@@ -53,22 +62,53 @@ export function createPreviewGate({
     lastSentAt = now()
     send(sent)
   }
+  const go = () => {
+    if (closed || timer != null || wanted === sent) return
+    const wait = lastSentAt + intervalMs - now()
+    if (wait <= 0) flush()
+    else timer = setTimer(flush, wait)
+  }
+  const endHold = () => {
+    if (hold == null) return
+    clearTimer(hold)
+    hold = null
+    go()
+  }
   return {
-    set(seen) {
+    set(seen, { now: atOnce = false } = {}) {
       if (closed) return
       wanted = seen === true
-      if (timer != null || wanted === sent) return
-      const wait = lastSentAt + intervalMs - now()
-      if (wait <= 0) flush()
-      else timer = setTimer(flush, wait)
+      if ((wanted || atOnce) && hold != null) {
+        clearTimer(hold)
+        hold = null
+      }
+      if (hold != null) return
+      if (!wanted && sent && timer == null && !atOnce) {
+        const ms = holdMs()
+        if (ms > 0) {
+          hold = setTimer(() => {
+            hold = null
+            go()
+          }, ms)
+          return
+        }
+      }
+      go()
     },
+    endHold,
     close() {
       closed = true
       if (timer != null) clearTimer(timer)
       timer = null
+      if (hold != null) clearTimer(hold)
+      hold = null
     },
     get sent() {
       return sent
+    },
+    // A change to "not seen" is being held.
+    get holding() {
+      return hold != null
     }
   }
 }

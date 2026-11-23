@@ -76,6 +76,11 @@ pub(crate) struct State {
     pub delivered: u64,
     pub taken: u64,
     pub dropped: u64,
+    /// Frames timed by their arrival, not by the compositor's clock (smooth B1.3).
+    pub untimed: u64,
+    /// Gaps between the pool's frames over 25 ms, and the longest gap (smooth B2).
+    pub late_gaps: u64,
+    pub longest_gap: Duration,
 }
 
 /// Between the capture's threads and the pipeline.
@@ -203,6 +208,7 @@ impl CaptureProducer {
             frames_taken: state.taken,
             frames_dropped_rate: state.dropped,
             buffer_path: "d3d11",
+            frames_untimed: state.untimed,
         };
         control.update_report(|r| r.capture = Some(report));
     }

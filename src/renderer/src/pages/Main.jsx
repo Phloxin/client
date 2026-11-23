@@ -57,7 +57,7 @@ import {
 } from '../lib/soup'
 import { resolveStreamFocus } from '../lib/streamView'
 import { preferredTileOf } from '../lib/streamTiles'
-import { selfScreenTileSeen } from '../lib/selfPreviewPlayback'
+import { selfScreenTileSeen, selfScreenTileWatched } from '../lib/selfPreviewPlayback'
 import { usePreviewWindow } from '../lib/useSelfPreviewWindow'
 import { playUiSound, isToastEnabled, setSoundsDeafened } from '../lib/sounds'
 import { setServerHost, apiBase, eventSocketUrl, assetUrl, throwIfError } from '../lib/serverConfig'
@@ -68,7 +68,8 @@ import {
   CloseAction,
   CloseCode,
   REQUEST_VOICE_TICKET_OP,
-  classifyClose
+  classifyClose,
+  isEndOfGoneStream
 } from '../lib/soup/protocol'
 import { httpFetch } from '../lib/http'
 import { setServerLimits, previewKind } from '../lib/attachments'
@@ -1148,9 +1149,11 @@ function Main() {
     mainWindow: mainPreviewWindow,
     popoutWindow: popoutPreviewWindow
   })
+  // Not watched: the person stopped the preview, which a stream preview obeys at once (fix C8).
+  const selfScreenWatched = selfScreenTileWatched({ streams: allVideoStreams, watchedTileIds })
   useEffect(() => {
-    setSelfScreenPreviewSeen(selfScreenSeen)
-  }, [selfScreenSeen])
+    setSelfScreenPreviewSeen(selfScreenSeen, { stopAsked: !selfScreenWatched })
+  }, [selfScreenSeen, selfScreenWatched])
 
   // Replacement handoffs retain a placeholder tile (the SFU marks their
   // ProducerClosed event), so any tile absent here genuinely stopped sharing.
@@ -3332,8 +3335,13 @@ function Main() {
           // a reply to one message, not a connection fault: surface it and keep
           // the socket. It may answer one of soup's stream or ticket requests; a
           // failed share start or ticket wait is reported by its owner, so it
-          // isn't shown twice.
+          // isn't shown twice. An EndStream for a stream already gone is what we asked
+          // for: nothing is shown (smooth P10).
           case 0:
+            if (isEndOfGoneStream(msg.data)) {
+              console.debug('[Events] EndStream: the stream had already ended', msg.data)
+              return
+            }
             console.warn('[Events] Request refused:', msg.data)
             if (!receiveEventSocketError(msg.data, msg.nonce)) {
               showError(msg.data?.message || 'Request refused by the server')

@@ -4,11 +4,14 @@
 // beside the program:
 //   cargo run --release -p pylon-media --features capture --example capture_encode_windows -- \
 //     seconds=20 fps=60 bitrate=8000000 target=primary max=1920x1080 [max_fps=60] \
-//     out=C:\x\t.h264 csv=C:\x\t.csv json=C:\x\t.json
+//     out=C:\x\t.h264 csv=C:\x\t.csv json=C:\x\t.json [encode=0]
 // `target` is `primary`, `window:<handle>` or `monitor:<x>,<y>` (a point in physical pixels).
 // Encodes what comes for `seconds` (or until the item closes) at no more than `fps`, keeping the
 // last frame as the pipeline does, and writes the Annex-B stream, one CSV line per frame
-// (frame,ms,bytes,key,encode_ms,delay_ms,width,height) and the totals as JSON.
+// (frame,ms,bytes,key,encode_ms,delay_ms,width,height,capture_ms) and the totals as JSON. `capture_ms` is
+// the frame's capture time from the start, signed (a compositor time may be ahead, smooth T2b).
+// With `encode=0` the frames are taken and let go with no encoder, to measure the capture alone
+// (smooth B2.1).
 
 #[cfg(not(windows))]
 fn main() {
@@ -77,6 +80,7 @@ mod imp {
         let max = get("max", "1920x1080");
         let (max_width, max_height) = max.split_once('x').map(|(w, h)| (w.parse().expect("max"), h.parse().expect("max"))).expect("max=<w>x<h>");
         let target_text = get("target", "primary");
+        let encode = num("encode", "1") != 0;
 
         let filter = std::env::var("PYLON_MEDIA_LOG").unwrap_or_else(|_| "info".into());
         tracing_subscriber::fmt()
@@ -112,11 +116,11 @@ mod imp {
         eprintln!("ready after {ready_ms:.0} ms: {info:?}");
 
         let mut producer = capture.producer(fps).expect("producer");
-        let mut encoder = capture.encoder(fps, max_width, max_height, bitrate).expect("encoder");
+        let mut encoder = encode.then(|| capture.encoder(fps, max_width, max_height, bitrate).expect("encoder"));
         let control = SourceControl::default();
         let mut out = std::fs::File::create(get("out", "capture.h264")).expect("out");
         let mut csv = std::fs::File::create(get("csv", "capture.csv")).expect("csv");
-        writeln!(csv, "frame,ms,bytes,key,encode_ms,delay_ms,width,height").unwrap();
+        writeln!(csv, "frame,ms,bytes,key,encode_ms,delay_ms,width,height,capture_ms").unwrap();
 
         let began = Instant::now();
         let interval = producer.interval();
@@ -148,18 +152,30 @@ mod imp {
             };
             let start = Instant::now();
             let delay = start.saturating_duration_since(frame.capture_time).as_secs_f64() * 1000.0;
-            let packet = encoder.encode(&frame, bitrate, 1, frames == 0).expect("encode");
+            let capture_ms = if frame.capture_time >= began {
+                frame.capture_time.duration_since(began).as_secs_f64() * 1000.0
+            } else {
+                -(began.duration_since(frame.capture_time).as_secs_f64() * 1000.0)
+            };
+            let (data, key) = match encoder.as_mut() {
+                Some(encoder) => {
+                    let packet = encoder.encode(&frame, bitrate, 1, frames == 0).expect("encode");
+                    (packet.data, packet.key)
+                }
+                None => (Vec::new(), false),
+            };
             let ms = start.elapsed().as_secs_f64() * 1000.0;
-            out.write_all(&packet.data).unwrap();
+            out.write_all(&data).unwrap();
             let at = start.saturating_duration_since(began);
             writeln!(
                 csv,
-                "{frames},{:.1},{},{},{ms:.3},{delay:.3},{},{}",
+                "{frames},{:.1},{},{},{ms:.3},{delay:.3},{},{},{:.3}",
                 at.as_secs_f64() * 1000.0,
-                packet.data.len(),
-                u8::from(packet.key),
+                data.len(),
+                u8::from(key),
                 frame.width,
-                frame.height
+                frame.height,
+                capture_ms
             )
             .unwrap();
             if let Some(count) = per_second.get_mut(at.as_secs() as usize) {
@@ -169,8 +185,8 @@ mod imp {
                 sizes.push((frame.width, frame.height));
             }
             frames += 1;
-            keys += u64::from(packet.key);
-            bytes += packet.data.len() as u64;
+            keys += u64::from(key);
+            bytes += data.len() as u64;
             encode_ms.push(ms);
             delay_ms.push(delay);
             last = Some(frame);

@@ -15,6 +15,17 @@ pylon-media-host [--insecure-plain] [--test-hooks]
 - Any other argument: a usage line on stderr and exit status 2.
 - `PYLON_MEDIA_LOG`: the log filter for stderr, in `tracing` env-filter syntax (`info`,
   `debug`, `info,pylon_media=debug`). Default `info`. Key bytes are never logged.
+- `PYLON_MEDIA_PRIORITY` (Windows): what the sidecar asks Windows for, without elevation:
+  `off`, `cpu` (process class above normal, the media threads in MMCSS), `gpu-thread` (also
+  GPU thread priority 7 on the capture's device) or `all` (also the GPU scheduling class
+  high). Default `all`. Every refusal is logged and ignored (`priority` lines).
+- `PYLON_MEDIA_WAIT` (Windows): how the send loop waits: `sleep`, `event` (the socket's read
+  event and a high resolution timer) or `spin`. Default `event`.
+- `PYLON_MEDIA_MIN_UPDATE_MS` (Windows): the screen capture's least update interval, in
+  milliseconds (a decimal number, 0 or more), or `off` to leave Windows' own. Default one frame
+  time of the capture's `max_fps` (none without it). For a monitor above 60 Hz, where one frame
+  time may give only every second or third refresh. Read once, logged (`capture least update
+  interval`); anything else is logged and the default used.
 
 ## Framing
 
@@ -46,6 +57,7 @@ host                                          sidecar
 {"key": {...}}                           ->   when the epoch changes
 {"preview": {...}}                       ->   any time after opened, if wanted
                                          <-   {"preview": {...}}             a few a second
+                                         <-   {"preview_frame": {...}}       or, "mode": "stream", every frame
 {"close": {}}                            ->
                                          <-   {"closed": {"reason": "close", ...}}
   sidecar exits with status 0
@@ -136,7 +148,7 @@ cannot be read) is a fatal error.
 | `transport` | object | the send transport's parameters, untouched: `id`, `ice_parameters`, `ice_candidates`, `dtls_parameters` (camelCase inside) |
 | `e2ee` | object or `null` | frame encryption, see below. `null` is refused without `--insecure-plain` |
 | `source` | object | where frames come from, see below |
-| `video` | object | `start_bitrate`, `max_bitrate`, integers 1 to 1000000000, and `codec` (optional): `"H264"` (the default) or `"AV1"`, anything else is a fatal error. See "AV1" below |
+| `video` | object | `start_bitrate`, `max_bitrate`, integers 1 to 1000000000, and `codec` (optional): `"H264"` (the default) or `"AV1"`, anything else is a fatal error. See "AV1" below. `degrade` (optional, an addition): `"rate"` (the default) or `"size"`, what gives way first on a tight link, see below; anything else is a fatal error |
 
 `e2ee`, fixed for the life of the session except for what `key` replaces:
 
@@ -169,6 +181,31 @@ and tries again with the next settled size.
 Which sources exist where: `file` everywhere; `pattern` on Linux and Windows in a sidecar built
 with the `encode` feature; `screen` (and `capture`) on Linux and Windows in one built with the
 `capture` feature; `synthetic` under `--test-hooks`.
+
+What gives way on a tight link (`video.degrade`, an addition): when the target bitrate falls
+below what the encoder can do, the `pattern` and `screen` sources give way evenly on frame rate
+(`"rate"`, the default and the behaviour before: one frame in N, see `frame_rate_divisor` in
+`stats`) or first on the picture's size (`"size"`). With `"size"` the encoded picture is capped
+at the share's own maximum, then 1280x720, then 960x540, fitted under the cap keeping its shape;
+a cap that would not make the picture smaller is skipped. A size needs `width * height * fps`
+times 0.030 bits per second in H264, 0.020 in AV1. One step down when the target has been under
+what the current size needs for 2 s, or when the encoder cannot get down to the target (its
+output over 1.15 times the target for 1 s at the lowest bitrate it is asked for). One step up
+when the target has been at least 1.25 times what the size above needs, or the share's maximum
+bitrate (`max_bitrate`, or the last `set_max_bitrate`) if that is less, for 5 s at the full frame
+rate. A size that needs more than the maximum is never stepped up to. At most one step every 5 s. A new size is taken up as a resized window's is (300 ms, then
+the encoder opens again with a key frame), and the encoder's output is measured afresh from it.
+The frame rate gives way only at the smallest size there is for the content. The `file` and
+`synthetic` sources ignore it. Anything other than `"rate"` or `"size"` is a fatal error.
+
+While the picture is below full size with `"size"`, the engine asks its transport to sustain
+the rate the next step up needs (the step up's threshold above, so at most the maximum):
+when the media sends less, padding on the RTX stream fills the gap, capped by the bandwidth
+estimate and never during overuse, so the estimate can grow to where the step up is taken. At
+full size, with no step up the maximum allows, and with `"rate"` nothing is sustained beyond the
+transport's own floor of 50 kbps. Nor is anything while no frame has been encoded for 1 s (a
+still picture): the rate returns with the next frame encoded. A changed rate is handed to the
+transport when the size changed or the rate moved by more than 5 %.
 
 The engine picks the session's codec (H264 unless `video.codec` says AV1) and its RTX payload
 type and the mid, abs-send-time and transport-wide-cc header extension ids from
@@ -264,6 +301,33 @@ it again.
 ```json
 {"preview": {"fps": 5, "max_width": 480, "max_height": 270}}
 {"preview": {"fps": 0, "max_width": 480, "max_height": 270}}
+```
+
+**The stream preview** (an addition): with `"mode": "stream"` the preview is the share itself,
+the frames the encoder made, as `preview_frame` messages instead of JPEG pictures.
+
+| field | type | |
+|---|---|---|
+| `mode` | `"jpeg"` or `"stream"`, optional | `"jpeg"` when left out: the pictures above, unchanged. `"stream"`: `fps` 0 stops it and any other `fps` turns it on; `max_width` and `max_height` must be there and are otherwise ignored |
+
+Every frame handed to the transport from the next key frame on is also handed to the host, in the
+clear: the plaintext of the frame that is encrypted and sent, after its encryption succeeded and
+before it is packetized (a frame encryption drops is not previewed). Turning the stream preview on,
+again too, asks the encoder for a key frame (at most one every 500 ms, as for the node's requests),
+and nothing is handed over before a key frame. Nothing the share does waits for the host: while 8
+frames handed over have not been written to stdout yet, a frame is dropped for the preview only,
+the frames after it wait for the next key frame, and one is asked for, at most once every 5 s
+while the host does not take them. So each start of the stream preview, and each drop, costs
+viewers a key frame, and a host that stops reading costs them one every 5 s. A frame handed over
+before the stream preview was last turned on is not written.
+
+One preview at a time: a request in one mode stops the other, and `fps` 0 in either mode stops
+both. The refusals are those of the JPEG preview (before `opened`, a source without a picture). An
+unknown `mode` is a field that does not parse.
+
+```json
+{"preview": {"fps": 10, "max_width": 1280, "max_height": 720, "mode": "stream"}}
+{"preview": {"fps": 0, "max_width": 1280, "max_height": 720, "mode": "stream"}}
 ```
 
 ### `test_drop_media`
@@ -396,6 +460,8 @@ Once a second after `connected`. Counters are totals since `open`.
 | `frames_dropped_encryption` | frames dropped because encryption failed (never sent in the clear) |
 | `media_packets_sent`, `media_bytes_sent` | media packets and their bytes (SRTP) on the socket |
 | `rtx_packets_sent` | packets on the RTX stream: retransmissions and probe padding |
+| `rtx_bytes_sent` | the bytes of those (SRTP) on the socket, a total (an addition). str0m does not count its padding apart from retransmissions, so this is the padding and the retransmissions together |
+| `sustain_bitrate_bps` | the rate the estimator is asked to sustain with media and padding now (an addition): 0, except with `"degrade": "size"` below full size, see "What gives way" |
 | `queued_packets` | packets waiting in str0m's send queue (media, resends, padding) at that moment |
 | `queued_packets_max` | the highest `queued_packets` since the last `stats` (the queue is read on every turn of the transport loop) |
 | `queued_bytes`, `queued_bytes_max` | the same queue in bytes, now and the highest since the last `stats` |
@@ -405,6 +471,8 @@ Once a second after `connected`. Counters are totals since `open`.
 | `frames_skipped_backlog` | frames the encoder did not encode because more than 200 ms of the target bitrate was waiting in the send queue |
 | `frames_skipped_rate` | frames not encoded because the frame rate gave way: when the encoder cannot get down to the target, one frame in N is encoded, evenly |
 | `frame_rate_divisor` | that N now (1, 2, 3, 4, 6 or 10), `null` for sources without an encoder |
+| `encoded_width`, `encoded_height` | the size the encoder runs at now (an addition), `null` for sources without an encoder and before it opened |
+| `size_steps_down`, `size_steps_up` | steps of the picture's size down and up with `"degrade": "size"`, totals (an addition); 0 with `"rate"` |
 | `encoder_bitrate_bps` | the bitrate the encoder is configured for now: the target scaled down by the encoder's overshoot over the last second, 0.7 to 1.0 of it. `null` for sources without an encoder |
 | `encoder_output_bps` | what the encoder produced over the last second. `null` before a second has passed and for sources without an encoder |
 | `encode_ms_median`, `encode_ms_max` | encode time per frame since the last `stats` (DMA-BUF import or the D3D11 video processor, colour conversion and encode), `null` without frames |
@@ -414,7 +482,11 @@ Once a second after `connected`. Counters are totals since `open`.
 | `capture_frames_taken` | of those, frames handed to the encoder (at most `fps` a second) |
 | `capture_frames_dropped_rate` | frames a newer one replaced before the encoder took them |
 | `capture_buffer_path` | `"dmabuf"` or `"memory"` on Linux, the path frames take now; `"d3d11"` on Windows |
-| `capture_delay_ms_median`, `capture_delay_ms_max` | from a frame arriving from the compositor to the encoder taking it (with the upload on the memory path), since the last `stats`, `null` without frames |
+| `capture_delay_ms_median`, `capture_delay_ms_max` | from a frame's capture time to the encoder taking it (with the upload on the memory path), since the last `stats`, `null` without frames. On Linux the capture time is when the compositor composed the frame (its buffer's `pts`), or its arrival when the compositor gave no usable time |
+| `capture_frames_untimed` | frames timed by their arrival because the compositor gave no usable time (on Linux: no `pts`, one of 0 or less, in the future, or over 1 s old), a total; `null` for sources other than `screen`. On Windows the compositor's time is the frame's `SystemRelativeTime` (the time it is shown), trusted from 1 s before the arrival to 50 ms after it; a frame without one, or with one outside that, is counted here |
+| `frame_interval_ms_median`, `frame_interval_ms_p95`, `frame_interval_ms_max` | the time between frames the encoder handed on, by their capture times (the timeline a viewer plays back), since the last `stats`: median, 95th percentile (nearest rank) and largest. `null` with fewer than two intervals since the last `stats` (fewer than two frames in that second) and for sources without an encoder |
+| `frame_gaps_long` | of those intervals, ones longer than 1.5 times the frame interval at the share's rate times the `frame_rate_divisor` in force, a total (a still screen counts one when it moves again) |
+| `send_interval_ms_p95`, `send_interval_ms_max` | the time between frames handed to the transport, by the clock, since the last `stats`: 95th percentile and largest, `null` with fewer than two |
 | `rtt_ms`, `loss_fraction` | when str0m has them, else `null` |
 | `nacks`, `plis`, `firs` | received from the node |
 | `dtls_version` | e.g. `"DTLS1_2"` |
@@ -441,6 +513,22 @@ request).
 
 ```json
 {"preview": {"width": 480, "height": 270, "jpeg": "/9j/4AAQSkZJRgABAgAAAQABAAD...", "t_ms": 10075.2}}
+```
+
+### `preview_frame`
+
+One encoded frame of the stream preview, after a `preview` request with `"mode": "stream"` (an
+addition). Only to the host, never logged: it is the sharer's screen in the clear.
+
+| field | |
+|---|---|
+| `codec` | `"h264"` (Annex B, one access unit, with its SPS and PPS in a key frame) or `"av1"` (one temporal unit, OBUs with their size fields, with its sequence header in a key frame) |
+| `key` | whether it is a key frame. The first frame after a request, and after a drop, is one |
+| `t_ms` | **not** when it was written, as on every other message: the frame's capture time in milliseconds since `open` (the time its RTP timestamp is made from) |
+| `data` | the frame as base64 (standard alphabet, padded) |
+
+```json
+{"preview_frame": {"codec": "h264", "key": true, "t_ms": 5012.338, "data": "AAAAAWdCwCqVoA..."}}
 ```
 
 ### `error`

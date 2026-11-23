@@ -27,6 +27,7 @@ use ::windows::{
         },
         System::{
             Com::CoIncrementMTAUsage,
+            Performance::{QueryPerformanceCounter, QueryPerformanceFrequency},
             WinRT::{
                 CreateDispatcherQueueController, DQTAT_COM_NONE, DQTYPE_THREAD_CURRENT, DispatcherQueueOptions,
                 Direct3D11::{CreateDirect3D11DeviceFromDXGIDevice, IDirect3DDxgiInterfaceAccess},
@@ -41,8 +42,11 @@ use ::windows::{
     core::{IInspectable, Interface, factory},
 };
 
-use super::{CaptureEvent, CaptureInfo, CaptureTarget, Events, Shared, failed, finish};
-use crate::video::windows::{D3d11Frame, Hold, device::Device};
+use super::{CaptureEvent, CaptureInfo, CaptureTarget, Events, Shared, State, failed, finish};
+use crate::video::{
+    timing::CaptureClock,
+    windows::{D3d11Frame, Hold, device::Device},
+};
 
 /// The pool's buffers: one being encoded, one kept, one waiting, one for Windows to draw (C5).
 const BUFFERS: i32 = 4;
@@ -53,6 +57,55 @@ const READY_WITHOUT_FRAME: Duration = Duration::from_secs(3);
 const STOP_POLL: Duration = Duration::from_millis(50);
 /// How long the capture waits at its end for the pipeline to let go of its frames.
 const FRAMES_BACK: Duration = Duration::from_secs(1);
+
+/// What `PYLON_MEDIA_MIN_UPDATE_MS` asks of the capture's least update interval, a switch for
+/// a monitor above 60 Hz, which one frame time may hold to every second or third refresh
+/// (fix E13).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum MinUpdate {
+    /// One frame time of the share's rate: unset.
+    FrameTime,
+    /// This many milliseconds.
+    Ms(f64),
+    /// `off`: not set, Windows' own.
+    Off,
+}
+
+impl MinUpdate {
+    /// From the variable's text, `None` when it is neither a number of milliseconds nor `off`.
+    fn from_text(text: Option<&str>) -> Option<MinUpdate> {
+        match text {
+            None => Some(MinUpdate::FrameTime),
+            Some("off") => Some(MinUpdate::Off),
+            Some(text) => text.trim().parse::<f64>().ok().filter(|ms| ms.is_finite() && *ms >= 0.0).map(MinUpdate::Ms),
+        }
+    }
+
+    /// From the variable, once, logged.
+    fn get() -> MinUpdate {
+        static ASKED: std::sync::OnceLock<MinUpdate> = std::sync::OnceLock::new();
+        *ASKED.get_or_init(|| {
+            let text = std::env::var("PYLON_MEDIA_MIN_UPDATE_MS").ok();
+            let asked = MinUpdate::from_text(text.as_deref()).unwrap_or_else(|| {
+                tracing::warn!(value = ?text, "PYLON_MEDIA_MIN_UPDATE_MS is a number of milliseconds or off, one frame time it is");
+                MinUpdate::FrameTime
+            });
+            tracing::info!(?asked, "capture least update interval");
+            asked
+        })
+    }
+
+    /// The interval to set for a share of `max_fps`, in 100 ns units, `None` for none.
+    fn interval(self, max_fps: Option<u32>) -> Option<i64> {
+        match self {
+            MinUpdate::FrameTime => max_fps.map(|fps| 10_000_000 / i64::from(fps)),
+            MinUpdate::Ms(ms) => Some((ms * 10_000.0).round() as i64),
+            MinUpdate::Off => None,
+        }
+    }
+}
+/// A gap between two frames from the pool longer than this is counted (smooth B2).
+const LATE_GAP: Duration = Duration::from_millis(25);
 
 /// Makes the process per-monitor DPI aware, so that window and monitor sizes and points are
 /// physical pixels (C1). Call it at start, before any window or monitor is looked at.
@@ -292,6 +345,19 @@ pub(super) fn run(resolved: Resolved, max_fps: Option<u32>, shared: Arc<Shared>,
         tracing::warn!(after_ms = FRAMES_BACK.as_millis() as u64, "capture frames still held, the pool closes anyway");
     }
     started.close_pool();
+    // The frames untimed by the compositor's clock with the capture's end (smooth B1.3), and the
+    // gaps between frames (B2).
+    if let Ok(state) = shared.state.lock() {
+        tracing::info!(
+            delivered = state.delivered,
+            taken = state.taken,
+            dropped = state.dropped,
+            untimed = state.untimed,
+            gaps_over_25ms = state.late_gaps,
+            longest_gap_ms = state.longest_gap.as_secs_f64() * 1000.0,
+            "capture ended"
+        );
+    }
     drop(queue);
 }
 
@@ -346,10 +412,12 @@ fn start(resolved: Resolved, max_fps: Option<u32>, shared: &Arc<Shared>, events:
         let border = session.IsBorderRequired().ok();
         // At most `max_fps` from Windows where it has the setting (C9). The token bucket limits
         // either way.
-        if let Some(fps) = max_fps
-            && let Err(error) = session.SetMinUpdateInterval(TimeSpan { Duration: 10_000_000 / i64::from(fps) })
+        // One frame time: half of it delivered fewer frames on the laptop (smooth B2.2). Or what
+        // PYLON_MEDIA_MIN_UPDATE_MS asks (fix E13).
+        if let Some(interval) = MinUpdate::get().interval(max_fps)
+            && let Err(error) = session.SetMinUpdateInterval(TimeSpan { Duration: interval })
         {
-            tracing::info!(%error, fps, "the capture's least update interval could not be set");
+            tracing::info!(%error, ?max_fps, interval_100ns = interval, "the capture's least update interval could not be set");
         }
         let min_update_ms = session.MinUpdateInterval().ok().map(|t| t.Duration as f64 / 10_000.0);
         let info = CaptureInfo {
@@ -369,10 +437,12 @@ fn start(resolved: Resolved, max_fps: Option<u32>, shared: &Arc<Shared>, events:
             let shared = shared.clone();
             let live = live.clone();
             let pool_size = Mutex::new(size);
+            // One clock per capture (smooth B1.2).
+            let clock = Mutex::new(Clock::default());
             let device = Agile(winrt_device);
             TypedEventHandler::<Direct3D11CaptureFramePool, IInspectable>::new(move |pool, _| {
                 if let Some(pool) = pool.as_ref() {
-                    frames(pool, device.get(), &pool_size, &shared, &live);
+                    frames(pool, device.get(), &pool_size, &clock, &shared, &live);
                 }
                 Ok(())
             })
@@ -393,16 +463,98 @@ fn start(resolved: Resolved, max_fps: Option<u32>, shared: &Arc<Shared>, events:
     }
 }
 
+/// The capture's clock (smooth T1 to T4) and the gaps between the pool's frames (B2), owned by
+/// the frame handler.
+#[derive(Default)]
+struct Clock {
+    times: CaptureClock,
+    /// Whether the first frame's clock was logged (T4).
+    logged: bool,
+    last_arrival: Option<Instant>,
+}
+
+/// What `Clock::stamp` gives the state: the counts of untimed frames and of late gaps, and
+/// the longest gap.
+struct Counts {
+    untimed: u64,
+    late_gap: bool,
+    gap: Duration,
+}
+
+impl Clock {
+    /// The capture time of a frame that arrived at `arrived`, shown by the compositor at
+    /// `composed` (with how far ahead of the arrival that is, in ms), or why there is no
+    /// compositor time (T1, T2b).
+    fn stamp(&mut self, arrived: Instant, composed: Result<(Instant, f64), String>) -> (Instant, Counts) {
+        let untimed = self.times.untimed;
+        let at = self.times.stamp(arrived, composed.as_ref().ok().map(|(at, _)| *at));
+        if !self.logged {
+            self.logged = true;
+            let clock = if self.times.untimed == untimed { "SystemRelativeTime" } else { "arrival" };
+            match &composed {
+                Ok((_, ahead_ms)) => tracing::info!(clock, ahead_ms, "capture clock"),
+                Err(why) => tracing::info!(clock, %why, "capture clock"),
+            }
+        }
+        let gap = self.last_arrival.map_or(Duration::ZERO, |last| arrived.saturating_duration_since(last));
+        self.last_arrival = Some(arrived);
+        (at, Counts { untimed: self.times.untimed, late_gap: gap > LATE_GAP, gap })
+    }
+}
+
+/// The compositor's time for `frame`, its `SystemRelativeTime`, and the performance counter now,
+/// both in 100 ns units of the counter (smooth T1).
+fn clock_of(frame: &Direct3D11CaptureFrame) -> Result<(i64, i64), String> {
+    let composed = frame.SystemRelativeTime().map_err(|e| format!("SystemRelativeTime: {e}"))?.Duration;
+    let (mut counter, mut frequency) = (0i64, 0i64);
+    // SAFETY: plain calls that write the integers given.
+    unsafe {
+        QueryPerformanceCounter(&mut counter).map_err(|e| format!("QueryPerformanceCounter: {e}"))?;
+        QueryPerformanceFrequency(&mut frequency).map_err(|e| format!("QueryPerformanceFrequency: {e}"))?;
+    }
+    if frequency <= 0 {
+        return Err(format!("performance counter frequency {frequency}"));
+    }
+    let now = i64::try_from(i128::from(counter) * 10_000_000 / i128::from(frequency)).map_err(|e| e.to_string())?;
+    Ok((composed, now))
+}
+
+/// The compositor's time for the frame as an `Instant`: `arrived` plus how far the
+/// compositor's time is ahead of the counter now (on the laptop it is the time the frame is
+/// shown, 5 to 12 ms ahead), or minus how far it is behind (T2b), with that difference in ms.
+fn composed_at(arrived: Instant, composed: i64, now: i64) -> Result<(Instant, f64), String> {
+    let ahead = composed - now;
+    let span = Duration::from_nanos(ahead.unsigned_abs().saturating_mul(100));
+    let at = if ahead >= 0 { arrived.checked_add(span) } else { arrived.checked_sub(span) };
+    at.map(|at| (at, ahead as f64 / 10_000.0)).ok_or_else(|| format!("composed at {composed} (100 ns), the counter at {now}"))
+}
+
 /// Takes every frame the pool has: the newest waits for the pipeline, an older one waiting is
-/// replaced and counted as dropped (C5).
-fn frames(pool: &Direct3D11CaptureFramePool, device: &IDirect3DDevice, pool_size: &Mutex<SizeInt32>, shared: &Shared, live: &Live) {
+/// replaced and counted as dropped (C5). Every frame is stamped by the compositor's clock, also
+/// one replaced later (smooth B1.2).
+fn frames(pool: &Direct3D11CaptureFramePool, device: &IDirect3DDevice, pool_size: &Mutex<SizeInt32>, clock: &Mutex<Clock>, shared: &Shared, live: &Live) {
     while let Ok(frame) = pool.TryGetNextFrame() {
         let arrived = Instant::now();
-        match frame_of(frame, arrived, pool, device, pool_size, live) {
+        let times = clock_of(&frame);
+        if let Ok((composed, now)) = times {
+            // For measuring the compositor's clock against the arrival (smooth B1).
+            tracing::trace!(composed, ahead_us = (composed - now) / 10, "capture frame");
+        }
+        let composed = times.and_then(|(composed, now)| composed_at(arrived, composed, now));
+        let Ok((capture_time, counts)) = clock.lock().map(|mut clock| clock.stamp(arrived, composed)) else {
+            return;
+        };
+        let count = |state: &mut State| {
+            state.untimed = counts.untimed;
+            state.late_gaps += u64::from(counts.late_gap);
+            state.longest_gap = state.longest_gap.max(counts.gap);
+        };
+        match frame_of(frame, capture_time, pool, device, pool_size, live) {
             Ok(Some(frame)) => {
                 live.ready(true);
                 let replaced = match shared.state.lock() {
                     Ok(mut state) if !state.ended => {
+                        count(&mut state);
                         state.delivered += 1;
                         let replaced = state.pending.replace(frame);
                         state.dropped += u64::from(replaced.is_some());
@@ -414,8 +566,14 @@ fn frames(pool: &Direct3D11CaptureFramePool, device: &IDirect3DDevice, pool_size
                 // Its buffer goes back to the pool, outside the lock.
                 drop(replaced);
             }
-            Ok(None) => {}
-            Err(error) => tracing::warn!(%error, "capture frame skipped"),
+            other => {
+                if let Ok(mut state) = shared.state.lock() {
+                    count(&mut state);
+                }
+                if let Err(error) = other {
+                    tracing::warn!(%error, "capture frame skipped");
+                }
+            }
         }
     }
 }
@@ -424,7 +582,7 @@ fn frames(pool: &Direct3D11CaptureFramePool, device: &IDirect3DDevice, pool_size
 /// content's size changed (C6).
 fn frame_of(
     frame: Direct3D11CaptureFrame,
-    arrived: Instant,
+    capture_time: Instant,
     pool: &Direct3D11CaptureFramePool,
     device: &IDirect3DDevice,
     pool_size: &Mutex<SizeInt32>,
@@ -457,7 +615,7 @@ fn frame_of(
     // pool was remade).
     let width = (content.Width as u32).min(desc.Width);
     let height = (content.Height as u32).min(desc.Height);
-    Ok(Some(D3d11Frame { texture, width, height, capture_time: arrived, hold: Some(Hold(Box::new(Returned::new(frame, &live.outstanding)))) }))
+    Ok(Some(D3d11Frame { texture, width, height, capture_time, hold: Some(Hold(Box::new(Returned::new(frame, &live.outstanding)))) }))
 }
 
 /// The item went away by itself: the share ends (C11).
@@ -468,4 +626,26 @@ fn item_closed(shared: &Shared, live: &Live) {
     tracing::info!(source = live.info.source, "the captured item closed, screen capture ended");
     finish(shared);
     (live.events)(CaptureEvent::Ended);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_least_update_interval_follows_the_variable() {
+        // Fix E13: unset is one frame time, a number is milliseconds, `off` sets nothing.
+        assert_eq!(MinUpdate::from_text(None), Some(MinUpdate::FrameTime));
+        assert_eq!(MinUpdate::FrameTime.interval(Some(60)), Some(166_666));
+        assert_eq!(MinUpdate::FrameTime.interval(None), None);
+        assert_eq!(MinUpdate::from_text(Some("off")), Some(MinUpdate::Off));
+        assert_eq!(MinUpdate::Off.interval(Some(60)), None);
+        assert_eq!(MinUpdate::from_text(Some("5")), Some(MinUpdate::Ms(5.0)));
+        assert_eq!(MinUpdate::Ms(5.0).interval(Some(60)), Some(50_000));
+        assert_eq!(MinUpdate::from_text(Some(" 6.9 ")).and_then(|m| m.interval(None)), Some(69_000));
+        assert_eq!(MinUpdate::from_text(Some("0")), Some(MinUpdate::Ms(0.0)));
+        for bad in ["", "-1", "fast", "inf", "NaN"] {
+            assert_eq!(MinUpdate::from_text(Some(bad)), None, "{bad:?}");
+        }
+    }
 }

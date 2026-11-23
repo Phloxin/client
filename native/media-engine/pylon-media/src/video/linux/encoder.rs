@@ -130,6 +130,11 @@ pub struct VaapiEncoder {
     kept: Option<Frame>,
     import: Option<Import>,
     resizes: Resizes,
+    /// The cap on the encoded picture of the size ladder, `None` for the share's own maximum
+    /// (smooth S2, S8).
+    cap: Option<(u32, u32)>,
+    /// The newest input frame's size.
+    input: Option<(u32, u32)>,
     open: Option<Open>,
     packet: ffi::Packet,
     pts: i64,
@@ -178,6 +183,8 @@ impl VaapiEncoder {
             kept: None,
             import: None,
             resizes: Resizes::default(),
+            cap: None,
+            input: None,
             open: None,
             packet,
             pts: 0,
@@ -192,11 +199,19 @@ impl VaapiEncoder {
         self.open.as_ref().map(|open| open.size)
     }
 
+    /// The size an input of `input` is encoded at under the smaller of the share's maximum and
+    /// `cap` (smooth S8).
+    fn wanted_under(&self, cap: Option<(u32, u32)>, input: (u32, u32)) -> (u32, u32) {
+        let (width, height) = cap.map_or((self.config.width, self.config.height), |(w, h)| (self.config.width.min(w), self.config.height.min(h)));
+        encoded_size(input.0, input.1, (width, height), self.limits)
+    }
+
     /// The import for frames like `frame` and the size they are encoded at. A new size is taken
     /// up by opening the encoder again only as D14 allows, until then frames are scaled to the
     /// size the encoder runs at.
     fn import_for(&mut self, frame: &DmaBufFrame) -> Result<(), Error> {
-        let wanted = encoded_size(frame.width, frame.height, (self.config.width, self.config.height), self.limits);
+        self.input = Some((frame.width, frame.height));
+        let wanted = self.wanted_under(self.cap, (frame.width, frame.height));
         let running = self.open.as_ref().map(|open| open.size);
         let (mut size, reopen) = self.resizes.decide(Instant::now(), wanted, running);
         if reopen && let Some(running) = running {
@@ -484,6 +499,30 @@ impl FrameEncoder for VaapiEncoder {
 
     fn resize_due(&self) -> Option<Instant> {
         self.open.as_ref().and(self.resizes.due())
+    }
+
+    fn set_size_cap(&mut self, cap: Option<(u32, u32)>) {
+        self.cap = cap;
+        // Asked for now, so a still screen takes it up too (D14's rule, through `resize_due`).
+        if let (Some(input), Some(open)) = (self.input, &self.open) {
+            let wanted = self.wanted_under(cap, input);
+            self.resizes.want(Instant::now(), wanted, open.size);
+        }
+    }
+
+    fn size_under(&self, cap: Option<(u32, u32)>) -> Option<(u32, u32)> {
+        self.input.map(|input| self.wanted_under(cap, input))
+    }
+
+    fn size_floor(&self) -> Option<f64> {
+        Some(match self.codec {
+            VideoCodec::H264 => crate::video::FLOOR_H264,
+            VideoCodec::Av1 => crate::video::FLOOR_AV1,
+        })
+    }
+
+    fn running_size(&self) -> Option<(u32, u32)> {
+        self.open.as_ref().map(|open| open.size)
     }
 
     fn offer_preview(&mut self, preview: &Arc<Preview>) -> bool {
