@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
+import { AnimatePresence } from 'motion/react'
 import './ClientSummary.css'
 import { IconUsersGroup, IconPhotoUp, IconTrash, IconZoomIn } from '@tabler/icons-react'
 import { RoleIcon } from '../lib/roleIcon'
@@ -193,13 +194,15 @@ function ClientSummary({ client, roles = [], vanity = [], isSelf = false, onSetA
         </section>
       )}
 
-      {viewerOpen && hasAvatar && (
-        <ImageViewer
-          src={client.avatar}
-          name={`${client?.name ?? 'User'} avatar`}
-          onClose={() => setViewerOpen(false)}
-        />
-      )}
+      <AnimatePresence>
+        {viewerOpen && hasAvatar && (
+          <ImageViewer
+            src={client.avatar}
+            name={`${client?.name ?? 'User'} avatar`}
+            onClose={() => setViewerOpen(false)}
+          />
+        )}
+      </AnimatePresence>
 
       {avatarMenu && (
         <div className="channel-context-menu" ref={avatarMenuRef} style={avatarMenuStyle}>

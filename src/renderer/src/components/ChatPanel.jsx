@@ -1956,13 +1956,15 @@ function ChatPanel({
         )}
       </AnimatePresence>
 
-      {viewerImage && (
-        <ImageViewer
-          src={viewerImage.url}
-          name={viewerImage.name}
-          onClose={() => setViewerImage(null)}
-        />
-      )}
+      <AnimatePresence>
+        {viewerImage && (
+          <ImageViewer
+            src={viewerImage.url}
+            name={viewerImage.name}
+            onClose={() => setViewerImage(null)}
+          />
+        )}
+      </AnimatePresence>
 
       <AnimatePresence>
         {viewerFile && (

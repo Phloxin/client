@@ -4502,13 +4502,15 @@ function Main() {
               </motion.div>
             </div>
           )}
-          {filesViewerImage && (
-            <ImageViewer
-              src={filesViewerImage.url}
-              name={filesViewerImage.name}
-              onClose={() => setFilesViewerImage(null)}
-            />
-          )}
+          <AnimatePresence>
+            {filesViewerImage && (
+              <ImageViewer
+                src={filesViewerImage.url}
+                name={filesViewerImage.name}
+                onClose={() => setFilesViewerImage(null)}
+              />
+            )}
+          </AnimatePresence>
           <AnimatePresence>
             {filesViewerFile && (
               <FileViewer

@@ -34,6 +34,35 @@ export function scrimFade(enabled) {
   }
 }
 
+// Image lightbox scrim. The exit is longer than scrimFade's and eases in-out,
+// so closing the viewer dissolves rather than blinks. Pointer events drop the
+// moment the exit starts, so the fading scrim never eats a click on the app
+// behind it.
+export function lightboxScrim(enabled) {
+  if (!enabled) return noMotion
+  return {
+    initial: { opacity: 0 },
+    animate: { opacity: 1, pointerEvents: 'auto', transition: { duration: 0.18, ease: 'easeOut' } },
+    exit: {
+      opacity: 0,
+      pointerEvents: 'none',
+      transition: { duration: 0.22, ease: [0.4, 0, 0.2, 1] }
+    }
+  }
+}
+
+// Image lightbox content: grows in from 96% on a soft spring, and settles back
+// to 95% while fading on close. Its fade finishes a little before the scrim's,
+// so the image is gone before the backdrop is.
+export function lightboxImage(enabled) {
+  if (!enabled) return noMotion
+  return {
+    initial: { opacity: 0, scale: 0.96 },
+    animate: { opacity: 1, scale: 1, transition: springSoft },
+    exit: { opacity: 0, scale: 0.95, transition: { duration: 0.18, ease: [0.4, 0, 1, 1] } }
+  }
+}
+
 // Anchored popover/menu: scale from its origin corner with a spring.
 export function menuPop(enabled) {
   if (!enabled) return noMotion

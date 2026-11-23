@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useLayoutEffect } from 'react'
+import { AnimatePresence } from 'motion/react'
 import './ClientSummary.css'
 import { IconVolume, IconPencil, IconTrash, IconPhotoUp, IconZoomIn } from '@tabler/icons-react'
 import ChannelPermissions from './ChannelPermissions'
@@ -225,13 +226,15 @@ function ChannelSummary({
         />
       )}
 
-      {viewerOpen && hasIcon && (
-        <ImageViewer
-          src={assetUrl(channel.channel_icon)}
-          name={`${channel?.name ?? 'Channel'} icon`}
-          onClose={() => setViewerOpen(false)}
-        />
-      )}
+      <AnimatePresence>
+        {viewerOpen && hasIcon && (
+          <ImageViewer
+            src={assetUrl(channel.channel_icon)}
+            name={`${channel?.name ?? 'Channel'} icon`}
+            onClose={() => setViewerOpen(false)}
+          />
+        )}
+      </AnimatePresence>
 
       {iconMenu && (
         <div className="channel-context-menu" ref={iconMenuRef} style={iconMenuStyle}>
