@@ -1,15 +1,19 @@
-/* Fire screensaver for the disconnected chat area (see IdleAnimation.jsx).
-   The root fills the flex region; the fire <pre> fills the root; the caption
-   sits centered in a carved-out hole the flames never touch. */
+/* Pylon-tower screensaver for the disconnected chat area (see IdleAnimation.jsx).
+   The root fills the flex region; the waves <pre> fills the root; the caption
+   sits in a carved-out hole the waves never touch, and the tower is drawn
+   standing on top of that hole. */
 .idle-animation {
   position: relative;
   flex: 1;
   min-height: 0;
   overflow: hidden;
   user-select: none;
+  /* One grid line; the caption is pushed down by half the tower (17 rows +
+     the gap) so tower + caption sit centered together. */
+  --idle-line: calc(13px * 1.15);
 }
 
-.idle-fire {
+.idle-waves {
   position: absolute;
   inset: 0;
   margin: 0;
@@ -23,7 +27,7 @@
 
 .idle-caption {
   position: absolute;
-  top: 50%;
+  top: calc(50% + 10 * var(--idle-line));
   left: 50%;
   transform: translate(-50%, -50%);
   display: flex;
