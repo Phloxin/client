@@ -1,5 +1,9 @@
 // window.pylonTest, the e2e harness's handle (client/e2e). Installed only when the preload says
 // the app was launched with PYLON_TEST=1. soup hands in its state through configureTestHooks.
+import { nativePreviewTally } from './soup/nativeShare'
+import { setStreamPreviewBehind, streamPreviewBehind } from './soup/nativeStreamPreview'
+import { frameJitterMs, interFrameSnapshot } from './streamStats'
+
 let getRemoteConsumers = () => new Map()
 let getProducers = () => []
 let getShareContexts = () => []
@@ -32,6 +36,11 @@ function localProducers() {
   return list
 }
 
+// Each consumer's inter-frame counters at the last rtcStats(): a sample's
+// frameJitterMs is over the time since then, the first one over the consumer's life.
+const interFrameBefore = new Map()
+const NO_FRAMES = { totalInterFrameDelay: 0, totalSquaredInterFrameDelay: 0, framesDecoded: 0 }
+
 async function consumerStats(entry) {
   const base = {
     consumerId: entry.consumerId,
@@ -42,12 +51,15 @@ async function consumerStats(entry) {
     const report = await entry.consumer.getStats()
     for (const s of report.values()) {
       if (s.type !== 'inbound-rtp') continue
+      const before = interFrameBefore.get(entry.consumerId) ?? NO_FRAMES
+      interFrameBefore.set(entry.consumerId, interFrameSnapshot(s))
       return {
         ...base,
         framesDecoded: s.framesDecoded ?? null,
         keyFramesDecoded: s.keyFramesDecoded ?? null,
         pliCount: s.pliCount ?? null,
         freezeCount: s.freezeCount ?? null,
+        frameJitterMs: s.kind === 'video' ? frameJitterMs(s, before) : null,
         frameWidth: s.frameWidth ?? null,
         frameHeight: s.frameHeight ?? null,
         packetsLost: s.packetsLost ?? null,
@@ -100,10 +112,59 @@ async function rtcStats() {
   return { consumers: consumerList, producers: producerList }
 }
 
+// The live screen share's native engine (soup/nativeShare.js): whether the share is native, its
+// source id, the sidecar's pid, its last stats and its event history. No key material.
+function nativeShare() {
+  const ctx = getShareContexts().find((share) => share.type === 'screen')
+  if (!ctx) return { sharing: false, native: false }
+  const info = ctx.producer?.native ? ctx.producer.testInfo() : null
+  return info ? { sharing: true, ...info } : { sharing: true, native: false }
+}
+
+// The native shares' preview pictures (soup/nativeShare.js): per share its requests, counts and
+// canvas size, kept past its end, and how many preview events reached this window per sidecar
+// pid and when the last one did (heard here too, so a picture after a share's end is seen).
+// Counts and times only, never a picture. `streamBehind`: a stream preview of this run could not
+// keep up, so shares start with the JPEGs; setStreamPreviewBehind sets or clears it.
+const previewEvents = new Map()
+
+function listenForPreviews() {
+  // `frames` and `lastFrameAt` for the stream preview's frames.
+  window.api?.mediaEngine?.onEvent?.((event) => {
+    if (event?.type !== 'preview' && event?.type !== 'preview_frame') return
+    const entry = previewEvents.get(event.pid) ?? {
+      count: 0,
+      lastAt: null,
+      frames: 0,
+      lastFrameAt: null
+    }
+    if (event.type === 'preview') {
+      entry.count++
+      entry.lastAt = Date.now()
+    } else {
+      entry.frames++
+      entry.lastFrameAt = Date.now()
+    }
+    previewEvents.set(event.pid, entry)
+  })
+}
+
+function nativePreview() {
+  return {
+    shares: nativePreviewTally(),
+    events: [...previewEvents].map(([pid, entry]) => ({ pid, ...entry })),
+    streamBehind: streamPreviewBehind()
+  }
+}
+
 if (typeof window !== 'undefined' && window.api?.isTestHarness) {
+  listenForPreviews()
   window.pylonTest = {
     consumers,
     rtcStats,
+    nativeShare,
+    nativePreview,
+    setStreamPreviewBehind: (value) => setStreamPreviewBehind(value === true),
     dropVoiceSocket: () => dropVoiceSocket()
   }
 }

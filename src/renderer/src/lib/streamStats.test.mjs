@@ -8,6 +8,7 @@ import {
   extractRecvVideoMetrics,
   extractSendAudioMetrics,
   extractTransportHealth,
+  frameJitterMs,
   jitterBufferAvgMs,
   voiceConnectionQuality
 } from './streamStats.js'
@@ -302,4 +303,50 @@ test('voice connection quality buckets RTT and loss', () => {
   assert.equal(voiceConnectionQuality({ rttMs: 40, lossFraction: 0.05 }), 'fair')
   assert.equal(voiceConnectionQuality({ rttMs: 400 }), 'poor')
   assert.equal(voiceConnectionQuality({ rttMs: 40, lossFraction: 0.1 }), 'poor')
+})
+
+// Counters after `delays` (ms) between frames, from `before`.
+const interFrame = (delays, before = { sum: 0, squares: 0, frames: 0 }) => ({
+  totalInterFrameDelay: before.sum + delays.reduce((s, d) => s + d / 1000, 0),
+  totalSquaredInterFrameDelay: before.squares + delays.reduce((s, d) => s + (d / 1000) ** 2, 0),
+  framesDecoded: before.frames + delays.length
+})
+
+test('frameJitterMs is the spread of the time between frames over the window', () => {
+  const zero = { totalInterFrameDelay: 0, totalSquaredInterFrameDelay: 0, framesDecoded: 0 }
+  // An even 60: no spread.
+  assert.ok(Math.abs(frameJitterMs(interFrame(Array(60).fill(1000 / 60)), zero)) < 1e-6)
+  // A mean of 25 ms alternating 17 and 33: 8 ms, what a mean frame rate hides.
+  const alternating = Array.from({ length: 60 }, (_, n) => (n % 2 ? 33 : 17))
+  assert.ok(Math.abs(frameJitterMs(interFrame(alternating), zero) - 8) < 1e-6)
+  // Only the window counts: a stall before it is not in it.
+  const before = interFrame([500, 16, 16])
+  const previous = before
+  const current = interFrame(Array(30).fill(16), {
+    sum: before.totalInterFrameDelay,
+    squares: before.totalSquaredInterFrameDelay,
+    frames: before.framesDecoded
+  })
+  assert.ok(frameJitterMs(current, previous) < 1e-3)
+  assert.ok(frameJitterMs(current, zero) > 50)
+})
+
+test('frameJitterMs is null without the fields, a previous sample, or two frames', () => {
+  const zero = { totalInterFrameDelay: 0, totalSquaredInterFrameDelay: 0, framesDecoded: 0 }
+  assert.equal(frameJitterMs(interFrame([16]), zero), null)
+  assert.equal(frameJitterMs(interFrame([16, 16]), null), null)
+  assert.equal(frameJitterMs({ framesDecoded: 10 }, zero), null)
+  // A counter that went backwards (a new consumer under the same key).
+  assert.equal(frameJitterMs(zero, interFrame([16, 16, 16])), null)
+  // Through the receive metrics: the first sample has no window, the next one has.
+  const inbound = (counters) =>
+    report({ id: 'in', type: 'inbound-rtp', kind: 'video', timestamp: 1, ...counters })
+  const first = extractRecvVideoMetrics(inbound(interFrame([16, 16])), null)
+  assert.equal(first.metrics.frameJitterMs, null)
+  const alternating = Array.from({ length: 10 }, (_, n) => (n % 2 ? 33 : 17))
+  const next = extractRecvVideoMetrics(
+    inbound(interFrame(alternating, { sum: 0.032, squares: 2 * 0.016 ** 2, frames: 2 })),
+    first.snapshot
+  )
+  assert.ok(Math.abs(next.metrics.frameJitterMs - 8) < 1e-6)
 })

@@ -25,6 +25,16 @@ asarUnpack:
   - resources/**
   # Native modules must live outside the asar to be dlopen-able.
   - '**/*.node'
+# The media engine's sidecar with its FFmpeg DLLs and licence texts, staged by
+# `npm run build:media-engine:win` (native/media-engine/windows/stage-sidecar.ps1). A packaged app
+# looks for it in <resources>/media-engine (src/main/mediaEngineHost.js). When nothing is staged
+# the folder holds only its placeholder and the app is packaged without a sidecar.
+extraResources:
+  - from: native/media-engine/dist
+    to: media-engine
+    filter:
+      - '**/*'
+      - '!.gitkeep'
 win:
   executableName: pylon
 nsis:

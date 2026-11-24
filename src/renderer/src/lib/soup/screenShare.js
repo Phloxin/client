@@ -11,6 +11,16 @@ import {
   shouldRecoverOnMuteStall
 } from './screenShareRecovery'
 import { codecLabel, computeOutboundVideoSample } from '../streamStats'
+import {
+  NativeCaptureEndedError,
+  captureNativeScreen,
+  nativeEngineStatus,
+  nativeShareSource,
+  startNativeShare
+} from './nativeShare'
+import { nativeShareCodec } from './nativeCodec'
+import { SHARE_RATE_INTERVAL_MS, chromiumRateSample, createShareRateLog } from './shareRate'
+import { releaseShareStream, setShareStreamKey } from './shareStream'
 
 let getDevice = () => null
 let getProducerTransport = () => null
@@ -28,8 +38,12 @@ let releaseStream = () => {}
 // The owner's pause of one of our sources on the server (SetSourcePaused).
 let setSourcePaused = async () => false
 let localProducerIds = new Set()
+// A native share's own send transport on the session: soup/index.js's
+// available, routerCapabilities and create.
+let auxTransport = null
 
 export function configureScreenShare(dependencies = {}) {
+  if (dependencies.auxTransport) auxTransport = dependencies.auxTransport
   if (dependencies.getDevice) getDevice = dependencies.getDevice
   if (dependencies.getProducerTransport) getProducerTransport = dependencies.getProducerTransport
   if (dependencies.getCallbacks) getCallbacks = dependencies.getCallbacks
@@ -338,15 +352,21 @@ function logNegotiatedVideoCodec(producer, scalabilityMode) {
 // codec + whether the encoder is hardware or software (encoderImplementation, e.g.
 // 'libaom' = software AV1) for the sharer's HW/SW tile badge, and qualityLimitationReason
 // ('cpu' = the encoder can't keep up) which drives maybeDowngradeScreenCodec.
-// Also logged in dev. Returns a stop function, which the share keeps as
+// Also logged in dev. onReport, when given, gets each report as it is (the screen share's
+// frame rate line, shareRate.js). Returns a stop function, which the share keeps as
 // ctx.statsStop.
-function startEncoderStatsLog(producer, onStats) {
+function startEncoderStatsLog(producer, onStats, onReport) {
   const sender = producer.rtpSender
   if (!sender?.getStats) return
   const previousByOutboundId = new Map()
   const id = setInterval(async () => {
     try {
       const stats = await sender.getStats()
+      try {
+        onReport?.(stats)
+      } catch {
+        // The line never costs the share's own statistics.
+      }
       const sample = computeOutboundVideoSample(stats, previousByOutboundId)
       if (!sample) return
 
@@ -662,7 +682,7 @@ function produceInitialScreenWithFallback(ctx, initialCodec) {
 // stats poller, apply the caller's per-type ctx state, then close the previous
 // producer locally. The candidate was produced with appData.replaces, so the
 // server already swapped it in for the previous source and closed that one.
-function adoptShareProducer(ctx, candidate, { applyState, scalabilityMode, onStats }) {
+function adoptShareProducer(ctx, candidate, { applyState, scalabilityMode, onStats, rateLine }) {
   const previous = ctx.producer
   ctx.statsStop?.()
   ctx.statsStop = null
@@ -693,13 +713,31 @@ function adoptShareProducer(ctx, candidate, { applyState, scalabilityMode, onSta
   }
 
   logNegotiatedVideoCodec(candidate.producer, scalabilityMode)
-  ctx.statsStop = startEncoderStatsLog(candidate.producer, (stats) => {
-    // A getStats() call already in flight for the replaced producer may finish
-    // after its interval is cleared. Do not let that stale software verdict skip
-    // a freshly selected SVC rung.
-    if (ctx.producer !== candidate.producer) return
-    onStats(ctx, stats)
-  })
+  // The screen share's frame rate line (shareRate.js), from the same poll's reports: a line
+  // once 5 seconds have passed since the last one. Each producer starts its own.
+  const rate = rateLine
+    ? createShareRateLog({
+        path: 'Chromium',
+        codec: codecLabel(candidate.producer.rtpParameters),
+        minIntervalMs: SHARE_RATE_INTERVAL_MS
+      })
+    : null
+  ctx.statsStop = startEncoderStatsLog(
+    candidate.producer,
+    (stats) => {
+      // A getStats() call already in flight for the replaced producer may finish
+      // after its interval is cleared. Do not let that stale software verdict skip
+      // a freshly selected SVC rung.
+      if (ctx.producer !== candidate.producer) return
+      onStats(ctx, stats)
+    },
+    rate &&
+      ((report) => {
+        // The same for the line: none for a replaced producer or a share that stopped.
+        if (ctx.producer !== candidate.producer || !isActiveShare(ctx)) return
+        rate.offer(chromiumRateSample(report))
+      })
+  )
 }
 
 function adoptScreenProducer(ctx, candidate) {
@@ -711,7 +749,8 @@ function adoptScreenProducer(ctx, candidate) {
       resetScreenFallbackCooldown(share)
     },
     scalabilityMode: candidate.encoding.scalabilityMode,
-    onStats: screenStatsHandler
+    onStats: screenStatsHandler,
+    rateLine: true
   })
 }
 
@@ -761,6 +800,8 @@ async function stopShareContext(ctx, { notifyServer = true } = {}) {
 
   ctx.statsStop?.()
   ctx.statsStop = null
+  // A native capture still in the portal's dialog goes with the share.
+  ctx.cancelNativeCapture?.()
 
   const videoProducer = ctx.producer
   const audioProducer = ctx.audioProducer
@@ -791,9 +832,9 @@ async function stopShareContext(ctx, { notifyServer = true } = {}) {
 
   if (notifyServer) {
     void Promise.all(producerIds.map((id) => closeServerProducer(id)))
-    // The stream is handed back with op 11. Without notifyServer the session
-    // is gone, and the stream with it.
-    if (ctx.streamKey) releaseStream(ctx.streamKey)
+    // The stream is handed back with op 11, once. Without
+    // notifyServer the session is gone, and the stream with it.
+    releaseShareStream(ctx, releaseStream)
   }
 
   ctx.stopPromise = (async () => {
@@ -1199,6 +1240,113 @@ async function recoverScreenShare(ctx, reason) {
   }
 }
 
+// Screenshare audio: native capture for per-app/system modes, or the legacy
+// loopback track riding getDisplayMedia. Audio failure keeps video live.
+// `stream` is the getDisplayMedia stream, read only for system-legacy. Throws
+// only when the share was superseded or stopped meanwhile.
+async function startShareAudio(ctx, { audioMode, audioTargets, stream }) {
+  let audioTrack = null
+  let nativeAudio = null
+  if (audioMode === 'system-legacy') {
+    audioTrack = stream.getAudioTracks()[0] ?? null
+    if (!audioTrack) {
+      const message = 'The selected capture source did not provide a system-audio track'
+      console.error(`[Soup] ${message}; sharing video-only`)
+      getCallbacks().onScreenAudioError?.(message)
+    }
+  } else if (audioMode !== 'none') {
+    try {
+      nativeAudio = await startScreenAudio({
+        mode: audioMode,
+        targets: audioTargets ?? undefined
+      })
+      if (!isActiveShare(ctx)) {
+        await nativeAudio.stop().catch(() => {})
+        throw shareSupersededError()
+      }
+      ctx.nativeAudio = nativeAudio
+      audioTrack = nativeAudio.track
+      console.log(`[Soup] Native screen audio capture started [backend:${nativeAudio.backend}]`)
+    } catch (err) {
+      if (isShareSupersededError(err) || !isActiveShare(ctx)) throw shareSupersededError()
+      console.error('[Soup] Native screen audio failed, sharing video-only:', err)
+      getCallbacks().onScreenAudioError?.(err.message)
+    }
+  }
+
+  if (audioTrack) {
+    ctx.audioTrack = audioTrack
+    try {
+      audioTrack.contentHint = 'music'
+      const audioProducer = await produceForShare(ctx, {
+        track: audioTrack,
+        // Stereo + a real bitrate: captured app/system audio is music/media,
+        // not speech, and the old mono default audibly degraded it. Shares the
+        // hi-fi mic profile's ceiling (micAudioProfile.js) because it is the
+        // same content class — the two must not drift apart.
+        codecOptions: {
+          opusStereo: true,
+          opusDtx: false,
+          opusFec: true,
+          opusMaxAverageBitrate: MUSIC_AUDIO_BITRATE,
+          opusPtime: 20
+        },
+        encodings: [{ maxBitrate: MUSIC_AUDIO_BITRATE }],
+        appData: { produced: 'ScreenShareAudio', streamKey: ctx.streamKey }
+      })
+
+      if (audioTrack.readyState === 'ended') {
+        const failureAlreadyReported = ctx.audioTrack !== audioTrack
+        audioProducer.close()
+        await closeServerProducer(audioProducer.id)
+        if (ctx.audioTrack === audioTrack) ctx.audioTrack = null
+        if (ctx.nativeAudio === nativeAudio) ctx.nativeAudio = null
+        audioTrack.stop()
+        await nativeAudio?.stop().catch(() => {})
+        if (!isActiveShare(ctx)) throw shareSupersededError()
+        const message = 'Screen audio capture ended while starting'
+        console.error(`[Soup] ${message}; sharing video-only`)
+        if (!failureAlreadyReported) getCallbacks().onScreenAudioError?.(message)
+      } else {
+        ctx.audioProducer = audioProducer
+        localProducerIds.add(audioProducer.id)
+        audioTrack.addEventListener(
+          'ended',
+          () => {
+            if (!isActiveShare(ctx) || ctx.audioTrack !== audioTrack) return
+            ctx.audioTrack = null
+            if (ctx.nativeAudio === nativeAudio) ctx.nativeAudio = null
+            if (ctx.audioProducer === audioProducer) ctx.audioProducer = null
+            audioProducer.close()
+            localProducerIds.delete(audioProducer.id)
+            void closeServerProducer(audioProducer.id)
+            void nativeAudio?.stop().catch(() => {})
+            if (isActiveShare(ctx) && ctx.producer) {
+              getCallbacks().onScreenAudioError?.('Screen audio capture ended')
+            }
+          },
+          { once: true }
+        )
+        console.log(`[Soup] Screen audio sharing [id:${audioProducer.id}]`)
+      }
+    } catch (err) {
+      if (isShareSupersededError(err) || !isActiveShare(ctx)) throw shareSupersededError()
+      const failureAlreadyReported = ctx.audioTrack !== audioTrack
+      if (ctx.audioTrack === audioTrack) ctx.audioTrack = null
+      if (ctx.nativeAudio === nativeAudio) ctx.nativeAudio = null
+      audioTrack.stop()
+      await nativeAudio
+        ?.stop()
+        .catch((stopErr) =>
+          console.warn('[Soup] Failed to stop owned screen audio after produce failure:', stopErr)
+        )
+      if (!isActiveShare(ctx)) throw shareSupersededError()
+      console.error('[Soup] Screen audio produce failed, sharing video-only:', err)
+      if (!failureAlreadyReported) getCallbacks().onScreenAudioError?.(err.message)
+    }
+  }
+}
+
 // ─── Share screen ────────────────────────────────────────────────
 // audioMode selects where screenshare audio comes from:
 //   'app'                 native capture of the shared app only (audioTargets)
@@ -1291,6 +1439,11 @@ export async function shareScreen({
   await claimShareContext(ctx)
 
   try {
+    // The native engine first, when it can. Anything short of a live native
+    // share carries on below as if it had never been tried.
+    const native = await startNativeScreenShare(ctx, audioMode, audioTargets)
+    if (native) return native
+
     const stream = await navigator.mediaDevices.getDisplayMedia({
       video: {
         frameRate: { ideal: fps, max: fps },
@@ -1328,10 +1481,10 @@ export async function shareScreen({
     // capture to publish: an OS picker can outlast the 30s the stream gives us
     // to create its first source.
     const streamKey = await createStream()
-    ctx.streamKey = streamKey
+    setShareStreamKey(ctx, streamKey)
     // A stop while we waited ran without the key, so hand it back here.
     if (!isActiveShare(ctx)) {
-      releaseStream(streamKey)
+      releaseShareStream(ctx, releaseStream)
       throw shareSupersededError()
     }
 
@@ -1361,108 +1514,7 @@ export async function shareScreen({
     // The channel's codecs may have changed while this was being produced.
     applyChannelCodecsTo(ctx)
 
-    // Screenshare audio: native capture for per-app/system modes, or the legacy
-    // loopback track riding getDisplayMedia. Audio failure keeps video live.
-    let audioTrack = null
-    let nativeAudio = null
-    if (audioMode === 'system-legacy') {
-      audioTrack = stream.getAudioTracks()[0] ?? null
-      if (!audioTrack) {
-        const message = 'The selected capture source did not provide a system-audio track'
-        console.error(`[Soup] ${message}; sharing video-only`)
-        getCallbacks().onScreenAudioError?.(message)
-      }
-    } else if (audioMode !== 'none') {
-      try {
-        nativeAudio = await startScreenAudio({
-          mode: audioMode,
-          targets: audioTargets ?? undefined
-        })
-        if (!isActiveShare(ctx)) {
-          await nativeAudio.stop().catch(() => {})
-          throw shareSupersededError()
-        }
-        ctx.nativeAudio = nativeAudio
-        audioTrack = nativeAudio.track
-        console.log(`[Soup] Native screen audio capture started [backend:${nativeAudio.backend}]`)
-      } catch (err) {
-        if (isShareSupersededError(err) || !isActiveShare(ctx)) throw shareSupersededError()
-        console.error('[Soup] Native screen audio failed, sharing video-only:', err)
-        getCallbacks().onScreenAudioError?.(err.message)
-      }
-    }
-
-    if (audioTrack) {
-      ctx.audioTrack = audioTrack
-      try {
-        audioTrack.contentHint = 'music'
-        const audioProducer = await produceForShare(ctx, {
-          track: audioTrack,
-          // Stereo + a real bitrate: captured app/system audio is music/media,
-          // not speech, and the old mono default audibly degraded it. Shares the
-          // hi-fi mic profile's ceiling (micAudioProfile.js) because it is the
-          // same content class — the two must not drift apart.
-          codecOptions: {
-            opusStereo: true,
-            opusDtx: false,
-            opusFec: true,
-            opusMaxAverageBitrate: MUSIC_AUDIO_BITRATE,
-            opusPtime: 20
-          },
-          encodings: [{ maxBitrate: MUSIC_AUDIO_BITRATE }],
-          appData: { produced: 'ScreenShareAudio', streamKey: ctx.streamKey }
-        })
-
-        if (audioTrack.readyState === 'ended') {
-          const failureAlreadyReported = ctx.audioTrack !== audioTrack
-          audioProducer.close()
-          await closeServerProducer(audioProducer.id)
-          if (ctx.audioTrack === audioTrack) ctx.audioTrack = null
-          if (ctx.nativeAudio === nativeAudio) ctx.nativeAudio = null
-          audioTrack.stop()
-          await nativeAudio?.stop().catch(() => {})
-          if (!isActiveShare(ctx)) throw shareSupersededError()
-          const message = 'Screen audio capture ended while starting'
-          console.error(`[Soup] ${message}; sharing video-only`)
-          if (!failureAlreadyReported) getCallbacks().onScreenAudioError?.(message)
-        } else {
-          ctx.audioProducer = audioProducer
-          localProducerIds.add(audioProducer.id)
-          audioTrack.addEventListener(
-            'ended',
-            () => {
-              if (!isActiveShare(ctx) || ctx.audioTrack !== audioTrack) return
-              ctx.audioTrack = null
-              if (ctx.nativeAudio === nativeAudio) ctx.nativeAudio = null
-              if (ctx.audioProducer === audioProducer) ctx.audioProducer = null
-              audioProducer.close()
-              localProducerIds.delete(audioProducer.id)
-              void closeServerProducer(audioProducer.id)
-              void nativeAudio?.stop().catch(() => {})
-              if (isActiveShare(ctx) && ctx.producer) {
-                getCallbacks().onScreenAudioError?.('Screen audio capture ended')
-              }
-            },
-            { once: true }
-          )
-          console.log(`[Soup] Screen audio sharing [id:${audioProducer.id}]`)
-        }
-      } catch (err) {
-        if (isShareSupersededError(err) || !isActiveShare(ctx)) throw shareSupersededError()
-        const failureAlreadyReported = ctx.audioTrack !== audioTrack
-        if (ctx.audioTrack === audioTrack) ctx.audioTrack = null
-        if (ctx.nativeAudio === nativeAudio) ctx.nativeAudio = null
-        audioTrack.stop()
-        await nativeAudio
-          ?.stop()
-          .catch((stopErr) =>
-            console.warn('[Soup] Failed to stop owned screen audio after produce failure:', stopErr)
-          )
-        if (!isActiveShare(ctx)) throw shareSupersededError()
-        console.error('[Soup] Screen audio produce failed, sharing video-only:', err)
-        if (!failureAlreadyReported) getCallbacks().onScreenAudioError?.(err.message)
-      }
-    }
+    await startShareAudio(ctx, { audioMode, audioTargets, stream })
 
     if (!isActiveShare(ctx) || !ctx.producer) throw shareSupersededError()
 
@@ -1476,6 +1528,219 @@ export async function shareScreen({
     await stopShareContext(ctx)
     throw err
   }
+}
+
+// ─── Native screen share ─────────────────────────────────────────
+// Whether the sharer's own screen tile is seen (Main.jsx works it out: selfScreenTileSeen in
+// lib/selfPreviewPlayback.js). A native share asks its sidecar for preview pictures only while
+// it is.
+let selfScreenPreviewSeen = false
+
+// `stopAsked`: the tile is not watched (the person chose Stop previewing), so a stream preview
+// stops at once instead of after its hold.
+export function setSelfScreenPreviewSeen(seen, { stopAsked = false } = {}) {
+  selfScreenPreviewSeen = seen === true
+  const producer = shares.screen?.producer
+  if (producer?.native) {
+    producer.setPreviewSeen?.(selfScreenPreviewSeen, { stopAsked: stopAsked === true })
+  }
+}
+
+// With the "Native screen share" setting on (or PYLON_NATIVE_SHARE set), a screen share's
+// video is sent by the native media engine on a send transport of its own
+// (soup/nativeShare.js). Main says at each share whether, and from which source. Its
+// producer-like object sits in ctx.producer, so stop, pause, the server ending
+// the share and replacement work on it as on any producer. A failure before
+// it is live leaves the share to Chromium without a word to the user.
+
+// Resolves with shareScreen's result for a live native share, or null when
+// the share should go through Chromium instead.
+async function startNativeScreenShare(ctx, audioMode, audioTargets) {
+  if (!auxTransport?.available()) return null
+  const status = await nativeEngineStatus()
+  const configured = nativeShareSource(status)
+  if (!status.available || !configured) return null
+  // The person's codec, if the channel allows it and the sidecar has it (soup/nativeCodec.js).
+  // A codec the sidecar does not have goes to Chromium, which then sends what was asked for.
+  const codecFor = (sidecarCodecs) =>
+    nativeShareCodec({
+      codecPref: ctx.codecPref,
+      envCodec: typeof window !== 'undefined' ? window.api?.preferScreenshareCodec : null,
+      sidecarCodecs,
+      allowed: videoCodecAllowed
+    })
+  let codec = codecFor(status.codecs)
+  if (!codec) return null
+  if (!isActiveShare(ctx)) throw shareSupersededError()
+
+  // The real screen is captured first: on Wayland in the portal's dialog, as long
+  // as the person takes, and saying no there ends the share as a cancelled picker
+  // does. On Windows the sidecar captures the source the picker chose.
+  let capture = null
+  if (configured.screen) {
+    const pending = captureNativeScreen({ maxFps: ctx.requestedVideo.fps })
+    ctx.cancelNativeCapture = pending.cancel
+    try {
+      capture = await pending.result
+    } catch (error) {
+      if (!isActiveShare(ctx)) throw shareSupersededError()
+      console.warn('[Soup] Native screen capture failed; sharing through Chromium:', error)
+      return null
+    } finally {
+      ctx.cancelNativeCapture = null
+    }
+    if (capture?.cancelled) {
+      if (!isActiveShare(ctx)) throw shareSupersededError()
+      throw new DOMException('Permission denied', 'NotAllowedError')
+    }
+    // The capture's sidecar said what it can send.
+    codec = codecFor(Array.isArray(capture?.codecs) ? capture.codecs : null)
+    if (!codec) {
+      void window.api?.mediaEngine?.close?.(capture.pid).catch(() => {})
+      if (!isActiveShare(ctx)) throw shareSupersededError()
+      console.warn('[Soup] The native engine lacks the codec chosen; sharing through Chromium')
+      return null
+    }
+  }
+
+  let native
+  try {
+    if (!isActiveShare(ctx)) throw shareSupersededError()
+    const streamKey = await createStream()
+    setShareStreamKey(ctx, streamKey)
+    if (!isActiveShare(ctx)) throw shareSupersededError()
+    native = await startNativeShare({
+      streamKey,
+      aux: auxTransport,
+      isActive: () => isActiveShare(ctx),
+      superseded: shareSupersededError,
+      onFailed: (reason) => void fallBackFromNativeShare(ctx, reason),
+      onEnded: (reason) => void finalStopShare(ctx, reason),
+      optimizeFor: ctx.optimizeFor,
+      capture,
+      video: ctx.requestedVideo,
+      codec,
+      configured,
+      previewSeen: () => selfScreenPreviewSeen,
+      previewOverride: status.preview
+    })
+  } catch (error) {
+    // A capture startNativeShare did not take over is closed here.
+    if (capture && !native) void window.api?.mediaEngine?.close?.(capture.pid).catch(() => {})
+    // Chromium's path asks for a stream of its own. A stop meanwhile handed it back already,
+    // then this is a no-op.
+    releaseShareStream(ctx, releaseStream)
+    ctx.streamKey = null
+    if (isShareSupersededError(error) || !isActiveShare(ctx)) throw shareSupersededError()
+    // The captured source went away: the share ends, Chromium would only ask again.
+    if (error instanceof NativeCaptureEndedError) throw error
+    console.warn('[Soup] Native screen share did not start; sharing through Chromium:', error)
+    return null
+  }
+
+  // A stop that came as it went live found no producer to close.
+  if (!isActiveShare(ctx)) {
+    void closeServerProducer(native.id)
+    native.close()
+    throw shareSupersededError()
+  }
+  ctx.producer = native
+  localProducerIds.add(native.id)
+  ctx.previewStream = native.preview
+  // The channel's codecs may have changed while it started.
+  applyChannelCodecsTo(ctx)
+  console.log(`[Soup] Screen sharing natively ${codec} [id:${native.id}]`)
+  // The sound belongs to the share, not to who captures the picture: it is kept
+  // when the share falls back to Chromium and goes with stopShareContext. Not
+  // awaited, so a slow or failed start never holds up or fails the share.
+  // Chromium's loopback rides its own capture, which a native share has not got.
+  if (audioMode === 'system-legacy') {
+    console.log('[Soup] Stream audio is not sent beside a native screen share in this build')
+  } else if (audioMode !== 'none') {
+    void startShareAudio(ctx, { audioMode, audioTargets, stream: null }).catch(() => {})
+  }
+  return {
+    id: native.id,
+    stream: ctx.previewStream,
+    codec: codecLabel(native.rtpParameters),
+    stop: () => stopShareContext(ctx)
+  }
+}
+
+// The live native share failed: the share carries on through Chromium. A new
+// capture, got the way recovery gets one, is produced with today's code, which
+// replaces the native source (viewers get SourceReplaced, the caller
+// onProducerReplaced). The preview stream keeps its identity and gets the
+// capture's track. Without a capture the share ends as a lost capture does.
+async function fallBackFromNativeShare(ctx, reason) {
+  const native = ctx.producer
+  if (!isActiveShare(ctx) || !native?.native || ctx.nativeFallback) return
+  ctx.nativeFallback = true
+  console.warn(`[Soup] Native screen share failed (${reason}); carrying on through Chromium`)
+
+  const transition = (async () => {
+    let stream = null
+    try {
+      const resolved = await window.electron?.ipcRenderer?.invoke('resolve-screen-source', {
+        previousSourceId: ctx.sourceId
+      })
+      if (!isActiveShare(ctx)) return
+      if (!resolved?.recoverable) throw unrecoverableSourceError()
+      const { width, height, fps } = ctx.requestedVideo
+      stream = await navigator.mediaDevices.getDisplayMedia({
+        video: {
+          frameRate: { ideal: fps, max: fps },
+          width: { ideal: width, max: width },
+          height: { ideal: height, max: height }
+        },
+        audio: false
+      })
+      if (!isActiveShare(ctx) || ctx.producer !== native) {
+        stream.getTracks().forEach((ownedTrack) => ownedTrack.stop())
+        return
+      }
+      const track = stream.getVideoTracks()[0]
+      if (!track) throw new Error('The re-resolved source did not provide a video track')
+      track.contentHint = ctx.optimizeFor === 'motion' ? 'motion' : 'detail'
+      ctx.stream = stream
+      ctx.track = track
+      stream = null
+      ctx.sourceId = resolved.sourceId ?? ctx.sourceId
+      const settings = track.getSettings()
+      ctx.width = settings.width > 0 ? settings.width : width
+      ctx.height = settings.height > 0 ? settings.height : height
+      ctx.fps = settings.frameRate > 0 ? Math.min(settings.frameRate, fps) : fps
+      for (const placeholder of ctx.previewStream?.getVideoTracks() ?? []) {
+        ctx.previewStream.removeTrack(placeholder)
+      }
+      ctx.previewStream?.addTrack(track)
+      watchScreenTrack(ctx, track)
+      watchWindowFollow(ctx)
+
+      const candidate = await produceInitialScreenWithFallback(ctx, pickVideoCodec(ctx))
+      if (!isActiveShare(ctx)) {
+        await discardUnadoptedShareProducer(candidate.producer)
+        return
+      }
+      adoptScreenProducer(ctx, candidate)
+      console.log(
+        `[Soup] Screen share moved to Chromium ${candidate.codec?.mimeType ?? 'default'} ` +
+          `${candidate.rung} [id:${candidate.producer.id}]`
+      )
+    } catch (error) {
+      stream?.getTracks().forEach((ownedTrack) => ownedTrack.stop())
+      if (isShareSupersededError(error) || !isActiveShare(ctx)) return
+      console.warn('[Soup] Native share could not move to Chromium; ending the share:', error)
+      await finalStopShare(ctx, reason)
+    }
+  })()
+  ctx.screenTransition = transition
+  try {
+    await transition
+  } finally {
+    if (ctx.screenTransition === transition) ctx.screenTransition = null
+  }
+  applyChannelCodecsTo(ctx)
 }
 
 // ─── Camera codec probing and fallback ───────────────────────────
@@ -1739,6 +2004,11 @@ export function applyChannelCodecs() {
 
 function applyChannelCodecsTo(ctx) {
   if (!ctx?.producer || !isActiveShare(ctx) || shareCodecAllowed(ctx)) return
+  // A native share sends one codec, so it fails over to Chromium's codecs.
+  if (ctx.producer.native) {
+    void fallBackFromNativeShare(ctx, 'codec-not-allowed')
+    return
+  }
   // The same slot the encoder fallbacks use, so the two never produce at once.
   const slot = ctx.type === 'camera' ? 'cameraTransition' : 'screenTransition'
   const previous = ctx[slot]

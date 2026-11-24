@@ -842,12 +842,15 @@ function ChatPanel({
     const el = inputRef.current
     const sides = ['paddingLeft', 'paddingRight', 'borderLeftWidth', 'borderRightWidth']
     const observer = new ResizeObserver(([entry]) => {
+      // A resize queued before the composer unmounted can still be delivered after it.
+      const highlight = highlightRef.current
+      if (!highlight) return
       const cs = getComputedStyle(el)
       const scrollbar = sides.reduce(
         (w, prop) => w - parseFloat(cs[prop]),
         entry.borderBoxSize[0].inlineSize - entry.contentBoxSize[0].inlineSize
       )
-      highlightRef.current.style.right = `${scrollbar}px`
+      highlight.style.right = `${scrollbar}px`
     })
     observer.observe(el)
     return () => observer.disconnect()

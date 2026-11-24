@@ -110,6 +110,7 @@ export {
 export {
   resetCameraCodecPreference,
   resetScreenCodecPreference,
+  setSelfScreenPreviewSeen,
   setSharePaused,
   shareCamera,
   shareScreen,
@@ -117,7 +118,7 @@ export {
 } from './screenShare'
 export { startStreamDebugStats, startVoiceConnectionStats } from './streamDiagnostics'
 
-// This module drives mediasoup-client over the pylon-voice v1 signaling
+// This module drives mediasoup-client over the pylon-voice v2 signaling
 // protocol. The wire format itself (encoders, answer matching, channel state,
 // close codes, and the event-socket stream ops) lives in ./protocol.js;
 // nothing here builds a frame by hand.
@@ -134,8 +135,8 @@ let ws = null
 // session has reached READY (its first Channel snapshot). One per session,
 // kept across a resume; null between sessions.
 let signal = null
-// Both transports arrive with RoutingParams; the server creates them when we
-// identify, so there is nothing to allocate on demand.
+// We ask for both transports at session start (establishSession), so there is
+// nothing to allocate on demand. Each carries its LocalId as appData.localId.
 let producerTransport = null
 let consumerTransport = null
 let producers = []
@@ -153,6 +154,9 @@ const localSourcePaused = new Map() // LocalId -> paused
 // Sources whose SetSourcePaused was refused while the socket was down; sent
 // again once the session is resumed (afterResume).
 const unsentSourcePauses = new Set() // LocalId
+// Native share transports whose CloseTransport was refused while the socket
+// was down; sent once the session is resumed (afterResume).
+const unsentTransportCloses = new Set() // LocalId
 // Stop function for the active local audio processing chain (mono fold plus
 // optional RNNoise / volume gate). Tears down its nodes and analysis loop; null
 // when no chain is active.
@@ -237,7 +241,12 @@ configureScreenShare({
   createStream: createOwnStream,
   releaseStream: releaseOwnStream,
   setSourcePaused: setServerSourcePaused,
-  localProducerIds
+  localProducerIds,
+  auxTransport: {
+    available: auxTransportAvailable,
+    routerCapabilities: () => signal?.routerCapabilities ?? null,
+    create: createAuxTransport
+  }
 })
 configureStreamDiagnostics({
   getProducerTransport: () => producerTransport,
@@ -507,9 +516,9 @@ function request(message) {
   return signal.matcher.request(message)
 }
 
-// A CreateSource or CreateSink. `build(node)` makes it around the new node's
-// LocalId, which the live socket's matcher takes from its counter and sends at
-// once, so the id belongs to the socket the request goes out on.
+// A CreateTransport, CreateSource or CreateSink. `build(id)` makes it around
+// the new LocalId, which the live socket's matcher takes from its counter and
+// sends at once, so the id belongs to the socket the request goes out on.
 function requestCreate(build) {
   if (!signal) return Promise.reject(new Error('Voice socket not open'))
   return signal.matcher.create(build)
@@ -1910,13 +1919,14 @@ async function openSocket(connectionGeneration = voiceConnectionGeneration, resu
   )
 }
 
-// Identify → Session → RoutingParams → Device + both transports →
-// SetCapabilities → Channel. Neither request has an answer of its own, so the
-// matcher waits on what follows each. The server pushes RoutingParams once
-// identify succeeds, and closes with 4003 when the ticket is refused.
-// SetCapabilities joins the channel, and the Channel snapshot after it is its
-// sign of success (the session is READY), applied as an event as well; a
-// refusal is an Error on the session.
+// Identify → Session → RoutingParams → both transports (CreateTransport Send
+// and Receive, asked for together) + Device → SetCapabilities → Channel.
+// Identify and SetCapabilities have no answer of their own, so the matcher
+// waits on what follows each. The server pushes RoutingParams once identify
+// succeeds, and closes with 4003 when the ticket is refused. SetCapabilities
+// joins the channel, and the Channel snapshot after it is its sign of success
+// (the session is READY), applied as an event as well; a refusal is an Error
+// on the session.
 async function establishSession(current, ticket) {
   const generation = mediaStateGeneration
   const isCurrent = () => signal === current && generation === mediaStateGeneration
@@ -1927,16 +1937,25 @@ async function establishSession(current, ticket) {
   emitMediaState('authenticated')
 
   voiceConnectStep = 'device'
-  const sendParams = mapTransportParams(routing?.producer_transport)
-  const recvParams = mapTransportParams(routing?.consumer_transport)
-  if (!sendParams || !recvParams) throw connectFailure('Voice server sent no transports')
-  // Never publish a half-loaded Device: a reset can land while it loads.
+  // The router's capabilities as the node sent them, for the native media
+  // engine (auxTransport).
+  current.routerCapabilities = routing?.router_capabilities ?? null
+  // Never publish a half-loaded Device: a reset can land while it loads. It
+  // loads while the node makes the transports, which are asked for first. Each
+  // transport's id is taken from its answer.
   const candidate = new Device()
-  await candidate.load({ routerRtpCapabilities: routing.router_capabilities })
+  const [sendAnswer, recvAnswer] = await Promise.all([
+    current.matcher.create((id) => Request.createTransport(id, Direction.Send)),
+    current.matcher.create((id) => Request.createTransport(id, Direction.Receive)),
+    candidate.load({ routerRtpCapabilities: routing.router_capabilities })
+  ])
   if (!isCurrent()) throw mediaResetError()
+  const sendParams = mapTransportParams(sendAnswer?.parameters)
+  const recvParams = mapTransportParams(recvAnswer?.parameters)
+  if (!sendParams || !recvParams) throw connectFailure('Voice server sent no transport')
   device = candidate
-  producerTransport = createSendTransport(candidate, sendParams, generation)
-  consumerTransport = createRecvTransport(candidate, recvParams, generation)
+  producerTransport = createSendTransport(candidate, sendParams, sendAnswer.transport, generation)
+  consumerTransport = createRecvTransport(candidate, recvParams, recvAnswer.transport, generation)
 
   voiceConnectStep = 'capabilities'
   // Throws if this runtime can't encrypt media: E2EE is mandatory.
@@ -1969,6 +1988,7 @@ const UPDATE_REQUIRED_MESSAGE =
 //   - a video sink's view role (a refused ConfigureSink makes applyViewRole
 //     forget the sink's config, so it sends all of it again);
 //   - the pause of one of our own sources;
+//   - the close of a native share's transport;
 //   - a connection repair that had to wait for the socket.
 function afterResume(current) {
   console.log(`[Soup] Session resumed, caught up at seq ${current.cursor.lastSeq}`)
@@ -1982,6 +2002,14 @@ function afterResume(current) {
     // A microphone's pause is voice state (op 5), never sent here.
     if (!localSources.has(node)) continue
     void setServerSourcePaused(ownId(node), localSourcePaused.get(node) === true)
+  }
+
+  const closes = [...unsentTransportCloses]
+  unsentTransportCloses.clear()
+  for (const transport of closes) {
+    request(Request.closeTransport(transport)).catch((err) =>
+      console.warn(`[Soup] Closing transport ${transport} failed:`, err?.message ?? err)
+    )
   }
 
   const restarts = [...pendingIceRestarts]
@@ -2397,7 +2425,7 @@ function restartTransportIce(direction, reason) {
       )
     }, ICE_RESTART_TIMEOUT_MS)
   )
-  request(Request.restartIce(direction))
+  request(Request.restartIce(transport.appData.localId))
     .then((answer) => {
       if (!isCurrent()) return
       return transport.restartIce({ iceParameters: answer?.ice_parameters })
@@ -2450,33 +2478,50 @@ export function disconnect() {
 }
 
 // ─── Transports ──────────────────────────────────────────────────
-// producer_transport is our send transport (it creates sources),
-// consumer_transport our receive transport (it creates sinks).
-function createSendTransport(loadedDevice, params, generation) {
-  const transport = wrapSendTransport(loadedDevice.createSendTransport(params))
+// producerTransport is our send transport (it creates sources),
+// consumerTransport our receive transport (it creates sinks). Each is made with
+// its LocalId as appData.localId, which every request about it names.
+function createSendTransport(loadedDevice, params, localId, generation) {
+  const transport = wrapSendTransport(
+    loadedDevice.createSendTransport({ ...params, appData: { localId } })
+  )
   const isCurrentTransport = () =>
     generation === mediaStateGeneration && producerTransport === transport && !transport.closed
 
   watchTransportConnectivity(transport, 'Send', isCurrentTransport)
   transport.on('connect', ({ dtlsParameters }, callback, errback) =>
-    connectTransport(Direction.Send, dtlsParameters, isCurrentTransport, callback, errback)
+    connectTransport(
+      transport.appData.localId,
+      dtlsParameters,
+      isCurrentTransport,
+      callback,
+      errback
+    )
   )
   transport.on('produce', ({ rtpParameters, appData }, callback, errback) => {
-    createSource(rtpParameters, appData, isCurrentTransport)
+    createSource(rtpParameters, appData, isCurrentTransport, transport.appData.localId)
       .then((node) => callback({ id: ownId(node) }))
       .catch((err) => errback(err))
   })
   return transport
 }
 
-function createRecvTransport(loadedDevice, params, generation) {
-  const transport = wrapRecvTransport(loadedDevice.createRecvTransport(params))
+function createRecvTransport(loadedDevice, params, localId, generation) {
+  const transport = wrapRecvTransport(
+    loadedDevice.createRecvTransport({ ...params, appData: { localId } })
+  )
   const isCurrentTransport = () =>
     generation === mediaStateGeneration && consumerTransport === transport && !transport.closed
 
   watchTransportConnectivity(transport, 'Receive', isCurrentTransport)
   transport.on('connect', ({ dtlsParameters }, callback, errback) =>
-    connectTransport(Direction.Receive, dtlsParameters, isCurrentTransport, callback, errback)
+    connectTransport(
+      transport.appData.localId,
+      dtlsParameters,
+      isCurrentTransport,
+      callback,
+      errback
+    )
   )
   return transport
 }
@@ -2484,13 +2529,13 @@ function createRecvTransport(loadedDevice, params, generation) {
 // mediasoup-client fires 'connect' on a transport's first produce/consume.
 // Waiting for TransportConnected (rather than calling back as soon as the
 // request is sent, which the in-order server would also allow) costs one round
-// trip per transport and gives a clean failure path.
-function connectTransport(direction, dtlsParameters, isCurrentTransport, callback, errback) {
+// trip per transport and gives a clean failure path. `transport` is its LocalId.
+function connectTransport(transport, dtlsParameters, isCurrentTransport, callback, errback) {
   if (!isCurrentTransport()) {
     errback(mediaResetError())
     return
   }
-  request(Request.connectTransport(direction, dtlsParameters))
+  request(Request.connectTransport(transport, dtlsParameters))
     .then(() => {
       if (!isCurrentTransport()) throw mediaResetError()
       callback()
@@ -2510,7 +2555,9 @@ function connectTransport(direction, dtlsParameters, isCurrentTransport, callbac
 // appData.streamKey is the stream (createOwnStream) a Stream or StreamAudio
 // source publishes into. A replacement carries it too: the server would take
 // it without, but sending the same key keeps every stream CreateSource alike.
-async function createSource(rtpParameters, appData, isCurrentTransport) {
+//
+// `transport` is the LocalId of the send transport the source comes in on.
+async function createSource(rtpParameters, appData, isCurrentTransport, transport) {
   if (!isCurrentTransport()) throw mediaResetError()
   const type = sourceTypeForAppData(appData)
   if (!type) throw new Error(`No voice source type for producer "${appData?.produced}"`)
@@ -2532,7 +2579,7 @@ async function createSource(rtpParameters, appData, isCurrentTransport) {
   let created
   try {
     created = await requestCreate((node) =>
-      Request.createSource(node, type, rtpParameters, replaces, streamKey)
+      Request.createSource(node, transport, type, rtpParameters, replaces, streamKey)
     )
   } catch (err) {
     // Nothing was handed over, so a Closed for the old source meanwhile (say,
@@ -2555,6 +2602,61 @@ async function createSource(rtpParameters, appData, isCurrentTransport) {
   )
   if (type === SourceType.Stream) publishStreamViewers()
   return node
+}
+
+// ─── The native share's transport ───────────────────────────────
+// The native media engine's own send transport (soup/nativeShare.js), made
+// when a share starts and closed when it stops, next to our two session
+// transports. The engine gets the node's parameters and the router's
+// capabilities as the node sent them, and what it answers goes back to the
+// node untouched.
+function auxTransportAvailable() {
+  return signal?.ready === true && !signal.detached
+}
+
+// Resolves with { parameters, connect, createSource, closeSource, close }:
+// the node's transport parameters and what is done with them, bound to this
+// session and media generation. Once either has changed, connect and
+// createSource fail and the closers do nothing.
+async function createAuxTransport() {
+  const current = signal
+  const generation = mediaStateGeneration
+  const isCurrent = () => signal === current && generation === mediaStateGeneration
+  const answer = await requestCreate((id) => Request.createTransport(id, Direction.Send))
+  if (!isCurrent()) throw mediaResetError()
+  // The id the node made it under, which every request about it names.
+  const transport = answer?.transport
+  return {
+    parameters: answer?.parameters ?? null,
+    connect: (dtlsParameters) =>
+      isCurrent()
+        ? request(Request.connectTransport(transport, dtlsParameters))
+        : Promise.reject(mediaResetError()),
+    // A Stream source on this transport, through createSource like every
+    // source of ours. Resolves with its id (the LocalId as a string, like a
+    // producer's).
+    createSource: async (rtpParameters, streamKey) => {
+      const node = await createSource(
+        rtpParameters,
+        { produced: 'ScreenShare', streamKey },
+        isCurrent,
+        transport
+      )
+      return ownId(node)
+    },
+    closeSource: (id) => {
+      if (isCurrent()) closeServerProducer(id)
+    },
+    // Closes the transport and whatever source is still on it. One refused
+    // while the socket is down is closed once the session is resumed.
+    close: () => {
+      if (!isCurrent()) return Promise.resolve(null)
+      return request(Request.closeTransport(transport)).catch((err) => {
+        if (isCurrent() && signal.detached) unsentTransportCloses.add(transport)
+        throw err
+      })
+    }
+  }
 }
 
 function watchTransportConnectivity(transport, label, isCurrentTransport) {
@@ -3687,7 +3789,8 @@ function sourceGoneError(id) {
 // source needs first. A Denied means the watch we counted on is gone (revoked,
 // or never granted on the node), so forget it and ask for it once more. Each
 // attempt names a new sink: an id is used up even when its create fails.
-async function requestSink(id, streamKey, isCurrent) {
+// `transport` is the LocalId of the receive transport the sink is made on.
+async function requestSink(id, streamKey, isCurrent, transport) {
   for (let attempt = 0; ; attempt++) {
     if (streamKey != null) {
       await ensureStreamWatch(streamKey)
@@ -3695,7 +3798,7 @@ async function requestSink(id, streamKey, isCurrent) {
       if (channelState.source(id) == null) throw sourceGoneError(id)
     }
     try {
-      return await requestCreate((node) => Request.createSink(node, id))
+      return await requestCreate((node) => Request.createSink(node, transport, id))
     } catch (err) {
       if (!err?.denied || streamKey == null || attempt > 0) throw err
       console.warn(`[Soup] Sink for source ${id} denied; asking to watch stream ${streamKey} again`)
@@ -3721,7 +3824,7 @@ async function createSinkFor(id) {
   const isCurrent = () =>
     generation === mediaStateGeneration && consumerTransport === transport && !transport.closed
 
-  const sink = await requestSink(id, source.streamKey, isCurrent)
+  const sink = await requestSink(id, source.streamKey, isCurrent, transport.appData.localId)
   if (!isCurrent()) throw mediaResetError()
   sinkSources.set(sink.node, id)
   // Closed for this sink, or SourcesRemoved for its source, while we were
@@ -3959,6 +4062,7 @@ function resetMediaState() {
   localSources.clear()
   localSourcePaused.clear()
   unsentSourcePauses.clear()
+  unsentTransportCloses.clear()
   sourceReplacements.clear()
   knownVideoProducers.clear()
   knownScreenAudioProducers.clear()

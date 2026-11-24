@@ -44,6 +44,7 @@ import {
   restartVoiceSession,
   setEventSocketSender,
   setMicMuted,
+  setSelfScreenPreviewSeen,
   setSoundMuted,
   setVoiceServerHooks,
   setStreamAudioState,
@@ -56,6 +57,8 @@ import {
 } from '../lib/soup'
 import { resolveStreamFocus } from '../lib/streamView'
 import { preferredTileOf } from '../lib/streamTiles'
+import { selfScreenTileSeen, selfScreenTileWatched } from '../lib/selfPreviewPlayback'
+import { usePreviewWindow } from '../lib/useSelfPreviewWindow'
 import { playUiSound, isToastEnabled, setSoundsDeafened } from '../lib/sounds'
 import { setServerHost, apiBase, eventSocketUrl, assetUrl, throwIfError } from '../lib/serverConfig'
 import { validateMessage, statusOf } from '../lib/presence'
@@ -65,7 +68,8 @@ import {
   CloseAction,
   CloseCode,
   REQUEST_VOICE_TICKET_OP,
-  classifyClose
+  classifyClose,
+  isEndOfGoneStream
 } from '../lib/soup/protocol'
 import { httpFetch } from '../lib/http'
 import { setServerLimits, previewKind } from '../lib/attachments'
@@ -1129,6 +1133,28 @@ function Main() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selfTileKey])
 
+  // Whether the sharer's own screen tile is being seen, here or in the pop-out.
+  // A native share asks its sidecar for preview
+  // pictures only while it is. The pop-out says its focus and visibility over the bridge.
+  const mainPreviewWindow = usePreviewWindow()
+  const [popoutPreviewWindow, setPopoutPreviewWindow] = useState(null)
+  useEffect(() => {
+    if (!poppedOut) setPopoutPreviewWindow(null)
+  }, [poppedOut])
+  const selfScreenSeen = selfScreenTileSeen({
+    streams: allVideoStreams,
+    watchedTileIds,
+    streamsShown,
+    poppedOut,
+    mainWindow: mainPreviewWindow,
+    popoutWindow: popoutPreviewWindow
+  })
+  // Not watched: the person stopped the preview, which a stream preview obeys at once.
+  const selfScreenWatched = selfScreenTileWatched({ streams: allVideoStreams, watchedTileIds })
+  useEffect(() => {
+    setSelfScreenPreviewSeen(selfScreenSeen, { stopAsked: !selfScreenWatched })
+  }, [selfScreenSeen, selfScreenWatched])
+
   // Replacement handoffs retain a placeholder tile (the SFU marks their
   // ProducerClosed event), so any tile absent here genuinely stopped sharing.
   // Clear intent immediately: a later unrelated share must require a new click.
@@ -1185,6 +1211,16 @@ function Main() {
       // mute controls write here; the change comes back via streamAudio.
       setStreamAudio: (clientId, patch) => setStreamAudioState(clientId, patch),
       setStreamRoles: (payload) => setVideoStreamRoles(payload),
+      // The pop-out's { windowFocused, documentVisible }, for whether the self tile is seen.
+      setPreviewWindow: (state) =>
+        setPopoutPreviewWindow(
+          state
+            ? {
+                windowFocused: state.windowFocused === true,
+                documentVisible: state.documentVisible === true
+              }
+            : null
+        ),
       subscribe: (cb) => {
         popoutListenersRef.current.add(cb)
         return () => popoutListenersRef.current.delete(cb)
@@ -3299,8 +3335,13 @@ function Main() {
           // a reply to one message, not a connection fault: surface it and keep
           // the socket. It may answer one of soup's stream or ticket requests; a
           // failed share start or ticket wait is reported by its owner, so it
-          // isn't shown twice.
+          // isn't shown twice. An EndStream for a stream already gone is what we asked
+          // for: nothing is shown.
           case 0:
+            if (isEndOfGoneStream(msg.data)) {
+              console.debug('[Events] EndStream: the stream had already ended', msg.data)
+              return
+            }
             console.warn('[Events] Request refused:', msg.data)
             if (!receiveEventSocketError(msg.data, msg.nonce)) {
               showError(msg.data?.message || 'Request refused by the server')
