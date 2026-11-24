@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from '
 import { IconDeviceGamepad2 } from '@tabler/icons-react'
 import { activityCapabilities, activitySrcdoc } from '../activities/ui'
 import { bridgeClients, readUiMessage, themeValues } from '../lib/activities/bridge'
+import { exportImage } from '../lib/activities/exportImage'
 import ActivityPlayer from './ActivityPlayer'
 import { ActivityPlaceholder } from './ActivityHostLayer'
 import './ActivityView.css'
@@ -30,8 +31,15 @@ function bannerText(state) {
 // init, the theme and the state log, and from then on passes state, clients, replies, the
 // connection and the close through. Messages from anything but this frame are ignored. For a
 // bundle with the `player` capability (`player` is the surface's handle, `bodyRef` what goes
-// fullscreen) it also routes `player` and `fullscreen`, which any other bundle has dropped.
-function useBridge(frameRef, controller, roster, srcdoc, { player = null, bodyRef = null } = {}) {
+// fullscreen) it also routes `player` and `fullscreen`, which any other bundle has dropped; for one
+// whose `capabilities` include `export`, it saves or shares the bundle's picture.
+function useBridge(
+  frameRef,
+  controller,
+  roster,
+  srcdoc,
+  { player = null, bodyRef = null, capabilities } = {}
+) {
   const rosterRef = useRef(roster)
   const postClientsRef = useRef(null)
 
@@ -113,7 +121,7 @@ function useBridge(frameRef, controller, roster, srcdoc, { player = null, bodyRe
     })
     const onMessage = (event) => {
       if (event.source !== frame.contentWindow) return
-      const message = readUiMessage(event.data)
+      const message = readUiMessage(event.data, capabilities)
       switch (message.type) {
         case 'ready':
           ready = true
@@ -149,6 +157,16 @@ function useBridge(frameRef, controller, roster, srcdoc, { player = null, bodyRe
             player.current.command(message)
           } else {
             setFullscreen(message.on)
+          }
+          return
+        case 'export':
+          if (message.refused) {
+            console.warn('[Activity] Refused an export from the activity:', message.refused)
+            post({ type: 'export', id: message.id, ok: false, error: 'export_failed' })
+          } else {
+            exportImage(message, { channelId: controller.state.room?.channel_id }).then((result) =>
+              post({ type: 'export', id: message.id, ...result })
+            )
           }
           return
         default:
@@ -191,7 +209,7 @@ function useBridge(frameRef, controller, roster, srcdoc, { player = null, bodyRe
       observer.disconnect()
       postClientsRef.current = null
     }
-  }, [frameRef, controller, srcdoc, player, bodyRef])
+  }, [frameRef, controller, srcdoc, player, bodyRef, capabilities])
 }
 
 // A controller's state, for a view; NO_SESSION without one.
@@ -212,8 +230,12 @@ export function ActivityBody({ controller, activityId, roster, onAudible }) {
   const playerRef = useRef(null)
   const state = useSessionState(controller)
   const srcdoc = activitySrcdoc(activityId)
-  const hasPlayer = srcdoc != null && activityCapabilities(activityId).includes('player')
-  useBridge(frameRef, controller, roster, srcdoc, hasPlayer ? { player: playerRef, bodyRef } : {})
+  const capabilities = activityCapabilities(activityId)
+  const hasPlayer = srcdoc != null && capabilities.includes('player')
+  useBridge(frameRef, controller, roster, srcdoc, {
+    ...(hasPlayer ? { player: playerRef, bodyRef } : {}),
+    capabilities
+  })
   const postPlayerEvent = useCallback(
     (event) => frameRef.current?.contentWindow?.postMessage({ type: 'player', ...event }, '*'),
     []

@@ -1015,6 +1015,31 @@ app.whenReady().then(() => {
     }
   })
 
+  // Save a PNG an activity made (the whiteboard's picture) to a user-chosen location. The bytes
+  // and name are checked again here, since this writes to disk.
+  const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+  ipcMain.handle('save-png', async (event, { name, data } = {}) => {
+    const isPng =
+      data instanceof Uint8Array &&
+      data.length <= 8 * 1024 * 1024 &&
+      PNG_SIGNATURE.every((byte, i) => data[i] === byte)
+    const plainName =
+      typeof name === 'string' && /^[A-Za-z0-9][A-Za-z0-9 ._-]{0,95}\.png$/.test(name)
+    if (!isPng || !plainName) return { ok: false, error: 'Not a PNG to save' }
+    try {
+      const { canceled, filePath } = await dialog.showSaveDialog(
+        BrowserWindow.fromWebContents(event.sender),
+        { defaultPath: name, filters: [{ name: 'PNG image', extensions: ['png'] }] }
+      )
+      if (canceled || !filePath) return { ok: false, canceled: true }
+      writeFileSync(filePath, data)
+      return { ok: true, filePath }
+    } catch (err) {
+      console.error('[save-png] Saving failed:', err)
+      return { ok: false, error: err.message }
+    }
+  })
+
   // ─── Session (see session.js) ─────────────────────────────────────
   // The renderer hands over the login/register response and asks for refreshes;
   // only the events-WS identify ever gets a token back.

@@ -3,10 +3,13 @@
 
 import {
   IconCards,
+  IconChalkboard,
   IconChess,
   IconCircles,
   IconDeviceGamepad2,
   IconDeviceTv,
+  IconPokerChip,
+  IconSpade,
   IconTicTac
 } from '@tabler/icons-react'
 
@@ -15,7 +18,10 @@ export const ACTIVITY_TYPES = {
   connect4: { icon: IconCircles, endedVerb: 'played' },
   uno: { icon: IconCards, endedVerb: 'played' },
   chess: { icon: IconChess, endedVerb: 'played' },
-  watch_together: { icon: IconDeviceTv, endedVerb: 'watched' }
+  watch_together: { icon: IconDeviceTv, endedVerb: 'watched' },
+  blackjack: { icon: IconSpade, endedVerb: 'played' },
+  poker: { icon: IconPokerChip, endedVerb: 'played' },
+  whiteboard: { icon: IconChalkboard, endedVerb: 'joined' }
 }
 
 export const FALLBACK_ACTIVITY_TYPE = { icon: IconDeviceGamepad2, endedVerb: 'took part' }

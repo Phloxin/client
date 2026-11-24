@@ -1,0 +1,680 @@
+/* Poker: the oval table with the board, the pot and the deck in the middle and nine pods around it
+   (hole cards over a plate, the street bet and the dealer button in front). Wide, the pods sit on
+   the rail of a lying oval; under 520 px the table stands up, with three pods down each side, two
+   at the top and the viewer's at the bottom. The dock holds the raise panel and the turn's
+   buttons. */
+
+.table.pk {
+  --cs-felt: #1f5f8b;
+  --cs-felt-deep: #0c2c4a;
+  --th: min(100cqh, 60cqw);
+  --tw: min(100cqw, calc(var(--th) * 2));
+  --u: calc(var(--tw) / 100);
+  --card-w: clamp(18px, calc(var(--u) * 4.4), 50px);
+  --board-card: clamp(22px, calc(var(--u) * 6), 68px);
+  --my-card: clamp(26px, calc(var(--u) * 7), 78px);
+  --chip: clamp(10px, calc(var(--u) * 1.8), 19px);
+  --av: clamp(18px, calc(var(--u) * 3.3), 34px);
+  --pod-w: calc(var(--u) * 15);
+}
+
+.pk .felt {
+  --felt-radius: 999px;
+  inset: calc(var(--u) * 6) calc(var(--u) * 5.5) calc(var(--u) * 7.5);
+}
+
+/* ── Centre: pot, deck, board ────────────────────────────────────────────── */
+
+.centre {
+  position: absolute;
+  top: 46%;
+  left: 50%;
+  display: grid;
+  justify-items: center;
+  gap: calc(var(--u) * 0.9);
+  translate: -50% -50%;
+}
+
+.pot {
+  display: flex;
+  align-items: flex-end;
+  gap: calc(var(--u) * 0.8);
+  min-height: calc(var(--chip) * 1.9);
+}
+
+.pot-total {
+  align-self: center;
+}
+
+.board-row {
+  position: relative;
+}
+
+.board {
+  --card-w: var(--board-card);
+  display: flex;
+  gap: calc(var(--u) * 0.7);
+}
+
+.slot {
+  display: block;
+  width: var(--card-w);
+  height: calc(var(--card-w) * 1.4);
+  border: 1px dashed rgb(255 255 255 / 22%);
+  border-radius: calc(var(--card-w) * 0.09);
+  background: rgb(0 0 0 / 10%);
+}
+
+.slot .card {
+  margin: -1px;
+}
+
+.deck {
+  --card-w: calc(var(--board-card) * 0.8);
+  position: absolute;
+  top: 50%;
+  right: 100%;
+  margin-right: calc(var(--u) * 1.6);
+  translate: 0 -50%;
+}
+
+.deck .back {
+  box-shadow:
+    0 0 0 1px var(--cs-card-edge),
+    calc(var(--card-w) * 0.03) calc(var(--card-w) * 0.04) 0 #d9d5c9,
+    calc(var(--card-w) * 0.06) calc(var(--card-w) * 0.08) 0 #b9b4a6,
+    calc(var(--card-w) * 0.09) calc(var(--card-w) * 0.12) 3px rgb(0 0 0 / 50%);
+}
+
+.table-info {
+  color: var(--cs-ink-soft);
+  font-weight: 600;
+  font-size: var(--fs-tiny);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* ── Pods ────────────────────────────────────────────────────────────────── */
+
+.pod {
+  position: absolute;
+  top: var(--y);
+  left: var(--x);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: var(--pod-w);
+  translate: -50% -50%;
+}
+
+.hole {
+  display: flex;
+  justify-content: center;
+  height: calc(var(--card-w) * 1.4);
+  margin-bottom: calc(var(--card-w) * -0.42);
+}
+
+.hole .card + .card {
+  margin-left: calc(var(--card-w) * -0.18);
+}
+
+/* Hidden cards are held closer, the second a little askew. */
+.hole .card.down + .card.down {
+  margin-left: calc(var(--card-w) * -0.45);
+  rotate: 7deg;
+}
+
+.pod .plate {
+  z-index: 1;
+  min-width: calc(var(--av) * 2.6);
+}
+
+.pod.me {
+  --card-w: var(--my-card);
+  --pod-w: calc(var(--u) * 22);
+}
+
+.pod.me .hole .card + .card {
+  margin-left: calc(var(--card-w) * 0.08);
+}
+
+.pod.me .hole {
+  margin-bottom: calc(var(--card-w) * -0.2);
+}
+
+/* Cards turned up at another seat are larger, to be read across the table. */
+.pod.shown {
+  --card-w: clamp(24px, calc(var(--u) * 5.6), 62px);
+}
+
+/* The hand's name lies on the plate's upper edge, over the foot of the cards, and what the seat
+   won on its lower edge. At the viewer's own seat both stand beside the plate. */
+.best,
+.won {
+  position: absolute;
+  z-index: 3;
+  left: 50%;
+  translate: -50% -50%;
+}
+
+.best {
+  top: 0;
+  translate: -50% -80%;
+}
+
+.won {
+  top: 100%;
+  font-size: var(--fs-name);
+  translate: -50% -22%;
+}
+
+.pod.me .best,
+.pod.me .won {
+  left: 100%;
+  margin-left: calc(var(--u) * 0.8);
+  translate: 0 -50%;
+}
+
+.pod.me .best {
+  top: 50%;
+}
+
+.pod.me .best:has(+ .won:not([hidden])) {
+  top: 24%;
+}
+
+.pod.me .won {
+  top: 76%;
+}
+
+/* A turned-up hand has its name where the tag is, so the tag goes to the lower edge. */
+.pod.shown .tag {
+  top: auto;
+  bottom: 0;
+  translate: 0 62%;
+}
+
+.pod.folded .plate,
+.pod.out .plate {
+  background: color-mix(in srgb, var(--cs-plate) 70%, transparent);
+}
+
+.pod.folded .plate > :not(.tag, .best, .won),
+.pod.out .plate > :not(.tag, .best, .won) {
+  opacity: 0.5;
+}
+
+/* The viewer keeps seeing the cards they folded. */
+.pod.folded .hole .card {
+  opacity: 0.4;
+}
+
+.pod.winner .plate {
+  box-shadow:
+    0 0 0 2px var(--cs-gold),
+    0 0 calc(var(--av) * 0.6) rgb(243 197 82 / 75%);
+}
+
+/* The move just made, over the pod. The bundle takes it out again after 1.8 s. */
+.say {
+  position: absolute;
+  z-index: 6;
+  top: 0;
+  left: 50%;
+  padding: 0.1em 0.7em;
+  border-radius: 999px;
+  background: #f6f1df;
+  box-shadow: 0 2px 6px rgb(0 0 0 / 45%);
+  color: #1b1e25;
+  font-weight: 800;
+  font-size: var(--fs-small);
+  white-space: nowrap;
+  translate: -50% -60%;
+  animation: say 1.8s both;
+}
+
+.say.fold {
+  background: #39424e;
+  color: #e7ebf0;
+}
+
+.say.raise {
+  background: linear-gradient(#ffe391, #e8b22c);
+  color: #3a2903;
+}
+
+.say.allin {
+  background: var(--cs-card-red);
+  color: #fff;
+}
+
+@keyframes say {
+  0% {
+    transform: translateY(50%);
+    opacity: 0;
+  }
+
+  8%,
+  82% {
+    transform: none;
+    opacity: 1;
+  }
+
+  100% {
+    transform: none;
+    opacity: 0;
+  }
+}
+
+/* The dealer button, the blind mark and the street bet, in a row in front of the pod. */
+.pod-front {
+  position: absolute;
+  top: calc(50% + var(--by));
+  left: calc(50% + var(--bx));
+  display: flex;
+  align-items: center;
+  gap: calc(var(--u) * 0.5);
+  translate: -50% -50%;
+}
+
+.pod-bet {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--chip) * 0.25);
+}
+
+.pod-bet[hidden] {
+  display: none;
+}
+
+.pod .btn.sit {
+  padding: 3px 12px;
+  border-color: rgb(255 255 255 / 35%);
+  background: var(--cs-plate);
+  color: var(--cs-ink);
+  font-size: var(--fs-name);
+}
+
+.pod .btn.sit:hover:not(:disabled) {
+  border-color: var(--cs-gold);
+}
+
+.pod.empty .hole {
+  display: none;
+}
+
+/* An open seat is a faint ring where its plate would be. */
+.pod.empty::before {
+  width: var(--av);
+  height: var(--av);
+  margin-top: calc(var(--card-w) * 0.98);
+  border: 1.5px dashed rgb(255 255 255 / 30%);
+  border-radius: 50%;
+  background: rgb(0 0 0 / 22%);
+  content: '';
+}
+
+.pod.empty:has(.sit:not([hidden]))::before {
+  display: none;
+}
+
+.pod.empty .btn.sit {
+  margin-top: calc(var(--card-w) * 0.98);
+}
+
+.pod[data-slot='0'] {
+  --x: 50%;
+  --bx: 0px;
+  --by: calc(var(--u) * -10);
+  top: auto;
+  bottom: 0;
+  translate: -50% 0;
+}
+
+.pod[data-slot='1'] {
+  --x: 23%;
+  --y: 85%;
+  --bx: calc(var(--u) * 5);
+  --by: calc(var(--u) * -8.4);
+}
+
+.pod[data-slot='2'] {
+  --x: 11.5%;
+  --y: 59%;
+  --bx: calc(var(--u) * 11.5);
+  --by: calc(var(--u) * -0.5);
+}
+
+.pod[data-slot='3'] {
+  --x: 14.5%;
+  --y: 23%;
+  --bx: calc(var(--u) * 11.5);
+  --by: calc(var(--u) * 5);
+}
+
+.pod[data-slot='4'] {
+  --x: 33%;
+  --y: 11.5%;
+  --bx: calc(var(--u) * 3);
+  --by: calc(var(--u) * 8.4);
+}
+
+.pod[data-slot='5'] {
+  --x: 67%;
+  --y: 11.5%;
+  --bx: calc(var(--u) * -3);
+  --by: calc(var(--u) * 8.4);
+}
+
+.pod[data-slot='6'] {
+  --x: 85.5%;
+  --y: 23%;
+  --bx: calc(var(--u) * -11.5);
+  --by: calc(var(--u) * 5);
+}
+
+.pod[data-slot='7'] {
+  --x: 88.5%;
+  --y: 59%;
+  --bx: calc(var(--u) * -11.5);
+  --by: calc(var(--u) * -0.5);
+}
+
+.pod[data-slot='8'] {
+  --x: 77%;
+  --y: 85%;
+  --bx: calc(var(--u) * -5);
+  --by: calc(var(--u) * -8.4);
+}
+
+/* On the right-hand side the chips are nearest the pod, as on the left. */
+.pod[data-slot='5'] .pod-front,
+.pod[data-slot='6'] .pod-front,
+.pod[data-slot='7'] .pod-front,
+.pod[data-slot='8'] .pod-front,
+.pod[data-slot='5'] .pod-bet,
+.pod[data-slot='6'] .pod-bet,
+.pod[data-slot='7'] .pod-bet,
+.pod[data-slot='8'] .pod-bet {
+  flex-direction: row-reverse;
+}
+
+/* ── Under 520 px: the table stands up ───────────────────────────────────── */
+
+@container (max-width: 519px) {
+  .table.pk {
+    --tw: 100cqw;
+    --th: 100cqh;
+    --u: min(1cqw, 0.7cqh);
+    --rail: calc(var(--u) * 2);
+    --card-w: calc(var(--u) * 7.4);
+    --board-card: calc(var(--u) * 8.6);
+    --my-card: calc(var(--u) * 14);
+    --chip: calc(var(--u) * 3.6);
+    --av: calc(var(--u) * 7.6);
+    --pod-w: calc(var(--u) * 18.5);
+    --fs-name: 10px;
+    --fs-small: 10px;
+    --fs-tiny: 9px;
+  }
+
+  .pk .felt {
+    --felt-radius: calc(var(--u) * 17);
+    inset: calc(var(--u) * 8) calc(var(--u) * 5) calc(var(--u) * 9);
+  }
+
+  .centre {
+    top: 49%;
+  }
+
+  /* The short name of a hand: Trips, Quads. */
+  .best[data-short] {
+    font-size: 0;
+  }
+
+  .best[data-short]::before {
+    content: attr(data-short);
+    font-size: var(--fs-small);
+  }
+
+  .deck {
+    top: auto;
+    right: auto;
+    bottom: 100%;
+    left: 0;
+    margin: 0 0 calc(var(--u) * 1.4);
+    translate: none;
+  }
+
+  /* A pod is a small column: the cards, then the avatar over the name over the stack. */
+  .pod .plate {
+    flex-direction: column;
+    gap: 0;
+    width: 100%;
+    min-width: 0;
+    padding: calc(var(--u) * 0.8) calc(var(--u) * 0.6);
+    border-radius: calc(var(--u) * 3);
+    text-align: center;
+  }
+
+  .pod .plate-text {
+    align-items: center;
+    width: 100%;
+  }
+
+  .pod .plate-name {
+    max-width: 100%;
+  }
+
+  .pod .tag {
+    right: 50%;
+    translate: 50% -78%;
+  }
+
+  .pod.me .tag {
+    right: 0;
+    translate: 35% -78%;
+  }
+
+  .pod.shown {
+    --card-w: calc(var(--u) * 10);
+  }
+
+  .pod.shown .tag {
+    translate: 50% 62%;
+  }
+
+  .pod.me {
+    --pod-w: calc(var(--u) * 34);
+  }
+
+  .pod.me .plate {
+    flex-direction: row;
+    gap: calc(var(--av) * 0.22);
+    width: auto;
+    padding: calc(var(--av) * 0.1);
+    padding-right: calc(var(--av) * 0.4);
+    border-radius: 999px;
+    text-align: left;
+  }
+
+  .pod.me .plate-text {
+    align-items: flex-start;
+  }
+
+  .pod[data-slot='0'] {
+    --by: calc(var(--u) * -15.5);
+    bottom: calc(var(--u) * 0.6);
+  }
+
+  .pod[data-slot='1'] {
+    --x: 10.5%;
+    --y: 73%;
+    --bx: calc(var(--u) * 14);
+    --by: calc(var(--u) * -8);
+  }
+
+  .pod[data-slot='2'] {
+    --x: 10.5%;
+    --y: 51%;
+    --bx: calc(var(--u) * 14);
+    --by: calc(var(--u) * 10.5);
+  }
+
+  .pod[data-slot='3'] {
+    --x: 10.5%;
+    --y: 29%;
+    --bx: calc(var(--u) * 14);
+    --by: calc(var(--u) * 6);
+  }
+
+  .pod[data-slot='4'] {
+    --x: 31%;
+    --y: 12.5%;
+    --bx: calc(var(--u) * 3);
+    --by: calc(var(--u) * 16);
+  }
+
+  .pod[data-slot='5'] {
+    --x: 69%;
+    --y: 12.5%;
+    --bx: calc(var(--u) * -3);
+    --by: calc(var(--u) * 16);
+  }
+
+  .pod[data-slot='6'] {
+    --x: 89.5%;
+    --y: 29%;
+    --bx: calc(var(--u) * -14);
+    --by: calc(var(--u) * 6);
+  }
+
+  .pod[data-slot='7'] {
+    --x: 89.5%;
+    --y: 51%;
+    --bx: calc(var(--u) * -14);
+    --by: calc(var(--u) * 10.5);
+  }
+
+  .pod[data-slot='8'] {
+    --x: 89.5%;
+    --y: 73%;
+    --bx: calc(var(--u) * -14);
+    --by: calc(var(--u) * -8);
+  }
+}
+
+/* ── Dock ────────────────────────────────────────────────────────────────── */
+
+.turn {
+  display: grid;
+  grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
+  align-items: center;
+  gap: 6px 14px;
+}
+
+.raise {
+  display: grid;
+  gap: 4px;
+}
+
+.raise[hidden] {
+  display: none;
+}
+
+.presets {
+  display: flex;
+  gap: 4px;
+}
+
+.presets .btn {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 2px 4px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.raise-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.raise-range {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--color-primary);
+}
+
+/* As tall as the slider, so the row keeps its height. */
+.raise-row .btn.step {
+  flex: none;
+  width: 28px;
+  height: 18px;
+  padding: 0;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.turn-buttons {
+  display: flex;
+  grid-column: 2;
+  gap: 6px;
+}
+
+.turn-buttons .btn.act {
+  padding: 6px 4px;
+}
+
+/* Fold is the short word and the raise the long one. */
+#fold {
+  flex-grow: 0.7;
+}
+
+#raise-btn {
+  flex-grow: 1.4;
+}
+
+.actions {
+  --actions-h: 50px;
+}
+
+.reveal {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.reveal[hidden] {
+  display: none;
+}
+
+.reveal input {
+  margin: 0;
+  accent-color: var(--color-primary);
+}
+
+@media (max-width: 519px) {
+  .turn {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .turn-buttons {
+    grid-column: 1;
+  }
+
+  .actions {
+    --actions-h: 98px;
+  }
+
+  .turn-buttons .btn.act {
+    font-size: 13px;
+  }
+}

@@ -1,0 +1,774 @@
+/* Shared by the casino bundles (blackjack, poker), on top of base.css: the table (rail and felt),
+   cards, chips, the seat plate with its timer ring, the labels that lie on the felt, the layer the
+   moves are played on, and the dock under the table. The table and what lies on it keep their own
+   colours on every theme; the dock uses the theme variables. Each bundle's style.css sets the
+   table's size variables (--tw, --th, --u and the sizes built on --u) and places the seats. */
+
+:root {
+  --cs-felt: #1e7a56;
+  --cs-felt-deep: #0c4631;
+  --cs-felt-line: rgb(255 255 255 / 15%);
+  --cs-rail: #4d2e1b;
+  --cs-rail-light: #84522e;
+  --cs-rail-dark: #2a170d;
+  --cs-brass: #cfa349;
+  --cs-gold: #f3c552;
+  --cs-ink: #f5f2e7;
+  --cs-ink-soft: rgb(245 242 231 / 66%);
+  --cs-plate: #11151a;
+  --cs-plate-edge: rgb(255 255 255 / 15%);
+  --cs-card: #fbfaf5;
+  --cs-card-edge: rgb(0 0 0 / 22%);
+  --cs-card-red: #c9252d;
+  --cs-card-black: #1b1e25;
+  --cs-back: #8f1d2c;
+  --cs-back-deep: #5d0f1b;
+  --cs-win: #2aa35b;
+  --cs-lose: #c53a3a;
+  --cs-push: #5a6f86;
+}
+
+/* Registered as lengths, so the container units in them are worked out on the table and the
+   cards, which are containers themselves, inherit plain pixels. */
+@property --u {
+  syntax: '<length>';
+  inherits: true;
+  initial-value: 4px;
+}
+
+@property --tw {
+  syntax: '<length>';
+  inherits: true;
+  initial-value: 400px;
+}
+
+@property --th {
+  syntax: '<length>';
+  inherits: true;
+  initial-value: 300px;
+}
+
+.game.casino {
+  gap: 8px;
+  padding: 8px;
+}
+
+.table-area {
+  display: grid;
+  flex: 1;
+  place-items: center;
+  min-height: 0;
+  container-type: size;
+}
+
+.table {
+  --u: 1cqw;
+  --tw: 100cqw;
+  --th: 100cqh;
+  --rail: calc(var(--u) * 1.5);
+  --card-w: calc(var(--u) * 5.4);
+  --chip: calc(var(--u) * 2);
+  --av: calc(var(--u) * 3.4);
+  --fs-name: clamp(10px, calc(var(--u) * 1.4), 14px);
+  --fs-small: clamp(9.5px, calc(var(--u) * 1.25), 13px);
+  --fs-tiny: clamp(8.5px, calc(var(--u) * 1.05), 11px);
+  position: relative;
+  flex: none;
+  width: var(--tw);
+  height: var(--th);
+  color: var(--cs-ink);
+  font-size: var(--fs-small);
+  line-height: 1.25;
+}
+
+/* ── Rail and felt ───────────────────────────────────────────────────────── */
+
+/* The box is the wooden rail; ::before is the cloth inside it, ::after the line printed on the
+   cloth. */
+.felt {
+  position: absolute;
+  inset: 0;
+  border-radius: var(--felt-radius, calc(var(--u) * 8));
+  background: linear-gradient(
+    180deg,
+    var(--cs-rail-light),
+    var(--cs-rail) 38%,
+    var(--cs-rail-dark)
+  );
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 28%),
+    inset 0 -1px 0 rgb(0 0 0 / 40%),
+    0 calc(var(--u) * 0.6) calc(var(--u) * 1.8) rgb(0 0 0 / 34%);
+}
+
+.felt::before {
+  position: absolute;
+  inset: var(--rail);
+  border-radius: var(--cloth-radius, inherit);
+  background:
+    radial-gradient(ellipse 70% 60% at 50% 40%, rgb(255 255 255 / 11%), transparent 70%),
+    radial-gradient(ellipse at 50% 50%, var(--cs-felt), var(--cs-felt-deep) 120%);
+  box-shadow:
+    0 0 0 max(1.5px, calc(var(--u) * 0.18)) var(--cs-brass),
+    inset 0 0 0 1px rgb(0 0 0 / 30%),
+    inset 0 calc(var(--u) * 0.8) calc(var(--u) * 2.6) rgb(0 0 0 / 45%);
+  content: '';
+}
+
+.felt::after {
+  position: absolute;
+  inset: calc(var(--rail) + var(--u) * 1.6);
+  border: 1px solid var(--cs-felt-line);
+  border-radius: var(--cloth-radius, inherit);
+  content: '';
+}
+
+/* ── Cards ───────────────────────────────────────────────────────────────── */
+
+.card {
+  position: relative;
+  flex: none;
+  width: var(--card-w);
+  height: calc(var(--card-w) * 1.4);
+  border-radius: calc(var(--card-w) * 0.09);
+  box-shadow:
+    0 0 0 1px var(--cs-card-edge),
+    0 1px 3px rgb(0 0 0 / 35%);
+  color: var(--cs-card-black);
+  perspective: calc(var(--card-w) * 9);
+  container-type: inline-size;
+}
+
+.card[data-suit='hearts'],
+.card[data-suit='diamonds'] {
+  color: var(--cs-card-red);
+}
+
+.card-in {
+  position: absolute;
+  inset: 0;
+  transform-style: preserve-3d;
+}
+
+.card.down .card-in {
+  transform: rotateY(180deg);
+}
+
+.card-face,
+.card-back {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  backface-visibility: hidden;
+}
+
+.card-face {
+  background: var(--cs-card);
+}
+
+.card-face svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  fill: currentColor;
+}
+
+.card-face text {
+  font-weight: 700;
+  text-anchor: middle;
+}
+
+.card-face .idx {
+  font-size: 23px;
+}
+
+.card-face .idx.ten {
+  font-size: 19px;
+  letter-spacing: -1.5px;
+}
+
+.card-face .court {
+  fill: currentColor;
+  fill-opacity: 0.08;
+  stroke: currentColor;
+  stroke-opacity: 0.45;
+  stroke-width: 1.5;
+}
+
+.card-face .court-letter {
+  font-weight: 800;
+  font-size: 46px;
+}
+
+.card-face .big {
+  font-weight: 800;
+  font-size: 58px;
+}
+
+.card-face .wash {
+  opacity: 0.13;
+}
+
+.card-face .big.ten {
+  font-size: 46px;
+  letter-spacing: -7px;
+}
+
+.card-face .f-mini {
+  display: none;
+}
+
+@container (max-width: 55.9px) {
+  .card-face .f-full {
+    display: none;
+  }
+
+  .card-face .f-mini {
+    display: inline;
+  }
+}
+
+.card-back,
+.back {
+  --line: calc(var(--card-w) * 0.035);
+  --gap: calc(var(--card-w) * 0.14);
+  border: calc(var(--card-w) * 0.07) solid var(--cs-card);
+  background:
+    repeating-linear-gradient(
+      45deg,
+      rgb(255 255 255 / 16%) 0 var(--line),
+      transparent var(--line) var(--gap)
+    ),
+    repeating-linear-gradient(
+      -45deg,
+      rgb(255 255 255 / 16%) 0 var(--line),
+      transparent var(--line) var(--gap)
+    ),
+    radial-gradient(circle, var(--cs-back), var(--cs-back-deep));
+}
+
+.card-back {
+  transform: rotateY(180deg);
+}
+
+/* A face-down card that is not a `.card`: the top of the shoe, the deck, the discard pile. */
+.back {
+  display: block;
+  flex: none;
+  width: var(--card-w);
+  height: calc(var(--card-w) * 1.4);
+  border-radius: calc(var(--card-w) * 0.09);
+  box-shadow:
+    0 0 0 1px var(--cs-card-edge),
+    0 1px 3px rgb(0 0 0 / 35%);
+}
+
+/* Part of a winning five, and the cards left out of it. Both are a transform or an opacity so
+   stage.from can play them in. */
+.card.lift {
+  transform: translateY(-14%);
+}
+
+.card.dim {
+  opacity: 0.42;
+}
+
+/* ── Chips ───────────────────────────────────────────────────────────────── */
+
+.chips {
+  display: inline-flex;
+  flex: none;
+  align-items: flex-end;
+  gap: calc(var(--chip) * 0.12);
+}
+
+.stack {
+  display: flex;
+  flex-direction: column-reverse;
+}
+
+.chip {
+  --c: #d9d6cb;
+  --ci: #f7f5ee;
+  --cd: rgb(0 0 0 / 55%);
+  display: block;
+  flex: none;
+  width: var(--chip);
+  height: var(--chip);
+  border-radius: 50%;
+  background:
+    radial-gradient(
+      circle closest-side,
+      var(--c) 0 56%,
+      rgb(255 255 255 / 60%) 58% 66%,
+      transparent 68%
+    ),
+    repeating-conic-gradient(from 15deg, var(--c) 0 30deg, var(--ci) 30deg 60deg);
+  box-shadow:
+    inset 0 0 0 max(0.5px, calc(var(--chip) * 0.03)) rgb(0 0 0 / 30%),
+    0 calc(var(--chip) * 0.1) 0 color-mix(in srgb, var(--c) 55%, #000),
+    0 calc(var(--chip) * 0.14) calc(var(--chip) * 0.12) var(--cd);
+}
+
+.stack .chip + .chip {
+  margin-bottom: calc(var(--chip) * -0.84);
+}
+
+.chip[data-d='1'] {
+  --c: #e6e3d8;
+  --ci: #3a6db3;
+}
+
+.chip[data-d='5'] {
+  --c: #c8322e;
+}
+
+.chip[data-d='10'] {
+  --c: #2c62c9;
+}
+
+.chip[data-d='25'] {
+  --c: #1c8a4b;
+}
+
+.chip[data-d='50'] {
+  --c: #dd7a1c;
+}
+
+.chip[data-d='100'] {
+  --c: #23262d;
+}
+
+.chip[data-d='500'] {
+  --c: #6c3ab6;
+}
+
+.chip[data-d='1000'] {
+  --c: #d8a421;
+  --ci: #2b2410;
+}
+
+/* The amount written beside a stack on the felt. */
+.amount {
+  color: var(--cs-ink);
+  font-weight: 700;
+  font-size: var(--fs-small);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  text-shadow: 0 1px 2px rgb(0 0 0 / 60%);
+}
+
+/* A rack chip is a button in the dock. */
+.chip.rack {
+  --chip: 42px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  color: #fff;
+  font: inherit;
+  font-weight: 800;
+  font-size: 11px;
+  letter-spacing: -0.02em;
+  cursor: pointer;
+  transition: transform 0.12s;
+}
+
+.chip.rack[data-d='1'],
+.chip.rack[data-d='1000'] {
+  color: #1b1e25;
+}
+
+.chip.rack:hover:not(:disabled) {
+  transform: translateY(-3px);
+}
+
+.chip.rack:active:not(:disabled) {
+  transform: translateY(0) scale(0.96);
+}
+
+.chip.rack:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.chip.rack:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 3px;
+}
+
+/* ── Seat plate ──────────────────────────────────────────────────────────── */
+
+.plate {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: calc(var(--av) * 0.22);
+  max-width: 100%;
+  padding: calc(var(--av) * 0.12);
+  padding-right: calc(var(--av) * 0.36);
+  border-radius: 999px;
+  background: var(--cs-plate);
+  box-shadow:
+    0 0 0 1px var(--cs-plate-edge),
+    0 2px 6px rgb(0 0 0 / 40%);
+  color: var(--cs-ink);
+}
+
+.avatar-wrap {
+  position: relative;
+  display: grid;
+  flex: none;
+}
+
+.plate .avatar {
+  width: var(--av);
+  height: var(--av);
+  background: #2c3644;
+  color: #d5dbe3;
+  font-size: calc(var(--av) * 0.44);
+}
+
+.plate-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.plate-name {
+  display: flex;
+  align-items: center;
+  gap: 0.3em;
+  min-width: 0;
+  font-weight: 600;
+  font-size: var(--fs-name);
+}
+
+.plate-name > span:first-child {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.plate-stack {
+  color: var(--cs-gold);
+  font-weight: 700;
+  font-size: var(--fs-small);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.crown {
+  display: grid;
+  flex: none;
+  color: var(--cs-gold);
+}
+
+.crown svg {
+  width: 1.1em;
+  height: 1.1em;
+  fill: currentColor;
+}
+
+/* The seat whose turn it is. */
+.acting .plate {
+  box-shadow:
+    0 0 0 2px var(--cs-gold),
+    0 0 calc(var(--av) * 0.5) rgb(243 197 82 / 60%);
+}
+
+/* A word on the plate's upper edge: Away, All in, Folded, Sitting out. */
+.tag {
+  position: absolute;
+  top: 0;
+  right: calc(var(--av) * 0.2);
+  padding: 0 0.55em;
+  border-radius: 999px;
+  background: #2f3947;
+  box-shadow: 0 0 0 1px rgb(255 255 255 / 20%);
+  color: var(--cs-ink);
+  font-weight: 700;
+  font-size: var(--fs-tiny);
+  line-height: 1.5;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  text-transform: uppercase;
+  translate: 0 -78%;
+}
+
+.tag.allin {
+  background: var(--cs-card-red);
+  color: #fff;
+}
+
+.tag[hidden] {
+  display: none;
+}
+
+/* ── Timer ring ──────────────────────────────────────────────────────────── */
+
+/* Two half rings, each turning out of sight behind the clip of its half; casino.timer runs them.
+   The hot layer is the same ring in the danger colour. */
+.ring {
+  --ring-w: max(2px, calc(var(--av) * 0.09));
+  position: absolute;
+  inset: calc(var(--ring-w) * -1);
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 var(--ring-w) rgb(255 255 255 / 14%);
+  pointer-events: none;
+}
+
+.ring[hidden] {
+  display: none;
+}
+
+.ring-ok,
+.ring-hot {
+  position: absolute;
+  inset: 0;
+  color: var(--cs-gold);
+}
+
+.ring-hot {
+  color: var(--color-danger, #e5545a);
+  opacity: 0;
+}
+
+.ring i,
+.ring b {
+  position: absolute;
+  inset: 0;
+  clip-path: inset(0 0 0 49.5%);
+}
+
+.ring i + i,
+.ring i + i b {
+  clip-path: inset(0 49.5% 0 0);
+}
+
+.ring b {
+  border: var(--ring-w) solid currentColor;
+  border-radius: 50%;
+}
+
+/* ── Labels on the felt ──────────────────────────────────────────────────── */
+
+.pill {
+  padding: 0.05em 0.6em;
+  border-radius: 999px;
+  background: rgb(8 12 16 / 78%);
+  box-shadow: 0 0 0 1px rgb(255 255 255 / 16%);
+  color: #fff;
+  font-weight: 700;
+  font-size: var(--fs-small);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.pill[hidden] {
+  display: none;
+}
+
+.pill.gold {
+  background: linear-gradient(#ffe391, #e8b22c);
+  box-shadow: 0 1px 4px rgb(0 0 0 / 40%);
+  color: #3a2903;
+}
+
+.pill.win {
+  background: var(--cs-win);
+}
+
+.pill.lose {
+  background: #3b2226;
+  color: #f0b3b3;
+}
+
+.pill.bust {
+  background: var(--cs-lose);
+}
+
+.pill.push {
+  background: var(--cs-push);
+}
+
+/* The dealer button and the blind marks. */
+.marker {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: calc(var(--chip) * 1.25);
+  height: calc(var(--chip) * 1.25);
+  border-radius: 50%;
+  background: #f6f3ea;
+  box-shadow:
+    inset 0 0 0 1px rgb(0 0 0 / 25%),
+    0 1px 0 #9b978a,
+    0 2px 3px rgb(0 0 0 / 45%);
+  color: #1b1e25;
+  font-weight: 800;
+  font-size: var(--fs-tiny);
+  line-height: 1;
+}
+
+.marker[hidden] {
+  display: none;
+}
+
+.marker.blind {
+  background: #24456f;
+  box-shadow:
+    inset 0 0 0 1px rgb(255 255 255 / 30%),
+    0 2px 3px rgb(0 0 0 / 45%);
+  color: #fff;
+}
+
+/* ── The layer the moves are played on ───────────────────────────────────── */
+
+.fx {
+  position: absolute;
+  z-index: 40;
+  inset: 0;
+  pointer-events: none;
+}
+
+.ghost {
+  position: absolute;
+  margin: 0 !important;
+  translate: none !important;
+  will-change: transform, opacity;
+}
+
+.casino-sprite {
+  position: absolute;
+}
+
+/* ── Dock ────────────────────────────────────────────────────────────────── */
+
+.dock {
+  position: relative;
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  max-width: 620px;
+  margin: 0 auto;
+}
+
+/* Status in the middle, the quiet seat button on its left, the leader's button on its right. */
+.bar {
+  display: grid;
+  grid-template-columns: minmax(max-content, 1fr) minmax(0, auto) minmax(max-content, 1fr);
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 28px;
+}
+
+.bar-left,
+.bar-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.bar-right {
+  justify-content: flex-end;
+}
+
+.bar .status-row {
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+
+.bar .btn {
+  padding: 3px 9px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.bar .status {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.btn.quiet {
+  padding: 3px 9px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-weight: 500;
+  font-size: 12px;
+}
+
+/* The rejection line floats over the table's lower edge, so it takes no room. */
+.casino .notice {
+  position: absolute;
+  z-index: 60;
+  bottom: calc(100% + 10px);
+  left: 50%;
+  min-height: 0;
+  padding: 3px 12px;
+  border-radius: 999px;
+  background: var(--color-danger);
+  box-shadow: 0 3px 10px rgb(0 0 0 / 35%);
+  color: #fff;
+  font-weight: 600;
+  white-space: nowrap;
+  pointer-events: none;
+  translate: -50% 0;
+}
+
+.casino .notice:empty {
+  display: none;
+}
+
+/* The controls. The room they take is kept while the viewer is seated, so the table does not
+   change size from turn to turn. */
+.actions {
+  display: grid;
+  align-content: center;
+  width: 100%;
+  min-height: var(--actions-h, 44px);
+}
+
+.actions[hidden],
+.actions > [hidden] {
+  display: none;
+}
+
+.actions > * {
+  grid-area: 1 / 1;
+}
+
+.btn.act {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 38px;
+  padding: 6px 8px;
+  font-size: 14px;
+  white-space: nowrap;
+}
+
+.btn.act.fold {
+  border-color: color-mix(in srgb, var(--color-danger) 55%, var(--color-border-light));
+  color: var(--color-danger);
+}
+
+@media (max-width: 380px) {
+  .bar {
+    gap: 5px;
+  }
+
+  .bar .btn {
+    padding: 3px 7px;
+  }
+
+  .bar .status {
+    font-size: 13.5px;
+  }
+}

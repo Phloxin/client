@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="../shared/base.css" />
+    <link rel="stylesheet" href="../shared/casino.css" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main class="game casino" id="game" hidden>
+      <section class="table-area">
+        <div class="table bj" id="table">
+          <div class="felt"></div>
+          <svg class="print" viewBox="0 0 400 80" aria-hidden="true">
+            <path id="bj-print-a" d="M24 10Q200 64 376 10" fill="none" />
+            <path id="bj-print-b" d="M70 40Q200 80 330 40" fill="none" />
+            <text class="print-a">
+              <textPath href="#bj-print-a" startOffset="50%">BLACKJACK PAYS 3 TO 2</textPath>
+            </text>
+            <text class="print-b">
+              <textPath href="#bj-print-b" startOffset="50%">Dealer stands on 17</textPath>
+            </text>
+          </svg>
+          <div class="tray discard" id="discard"><span class="back"></span></div>
+          <div class="tray shoe" id="shoe">
+            <span class="back" id="shoe-top"></span>
+            <span class="shoe-count" id="shoe-count"></span>
+          </div>
+          <div class="dealer" id="dealer">
+            <span class="dealer-label">Dealer</span>
+            <div class="hand" id="dealer-hand">
+              <div class="cards" id="dealer-cards"></div>
+              <span class="pill total" id="dealer-total" hidden></span>
+            </div>
+          </div>
+          <div class="spots" id="spots"></div>
+          <div class="fx" id="fx"></div>
+        </div>
+      </section>
+      <footer class="dock">
+        <div class="bar">
+          <div class="bar-left">
+            <button class="btn quiet" id="leave" type="button" hidden>Leave seat</button>
+          </div>
+          <div class="status-row">
+            <span class="status" id="status"></span>
+            <span class="watching" id="watching" hidden>Watching</span>
+          </div>
+          <div class="bar-right">
+            <button class="btn primary" id="deal" type="button" hidden>Deal now</button>
+          </div>
+        </div>
+        <p class="notice" id="notice" role="status"></p>
+        <div class="actions" id="actions" hidden>
+          <div class="betting" id="betting" hidden>
+            <div class="rack" id="rack"></div>
+            <div class="bet-row">
+              <button class="btn" id="bet-clear" type="button">Clear</button>
+              <button class="btn" id="bet-same" type="button" hidden>Same bet</button>
+              <button class="btn primary" id="bet-place" type="button">
+                Bet <span id="bet-amount"></span>
+              </button>
+            </div>
+          </div>
+          <div class="playing" id="playing" hidden>
+            <button class="btn act primary" id="hit" type="button">Hit</button>
+            <button class="btn act" id="stay" type="button">Stand</button>
+            <button class="btn act" id="double" type="button" hidden>Double</button>
+            <button class="btn act" id="split" type="button" hidden>Split</button>
+          </div>
+          <div class="broke" id="broke" hidden>
+            <span>You're out of chips</span>
+            <button class="btn primary" id="rebuy" type="button">Rebuy</button>
+          </div>
+        </div>
+      </footer>
+    </main>
+    <script src="../shared/bridge.js"></script>
+    <script src="../shared/room.js"></script>
+    <script src="../shared/cards.js"></script>
+    <script src="main.js"></script>
+  </body>
+</html>

@@ -4,6 +4,7 @@ import test from 'node:test'
 
 import {
   BUNDLE_CSP,
+  MAX_EXPORT_BYTES,
   THEME_VARS,
   actionFrame,
   bridgeClients,
@@ -237,6 +238,87 @@ test('fullscreen needs on as a boolean', () => {
   }
 })
 
+const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13])
+const pngOf = (length) => {
+  const data = new Uint8Array(length)
+  data.set(PNG.subarray(0, 8))
+  return data
+}
+const readExport = (fields, capabilities = ['export']) =>
+  readUiMessage(
+    { type: 'export', op: 'save', id: 7, name: 'whiteboard.png', data: PNG, ...fields },
+    capabilities
+  )
+
+test('an export from a bundle with the capability is read as it is', () => {
+  assert.deepEqual(readExport({}), {
+    type: 'export',
+    op: 'save',
+    id: 7,
+    name: 'whiteboard.png',
+    data: PNG
+  })
+  assert.equal(readExport({ op: 'share', id: 0 }).op, 'share')
+  assert.equal(readExport({ id: 4294967295 }).id, 4294967295)
+  for (const name of [
+    'whiteboard-2026-11-24-0930.png',
+    'a.png',
+    'My board 2.png',
+    'x'.repeat(96) + '.png'
+  ]) {
+    assert.equal(readExport({ name }).name, name)
+  }
+  const most = readExport({ data: pngOf(MAX_EXPORT_BYTES) })
+  assert.equal(most.refused, undefined)
+  assert.equal(most.data.length, 8 * 1024 * 1024)
+})
+
+test('an export without the capability or a valid id is dropped', () => {
+  const message = { type: 'export', op: 'save', id: 7, name: 'whiteboard.png', data: PNG }
+  for (const read of [
+    readUiMessage(message),
+    readUiMessage(message, []),
+    readUiMessage(message, ['player'])
+  ]) {
+    assert.equal(read.type, 'drop')
+    assert.equal(typeof read.why, 'string')
+  }
+  for (const id of [-1, 2 ** 32, 1.5, '7', null, undefined]) {
+    assert.equal(readExport({ id }).type, 'drop', String(id))
+  }
+})
+
+test('an export with a valid id that fails a check is refused, so the shell can answer it', () => {
+  for (const bad of [
+    { op: 'print' },
+    { op: undefined },
+    { name: 'a/b.png' },
+    { name: 'a\\b.png' },
+    { name: '../b.png' },
+    { name: '.png' },
+    { name: '.hidden.png' },
+    { name: 'b.PNG' },
+    { name: 'b.png.exe' },
+    { name: 'b' },
+    { name: 'x'.repeat(97) + '.png' },
+    { name: 'café.png' },
+    { name: 'a\u0000.png' },
+    { name: 5 },
+    { data: [...PNG] },
+    { data: PNG.buffer },
+    { data: PNG.subarray(0, 4) },
+    { data: new Uint8Array(12) },
+    { data: pngOf(MAX_EXPORT_BYTES + 1) }
+  ]) {
+    const read = readExport(bad)
+    const label = JSON.stringify(bad).slice(0, 60)
+    assert.deepEqual(Object.keys(read), ['type', 'id', 'refused'], label)
+    assert.equal(read.type, 'export', label)
+    assert.equal(read.id, 7, label)
+    assert.equal(typeof read.refused, 'string', label)
+  }
+})
+
 test('an action frame goes out under the wire id with the data as is', () => {
   const { frame } = actionFrame(99, { type: 'place', cell: 4 })
   assert.deepEqual(decodeControl(frame.subarray(4)), {
@@ -277,22 +359,37 @@ const UI = new URL('../../activities/ui/', import.meta.url)
 const STYLES = new URL('../../styles/', import.meta.url)
 const read = (base, path) => readFileSync(new URL(path, base), 'utf8')
 // The shared layers each bundle loads, in order. Uno has no duel; Watch Together has no seats
-// layer and has the player.
+// layer and has the player; blackjack and poker have the casino cards and no seats layer; the
+// whiteboard has the bridge and room only.
 const DUEL_LAYERS = ['bridge', 'room', 'seats', 'duel']
 const LAYERS = {
   tic_tac_toe: DUEL_LAYERS,
   connect4: DUEL_LAYERS,
   chess: DUEL_LAYERS,
   uno: ['bridge', 'room', 'seats'],
-  watch_together: ['bridge', 'room', 'player']
+  watch_together: ['bridge', 'room', 'player'],
+  blackjack: ['bridge', 'room', 'cards'],
+  poker: ['bridge', 'room', 'cards'],
+  whiteboard: ['bridge', 'room']
 }
 const BUNDLES = Object.keys(LAYERS)
+// The shared stylesheets a bundle loads after base.css.
+const SHARED_CSS = { blackjack: ['casino'], poker: ['casino'] }
+const sharedCss = (id) => SHARED_CSS[id] ?? []
 // A bundle's own scripts loaded between the shared layers and main.js: chess's pieces, Watch
-// Together's sync, icons and scene.
-const OWN_SCRIPTS = { chess: ['pieces.js'], watch_together: ['sync.js', 'icons.js', 'scene.js'] }
+// Together's sync, icons and scene, the whiteboard's net layer, icons, stamps, engine, board and
+// widgets.
+const OWN_SCRIPTS = {
+  chess: ['pieces.js'],
+  watch_together: ['sync.js', 'icons.js', 'scene.js'],
+  whiteboard: ['net.js', 'icons.js', 'stamps.js', 'engine.js', 'board.js', 'widgets.js']
+}
 const ownScripts = (id) => OWN_SCRIPTS[id] ?? []
 const bundleFiles = (id) => ({
   '../shared/base.css': read(UI, 'shared/base.css'),
+  ...Object.fromEntries(
+    sharedCss(id).map((name) => [`../shared/${name}.css`, read(UI, `shared/${name}.css`)])
+  ),
   ...Object.fromEntries(
     LAYERS[id].map((name) => [`../shared/${name}.js`, read(UI, `shared/${name}.js`)])
   ),
@@ -302,7 +399,7 @@ const bundleFiles = (id) => ({
 })
 // The bundles' own variables, not the client's: the board's gap and fall, Connect 4's discs,
 // chess's squares, picker edge and marks, Uno's cards and their sizes, Watch Together's house
-// palette and its layout sizes.
+// palette and its layout sizes, the casino table's fixed colours and its sizes on the table unit.
 const BUNDLE_OWN_VARS = new Set([
   '--gap',
   '--fall',
@@ -341,19 +438,83 @@ const BUNDLE_OWN_VARS = new Set([
   '--fill-wood',
   '--fill-carpet',
   '--bar-h',
-  '--d'
+  '--d',
+  '--cs-felt',
+  '--cs-felt-deep',
+  '--cs-felt-line',
+  '--cs-rail',
+  '--cs-rail-light',
+  '--cs-rail-dark',
+  '--cs-brass',
+  '--cs-gold',
+  '--cs-ink',
+  '--cs-ink-soft',
+  '--cs-plate',
+  '--cs-plate-edge',
+  '--cs-card',
+  '--cs-card-edge',
+  '--cs-card-red',
+  '--cs-card-black',
+  '--cs-back',
+  '--cs-back-deep',
+  '--cs-win',
+  '--cs-lose',
+  '--cs-push',
+  '--u',
+  '--tw',
+  '--th',
+  '--rail',
+  '--chip',
+  '--av',
+  '--fs-name',
+  '--fs-small',
+  '--fs-tiny',
+  '--felt-radius',
+  '--cloth-radius',
+  '--line',
+  '--c',
+  '--ci',
+  '--cd',
+  '--ring-w',
+  '--actions-h',
+  '--card-base',
+  '--bet-h',
+  '--spot-w',
+  '--hand-gap',
+  '--hand-w',
+  '--fan',
+  '--step',
+  '--n',
+  '--r',
+  '--k',
+  '--s',
+  '--hands',
+  '--spread',
+  '--room',
+  '--x',
+  '--y',
+  '--board-card',
+  '--my-card',
+  '--pod-w',
+  '--bx',
+  '--by'
 ])
+// A bundle may instead give all its own variables its prefix, each one it reads set by its
+// stylesheet or its scripts: the whiteboard's start with `--wb-`.
+const OWN_PREFIXES = { whiteboard: '--wb-' }
+const hasOwnPrefix = (name) => Object.values(OWN_PREFIXES).some((p) => name.startsWith(p))
 
 for (const id of BUNDLES) {
   test(`the ${id} bundle builds into one document with nothing left to fetch`, () => {
     const doc = buildSrcdoc(read(UI, `${id}/index.html`), bundleFiles(id))
     assert.ok(!/<link|<script\s+src/.test(doc))
     assert.equal(doc.match(/<script>/g).length, LAYERS[id].length + ownScripts(id).length + 1)
-    // Two stylesheets; a script may carry `<style>` as text (Watch Together's scene markup).
+    // base.css, the shared stylesheets and style.css; a script may carry `<style>` as text (Watch
+    // Together's scene markup).
     const inScripts = ownScripts(id)
       .map((name) => read(UI, `${id}/${name}`).split('<style>').length - 1)
       .reduce((a, b) => a + b, 0)
-    assert.equal(doc.match(/<style>/g).length, 2 + inScripts)
+    assert.equal(doc.match(/<style>/g).length, 2 + sharedCss(id).length + inScripts)
   })
 
   test(`the ${id} bundle loads the shared layers in order, before its own scripts`, () => {
@@ -370,10 +531,34 @@ for (const id of BUNDLES) {
 test('THEME_VARS is exactly the client variables the bundles use, and the client defines each', () => {
   const css = BUNDLES.map((id) => bundleFiles(id)['style.css'])
     .concat(read(UI, 'shared/base.css'))
+    .concat(
+      Object.values(SHARED_CSS)
+        .flat()
+        .map((name) => read(UI, `shared/${name}.css`))
+    )
     .join('\n')
   const used = new Set([...css.matchAll(/var\((--[a-z0-9-]+)/g)].map((m) => m[1]))
   for (const name of BUNDLE_OWN_VARS) used.delete(name)
+  for (const name of used) if (hasOwnPrefix(name)) used.delete(name)
   assert.deepEqual([...used].sort(), [...THEME_VARS].sort())
   const client = read(STYLES, 'themes.css') + read(STYLES, 'base.css')
   for (const name of THEME_VARS) assert.ok(client.includes(`${name}:`), name)
 })
+
+for (const [id, prefix] of Object.entries(OWN_PREFIXES)) {
+  test(`every ${prefix} variable the ${id} bundle reads is one it sets`, () => {
+    const css = read(UI, `${id}/style.css`)
+    const scripts = [...ownScripts(id), 'main.js'].map((name) => read(UI, `${id}/${name}`))
+    const name = `${prefix}[a-z0-9-]+`
+    const reads = new Set([...css.matchAll(new RegExp(`var\\((${name})`, 'g'))].map((m) => m[1]))
+    const sets = new Set([
+      ...[...css.matchAll(new RegExp(`(${name})\\s*:`, 'g'))].map((m) => m[1]),
+      ...scripts.flatMap((js) => [...js.matchAll(new RegExp(`'(${name})'`, 'g'))].map((m) => m[1]))
+    ])
+    assert.ok(reads.size > 0)
+    assert.deepEqual(
+      [...reads].filter((n) => !sets.has(n)),
+      []
+    )
+  })
+}

@@ -103,10 +103,32 @@ function readPlayerOp(data) {
   }
 }
 
-// A message a bundle posted, checked: { type: 'ready' | 'action' | 'input' | 'status' | 'player' |
-// 'fullscreen', ... }, or { type: 'drop', why } for anything malformed, which the shell drops with a
-// warning.
-export function readUiMessage(data) {
+// The `export` capability: a PNG the bundle made, to save or share under a plain name.
+export const MAX_EXPORT_BYTES = 8 * 1024 * 1024
+const EXPORT_OPS = new Set(['save', 'share'])
+const PNG_NAME = /^[A-Za-z0-9][A-Za-z0-9 ._-]{0,95}\.png$/
+const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+
+// An export the shell can answer, as it is, or with `refused` saying which check it failed.
+function readExport(data) {
+  if (!isId(data.id)) return drop('export id is not an integer from 0 to 2^32 - 1')
+  const refuse = (why) => ({ type: 'export', id: data.id, refused: why })
+  if (!EXPORT_OPS.has(data.op)) return refuse('export op is not save or share')
+  if (typeof data.name !== 'string' || !PNG_NAME.test(data.name)) {
+    return refuse('export name is not a plain .png name')
+  }
+  if (!(data.data instanceof Uint8Array)) return refuse('export data is not a Uint8Array')
+  if (data.data.length > MAX_EXPORT_BYTES) return refuse('export data is over 8 MiB')
+  if (!PNG_SIGNATURE.every((byte, i) => data.data[i] === byte)) {
+    return refuse('export data is not a PNG')
+  }
+  return { type: 'export', op: data.op, id: data.id, name: data.name, data: data.data }
+}
+
+// A message a bundle with `capabilities` posted, checked: { type: 'ready' | 'action' | 'input' |
+// 'status' | 'player' | 'fullscreen' | 'export', ... }, or { type: 'drop', why } for anything
+// malformed, which the shell drops with a warning.
+export function readUiMessage(data, capabilities = []) {
   if (!data || typeof data !== 'object') return drop('not an object')
   switch (data.type) {
     case 'ready':
@@ -128,6 +150,11 @@ export function readUiMessage(data) {
     case 'fullscreen':
       if (typeof data.on !== 'boolean') return drop('fullscreen on is not a boolean')
       return { type: 'fullscreen', on: data.on }
+    case 'export':
+      if (!capabilities.includes('export')) {
+        return drop('export from a bundle without the capability')
+      }
+      return readExport(data)
     default:
       return drop(`unknown type ${String(data.type).slice(0, 40)}`)
   }

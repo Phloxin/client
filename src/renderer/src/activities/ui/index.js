@@ -1,7 +1,8 @@
 // The activity UIs this client ships, by the server's activity id. Each is plain HTML, JS and CSS
 // with no build step, read here as text and inlined into the frame's srcdoc
 // (lib/activities/bridge.js) until the server's asset origin exists. A bundle may have
-// capabilities: 'player' lets it drive the video surface the shell hosts under its frame.
+// capabilities: 'player' lets it drive the video surface the shell hosts under its frame; 'export'
+// lets it save a PNG it made or share it to the room's channel.
 
 import { buildSrcdoc } from '../../lib/activities/bridge.js'
 import baseCss from './shared/base.css?raw'
@@ -10,6 +11,8 @@ import roomJs from './shared/room.js?raw'
 import seatsJs from './shared/seats.js?raw'
 import duelJs from './shared/duel.js?raw'
 import playerJs from './shared/player.js?raw'
+import casinoCss from './shared/casino.css?raw'
+import cardsJs from './shared/cards.js?raw'
 import tttHtml from './tic_tac_toe/index.html?raw'
 import tttCss from './tic_tac_toe/style.css?raw'
 import tttJs from './tic_tac_toe/main.js?raw'
@@ -29,6 +32,21 @@ import wtJs from './watch_together/main.js?raw'
 import wtSyncJs from './watch_together/sync.js?raw'
 import wtIconsJs from './watch_together/icons.js?raw'
 import wtSceneJs from './watch_together/scene.js?raw'
+import bjHtml from './blackjack/index.html?raw'
+import bjCss from './blackjack/style.css?raw'
+import bjJs from './blackjack/main.js?raw'
+import pkHtml from './poker/index.html?raw'
+import pkCss from './poker/style.css?raw'
+import pkJs from './poker/main.js?raw'
+import wbHtml from './whiteboard/index.html?raw'
+import wbCss from './whiteboard/style.css?raw'
+import wbNetJs from './whiteboard/net.js?raw'
+import wbIconsJs from './whiteboard/icons.js?raw'
+import wbStampsJs from './whiteboard/stamps.js?raw'
+import wbEngineJs from './whiteboard/engine.js?raw'
+import wbBoardJs from './whiteboard/board.js?raw'
+import wbWidgetsJs from './whiteboard/widgets.js?raw'
+import wbJs from './whiteboard/main.js?raw'
 
 // Every shared file a bundle may load; each bundle's index.html names the ones it uses.
 const SHARED = {
@@ -37,7 +55,9 @@ const SHARED = {
   '../shared/room.js': roomJs,
   '../shared/seats.js': seatsJs,
   '../shared/duel.js': duelJs,
-  '../shared/player.js': playerJs
+  '../shared/player.js': playerJs,
+  '../shared/casino.css': casinoCss,
+  '../shared/cards.js': cardsJs
 }
 
 const BUNDLES = {
@@ -59,6 +79,23 @@ const BUNDLES = {
       'main.js': wtJs
     },
     capabilities: ['player']
+  },
+  blackjack: { html: bjHtml, files: { ...SHARED, 'style.css': bjCss, 'main.js': bjJs } },
+  poker: { html: pkHtml, files: { ...SHARED, 'style.css': pkCss, 'main.js': pkJs } },
+  whiteboard: {
+    html: wbHtml,
+    files: {
+      ...SHARED,
+      'style.css': wbCss,
+      'net.js': wbNetJs,
+      'icons.js': wbIconsJs,
+      'stamps.js': wbStampsJs,
+      'engine.js': wbEngineJs,
+      'board.js': wbBoardJs,
+      'widgets.js': wbWidgetsJs,
+      'main.js': wbJs
+    },
+    capabilities: ['export']
   }
 }
 
@@ -74,8 +111,11 @@ export function activitySrcdoc(activityId) {
   return built.get(activityId)
 }
 
+// One array per activity, so a hook may depend on it.
+const NO_CAPABILITIES = Object.freeze([])
+
 // What an activity's bundle may do beyond the bridge, [] for none or no bundle.
 export function activityCapabilities(activityId) {
-  if (!Object.hasOwn(BUNDLES, activityId)) return []
-  return BUNDLES[activityId].capabilities ?? []
+  if (!Object.hasOwn(BUNDLES, activityId)) return NO_CAPABILITIES
+  return BUNDLES[activityId].capabilities ?? NO_CAPABILITIES
 }

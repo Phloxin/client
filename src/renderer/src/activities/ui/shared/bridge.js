@@ -1,13 +1,15 @@
 // The bundle's side of the activity bridge: one object, `bridge`, for the bundle's main.js. The
-// shell posts init, state, volatile, clients, ok, rejected, theme, closed and connection; this
-// decodes state and volatile payloads (JSON bytes), applies the theme, and keeps each action's
+// shell posts init, state, volatile, clients, ok, rejected, theme, closed, connection and export;
+// this decodes state and volatile payloads (JSON bytes), applies the theme, and keeps each action's
 // promise until its ok has come and state at least that new has been seen, or until it is
-// rejected.
+// rejected, and each export's until the shell answers it.
 ;(() => {
   const decoder = new TextDecoder()
   const encoder = new TextEncoder()
   const pending = new Map()
+  const exporting = new Map()
   let nextId = 1
+  let nextExportId = 1
   let seenGeneration = -1
   let busy = false
 
@@ -101,6 +103,14 @@
       case 'connection':
         handlers.connection(m.state)
         break
+      case 'export': {
+        const p = exporting.get(m.id)
+        if (!p) break
+        exporting.delete(m.id)
+        if (m.ok === true) p.resolve()
+        else p.reject(typeof m.error === 'string' ? m.error : 'export_failed')
+        break
+      }
       default:
         break
     }
@@ -128,6 +138,16 @@
       return new Promise((resolve, reject) => {
         pending.set(id, { resolve, reject, okGeneration: null })
         post({ type: 'action', id, data })
+      })
+    },
+    // Saves (op 'save') or shares to the room's channel (op 'share') a PNG the bundle made, for a
+    // bundle with the export capability. Resolves when done, rejects with the shell's reason.
+    exportImage(op, name, data) {
+      const id = nextExportId
+      nextExportId = nextExportId >= 4294967295 ? 1 : nextExportId + 1
+      return new Promise((resolve, reject) => {
+        exporting.set(id, { resolve, reject })
+        post({ type: 'export', op, id, name, data })
       })
     },
     // Sends a value's JSON as an input datagram.
