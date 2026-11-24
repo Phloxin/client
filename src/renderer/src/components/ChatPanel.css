@@ -957,6 +957,36 @@ a.chat-embed-title:hover {
 }
 
 /* YouTube click-to-play facade. */
+/* Watch together on a YouTube embed, in the look of an activity card's Join. */
+.chat-embed-watch {
+  display: block;
+  margin-top: 8px;
+  padding: 3px 10px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-family: var(--font-family-primary);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  cursor: pointer;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease;
+}
+
+.chat-embed-watch:hover:not(:disabled) {
+  border-color: var(--color-primary);
+}
+
+.chat-embed-watch:disabled {
+  cursor: default;
+}
+
+.chat-embed-watch[data-state='busy'] {
+  opacity: 0.5;
+}
+
 .chat-embed-play {
   position: relative;
   display: block;
@@ -1216,7 +1246,8 @@ button.chat-reply-preview:focus-visible {
 }
 
 /* Body of a message whose only content was a file that has since been deleted. */
-.chat-message-removed {
+.chat-message-removed,
+.chat-message-unsupported {
   font-size: var(--font-size-md);
   font-style: italic;
   color: var(--color-text-muted);

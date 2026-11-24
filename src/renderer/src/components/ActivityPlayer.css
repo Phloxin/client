@@ -1,0 +1,16 @@
+/* The video surface under a `player` bundle's frame: placed where the bundle's screen is,
+   taking no input. */
+
+.activity-player {
+  position: absolute;
+  overflow: hidden;
+  background: #000;
+  pointer-events: none;
+}
+
+.activity-player iframe {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}

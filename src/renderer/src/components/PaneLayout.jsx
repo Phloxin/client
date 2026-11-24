@@ -135,7 +135,11 @@ function PaneLayout({ layout, panes, menuItems, dispatch }) {
   }
 
   // Pointer pressed on a tab: track it until release; past the threshold it
-  // is a drag. Escape, a lost pointer or a lost window cancel it.
+  // is a drag. Escape, a lost pointer or a lost window cancel it. From the
+  // press on, iframes (activities, embedded players) take no pointer input:
+  // over one, the moves and the release would go to its document instead of
+  // this window, and the drag would hang with the ghost stuck where it last
+  // saw the pointer.
   const startDrag = (e, tab, paneId) => {
     if (sessionRef.current) return
     const rect = e.currentTarget.getBoundingClientRect()
@@ -159,6 +163,7 @@ function PaneLayout({ layout, panes, menuItems, dispatch }) {
       window.removeEventListener('pointercancel', onCancel)
       window.removeEventListener('blur', onCancel)
       window.removeEventListener('keydown', onKey, true)
+      document.documentElement.classList.remove('tab-pressed')
       sessionRef.current = null
       if (!s.started) return
       document.documentElement.classList.remove('tab-dragging')
@@ -169,6 +174,12 @@ function PaneLayout({ layout, panes, menuItems, dispatch }) {
     }
     const onMove = (ev) => {
       if (ev.pointerId !== s.pointerId) return
+      // A move with no button held means the release went somewhere this
+      // window never heard about; drop the drag rather than carry it on.
+      if (ev.pointerType === 'mouse' && (ev.buttons & 1) === 0) {
+        finish(false)
+        return
+      }
       if (!s.started) {
         if (Math.hypot(ev.clientX - s.x0, ev.clientY - s.y0) < DRAG_THRESHOLD) return
         s.started = true
@@ -206,6 +217,7 @@ function PaneLayout({ layout, panes, menuItems, dispatch }) {
     }
     s.cancel = onCancel
     sessionRef.current = s
+    document.documentElement.classList.add('tab-pressed')
     window.addEventListener('pointermove', onMove)
     window.addEventListener('pointerup', onUp)
     window.addEventListener('pointercancel', onCancel)

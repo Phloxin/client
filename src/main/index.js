@@ -44,8 +44,15 @@ import {
 } from './diagnostics'
 
 // `electron-vite dev` runs beside the installed app: its own userData keeps the
-// settings, session, and single-instance lock apart
-if (process.env['ELECTRON_RENDERER_URL']) app.setPath('userData', `${app.getPath('userData')}-dev`)
+// settings, session, and single-instance lock apart. PYLON_PROFILE=<name> gives a
+// further dev copy its own userData (`-dev-<name>`), so two dev clients run at once.
+if (process.env['ELECTRON_RENDERER_URL']) {
+  const profile = process.env.PYLON_PROFILE?.trim()
+  if (profile && !/^[A-Za-z0-9_-]+$/.test(profile)) {
+    throw new Error(`PYLON_PROFILE="${profile}" may only contain letters, digits, - and _`)
+  }
+  app.setPath('userData', `${app.getPath('userData')}-dev${profile ? `-${profile}` : ''}`)
+}
 
 // Install before startup settings are read so early persistence/configuration
 // failures are retained in packaged builds.
@@ -1008,6 +1015,31 @@ app.whenReady().then(() => {
         filename: filename || basename(target.pathname) || 'download',
         error: err
       })
+      return { ok: false, error: err.message }
+    }
+  })
+
+  // Save a PNG an activity made (the whiteboard's picture) to a user-chosen location. The bytes
+  // and name are checked again here, since this writes to disk.
+  const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+  ipcMain.handle('save-png', async (event, { name, data } = {}) => {
+    const isPng =
+      data instanceof Uint8Array &&
+      data.length <= 8 * 1024 * 1024 &&
+      PNG_SIGNATURE.every((byte, i) => data[i] === byte)
+    const plainName =
+      typeof name === 'string' && /^[A-Za-z0-9][A-Za-z0-9 ._-]{0,95}\.png$/.test(name)
+    if (!isPng || !plainName) return { ok: false, error: 'Not a PNG to save' }
+    try {
+      const { canceled, filePath } = await dialog.showSaveDialog(
+        BrowserWindow.fromWebContents(event.sender),
+        { defaultPath: name, filters: [{ name: 'PNG image', extensions: ['png'] }] }
+      )
+      if (canceled || !filePath) return { ok: false, canceled: true }
+      writeFileSync(filePath, data)
+      return { ok: true, filePath }
+    } catch (err) {
+      console.error('[save-png] Saving failed:', err)
       return { ok: false, error: err.message }
     }
   })

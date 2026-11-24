@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="../shared/base.css" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main class="game" id="game" hidden>
+      <header class="seats"></header>
+      <section class="board-area">
+        <div class="board" id="board"></div>
+      </section>
+      <footer class="footer">
+        <div class="status-row">
+          <span class="status" id="status"></span>
+          <span class="watching" id="watching" hidden>Watching</span>
+        </div>
+        <div class="controls" id="controls" hidden>
+          <button class="btn" id="draw" type="button">Offer draw</button>
+          <button class="btn" id="resign" type="button">Resign</button>
+        </div>
+        <p class="notice" id="notice" role="status"></p>
+        <button class="btn primary" id="action" type="button" hidden>Rematch</button>
+      </footer>
+    </main>
+    <script src="../shared/bridge.js"></script>
+    <script src="../shared/room.js"></script>
+    <script src="../shared/seats.js"></script>
+    <script src="../shared/duel.js"></script>
+    <script src="pieces.js"></script>
+    <script src="main.js"></script>
+  </body>
+</html>

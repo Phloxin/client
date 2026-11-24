@@ -16,7 +16,8 @@ export const PERMISSIONS = [
   ['MANAGE_ROLES', 'Manage Permissions', 'Manage channel permission overwrites'],
   ['SPEAK', 'Speak', 'Speak in the voice channel'],
   ['STREAM', 'Stream', 'Stream / Go Live in voice'],
-  ['DEAFEN_MEMBERS', 'Deafen Members', 'Server-deafen members in voice']
+  ['DEAFEN_MEMBERS', 'Deafen Members', 'Server-deafen members in voice'],
+  ['CREATE_ACTIVITY', 'Start Activities', 'Open activity rooms in the channel']
 ]
 
 // Bit index per flag, matching the server's `1 << n`.
@@ -38,6 +39,7 @@ const BITS = {
   STREAM: 14,
   DEAFEN_MEMBERS: 15,
   CREATE_INVITES: 19,
+  CREATE_ACTIVITY: 20,
   ADMINISTRATOR: 62
 }
 

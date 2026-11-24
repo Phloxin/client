@@ -1,0 +1,149 @@
+/* The composer's + menu and its Activities submenu. The menus' chrome is the shared
+   client-context-menu look (VoiceChannel.css); this only lays them side by side above the
+   button. */
+
+.composer-plus {
+  position: relative;
+  display: flex;
+}
+
+.composer-plus .chat-icon-btn.active {
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.composer-plus-menus {
+  position: fixed;
+  z-index: 1000;
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.composer-plus-menus .client-context-menu {
+  position: static;
+}
+
+.client-context-menu.composer-plus-menu {
+  min-width: 170px;
+  padding: var(--spacing-xs);
+}
+
+.composer-plus-menu .client-context-menu-item.active {
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.composer-plus-menus .client-context-menu-item:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.composer-plus-menus .client-context-menu-item:disabled:hover {
+  background: transparent;
+  color: var(--color-text-secondary);
+}
+
+.client-context-menu.composer-activities-menu {
+  min-width: 240px;
+  max-width: min(320px, calc(100vw - 16px));
+  max-height: min(420px, calc(100vh - 120px));
+  overflow-y: auto;
+  padding: var(--spacing-xs);
+}
+
+.composer-menu-heading {
+  padding: 6px 6px 2px;
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-text-tertiary);
+}
+
+.composer-room-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: 6px;
+  border-radius: var(--radius-sm);
+}
+
+.composer-room-row:hover {
+  background: var(--color-surface);
+}
+
+.composer-room-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.composer-room-name {
+  overflow: hidden;
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.composer-room-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  min-width: 0;
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-xs);
+}
+
+.composer-room-creator {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.composer-room-count {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 3px;
+}
+
+.composer-room-join {
+  flex: none;
+  padding: 4px 10px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-background-mute);
+  color: var(--color-text);
+  font-family: var(--font-family-primary);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  cursor: pointer;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease;
+}
+
+.composer-room-join:hover {
+  border-color: var(--color-primary);
+}
+
+.composer-activity-item {
+  justify-content: space-between;
+}
+
+.composer-activity-name {
+  overflow: hidden;
+  color: var(--color-text);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.composer-activity-players {
+  flex: none;
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-xs);
+}

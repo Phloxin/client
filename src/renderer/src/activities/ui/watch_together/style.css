@@ -1,0 +1,1060 @@
+/* Watch Together: the illustrated house of scene.js, seen from the back,
+   fitted to the house area, with the viewers' portraits, the seats' hit targets, the control bar
+   and the screen laid over it. The house does not follow the client's theme; the queue panel
+   does. The screen is a hole: the shell's video sits under this frame, so over it nothing paints
+   but the closed curtains, the pause scrim and the screen's texts. */
+
+:root {
+  --house: #14090b;
+  --curtain: #7a1420;
+  --curtain-fold: #5a0e17;
+  --gold: #c9a227;
+  --house-text: #f3e9d8;
+  /* Around the scene, the arch's darkest wood above and the carpet below. */
+  --fill-wood: #36170b;
+  --fill-carpet: #1d4445;
+}
+
+html,
+body {
+  background: transparent;
+}
+
+.wt {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  color: var(--house-text);
+}
+
+.wt[hidden] {
+  display: none;
+}
+
+.wt.column {
+  grid-template-columns: minmax(0, 1fr) 300px;
+}
+
+.house {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  container-type: inline-size;
+}
+
+/* ── The scene and what fills around it ──────────────────────────────────── */
+
+.fill {
+  position: absolute;
+  background: var(--fill-wood);
+}
+
+.fill.bottom {
+  background: var(--fill-carpet);
+}
+
+.scene-box {
+  position: absolute;
+}
+
+.scene-host,
+.scene-host svg {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.screen {
+  position: absolute;
+  z-index: 2;
+  overflow: hidden;
+}
+
+/* Nothing loaded, an error or a stall: black, not the video. */
+.screen.opaque {
+  background: #000;
+}
+
+.screen.can-control {
+  cursor: pointer;
+}
+
+/* The pause scrim, with a large pause glyph. */
+.scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.7);
+  color: rgb(243 233 216 / 0.9);
+}
+
+.scrim[hidden] {
+  display: none;
+}
+
+.scrim .icon {
+  width: 22%;
+  height: auto;
+  aspect-ratio: 1;
+}
+
+/* Drawn across the screen through the lead-in, open otherwise. */
+.drape {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 1;
+  width: 50.5%;
+  background: repeating-linear-gradient(90deg, var(--curtain) 0 7px, var(--curtain-fold) 7px 11px);
+  transition: transform 0.9s cubic-bezier(0.6, 0, 0.3, 1);
+  pointer-events: none;
+}
+
+.drape.left {
+  left: 0;
+  transform: translateX(-101%);
+}
+
+.drape.right {
+  right: 0;
+  transform: translateX(101%);
+}
+
+.screen.closed .drape {
+  transform: none;
+}
+
+.countdown {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  color: var(--gold);
+  font-size: calc(var(--screen-h) * 0.34);
+  font-weight: 700;
+  text-shadow: 0 2px 12px rgb(0 0 0 / 0.6);
+  pointer-events: none;
+}
+
+.countdown:empty {
+  display: none;
+}
+
+.wt[data-view='theatre'] .drape,
+.wt[data-view='theatre'] .countdown {
+  display: none;
+}
+
+.screen-msg {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px;
+  text-align: center;
+}
+
+.screen-msg[hidden] {
+  display: none;
+}
+
+.screen-title {
+  font-size: clamp(13px, calc(var(--screen-h) * 0.09), 22px);
+  font-weight: 600;
+}
+
+.screen-sub {
+  color: color-mix(in srgb, var(--house-text) 70%, transparent);
+  font-size: clamp(11px, calc(var(--screen-h) * 0.06), 15px);
+}
+
+.screen-msg .btn,
+.seat-card .btn {
+  border-color: var(--gold);
+  background: transparent;
+  color: var(--house-text);
+}
+
+.screen-msg .btn.primary {
+  background: var(--gold);
+  color: var(--house);
+}
+
+/* ── The control bar ─────────────────────────────────────────────────────── */
+
+/* Along the stage's front edge in the theatre; layout() sets its place and size. */
+.bar-slot {
+  position: absolute;
+  z-index: 3;
+  transform: translateX(-50%);
+}
+
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  height: 32px;
+  font-size: 12px;
+}
+
+.wt[data-view='theatre'] .bar {
+  height: 100%;
+  padding: 0 6px;
+  border: 1px solid rgb(201 162 39 / 0.35);
+  border-radius: 6px;
+  background: rgb(14 10 12 / 0.92);
+  box-shadow: 0 4px 14px rgb(0 0 0 / 0.5);
+}
+
+.wt[data-view='theatre'] .bar .icon-btn,
+.wt[data-view='theatre'] .bar .speed-btn,
+.wt[data-view='theatre'] .bar .emoji {
+  height: min(28px, calc(var(--bar-h) - 6px));
+  min-width: min(28px, calc(var(--bar-h) - 6px));
+}
+
+.icon-btn,
+.speed-btn,
+.emoji {
+  display: grid;
+  flex: none;
+  place-items: center;
+  height: 28px;
+  min-width: 28px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.icon-btn:hover:not(:disabled),
+.speed-btn:hover:not(.inert),
+.emoji:hover {
+  background: rgb(255 255 255 / 0.1);
+}
+
+.icon-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.icon-btn.on {
+  color: var(--gold);
+}
+
+.icon-btn:focus-visible,
+.speed-btn:focus-visible,
+.emoji:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 1px;
+}
+
+.icon {
+  width: 18px;
+  height: 18px;
+}
+
+/* A press on a button's icon is a press on the button. */
+button .icon {
+  pointer-events: none;
+}
+
+.play-wrap {
+  position: relative;
+  display: inline-grid;
+}
+
+.lock-badge {
+  position: absolute;
+  right: -1px;
+  bottom: 1px;
+  display: grid;
+  place-items: center;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--house);
+  color: var(--gold);
+  pointer-events: none;
+}
+
+.lock-badge[hidden] {
+  display: none;
+}
+
+.lock-badge .icon {
+  width: 10px;
+  height: 10px;
+}
+
+.time {
+  flex: none;
+  padding: 0 4px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.scrub,
+.volume {
+  --fill: 0%;
+  height: 4px;
+  margin: 0 4px;
+  border-radius: 2px;
+  background:
+    linear-gradient(var(--gold), var(--gold)) 0 0 / var(--fill) 100% no-repeat,
+    rgb(255 255 255 / 0.22);
+  appearance: none;
+  cursor: pointer;
+}
+
+/* A small basis, so the bar's minimum is its buttons and a short scrub bar. */
+.scrub {
+  flex: 1 1 80px;
+  width: 80px;
+  min-width: 36px;
+}
+
+.scrub[hidden] {
+  display: none;
+}
+
+.scrub:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.scrub::-webkit-slider-thumb,
+.volume::-webkit-slider-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--house-text);
+  appearance: none;
+}
+
+.scrub:disabled::-webkit-slider-thumb {
+  background: transparent;
+}
+
+.volume-group {
+  display: flex;
+  flex: none;
+  align-items: center;
+}
+
+.volume {
+  width: 64px;
+  background: rgb(255 255 255 / 0.22);
+}
+
+.speed-btn {
+  min-width: 36px;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.speed-btn.inert {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.menu-anchor {
+  position: relative;
+  display: inline-grid;
+}
+
+.menu-anchor[hidden] {
+  display: none;
+}
+
+.menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  border: 1px solid rgb(201 162 39 / 0.5);
+  border-radius: 8px;
+  background: #1f1012;
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.5);
+}
+
+.menu[hidden] {
+  display: none;
+}
+
+.menu-item {
+  padding: 4px 14px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  cursor: pointer;
+}
+
+.menu-item:hover,
+.menu-item.on {
+  background: rgb(201 162 39 / 0.2);
+}
+
+.react-menu {
+  flex-direction: row;
+}
+
+/* Speed, the lock and the reactions, above the "more" button. */
+.more-menu {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  width: max-content;
+  max-width: min(260px, 90vw);
+}
+
+.more-menu .speed-anchor .menu {
+  right: auto;
+  left: 0;
+}
+
+.reactions-row {
+  display: flex;
+  flex: none;
+  margin-left: 6px;
+}
+
+.reactions-row[hidden] {
+  display: none;
+}
+
+.more-menu .reactions-row {
+  flex-wrap: wrap;
+  margin-left: 0;
+}
+
+.emoji {
+  font-size: 16px;
+  line-height: 1;
+}
+
+/* A narrow house: the bar is one row, with no time and no volume slider. */
+.wt.narrow[data-view='theatre'] .time,
+.wt.narrow[data-view='theatre'] .volume {
+  display: none;
+}
+
+@container (max-width: 479px) {
+  .volume {
+    display: none;
+  }
+
+  .time {
+    padding: 0 2px;
+    font-size: 11px;
+  }
+
+  .icon-btn,
+  .speed-btn {
+    min-width: 24px;
+    padding: 0 2px;
+  }
+
+  .speed-btn {
+    min-width: 30px;
+  }
+
+  .bar {
+    gap: 0;
+  }
+
+  .scrub {
+    min-width: 20px;
+  }
+
+  .wt:not([data-view='theatre']) .bar {
+    padding-right: 2px;
+    padding-left: 2px;
+  }
+}
+
+/* ── Seats: portraits and hit targets at the scene's anchors ─ */
+
+.chairs {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.chair {
+  position: absolute;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.chair[hidden] {
+  display: none;
+}
+
+.chair.empty:hover:not(:disabled) {
+  background: rgb(255 213 74 / 0.18);
+  box-shadow: 0 0 0 2px rgb(255 213 74 / 0.75);
+}
+
+.chair:disabled {
+  cursor: default;
+}
+
+.chair:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 1px;
+}
+
+.chair .avatar {
+  width: 100%;
+  height: 100%;
+  background: #3a2326;
+  box-shadow: 0 0 0 max(1px, calc(var(--d) * 0.05)) #f1e2bd;
+  color: #fff;
+  font-size: calc(var(--d) * 0.5);
+}
+
+/* The viewer's own: the gold ring. */
+.chair.mine .avatar {
+  box-shadow:
+    0 0 0 max(2px, calc(var(--d) * 0.117)) #ffd54a,
+    0 0 0 max(3px, calc(var(--d) * 0.2)) rgb(255 213 74 / 0.3);
+}
+
+/* Inside the leave grace. */
+.chair.dimmed .avatar {
+  opacity: 0.45;
+}
+
+/* The leader's crown, on the portrait's top edge. */
+.chair .crown {
+  position: absolute;
+  top: calc(var(--d) * -0.24);
+  left: 50%;
+  display: grid;
+  width: calc(var(--d) * 0.55);
+  height: calc(var(--d) * 0.4);
+  color: #ffd54a;
+  filter: drop-shadow(0 0 1px #4a2e04);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.chair .crown .icon {
+  width: 100%;
+  height: 100%;
+}
+
+.chair .warn {
+  position: absolute;
+  right: calc(var(--d) * -0.12);
+  bottom: calc(var(--d) * -0.08);
+  display: grid;
+  place-items: center;
+  width: calc(var(--d) * 0.45);
+  height: calc(var(--d) * 0.45);
+  border-radius: 50%;
+  background: #f2c230;
+  color: var(--house);
+  pointer-events: none;
+}
+
+.chair .warn .icon {
+  width: 75%;
+  height: 75%;
+}
+
+/* Those with no seat on show, under the scene: "+N standing", or "+N more" in the crop. */
+.standing {
+  position: absolute;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: #e9dcc4;
+  font-size: 12px;
+}
+
+.standing[hidden] {
+  display: none;
+}
+
+.stack {
+  display: flex;
+}
+
+.stack .avatar {
+  width: 20px;
+  height: 20px;
+  margin-left: -6px;
+  border: 1.5px solid #120807;
+  background: #3a2326;
+  color: #fff;
+  font-size: 10px;
+}
+
+.stack .avatar:first-child {
+  margin-left: 0;
+}
+
+.standing-count {
+  color: color-mix(in srgb, var(--house-text) 75%, transparent);
+}
+
+.seat-card {
+  position: fixed;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  padding: 8px 12px;
+  border: 1px solid var(--gold);
+  border-radius: 8px;
+  background: #1f1012;
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.55);
+}
+
+.seat-card[hidden] {
+  display: none;
+}
+
+.seat-card-name {
+  max-width: 100%;
+  overflow: hidden;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* ── Reactions in flight ─────────────────────────────────────────────────── */
+
+.fly {
+  position: fixed;
+  inset: 0;
+  z-index: 4;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.flying {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  transform: translate(-50%, -100%);
+}
+
+.flying-emoji {
+  font-size: 24px;
+  line-height: 1;
+}
+
+.flying .avatar {
+  width: 22px;
+  height: 22px;
+  border: 1px solid rgb(0 0 0 / 0.4);
+  background: #3a2326;
+  color: var(--house-text);
+  font-size: 11px;
+}
+
+/* ── Expanded and fullscreen ──────────────────────────────── */
+
+.wt:not([data-view='theatre']) .scene-box,
+.wt:not([data-view='theatre']) .fill,
+.wt:not([data-view='theatre']) .standing {
+  display: none;
+}
+
+/* Black around the video, painted by the screen's own shadow so nothing covers the video. */
+.wt:not([data-view='theatre']) .screen {
+  box-shadow: 0 0 0 200vmax #000;
+}
+
+.wt:not([data-view='theatre']) .bar {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 3;
+  height: auto;
+  padding: 22px 8px 6px;
+  background: linear-gradient(transparent, rgb(0 0 0 / 0.78));
+  transition: opacity 0.25s;
+}
+
+.wt.bar-hidden:not([data-view='theatre']) .bar {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.wt.bar-hidden:not([data-view='theatre']) .screen {
+  cursor: none;
+}
+
+/* ── The queue panel: the client's theme ─────────────────────────────────── */
+
+.queue {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  padding: 10px;
+  overflow-y: auto;
+  border-left: 1px solid var(--color-border);
+  background: var(--color-background-soft);
+  color: var(--color-text);
+  user-select: text;
+}
+
+/* A drawer over the right edge when the frame is narrow, and always outside the theatre. */
+.wt:not(.column) .queue {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(300px, 100%);
+  box-shadow: -8px 0 24px rgb(0 0 0 / 0.4);
+  transform: translateX(100%);
+  visibility: hidden;
+  transition:
+    transform 0.2s ease,
+    visibility 0.2s;
+}
+
+.wt:not(.column) .queue.open {
+  transform: none;
+  visibility: visible;
+}
+
+.queue-close {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+}
+
+.wt.column .queue-close {
+  display: none;
+}
+
+.section-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.count {
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--color-background-mute);
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  letter-spacing: 0;
+}
+
+.now {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.now[hidden] {
+  display: none;
+}
+
+.now-body {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.now-body .thumb {
+  width: 96px;
+  height: 54px;
+}
+
+.now-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.vote-count {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.btn.on {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.add-row {
+  display: flex;
+  gap: 6px;
+}
+
+.add-row input {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--color-border-light);
+  border-radius: var(--border-radius-sm, 6px);
+  background: var(--color-background);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.add-row input:focus {
+  border-color: var(--color-primary);
+  outline: 0;
+}
+
+.add-row input:disabled {
+  opacity: 0.6;
+}
+
+.queue .icon-btn {
+  color: var(--color-text-secondary);
+}
+
+.queue .icon-btn:hover:not(:disabled) {
+  background: var(--color-background-mute);
+  color: var(--color-text);
+}
+
+.queue .icon-btn.on {
+  color: var(--color-primary);
+}
+
+.queue .icon-btn[hidden] {
+  display: none;
+}
+
+.add-msg {
+  min-height: 1em;
+  margin: -4px 0 0;
+  color: var(--color-danger);
+  font-size: 12px;
+}
+
+.add-msg:empty {
+  display: none;
+}
+
+.entries {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.entries[hidden] {
+  display: none;
+}
+
+.entry {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 4px;
+  border-radius: var(--border-radius-sm, 6px);
+}
+
+.entry:hover {
+  background: var(--color-background-mute);
+}
+
+.entry.dragging {
+  opacity: 0.5;
+}
+
+.entry.drop-before {
+  box-shadow: inset 0 2px 0 var(--color-primary);
+}
+
+.entry.drop-after {
+  box-shadow: inset 0 -2px 0 var(--color-primary);
+}
+
+.handle {
+  display: grid;
+  flex: none;
+  place-items: center;
+  color: var(--color-text-tertiary);
+  cursor: grab;
+  touch-action: none;
+}
+
+.handle .icon {
+  width: 16px;
+  height: 16px;
+}
+
+.thumb {
+  flex: none;
+  width: 64px;
+  height: 36px;
+  border-radius: 4px;
+  background: var(--color-background-mute);
+  object-fit: cover;
+}
+
+.entry-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.entry-title {
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: 13px;
+  line-height: 1.3;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.entry-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+}
+
+.adder {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+}
+
+.adder .avatar {
+  width: 16px;
+  height: 16px;
+  font-size: 9px;
+}
+
+.adder-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.entry-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+}
+
+.entry-actions .icon-btn {
+  height: 22px;
+  min-width: 22px;
+}
+
+.entry-actions .icon {
+  width: 15px;
+  height: 15px;
+}
+
+.btn.small {
+  padding: 2px 8px;
+  font-size: 12px;
+}
+
+#clear-btn {
+  align-self: flex-start;
+}
+
+.played-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.played-toggle .icon {
+  width: 14px;
+  height: 14px;
+}
+
+/* room.js's notice line: a rejected action, for 3 s. */
+.notice {
+  position: fixed;
+  top: 8px;
+  left: 50%;
+  z-index: 6;
+  max-width: calc(100% - 16px);
+  margin: 0;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: rgb(20 9 11 / 0.92);
+  color: #ff8a80;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.notice:empty {
+  display: none;
+}

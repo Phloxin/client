@@ -337,6 +337,55 @@ test('the closed stack is never persisted and starts over on reset and hydrate',
   assert.deepEqual(run(s, { type: 'hydrate', persisted: toPersisted(s) }).closed, [])
 })
 
+test('an activity tab opens, pins and focuses like any other tab', () => {
+  let s = pinned(createLayout(), 'a')
+  s = run(s, open('activity', 'r1', { pinned: true }))
+  assert.deepEqual(view(s), [['chat:a^', 'activity:r1^*']])
+  s = run(s, { type: 'activate', tabId: idOf(s, 'chat', 'a') }, open('activity', 'r1'))
+  assert.deepEqual(view(s), [['chat:a^', 'activity:r1^*']])
+})
+
+test('closing activity tabs pushes nothing, in every close', () => {
+  let s = pinned(createLayout(), 'a', 'b')
+  s = run(s, open('activity', 'r1', { pinned: true }), open('activity', 'r2', { pinned: true }))
+  s = run(s, { type: 'close', tabId: idOf(s, 'activity', 'r1') })
+  assert.deepEqual(view(s), [['chat:a^', 'chat:b^', 'activity:r2^*']])
+  assert.deepEqual(s.closed, [])
+  assert.equal(canReopen(s), false)
+  s = run(s, open('activity', 'r3', { pinned: true }))
+  s = run(s, { type: 'closeToRight', tabId: idOf(s, 'chat', 'b') })
+  assert.deepEqual(view(s), [['chat:a^', 'chat:b^*']])
+  assert.deepEqual(s.closed, [])
+  s = run(s, open('activity', 'r4', { pinned: true }))
+  s = run(s, { type: 'closeOthers', tabId: idOf(s, 'chat', 'a') })
+  assert.deepEqual(closedOf(s), ['chat:b@1'])
+  // Reopen skips nothing it should not: only the chat is on the stack.
+  s = run(s, { type: 'reopen' })
+  assert.deepEqual(view(s), [['chat:a^', 'chat:b^*']])
+  assert.deepEqual(s.closed, [])
+})
+
+test('activity tabs are never saved and never restored', () => {
+  let s = pinned(createLayout(), 'a')
+  s = run(s, open('activity', 'r1', { pinned: true }))
+  assert.deepEqual(toPersisted(s).panes, [{ tabs: [{ kind: 'chat', ref: 'a' }], active: null }])
+  const h = run(createLayout(), {
+    type: 'hydrate',
+    persisted: {
+      panes: [
+        {
+          tabs: [
+            { kind: 'activity', ref: 'r1' },
+            { kind: 'chat', ref: 'a' }
+          ],
+          active: 0
+        }
+      ]
+    }
+  })
+  assert.deepEqual(view(h), [['chat:a^*']])
+})
+
 test('reopen discards every entry it skips, reopening nothing when none is left', () => {
   let s = pinned(createLayout(), 'a', 'b', 'c', 'd')
   for (const ref of ['a', 'b', 'c']) s = run(s, { type: 'close', tabId: idOf(s, 'chat', ref) })

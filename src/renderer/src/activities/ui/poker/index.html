@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="../shared/base.css" />
+    <link rel="stylesheet" href="../shared/casino.css" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main class="game casino" id="game" hidden>
+      <section class="table-area">
+        <div class="table pk" id="table">
+          <div class="felt"></div>
+          <div class="centre">
+            <div class="pot" id="pot">
+              <span class="chips" id="pot-chips"></span>
+              <span class="pill pot-total" id="pot-total" hidden></span>
+            </div>
+            <div class="board-row">
+              <span class="deck" id="deck"><span class="back"></span></span>
+              <div class="board" id="board">
+                <span class="slot"></span>
+                <span class="slot"></span>
+                <span class="slot"></span>
+                <span class="slot"></span>
+                <span class="slot"></span>
+              </div>
+            </div>
+            <div class="table-info" id="table-info"></div>
+          </div>
+          <div class="pods" id="pods"></div>
+          <div class="fx" id="fx"></div>
+        </div>
+      </section>
+      <footer class="dock">
+        <div class="bar">
+          <div class="bar-left">
+            <button class="btn quiet" id="leave" type="button" hidden>Leave seat</button>
+          </div>
+          <div class="status-row">
+            <span class="status" id="status"></span>
+            <span class="watching" id="watching" hidden>Watching</span>
+          </div>
+          <div class="bar-right">
+            <button class="btn primary" id="start" type="button" hidden>Start</button>
+            <button class="btn primary" id="rebuy" type="button" hidden>Rebuy</button>
+          </div>
+        </div>
+        <p class="notice" id="notice" role="status"></p>
+        <div class="actions" id="actions" hidden>
+          <div class="turn" id="turn" hidden>
+            <div class="raise" id="raise">
+              <div class="presets" id="presets">
+                <button class="btn" type="button" data-preset="min">Min</button>
+                <button class="btn" type="button" data-preset="half">½ pot</button>
+                <button class="btn" type="button" data-preset="pot">Pot</button>
+                <button class="btn" type="button" data-preset="max">All in</button>
+              </div>
+              <div class="raise-row">
+                <button class="btn step" id="raise-less" type="button" aria-label="Lower the raise">
+                  −
+                </button>
+                <input class="raise-range" id="raise-range" type="range" aria-label="Raise to" />
+                <button class="btn step" id="raise-more" type="button" aria-label="Raise more">
+                  +
+                </button>
+              </div>
+            </div>
+            <div class="turn-buttons">
+              <button class="btn act fold" id="fold" type="button">Fold</button>
+              <button class="btn act" id="call" type="button">Check</button>
+              <button class="btn act primary" id="raise-btn" type="button">Raise</button>
+            </div>
+          </div>
+        </div>
+        <label class="reveal" id="reveal-row" hidden>
+          <input type="checkbox" id="reveal" />
+          <span>Show my cards to spectators</span>
+        </label>
+      </footer>
+    </main>
+    <script src="../shared/bridge.js"></script>
+    <script src="../shared/room.js"></script>
+    <script src="../shared/cards.js"></script>
+    <script src="main.js"></script>
+  </body>
+</html>

@@ -15,8 +15,12 @@ export const TAB_KINDS = [
   'files',
   'bans',
   'server-admin',
-  'connection-info'
+  'connection-info',
+  'activity'
 ]
+// An activity tab is a live room session (ref: the room id), and closing it leaves the room, so
+// it is never saved, never restored and never reopened.
+const isActivity = (tab) => tab?.kind === 'activity'
 export const MAX_PANES = 2
 export const MIN_SPLIT_RATIO = 0.25
 export const MAX_SPLIT_RATIO = 0.75
@@ -170,14 +174,16 @@ export function moveOrder(state, { tabId, toPaneId, index }) {
   return pane ? placeIn(state, pane, tabId, index).tabIds : []
 }
 
-// Pinned tabs per pane (the connected group and previews excluded) with the
-// index of the active one (null when that tab is not saved), plus the split,
-// as saved per server host.
+// Pinned tabs per pane (the connected group, activity tabs and previews
+// excluded) with the index of the active one (null when that tab is not saved),
+// plus the split, as saved per server host.
 export function toPersisted(state) {
   return {
     panes: state.panes
       .map((p) => {
-        const ids = p.tabIds.filter((id) => !isGroupTab(state, id) && state.tabs[id].pinned)
+        const ids = p.tabIds.filter(
+          (id) => !isGroupTab(state, id) && !isActivity(state.tabs[id]) && state.tabs[id].pinned
+        )
         const at = ids.indexOf(p.activeTabId)
         return {
           tabs: ids.map((id) => ({ kind: state.tabs[id].kind, ref: state.tabs[id].ref })),
@@ -338,7 +344,7 @@ function unpin(state, tabId) {
 
 // A user's close: remove `ids` and push them onto the closed stack in strip
 // order, each with its index at the moment it goes, so reopening them last
-// first puts every one back where it was.
+// first puts every one back where it was. Activity tabs go without an entry.
 function closeTabs(state, ids) {
   const gone = new Set(ids.filter((id) => state.tabs[id]))
   if (!gone.size) return state
@@ -348,7 +354,8 @@ function closeTabs(state, ids) {
     pane.tabIds.forEach((id, i) => {
       if (!gone.has(id)) return
       const { kind, ref } = state.tabs[id]
-      entries.push({ kind, ref, paneId: pane.id, index: i - removed++ })
+      const index = i - removed++
+      if (!isActivity(state.tabs[id])) entries.push({ kind, ref, paneId: pane.id, index })
     })
   }
   return {
@@ -605,7 +612,11 @@ function leaveGroup(state, cur) {
 }
 
 const validContent = (t) =>
-  !!t && typeof t === 'object' && TAB_KINDS.includes(t.kind) && t.kind !== 'streams'
+  !!t &&
+  typeof t === 'object' &&
+  TAB_KINDS.includes(t.kind) &&
+  t.kind !== 'streams' &&
+  !isActivity(t)
 
 // Rebuild from a saved layout: its tabs come back pinned, each pane on its
 // saved active tab (its first when that one is gone). A live connected group

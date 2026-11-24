@@ -119,6 +119,12 @@ html.tab-dragging * {
   user-select: none;
 }
 
+/* A frame under the pointer would take its moves and release from this
+   window; see startDrag in PaneLayout.jsx. */
+html.tab-pressed iframe {
+  pointer-events: none;
+}
+
 /* ── Drop zones: a canvas half (split) or a pane's body (move there) ──────── */
 
 .pane-drop-zone {

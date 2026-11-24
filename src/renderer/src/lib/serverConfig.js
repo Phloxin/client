@@ -53,6 +53,11 @@ export const API_VERSION = 1
 // with 4000.
 export const EVENTS_PROTOCOL_VERSION = 1
 
+// Room session protocol version, appended as `v` to the ticket's `url`. The room endpoint refuses
+// any other (or a missing) `v` before the session opens, which a browser cannot see, so callers
+// check the server's `protocols.activities` first.
+export const ROOMS_PROTOCOL_VERSION = 1
+
 export function eventSocketUrl() {
   return `${wsBase()}/ws?v=${EVENTS_PROTOCOL_VERSION}`
 }

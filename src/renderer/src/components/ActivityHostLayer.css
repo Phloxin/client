@@ -1,0 +1,25 @@
+/* The host layer: player bundles' bodies, laid over their tabs' placeholders.
+   z-index 5 is above pane content and under everything that draws over a pane: the sidebar's
+   resize handle (10), the notification panel (20), the pane divider (50), drop zones (60), the
+   theatre video viewer (950), menus, toasts and the tab ghost (1000 and up), dialogs (1100 and
+   up). No ancestor of the panes makes a stacking context, so these all compare at the root. */
+
+.activity-host-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+}
+
+.activity-host-body {
+  position: fixed;
+  display: flex;
+  flex-direction: column;
+  pointer-events: auto;
+}
+
+/* No placeholder on screen: the last size, out of sight and out of reach, still running. */
+.activity-host-body.hidden {
+  visibility: hidden;
+  pointer-events: none;
+}
