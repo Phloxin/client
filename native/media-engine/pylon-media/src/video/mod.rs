@@ -845,6 +845,7 @@ impl<P: FrameProducer, E: FrameEncoder<Frame = P::Frame>> VideoPipeline<P, E> {
         let done = Instant::now();
         self.last_encoded = Some(done);
         self.meter.record(done, packet.data.len() as u64, bitrate);
+        let previous = self.running;
         let running = self.encoder.running_size();
         if self.ladder.on && self.running.is_some() && running != self.running {
             // S9: a new size starts the loops afresh, its key frame and the old size's frames
@@ -887,7 +888,13 @@ impl<P: FrameProducer, E: FrameEncoder<Frame = P::Frame>> VideoPipeline<P, E> {
             r.encode_ms.push(encode_ms);
         });
         if packet.key && !key {
-            tracing::warn!(bytes = packet.data.len(), "key frame that was not asked for");
+            if previous.is_some() && running.is_some() && running != previous {
+                // The first frame of an encoder opened again at a new size is its own key frame
+                // (merge D: it was warned of at every size step).
+                tracing::info!(bytes = packet.data.len(), from = ?previous, to = ?running, "key frame of the encoder opened again at the new size");
+            } else {
+                tracing::warn!(bytes = packet.data.len(), "key frame that was not asked for");
+            }
         }
         if packet.key {
             // Any key frame restarts the spacing and meets a pending request (fix E5).
@@ -1673,10 +1680,12 @@ mod tests {
         running: Option<(u32, u32)>,
         bytes: usize,
         caps: Arc<Mutex<Vec<Option<(u32, u32)>>>>,
+        /// The next frame is a key frame nobody asked for, at the running size (merge D).
+        key_next: bool,
     }
     impl Laddered {
         fn new(bytes: usize) -> Self {
-            Laddered { cap: None, running: None, bytes, caps: Arc::default() }
+            Laddered { cap: None, running: None, bytes, caps: Arc::default(), key_next: false }
         }
     }
     impl FrameEncoder for Laddered {
@@ -1685,7 +1694,7 @@ mod tests {
             let size = self.size_under(self.cap).unwrap();
             let opened = self.running != Some(size);
             self.running = Some(size);
-            let key = key || opened;
+            let key = key || opened || std::mem::take(&mut self.key_next);
             let mut data = vec![0, 0, 0, 1, if key { 0x65 } else { 0x41 }];
             data.resize(self.bytes.max(data.len()), 1);
             Ok(Packet { data, key })
@@ -1833,6 +1842,54 @@ mod tests {
         assert!(!pipeline.meter.frames.is_empty());
         assert!(pipeline.cadence.over_since.is_none(), "it stepped, as today");
         assert_eq!(pipeline.cadence.divisor(), 2);
+    }
+
+    /// Every line logged on this thread while `run` runs, at `info` and above.
+    fn logged(run: impl FnOnce()) -> String {
+        #[derive(Clone, Default)]
+        struct Lines(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Lines {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let lines = Lines::default();
+        let writer = lines.clone();
+        let subscriber = tracing_subscriber::fmt().with_writer(move || writer.clone()).with_max_level(tracing::Level::INFO).finish();
+        tracing::subscriber::with_default(subscriber, run);
+        String::from_utf8(lines.0.lock().unwrap().clone()).unwrap()
+    }
+
+    #[test]
+    fn the_key_frame_of_an_encoder_opened_again_is_not_warned_of_and_any_other_unasked_one_is() {
+        // Merge D: the reopening's own key frame was warned of at every size step.
+        let mut pipeline = VideoPipeline::new(Frames(20), Laddered::new(20_000));
+        pipeline.set_degrade(crate::Degrade::Size);
+        let control = SourceControl::default();
+        control.set_target_bitrate(1_000_000);
+        let (sink, frames, _) = frame_channel(64);
+        let warned = |log: &str| log.lines().filter(|line| line.contains("WARN") && line.contains("key frame that was not asked for")).count();
+        let log = logged(|| {
+            // The share's first frame, asked as a key frame.
+            assert!(pipeline.step(&sink, &control).unwrap());
+            // A size step: the encoder opened again starts with its own key frame.
+            pipeline.encoder.set_size_cap(RUNGS[1]);
+            assert!(pipeline.step(&sink, &control).unwrap());
+            assert_eq!(pipeline.running, Some((1280, 720)));
+        });
+        assert_eq!(warned(&log), 0, "{log}");
+        assert_eq!(log.lines().filter(|line| line.contains("INFO") && line.contains("key frame of the encoder opened again at the new size")).count(), 1, "{log}");
+        // Any other key frame nobody asked for, at the running size, is still warned of.
+        let log = logged(|| {
+            pipeline.encoder.key_next = true;
+            assert!(pipeline.step(&sink, &control).unwrap());
+        });
+        assert_eq!(warned(&log), 1, "{log}");
+        assert_eq!(frames.try_iter().filter(|f| f.key).count(), 3);
     }
 
     #[test]

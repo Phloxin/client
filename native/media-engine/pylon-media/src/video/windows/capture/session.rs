@@ -58,24 +58,28 @@ const STOP_POLL: Duration = Duration::from_millis(50);
 /// How long the capture waits at its end for the pipeline to let go of its frames.
 const FRAMES_BACK: Duration = Duration::from_secs(1);
 
-/// What `PYLON_MEDIA_MIN_UPDATE_MS` asks of the capture's least update interval, a switch for
-/// a monitor above 60 Hz, which one frame time may hold to every second or third refresh
-/// (fix E13).
+/// What `PYLON_MEDIA_MIN_UPDATE_MS` asks of the capture's least update interval (fix E13).
+/// Unset it is one frame time; why, at `SetMinUpdateInterval`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum MinUpdate {
-    /// One frame time of the share's rate: unset.
+    /// `frame`, and unset: one frame time of the share's rate.
     FrameTime,
-    /// This many milliseconds.
+    /// This many milliseconds (1 for a monitor above 60 Hz).
     Ms(f64),
-    /// `off`: not set, Windows' own.
+    /// `off`: not set, Windows' own (16.0 ms seen).
     Off,
 }
 
 impl MinUpdate {
-    /// From the variable's text, `None` when it is neither a number of milliseconds nor `off`.
+    /// Unset: one frame time, the same as `frame`.
+    const DEFAULT: MinUpdate = MinUpdate::FrameTime;
+
+    /// From the variable's text, `None` when it is neither a number of milliseconds, `frame`
+    /// nor `off`.
     fn from_text(text: Option<&str>) -> Option<MinUpdate> {
         match text {
-            None => Some(MinUpdate::FrameTime),
+            None => Some(MinUpdate::DEFAULT),
+            Some("frame") => Some(MinUpdate::FrameTime),
             Some("off") => Some(MinUpdate::Off),
             Some(text) => text.trim().parse::<f64>().ok().filter(|ms| ms.is_finite() && *ms >= 0.0).map(MinUpdate::Ms),
         }
@@ -87,8 +91,8 @@ impl MinUpdate {
         *ASKED.get_or_init(|| {
             let text = std::env::var("PYLON_MEDIA_MIN_UPDATE_MS").ok();
             let asked = MinUpdate::from_text(text.as_deref()).unwrap_or_else(|| {
-                tracing::warn!(value = ?text, "PYLON_MEDIA_MIN_UPDATE_MS is a number of milliseconds or off, one frame time it is");
-                MinUpdate::FrameTime
+                tracing::warn!(value = ?text, "PYLON_MEDIA_MIN_UPDATE_MS is a number of milliseconds, frame or off, one frame time it is");
+                MinUpdate::DEFAULT
             });
             tracing::info!(?asked, "capture least update interval");
             asked
@@ -410,10 +414,16 @@ fn start(resolved: Resolved, max_fps: Option<u32>, shared: &Arc<Shared>, events:
             tracing::info!(%error, "the capture border could not be turned off");
         }
         let border = session.IsBorderRequired().ok();
-        // At most `max_fps` from Windows where it has the setting (C9). The token bucket limits
-        // either way.
-        // One frame time: half of it delivered fewer frames on the laptop (smooth B2.2). Or what
-        // PYLON_MEDIA_MIN_UPDATE_MS asks (fix E13).
+        // At most `max_fps` from Windows where it has the setting (C9), or what
+        // PYLON_MEDIA_MIN_UPDATE_MS asks (fix E13). The token bucket limits either way.
+        // One frame time pushes a frame that comes a little early to the next refresh on a
+        // monitor above 60 Hz: on a 240 Hz desktop 41 to 55 sent a second of 60, in a game at
+        // 144 Hz 48 to 58 (45 to 51 with `off`, where Windows applies 16.0 ms). A shorter
+        // interval gives them back there (1 ms: 60.0 sent of 169.5 captured, 52.0 to 55.6 in
+        // the game), but on a 60 Hz laptop with the real client any interval under a frame time
+        // took about 9 frames a second from the shared content (53 to 54 a second down to 42 to
+        // 45 with 1 ms, 45.5 with 10 ms) while the viewer gained 3. So one frame time stays the
+        // default, and PYLON_MEDIA_MIN_UPDATE_MS=1 is there for a fast monitor.
         if let Some(interval) = MinUpdate::get().interval(max_fps)
             && let Err(error) = session.SetMinUpdateInterval(TimeSpan { Duration: interval })
         {
@@ -634,8 +644,12 @@ mod tests {
 
     #[test]
     fn the_least_update_interval_follows_the_variable() {
-        // Fix E13: unset is one frame time, a number is milliseconds, `off` sets nothing.
+        // Fix E13: unset and `frame` are one frame time, a number is milliseconds, `off` sets
+        // nothing.
         assert_eq!(MinUpdate::from_text(None), Some(MinUpdate::FrameTime));
+        assert_eq!(MinUpdate::from_text(None).and_then(|m| m.interval(Some(60))), Some(166_666));
+        assert_eq!(MinUpdate::from_text(Some("frame")), Some(MinUpdate::FrameTime));
+        assert_eq!(MinUpdate::from_text(Some("frame")).and_then(|m| m.interval(Some(60))), Some(166_666));
         assert_eq!(MinUpdate::FrameTime.interval(Some(60)), Some(166_666));
         assert_eq!(MinUpdate::FrameTime.interval(None), None);
         assert_eq!(MinUpdate::from_text(Some("off")), Some(MinUpdate::Off));

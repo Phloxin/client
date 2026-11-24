@@ -22,10 +22,16 @@ pylon-media-host [--insecure-plain] [--test-hooks]
 - `PYLON_MEDIA_WAIT` (Windows): how the send loop waits: `sleep`, `event` (the socket's read
   event and a high resolution timer) or `spin`. Default `event`.
 - `PYLON_MEDIA_MIN_UPDATE_MS` (Windows): the screen capture's least update interval, in
-  milliseconds (a decimal number, 0 or more), or `off` to leave Windows' own. Default one frame
-  time of the capture's `max_fps` (none without it). For a monitor above 60 Hz, where one frame
-  time may give only every second or third refresh. Read once, logged (`capture least update
-  interval`); anything else is logged and the default used.
+  milliseconds (a decimal number, 0 or more), `frame` for one frame time of the capture's
+  `max_fps` (none without it), or `off` to leave Windows' own (16.0 ms seen). Default one frame
+  time, the same as `frame`. On a monitor above 60 Hz one frame time pushes a frame that comes a
+  little early to the next refresh (a 240 Hz desktop: 41 to 55 frames sent a second of 60 asked;
+  a game at 144 Hz: 48 to 58, 45 to 51 with `off`), and `1` gives them back (60.0 sent of 169.5
+  captured; 52.0 to 55.6 in the game). It is not the default because on a 60 Hz laptop with the
+  client any interval under a frame time took about 9 frames a second from the shared content
+  (53 to 54 a second down to 42 to 45 with 1 ms, 45.5 with 10 ms) while the viewer gained 3.
+  Read once, logged (`capture least update interval`); anything else is logged and the default
+  used.
 
 ## Framing
 
