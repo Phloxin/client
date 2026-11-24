@@ -43,7 +43,7 @@ export function wsBase() {
 
 // Signaling protocol version spoken on the voice socket. The voice node closes
 // any other (or a missing) `v` with 4000.
-export const VOICE_PROTOCOL_VERSION = 1
+export const VOICE_PROTOCOL_VERSION = 2
 
 // REST version sent as Pylon-Api-Version on every API request (see http.js).
 // main/session.js keeps its own copy for the refresh request.

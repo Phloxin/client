@@ -1,6 +1,6 @@
 // A screen share whose video the native media engine sends: a pylon-media-host
-// sidecar the main process runs (main/mediaEngine.js), on the session's third
-// transport (SendAux), sealed with this client's own sender key and a kid of
+// sidecar the main process runs (main/mediaEngine.js), on a send transport of
+// its own on the session, sealed with this client's own sender key and a kid of
 // its own from the E2EE worker, in H264 or AV1 (soup/nativeCodec.js). On with the "Native
 // screen share" setting (Advanced settings, Wayland and Windows), or PYLON_NATIVE_SHARE, which
 // wins over it: `screen` as the setting does, `file:<H264 file, or IVF for AV1>` and the
@@ -13,7 +13,7 @@
 // startNativeShare resolves with a producer-like object that screenShare.js
 // keeps in the share context's `producer`, so stop, pause, the server ending
 // the share and replacement treat it like a Chromium producer. Closing it
-// closes the sidecar and SendAux. A failure once it is live goes to onFailed,
+// closes the sidecar and its transport. A failure once it is live goes to onFailed,
 // and screenShare carries the share on through Chromium.
 //
 // The frame key never goes into a log, an error or the test hooks.
@@ -208,7 +208,8 @@ export function nativePreviewTally() {
 // Starts the native share step by step. Everything made is unmade when a
 // later step fails, and the error is rethrown.
 //   streamKey      the backend stream it publishes into (already created)
-//   aux            soup/index.js's SendAux functions (configureScreenShare)
+//   aux            soup/index.js's functions for the share's own send
+//                  transport (configureScreenShare)
 //   isActive()     false once the share was stopped or superseded
 //   superseded()   the error to throw then
 //   onFailed(reason)     the live share failed, called at most once
@@ -280,7 +281,7 @@ export async function startNativeShare({
   let rateLog = null
   let keyEngine = null
   let sourceId = null
-  // What aux.create() gave: SendAux on the session it was made on.
+  // What aux.create() gave: the share's transport on the session it was made on.
   let auxHandle = null
   let engineOpen = capture != null
   let preview = null
@@ -463,7 +464,7 @@ export async function startNativeShare({
     keyEngine = null
     if (engineOpen) engine.close(pid).catch(() => {})
     engineOpen = false
-    // Before SendAux closes it on the node, so its Closed is no surprise.
+    // Before the transport's close takes it down on the node, so its Closed is no surprise.
     if (ownSource && sourceId != null) auxHandle?.closeSource(sourceId)
     auxHandle?.close().catch((err) => {
       console.log('[Soup] Closing the native share transport:', err?.message ?? err)
@@ -614,7 +615,7 @@ export async function startNativeShare({
     auxHandle = handle
     step('transport')
     const transport = handle.parameters
-    if (!transport) throw new Error('The voice node sent no SendAux parameters')
+    if (!transport) throw new Error('The voice node sent no transport parameters')
 
     const { engine: engineId, kid, counter, ...firstKey } = await e2eeEngineKey(onKeyChange)
     keyEngine = engineId

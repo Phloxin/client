@@ -19,13 +19,13 @@ test('no endpoint means voice is unavailable', () => {
 })
 
 test('an endpoint is dialed with the protocol version', () => {
-  assert.equal(voiceSocketUrl('wss://media.example.com'), 'wss://media.example.com/voice?v=1')
-  assert.equal(voiceSocketUrl('ws://127.0.0.1:3100'), 'ws://127.0.0.1:3100/voice?v=1')
+  assert.equal(voiceSocketUrl('wss://media.example.com'), 'wss://media.example.com/voice?v=2')
+  assert.equal(voiceSocketUrl('ws://127.0.0.1:3100'), 'ws://127.0.0.1:3100/voice?v=2')
 })
 
 test('surrounding space and a trailing slash do not produce a broken URL', () => {
-  assert.equal(voiceSocketUrl('  wss://media.example.com/  '), 'wss://media.example.com/voice?v=1')
-  assert.equal(voiceSocketUrl('wss://media.example.com//'), 'wss://media.example.com/voice?v=1')
+  assert.equal(voiceSocketUrl('  wss://media.example.com/  '), 'wss://media.example.com/voice?v=2')
+  assert.equal(voiceSocketUrl('wss://media.example.com//'), 'wss://media.example.com/voice?v=2')
 })
 
 test('anything that is not a bare WebSocket origin is unusable', () => {
@@ -46,8 +46,8 @@ test('anything that is not a bare WebSocket origin is unusable', () => {
 test('a dev override wins over the server endpoint', () => {
   globalThis.window = { api: { voiceEndpointOverride: 'ws://localhost:4100' } }
   try {
-    assert.equal(voiceSocketUrl('wss://media.example.com'), 'ws://localhost:4100/voice?v=1')
-    assert.equal(voiceSocketUrl(undefined), 'ws://localhost:4100/voice?v=1')
+    assert.equal(voiceSocketUrl('wss://media.example.com'), 'ws://localhost:4100/voice?v=2')
+    assert.equal(voiceSocketUrl(undefined), 'ws://localhost:4100/voice?v=2')
   } finally {
     delete globalThis.window
   }

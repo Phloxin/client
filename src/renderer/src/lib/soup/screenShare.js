@@ -38,7 +38,7 @@ let releaseStream = () => {}
 // The owner's pause of one of our sources on the server (SetSourcePaused).
 let setSourcePaused = async () => false
 let localProducerIds = new Set()
-// The session's third transport (SendAux) for a native share: soup/index.js's
+// A native share's own send transport on the session: soup/index.js's
 // available, routerCapabilities and create.
 let auxTransport = null
 
@@ -1547,7 +1547,7 @@ export function setSelfScreenPreviewSeen(seen, { stopAsked = false } = {}) {
 }
 
 // With the "Native screen share" setting on (or PYLON_NATIVE_SHARE set), a screen share's
-// video is sent by the native media engine on the session's third transport
+// video is sent by the native media engine on a send transport of its own
 // (soup/nativeShare.js). Main says at each share whether, and from which source. Its
 // producer-like object sits in ctx.producer, so stop, pause, the server ending
 // the share and replacement work on it as on any producer. A failure before

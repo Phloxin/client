@@ -1,35 +1,6 @@
-// Helpers for the session's third transport (SendAux), which carries a native
-// screen share (soup/nativeShare.js). Kept apart from soup/index.js so they can
-// be tested on their own.
+// Helpers for the native screen share's own send transport (soup/nativeShare.js).
+// Kept apart from soup/index.js so they can be tested on their own.
 //   node --test src/renderer/src/lib/soup/auxTransport.test.mjs
-import { Direction, ErrorCode, Request, VoiceRequestError } from './protocol.js'
-
-function transportExists(err) {
-  return (
-    err instanceof VoiceRequestError &&
-    err.code === ErrorCode.InvalidState &&
-    err.object?.Transport === Direction.SendAux
-  )
-}
-
-// Asks the node for SendAux with `request` (the matcher's), and resolves with
-// its answer. A SendAux left open on the node (a stop while the socket was
-// detached, or a CloseTransport lost with it) is closed and asked for once more.
-export async function requestAuxTransport(request) {
-  try {
-    return await request(Request.createTransport(Direction.SendAux))
-  } catch (err) {
-    if (!transportExists(err)) throw err
-  }
-  console.log('[Soup] SendAux was still open on the voice node, closing it first')
-  try {
-    await request(Request.closeTransport(Direction.SendAux))
-  } catch (err) {
-    // Gone meanwhile is as good as closed.
-    if (!(err instanceof VoiceRequestError)) throw err
-  }
-  return request(Request.createTransport(Direction.SendAux))
-}
 
 const SHA256_FINGERPRINT = /^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){31}$/
 

@@ -1,4 +1,4 @@
-// pylon-voice signaling protocol, v1, plus the event-socket stream ops that
+// pylon-voice signaling protocol, v2, plus the event-socket stream ops that
 // authorize screen streams on it.
 //
 // Everything that knows the wire format lives here: request encoders, the
@@ -10,7 +10,7 @@
 // mediasoup-client driver.
 //
 // Contract: .plans/HANDOFF-voice-protocol-v1.md. Server source of truth:
-// server/backend crates/pylon-voice/src/signal/proto/v1.rs (voice socket),
+// server/backend crates/pylon-voice/src/signal/proto/v2.rs (voice socket),
 // crates/pylon-sfu/src/session.rs and session/{message,pending,id_space}.rs
 // (what answers what), crates/pylon-sfu/src/node/ids.rs (ids), and
 // src/events/socket.rs, src/events/socket/{ops,stream}.rs (stream ops).
@@ -21,11 +21,11 @@
 //   - Every server frame is an envelope, { "seq": n, "ev": <message> }. seq
 //     numbers the session's events from 1 and carries on across a resume; only
 //     the handshake frames Session and Resumed have none (decodeFrame).
-//   - Our own sources and sinks are LocalIds: JSON numbers (u32) this client
-//     picks. CreateSource, CreateSink and Sync each name a new one, and every
-//     new id must be above every id this socket used before, so one counter
-//     per socket serves all three (the matcher's). An id is never reused, not
-//     even after its create failed.
+//   - Our own transports, sources and sinks are LocalIds: JSON numbers (u32)
+//     this client picks. CreateTransport, CreateSource, CreateSink and Sync
+//     each name a new one, and every new id must be above every id this socket
+//     used before, so one counter per socket serves all four (the matcher's).
+//     An id is never reused, not even after its create failed.
 //   - Another client's source is a NodeId: the JSON string "<session>:<local>",
 //     <session> being the owner's voice session. Only ever echo one the server
 //     sent (CreateSink.source); a reconnect gives the owner's sources new ones.
@@ -43,9 +43,9 @@
 
 // ─── Requests (client → server) ──────────────────────────────────
 
-// `node`, `newNode` and `callback` are LocalIds (ours); `source` is a NodeId
-// (another client's). Which answer, if any, each request gets is in the
-// matcher's section below.
+// `node`, `newNode`, `transport`, `newTransport` and `callback` are LocalIds
+// (ours); `source` is a NodeId (another client's). Which answer, if any, each
+// request gets is in the matcher's section below.
 export const Request = Object.freeze({
   // First frame only, exactly once. The server answers with Session (the id
   // and resume token), then pushes RoutingParams (seq 1); a refused ticket
@@ -77,61 +77,63 @@ export const Request = Object.freeze({
   setCapabilities: (capabilities, e2eeFormats = []) => ({
     SetCapabilities: { capabilities, e2ee_formats: e2eeFormats }
   }),
-  // Any time, before SetCapabilities too, once per transport.
-  connectTransport: (direction, dtlsParameters) => ({
-    ConnectTransport: { transport_parameters: { dtlsParameters }, direction }
+  // Names a new transport `newTransport`, sending or receiving (Direction).
+  // Answered with Transport { transport, parameters }, the node's transport
+  // parameters (snake_case at the top, see mapTransportParams). Allowed before
+  // the session is ready too. A session has at most 4 transports; a fifth is
+  // refused with InvalidState.
+  createTransport: (newTransport, direction) => ({
+    CreateTransport: { new_transport: localId('new_transport', newTransport), direction }
   }),
-  // Asks for the session's third transport, SendAux, the only one made on
-  // request. Answered with Transport { direction, parameters }, the node's
-  // transport parameters (snake_case at the top like RoutingParams'). Only sent
-  // to a node whose RoutingParams said aux_send: an older one closes the socket
-  // on a message it doesn't know.
-  createTransport: (direction) => ({ CreateTransport: { direction } }),
-  // Closes SendAux and every source on it. Answered with Closed { nodes } for
-  // those sources (only if there were any), then TransportClosed { direction }.
-  closeTransport: (direction) => ({ CloseTransport: { direction } }),
+  // Any time, before SetCapabilities too, once per transport. Answered with
+  // TransportConnected { transport }.
+  connectTransport: (transport, dtlsParameters) => ({
+    ConnectTransport: {
+      transport: localId('transport', transport),
+      transport_parameters: { dtlsParameters }
+    }
+  }),
   // New local ICE parameters for one transport, after a network change.
-  // Answered with IceRestarted { direction, ice_parameters }, which go to
+  // Answered with IceRestarted { transport, ice_parameters }, which go to
   // mediasoup-client's transport.restartIce(). Allowed before the session is
   // ready too.
-  restartIce: (direction) => ({ RestartIce: { direction } }),
-  // Names the new source `newNode`. Refused before SetCapabilities. `replaces`
-  // names one of our own sources of the same kind to swap out atomically: peers
-  // get SourceReplaced rather than a remove and an add, and the server closes
-  // the old source, announcing it with a Closed ahead of this request's Source
-  // answer.
+  restartIce: (transport) => ({ RestartIce: { transport: localId('transport', transport) } }),
+  // Closes one of our transports and every source and sink on it. Answered
+  // with Closed { nodes } for those (only if there were any), then
+  // TransportClosed { transport }. Allowed before the session is ready too.
+  closeTransport: (transport) => ({
+    CloseTransport: { transport: localId('transport', transport) }
+  }),
+  // Names the new source `newNode`, coming in on our send transport
+  // `transport`. Refused before SetCapabilities. `replaces` names one of our
+  // own sources of the same kind, on any of our transports, to swap out
+  // atomically: peers get SourceReplaced rather than a remove and an add, and
+  // the server closes the old source, announcing it with a Closed ahead of
+  // this request's Source answer.
   //
   // `streamKey` names the stream (event-socket op 12) a Stream or StreamAudio
   // source belongs to, and must be null for Microphone and Webcam. A
   // replacement inherits its predecessor's stream, so it may pass null; a
   // different key is refused.
-  //
-  // `transport` is the sending transport the source comes in on. Send is left
-  // out of the message, so a node without SendAux gets what it always got.
-  createSource: (
-    newNode,
-    kind,
-    rtpParameters,
-    replaces = null,
-    streamKey = null,
-    transport = null
-  ) => ({
+  createSource: (newNode, transport, kind, rtpParameters, replaces = null, streamKey = null) => ({
     CreateSource: {
       new_node: localId('new_node', newNode),
+      transport: localId('transport', transport),
       kind,
       rtp_parameters: rtpParameters,
       replaces: replaces == null ? null : localId('replaces', replaces),
-      stream_key: streamKey,
-      ...(transport == null || transport === Direction.Send ? {} : { transport })
+      stream_key: streamKey
     }
   }),
-  // Names the new sink `newNode`, on another client's source. Refused before
-  // SetCapabilities. The sink starts paused unless `config` says otherwise
-  // (sinkConfigFields). Its Sink answer doesn't name the source again, so the
-  // caller keeps track of which source each sink is for.
-  createSink: (newNode, source, config) => ({
+  // Names the new sink `newNode`, on another client's source, received on our
+  // receive transport `transport`. Refused before SetCapabilities. The sink
+  // starts paused unless `config` says otherwise (sinkConfigFields). Its Sink
+  // answer doesn't name the source again, so the caller keeps track of which
+  // source each sink is for.
+  createSink: (newNode, transport, source, config) => ({
     CreateSink: {
       new_node: localId('new_node', newNode),
+      transport: localId('transport', transport),
       source: nodeId('source', source),
       ...sinkConfigFields(config)
     }
@@ -241,8 +243,8 @@ export const EVENT_TYPES = new Set([
   'Closed'
 ])
 
-// SendAux is a second sending transport, made on request (Request.createTransport).
-export const Direction = Object.freeze({ Send: 'Send', Receive: 'Receive', SendAux: 'SendAux' })
+// What a transport is for, named in its CreateTransport.
+export const Direction = Object.freeze({ Send: 'Send', Receive: 'Receive' })
 
 export const SourceType = Object.freeze({
   Microphone: 'Microphone',
@@ -360,8 +362,8 @@ export const ErrorCode = Object.freeze({
 })
 
 // A request the server answered with Error. Not fatal: the socket stays open.
-//   object: "Session" | { Transport: "Send" | "Receive" | "SendAux" } | { Source: n } | { Sink: n },
-//           n being one of our LocalIds. A failed create names its new node.
+//   object: "Session" | { Transport: n } | { Source: n } | { Sink: n },
+//           n being one of our LocalIds. A failed create names its new id.
 //   code:   one of ErrorCode
 export class VoiceRequestError extends Error {
   constructor(request, payload = {}) {
@@ -415,22 +417,23 @@ export class VoiceProtocolError extends Error {
 }
 
 // ─── Answers and errors ──────────────────────────────────────────
-// v1 has no request ids, and no rule that every request gets one reply. The
+// v2 has no request ids, and no rule that every request gets one reply. The
 // session handles requests strictly in order. A request that fails is answered
 // with Error, which names the object it is about. One that succeeds is
 // answered only when it has something to report:
 //
-//   Identify                        RoutingParams, pushed once identify succeeds
-//                                   (after Session; failure closes with 4003)
-//   SetCapabilities                 the first Channel snapshot: the session is ready
-//   Sync { callback }               Done { callback }
-//   ConnectTransport { direction }  TransportConnected { direction }
-//   RestartIce { direction }        IceRestarted { direction, ice_parameters }
-//   CreateTransport { direction }   Transport { direction, parameters }
-//   CloseTransport { direction }    TransportClosed { direction }, after a Closed for its sources
-//   CreateSource { new_node }       Source { node: new_node }
-//   CreateSink { new_node }         Sink { node: new_node }
-//   Close { node }                  Closed { nodes: [node] }, if the node was still alive
+//   Identify                           RoutingParams, pushed once identify succeeds
+//                                      (after Session; failure closes with 4003)
+//   SetCapabilities                    the first Channel snapshot: the session is ready
+//   Sync { callback }                  Done { callback }
+//   CreateTransport { new_transport }  Transport { transport: new_transport, parameters }
+//   ConnectTransport { transport }     TransportConnected { transport }
+//   RestartIce { transport }           IceRestarted { transport, ice_parameters }
+//   CloseTransport { transport }       TransportClosed { transport }, after a Closed for
+//                                      what was on it (only if anything was)
+//   CreateSource { new_node }          Source { node: new_node }
+//   CreateSink { new_node }            Sink { node: new_node }
+//   Close { node }                     Closed { nodes: [node] }, if the node was still alive
 //
 // ConfigureSink, SetSourcePaused, RequestKeyFrame, SetSpeaking and Group have
 // no success answer. A request on one of our ids that is no longer alive
@@ -438,10 +441,10 @@ export class VoiceProtocolError extends Error {
 //
 // So the matcher pairs by what an answer or Error is about, not by position:
 //   request(message)        waits for the answer above, found by its key (the
-//                           callback, the direction, the new node), or for an
+//                           callback, the transport, the new node), or for an
 //                           Error naming the request's object
-//   create(build)           request() for a CreateSource or CreateSink, around a
-//                           new node it names itself
+//   create(build)           request() for a CreateTransport, CreateSource or
+//                           CreateSink, around a new id it names itself
 //   requestSynced(message)  a request without a success answer, with a Sync right
 //                           behind it: Done means it went through, and an Error
 //                           naming its object before that Done means it didn't
@@ -489,12 +492,12 @@ export function createRequestMatcher({
   let boundary = null
   // Notified requests (Close, RequestKeyFrame) not known to have arrived yet:
   // { message, mark, inDoubt, doubtUntil }, `mark` being the newest id when it
-  // went out. An answer naming a newer id (Done, Source, Sink) is for a request
-  // sent after it on the same socket, so it arrived too. One in doubt (sent
-  // before a resume) only counts ids up to `doubtUntil`, the newest id before
-  // that resume: a later one went out on another socket. Kept so a resume can
-  // send a lost one again; both are harmless twice (a Close of a closed node
-  // is dropped).
+  // went out. An answer naming a newer id (Done, Transport, Source, Sink) is
+  // for a request sent after it on the same socket, so it arrived too. One in
+  // doubt (sent before a resume) only counts ids up to `doubtUntil`, the newest
+  // id before that resume: a later one went out on another socket. Kept so a
+  // resume can send a lost one again; both are harmless twice (a Close of a
+  // closed node is dropped).
   const notified = []
 
   const armOldest = () => {
@@ -572,10 +575,11 @@ export function createRequestMatcher({
     })
   const request = (message) => submit(message, null)
 
-  // CreateSource or CreateSink: `build(node)` makes the request around a new
-  // node, and it goes out at once, so new ids reach the server in order. A
-  // create lost with a socket is built again around another new node, so
-  // callers take the node from the answer ({ node }), never from `build`.
+  // CreateTransport, CreateSource or CreateSink: `build(id)` makes the request
+  // around a new id, and it goes out at once, so new ids reach the server in
+  // order. A create lost with a socket is built again around another new id,
+  // so callers take the id from the answer ({ transport } for a transport,
+  // { node } for a source or sink), never from `build`.
   const create = (build) => {
     if (refusal()) return Promise.reject(refusal())
     let message
@@ -679,7 +683,9 @@ export function createRequestMatcher({
     }
     if (!ANSWER_TYPES.has(type)) return false
     const key = answerKey(type, data)
-    if (type === 'Done' || type === 'Source' || type === 'Sink') confirmNotified(key)
+    if (type === 'Done' || type === 'Transport' || type === 'Source' || type === 'Sink') {
+      confirmNotified(key)
+    }
     const entry = pending.find((waiting) => waiting.answer === type && waiting.key === key)
     if (!entry) {
       const about = key == null ? '' : ` for ${key}`
@@ -722,12 +728,14 @@ export function createRequestMatcher({
   // this sends a Sync behind the replay: the session handles requests in order,
   // so once its Done arrives, every request sent before the drop that is still
   // waiting was lost with the socket, and goes out again:
-  //   - a create, built again around a new node (its old one is now below ids
-  //     the server has seen, so it would be refused);
+  //   - a create (CreateTransport, CreateSource, CreateSink), built again
+  //     around a new id (its old one is now below ids the server has seen, so
+  //     it would be refused);
   //   - a request settled by a Sync (and a bare Sync), with a new callback;
-  //   - ConnectTransport and RestartIce, as they were. Like the synced ones,
-  //     they're safe to repeat: a duplicate is ignored or answers with an
-  //     Error, which settles nothing worse than a loss would;
+  //   - ConnectTransport, RestartIce and CloseTransport, as they were. Like the
+  //     synced ones, they're safe to repeat: a duplicate is ignored or answers
+  //     with an Error, which settles nothing worse than a loss would. A lost
+  //     CloseTransport never reached the node, so its transport is still there;
   //   - Identify and SetCapabilities can't be lost by a session that resumed
   //     (only a ready one can), so one still waiting fails;
   //   - and a notified request (Close, RequestKeyFrame) sent before the drop
@@ -817,7 +825,11 @@ export function createRequestMatcher({
             : [entry.messages[0], Request.sync(callback)]
         pending.push(entry)
         resend.push(...entry.messages)
-      } else if (entry.answer === 'TransportConnected' || entry.answer === 'IceRestarted') {
+      } else if (
+        entry.answer === 'TransportConnected' ||
+        entry.answer === 'IceRestarted' ||
+        entry.answer === 'TransportClosed'
+      ) {
         pending.push(entry)
         resend.push(...entry.messages)
       } else {
@@ -897,11 +909,12 @@ function requestKey(type, body) {
   switch (type) {
     case 'Sync':
       return body.callback
+    case 'CreateTransport':
+      return body.new_transport
     case 'ConnectTransport':
     case 'RestartIce':
-    case 'CreateTransport':
     case 'CloseTransport':
-      return body.direction
+      return body.transport
     case 'CreateSource':
     case 'CreateSink':
       return body.new_node
@@ -914,11 +927,11 @@ function answerKey(type, data) {
   switch (type) {
     case 'Done':
       return data?.callback ?? null
+    case 'Transport':
     case 'TransportConnected':
     case 'IceRestarted':
-    case 'Transport':
     case 'TransportClosed':
-      return data?.direction ?? null
+      return data?.transport ?? null
     case 'Source':
     case 'Sink':
       return data?.node ?? null
@@ -934,17 +947,16 @@ function errorObjects(type, body) {
     case 'SetCapabilities':
     case 'Group':
       return ['Session']
+    // The transport, new or existing. They all work before SetCapabilities, so
+    // none of them is refused on the session.
+    case 'CreateTransport':
+      return [{ Transport: body.new_transport }]
     case 'ConnectTransport':
     case 'RestartIce':
-      return [{ Transport: body.direction }]
-    // Only the transport. Before SetCapabilities the node refuses either on the
-    // session, and claiming that could take another request's error. They are
-    // only sent to a ready session.
-    case 'CreateTransport':
     case 'CloseTransport':
-      return [{ Transport: body.direction }]
+      return [{ Transport: body.transport }]
     // Every create failure names the new node: not the source a sink was for,
-    // not the source being replaced, not the send transport.
+    // not the source being replaced, not the transport it names.
     case 'CreateSource':
       return [{ Source: body.new_node }]
     case 'CreateSink':
@@ -1168,7 +1180,7 @@ export function producedTypeForSource(sourceType) {
   return SOURCE_TO_PRODUCED[sourceType] ?? sourceType
 }
 
-// RoutingParams' transport descriptors are the one snake_case object in the
+// A Transport answer's parameters are the one snake_case object in the
 // protocol; the values inside are already mediasoup camelCase.
 export function mapTransportParams(params) {
   if (params == null) return null
