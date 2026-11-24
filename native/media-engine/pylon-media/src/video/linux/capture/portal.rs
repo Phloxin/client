@@ -1,4 +1,4 @@
-// The desktop portal's ScreenCast (M5b D2, D3): one monitor or window chosen by the person in
+// The desktop portal's ScreenCast: one monitor or window chosen by the person in
 // the portal's dialog, the cursor in the picture when the portal can, the choice remembered
 // with a restore token.
 

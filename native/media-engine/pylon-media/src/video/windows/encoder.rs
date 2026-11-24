@@ -1,7 +1,5 @@
 // libavcodec's Quick Sync (`h264_qsv`) or NVENC (`h264_nvenc`) H264 encoder behind our own D3D11
-// video processor (.plans/native-media-engine-m7-4-windows-encoder.md, N5 to N9), with the
-// options the two Windows encoder spikes settled (M7 plan, sections 8 and 9). Sizes are limited
-// as on Linux (.plans/native-media-engine-m7-5-windows-capture.md, C8).
+// video processor. Sizes are limited as on Linux.
 
 use std::{ptr, sync::Arc, time::Instant};
 
@@ -23,11 +21,11 @@ use crate::{
     },
 };
 
-/// The sizes encoded on Windows (M7.5 C8): a smaller picture is scaled up to the least, a larger
+/// The sizes encoded on Windows: a smaller picture is scaled up to the least, a larger
 /// one down to fit the most, as the driver's limits do on Linux.
 const LIMITS: EncodeLimits = EncodeLimits { min: (160, 120), max: (4096, 2304) };
 
-/// Which of libavcodec's encoders runs, from the adapter's vendor (N4).
+/// Which of libavcodec's encoders runs, from the adapter's vendor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Backend {
     /// `h264_qsv`, fed Quick Sync frames mapped from the D3D11 textures.
@@ -45,7 +43,7 @@ impl Backend {
     }
 
     /// Rows of the converted textures for a picture `height` high: Quick Sync reads past a
-    /// texture that is not a multiple of 16 rows (M7 plan F7), NVENC takes the picture's size.
+    /// texture that is not a multiple of 16 rows, NVENC takes the picture's size.
     fn rows(self, height: u32) -> u32 {
         match self {
             Backend::QuickSync => height.div_ceil(16) * 16,
@@ -54,7 +52,7 @@ impl Backend {
     }
 
     /// The rate control's maximum for a bitrate: VBR with the maximum at the target, which on
-    /// Quick Sync means 1 % above it (N6, N7).
+    /// Quick Sync means 1 % above it.
     fn max_rate(self, bitrate: u64) -> u64 {
         match self {
             Backend::QuickSync => bitrate + bitrate / 100,
@@ -63,19 +61,19 @@ impl Backend {
     }
 }
 
-/// NVENC's rate control buffer, 250 ms of the bitrate, following it (N7, as on Linux).
+/// NVENC's rate control buffer, 250 ms of the bitrate, following it (as on Linux).
 fn buffer_bits(bitrate: u64) -> i32 {
     (bitrate / 4).min(i32::MAX as u64) as i32
 }
 
-/// The least Quick Sync's buffer is opened with (N6, M7 plan F5).
+/// The least Quick Sync's buffer is opened with.
 const QUICK_SYNC_LEAST_BUFFER: u64 = 2_000_000;
 
-/// The least bitrate an encoder opened again at a new size is opened with (fix E7).
+/// The least bitrate an encoder opened again at a new size is opened with.
 const REOPEN_LEAST_BITRATE: u64 = 100_000;
 
 /// Quick Sync's rate control buffer, fixed at opening: a quarter of the opening bitrate, not
-/// less than `QUICK_SYNC_LEAST_BUFFER` (N6). It cannot change on the open encoder (F1).
+/// less than `QUICK_SYNC_LEAST_BUFFER`. It cannot change on the open encoder.
 fn quick_sync_buffer_bits(bitrate: u64) -> i32 {
     (bitrate / 4).max(QUICK_SYNC_LEAST_BUFFER).min(i32::MAX as u64) as i32
 }
@@ -96,7 +94,7 @@ struct Open {
     codec: Codec,
     /// The size it encodes at.
     size: (u32, u32),
-    /// The bitrate in its context: the bitrate asked for times the frame rate divisor (N8).
+    /// The bitrate in its context: the bitrate asked for times the frame rate divisor.
     bitrate: u64,
     /// Nothing encoded yet: the first frame is a key frame.
     fresh: bool,
@@ -104,23 +102,22 @@ struct Open {
 
 /// libavcodec's Quick Sync or NVENC encoder fed with D3D11 textures.
 pub struct D3d11Encoder {
-    /// The sharer's preview, started on the first offer (M6 preview step 3). It goes first, as
-    /// `kept` does (W7): its frames are references into the import's pool.
+    /// The sharer's preview, started on the first offer. It goes first, as
+    /// `kept` does: its frames are references into the import's pool.
     preview: Option<PreviewWorker<PreviewFrame>>,
     config: EncoderConfig,
     device: Arc<Device>,
     backend: Backend,
     /// Quick Sync's device, derived from the D3D11 device.
     qsv: Option<Buffer>,
-    /// The last converted frame, for a key frame when nothing new comes (M5b D6). It goes
+    /// The last converted frame, for a key frame when nothing new comes. It goes
     /// before the import whose pool it is from.
     kept: Option<Frame>,
     import: Option<Import>,
-    /// The import and encoder `new` opened, for a first frame of the size it was given (N4, C7).
+    /// The import and encoder `new` opened, for a first frame of the size it was given.
     provisional: bool,
     resizes: Resizes,
-    /// The cap on the encoded picture of the size ladder, `None` for the share's own maximum
-    /// (smooth S2, S8).
+    /// The cap on the encoded picture of the size ladder, `None` for the share's own maximum.
     cap: Option<(u32, u32)>,
     /// The newest input frame's size (the first one's from `new`).
     input: Option<(u32, u32)>,
@@ -134,8 +131,8 @@ unsafe impl Send for D3d11Encoder {}
 
 impl D3d11Encoder {
     /// The encoder for the device's vendor. It is opened here once for an input of `first` (the
-    /// pattern's size, or the captured item's: M7.5 C7), so that an encoder that does not open
-    /// fails the source (N4); a first frame of that size is encoded with it.
+    /// pattern's size, or the captured item's), so that an encoder that does not open
+    /// fails the source; a first frame of that size is encoded with it.
     pub(crate) fn new(config: EncoderConfig, device: Arc<Device>, first: (u32, u32)) -> Result<Self, Error> {
         if config.width < 16 || config.height < 16 || config.width > 4096 || config.height > 4096 {
             return Err(Error::invalid(format!("size {}x{} is not in 16 to 4096", config.width, config.height)));
@@ -204,15 +201,16 @@ impl D3d11Encoder {
     }
 
     /// The size an input of `input` is encoded at under the smaller of the share's maximum and
-    /// `cap` (smooth S8).
+    /// `cap`.
     fn wanted_under(&self, cap: Option<(u32, u32)>, input: (u32, u32)) -> (u32, u32) {
         let (width, height) = cap.map_or((self.config.width, self.config.height), |(w, h)| (self.config.width.min(w), self.config.height.min(h)));
         encoded_size(input.0, input.1, (width, height), LIMITS)
     }
 
     /// The import for frames like `frame` and the size they are encoded at. A new size is taken
-    /// up by opening the encoder again only as D14 allows, until then frames are scaled to the
-    /// size the encoder runs at. It opens again at `bitrate`, the bitrate in force (fix E7).
+    /// up by opening the encoder again only when the sizing rule allows it,
+    /// until then frames are scaled to the size the encoder runs at.
+    /// It opens again at `bitrate`, the bitrate in force.
     fn import_for(&mut self, frame: &D3d11Frame, bitrate: u64) -> Result<(), Error> {
         self.input = Some((frame.width, frame.height));
         let wanted = self.wanted_under(self.cap, (frame.width, frame.height));
@@ -235,12 +233,12 @@ impl D3d11Encoder {
         let (mut size, reopen) = self.resizes.decide(Instant::now(), wanted, running);
         if reopen && let Some(running) = running {
             // The preview's worker (with any frame it holds) and the kept frame are from the running
-            // import's pool and go before it (W7).
+            // import's pool and go before it.
             self.preview = None;
             self.kept = None;
             // The new encoder is opened before the running one goes, which stays if that fails.
             // At the bitrate in force, not the share's start: Quick Sync's buffer is fixed at
-            // opening and is to fit the target (fix E7).
+            // opening and is to fit the target.
             match self
                 .build_import((frame.width, frame.height), size)
                 .and_then(|import| Ok((self.open_encoder(&import, bitrate)?, import)))
@@ -319,20 +317,20 @@ impl D3d11Encoder {
                     (*c).hw_frames_ctx = import.converter.frames.new_ref();
                 }
             }
-            // No key frames on a timer, no B frames, one slice (D4).
+            // No key frames on a timer, no B frames, one slice.
             (*c).gop_size = i32::MAX;
             (*c).max_b_frames = 0;
             (*c).slices = 1;
             (*c).bit_rate = bitrate as i64;
             (*c).rc_max_rate = self.backend.max_rate(bitrate) as i64;
-            // BT.709 limited range in the VUI (D4).
+            // BT.709 limited range in the VUI.
             (*c).color_range = ff::AVColorRange::AVCOL_RANGE_MPEG;
             (*c).colorspace = ff::AVColorSpace::AVCOL_SPC_BT709;
             (*c).color_primaries = ff::AVColorPrimaries::AVCOL_PRI_BT709;
             (*c).color_trc = ff::AVColorTransferCharacteristic::AVCOL_TRC_BT709;
             let mut options = match self.backend {
                 Backend::QuickSync => {
-                    // HRD conformance off: the bitrate then changes on the open encoder (F1).
+                    // HRD conformance off: the bitrate then changes on the open encoder.
                     (*c).strict_std_compliance = -1; // FF_COMPLIANCE_UNOFFICIAL
                     (*c).rc_buffer_size = quick_sync_buffer_bits(bitrate);
                     Options::new(&[
@@ -406,7 +404,7 @@ impl FrameEncoder for D3d11Encoder {
 
     fn set_size_cap(&mut self, cap: Option<(u32, u32)>) {
         self.cap = cap;
-        // Asked for now, so a still screen takes it up too (D14's rule, through `resize_due`).
+        // Asked for now, so a still screen takes it up too (through `resize_due`).
         // Not before the first frame: that one decides on the provisional opening.
         if !self.provisional
             && let (Some(input), Some(open)) = (self.input, &self.open)
@@ -421,7 +419,7 @@ impl FrameEncoder for D3d11Encoder {
     }
 
     fn size_floor(&self) -> Option<f64> {
-        // H264 only on Windows (AV1 step 2, Q2).
+        // H264 only on Windows.
         Some(crate::video::FLOOR_H264)
     }
 
@@ -474,10 +472,10 @@ impl D3d11Encoder {
 
         // SAFETY: frames are owned by guards, the codec lives in self.
         unsafe {
-            // The frame rate stays: one frame in `divisor` gets `divisor` times the budget (N8).
+            // The frame rate stays: one frame in `divisor` gets `divisor` times the budget.
             let given = bitrate.saturating_mul(u64::from(divisor.max(1)));
             if open.bitrate != given {
-                // Changed on the open encoder with the next frame, no key frame (F1, F3).
+                // Changed on the open encoder with the next frame, no key frame.
                 (*open.codec.0).bit_rate = given as i64;
                 (*open.codec.0).rc_max_rate = self.backend.max_rate(given) as i64;
                 open.bitrate = given;
@@ -530,7 +528,7 @@ impl D3d11Encoder {
 impl Drop for D3d11Encoder {
     fn drop(&mut self) {
         // The preview's worker, the encoder and the kept frame go before the textures and frames
-        // contexts they hold (W7).
+        // contexts they hold.
         self.preview = None;
         self.open = None;
         self.kept = None;
@@ -608,7 +606,7 @@ mod tests {
     }
 
     /// On the GPU: run with `--ignored`. The bitrate changed on the open encoder, and one frame
-    /// in two with twice the bitrate (N8), bring no key frame and no new encoder.
+    /// in two with twice the bitrate, bring no key frame and no new encoder.
     #[test]
     #[ignore]
     fn gpu_a_bitrate_change_in_place_brings_no_key_frame() {
@@ -655,7 +653,6 @@ mod tests {
         assert_eq!(quick_sync_buffer_bits(25_000_000), 6_250_000);
         assert_eq!(quick_sync_buffer_bits(4_000_000), 2_000_000);
         assert_eq!(buffer_bits(4_000_000), 1_000_000);
-        // M7.5 C8.
         assert_eq!(encoded_size(100, 50, (1920, 1080), LIMITS), (160, 120));
         assert_eq!(encoded_size(5120, 2880, (8192, 8192), LIMITS), (4096, 2304));
         assert_eq!(encoded_size(1920, 1080, (1920, 1080), LIMITS), (1920, 1080));

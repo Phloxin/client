@@ -1,6 +1,6 @@
 // The pattern producer and the VA-API encoder without the transport, for measuring them alone:
 //   cargo run --release --features encode --example pattern_encode -- \
-//     width=1920 height=1080 fps=60 frames=600 bitrate=6000000 still=0 out=/tmp/p.h264 csv=/tmp/p.csv \
+//     width=1920 height=1080 fps=60 frames=600 bitrate=6000000 still=0 out=p.h264 csv=p.csv \
 //     [keys=120,121] [rates=300:2000000] [filler=1] [kind=screen|stress] [divs=300:3]
 // Writes the Annex-B stream and one CSV line per frame: frame,bytes,key,encode_ms.
 

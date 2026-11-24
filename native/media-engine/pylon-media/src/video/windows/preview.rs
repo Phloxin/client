@@ -1,4 +1,4 @@
-// The preview's Windows half (.plans/native-media-engine-m6-preview-3-windows.md, W2 to W4): the
+// The preview's Windows half: the
 // picture area of the frame the encoder converted (an NV12 D3D11 texture of the converter's pool,
 // BT.709 limited range, possibly taller than the picture) copied to a staging texture of the
 // preview's own, read back without ever waiting on the GPU inside a device call, scaled down and
@@ -35,13 +35,13 @@ use crate::{
     },
 };
 
-/// The longest the preview waits for the copy to be readable before it skips the frame (W3).
+/// The longest the preview waits for the copy to be readable before it skips the frame.
 const MAP_WAIT: Duration = Duration::from_millis(200);
-/// The sleep between two tries, outside any device call (W3).
+/// The sleep between two tries, outside any device call.
 const MAP_RETRY: Duration = Duration::from_millis(2);
 
-/// A reference to a converted frame and the size of the picture in it (the texture may be taller,
-/// M7 plan F7), for the preview's thread.
+/// A reference to a converted frame and the size of the picture in it (the texture may be taller),
+/// for the preview's thread.
 pub(crate) struct PreviewFrame {
     pub(crate) frame: Frame,
     pub(crate) width: u32,
@@ -136,7 +136,7 @@ impl PreviewMaker for D3d11Preview {
         let source = unsafe { ID3D11Texture2D::from_raw_borrowed(&raw) }.ok_or_else(|| Error::Media("the converted frame has no texture".into()))?;
         // Only the picture area: the rows below it (Quick Sync's rounding to 16) are not copied.
         let area = D3D11_BOX { left: 0, top: 0, front: 0, right: size.0, bottom: size.1, back: 1 };
-        // Timed from the copy to the map (A1).
+        // Timed from the copy to the map.
         let readable = times.start();
         self.device.with_context(|context| {
             // SAFETY: both textures are on this device, NV12, and the box is inside the source and
@@ -147,7 +147,7 @@ impl PreviewMaker for D3d11Preview {
                 context.Flush();
             }
         });
-        // W3: the map never waits inside the device call; the waiting is a sleep between tries.
+        // The map never waits inside the device call; the waiting is a sleep between tries.
         let began = Instant::now();
         let mapped = loop {
             let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
@@ -160,7 +160,7 @@ impl PreviewMaker for D3d11Preview {
                 Err(e) if e.code() == DXGI_ERROR_WAS_STILL_DRAWING => {
                     if began.elapsed() >= MAP_WAIT {
                         times.done(Stage::Readable, readable);
-                        // Not an error: the next frame offered is tried (W3, R4).
+                        // Not an error: the next frame offered is tried.
                         tracing::debug!(ms = began.elapsed().as_millis() as u64, "preview skipped, the GPU did not finish the copy in time");
                         return Ok(None);
                     }

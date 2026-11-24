@@ -32,7 +32,7 @@ pub(crate) struct Wire {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Format {
     H264 { profile_level_id: u32 },
-    /// The Dependency Descriptor's extension id comes with AV1 (Q3).
+    /// The Dependency Descriptor's extension id comes with AV1.
     Av1 { profile: u8, level_idx: u8, tier: u8, dependency_descriptor_id: u8 },
 }
 
@@ -63,7 +63,7 @@ fn is_mime(codec: &Value, mime: &str) -> bool {
 }
 
 impl Wire {
-    /// The entry of `codec` and its RTX in the router's capabilities (Q3).
+    /// The entry of `codec` and its RTX in the router's capabilities.
     pub fn from_router_capabilities(caps: &Value, codec: VideoCodec) -> Result<Self, Error> {
         let name = codec.name();
         let codecs = caps["codecs"]

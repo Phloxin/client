@@ -210,8 +210,8 @@ export function e2eeMediaReady() {
 }
 
 // ─── Native encoders ─────────────────────────────────────────────
-// A native encoder seals this client's frames with its own sender key and a kid of its own
-// (.plans/native-media-engine.md, decision 11). The key is secret: it goes to the encoder and
+// A native encoder seals this client's frames with its own sender key and a kid of its own.
+// The key is secret: it goes to the encoder and
 // nowhere else, never into a log or an error.
 
 // Registers an engine with the worker. Resolves with { engine, format, epoch, key, kid, counter }

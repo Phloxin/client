@@ -1,10 +1,9 @@
 #!/bin/bash
-# FFmpeg 9.0.2 for the engine on Windows (.plans/native-media-engine-m7-4-windows-encoder.md, N2),
-# built in a portable MSYS2 (UCRT64, gcc). From the M7 step 7.3b spike's m73b-ffbuild.sh
-# (native/encoder-spike/windows/scripts/), with ../nvenc-reconfig-no-idr.patch applied before the
-# build and without the spike's Quick Sync patch. How to run it: ffmpeg.md beside this script.
+# FFmpeg 9.0.2 for the engine on Windows,
+# built in a portable MSYS2 (UCRT64, gcc), with ../nvenc-reconfig-no-idr.patch applied before the
+# build. How to run it: ffmpeg.md beside this script.
 #
-# Lean (.plans/native-media-engine-packaging.md, W1): --disable-everything, and only what the
+# Lean: --disable-everything, and only what the
 # engine calls on Windows is enabled again (pylon-media/src/video/windows/, jpeg.rs, ffi.rs):
 #   - libavcodec, libavutil, and libavfilter with no filter in it (ffmpeg-sys-next links all three:
 #     pylon-media's Cargo.toml asks for its avcodec and avfilter features; Windows calls no filter);

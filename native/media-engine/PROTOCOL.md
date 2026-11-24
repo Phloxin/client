@@ -1,7 +1,7 @@
 # pylon-media-host control protocol, version 1
 
 `pylon-media-host` is the sidecar around the `pylon-media` engine. A host program (the probe
-today, the Electron main process later) starts it and drives one sending session with JSON
+or the Electron main process) starts it and drives one sending session with JSON
 lines.
 
 ```
@@ -25,10 +25,10 @@ pylon-media-host [--insecure-plain] [--test-hooks]
   milliseconds (a decimal number, 0 or more), `frame` for one frame time of the capture's
   `max_fps` (none without it), or `off` to leave Windows' own (16.0 ms seen). Default one frame
   time, the same as `frame`. On a monitor above 60 Hz one frame time pushes a frame that comes a
-  little early to the next refresh (a 240 Hz desktop: 41 to 55 frames sent a second of 60 asked;
+  little early to the next refresh (a 240 Hz monitor: 41 to 55 frames sent a second of 60 asked;
   a game at 144 Hz: 48 to 58, 45 to 51 with `off`), and `1` gives them back (60.0 sent of 169.5
-  captured; 52.0 to 55.6 in the game). It is not the default because on a 60 Hz laptop with the
-  client any interval under a frame time took about 9 frames a second from the shared content
+  captured; 52.0 to 55.6 in the game). It is not the default because on a 60 Hz laptop with an integrated GPU any
+  interval under a frame time took about 9 frames a second from the shared content
   (53 to 54 a second down to 42 to 45 with 1 ms, 45.5 with 10 ms) while the viewer gained 3.
   Read once, logged (`capture least update interval`); anything else is logged and the default
   used.
@@ -309,7 +309,7 @@ it again.
 {"preview": {"fps": 0, "max_width": 480, "max_height": 270}}
 ```
 
-**The stream preview** (an addition): with `"mode": "stream"` the preview is the share itself,
+**The stream preview**: with `"mode": "stream"` the preview is the share itself,
 the frames the encoder made, as `preview_frame` messages instead of JPEG pictures.
 
 | field | type | |
@@ -523,8 +523,8 @@ request).
 
 ### `preview_frame`
 
-One encoded frame of the stream preview, after a `preview` request with `"mode": "stream"` (an
-addition). Only to the host, never logged: it is the sharer's screen in the clear.
+One encoded frame of the stream preview, after a `preview` request with `"mode": "stream"`.
+Only to the host, never logged: it is the sharer's screen in the clear.
 
 | field | |
 |---|---|

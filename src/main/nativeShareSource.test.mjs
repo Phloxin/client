@@ -7,7 +7,7 @@ import {
   nativeShareSourceKind
 } from './nativeShareSource.js'
 
-// The platform kinds of T3: where the screen can be shared natively, and where not.
+// The platform kinds: where the screen can be shared natively, and where not.
 const PLATFORMS = {
   windows: { platform: 'win32', sessionType: undefined, isAbsolute: win32.isAbsolute },
   wayland: { platform: 'linux', sessionType: 'wayland', isAbsolute: posix.isAbsolute },

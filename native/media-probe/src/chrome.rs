@@ -1,4 +1,4 @@
-// The Chromium baseline for probe 3 (.plans/native-media-engine-m5a-encoder.md, D26): Chromium,
+// The Chromium baseline for probe 3: Chromium,
 // through mediasoup-client in the viewer harness, is the sender on the same node, behind the same
 // relay, through the same phases. It shows what a mature estimator does on this rig.
 //

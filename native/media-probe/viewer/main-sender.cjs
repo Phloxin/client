@@ -1,4 +1,4 @@
-// Electron main for probe 3's Chromium baseline (D26): one window with the sender page.
+// Electron main for probe 3's Chromium baseline: one window with the sender page.
 const { app, BrowserWindow } = require('electron')
 const { join } = require('node:path')
 

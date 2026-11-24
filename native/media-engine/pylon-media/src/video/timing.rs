@@ -1,13 +1,13 @@
-// A frame's capture time from the compositor's own clock (smooth T1, T2b, T3).
+// A frame's capture time from the compositor's own clock.
 
 use std::time::{Duration, Instant};
 
-/// A compositor time this long before the arrival is still trusted (T2b).
+/// A compositor time this long before the arrival is still trusted.
 const MAX_BEFORE: Duration = Duration::from_secs(1);
-/// A compositor time this long after the arrival is still trusted (T2b: Windows gives the time
+/// A compositor time this long after the arrival is still trusted (Windows gives the time
 /// the frame is shown, a few milliseconds ahead).
 const MAX_AFTER: Duration = Duration::from_millis(50);
-/// Capture times of one capture are at least this far apart (T3).
+/// Capture times of one capture are at least this far apart.
 const STEP: Duration = Duration::from_millis(1);
 
 /// The capture times of one capture.
@@ -21,7 +21,7 @@ pub(crate) struct CaptureClock {
 impl CaptureClock {
     /// The capture time of a frame that arrived at `arrived`, with the compositor's time
     /// `composed` for it (`None` when the compositor gave none). A compositor time from 1 s
-    /// before the arrival to 50 ms after it is the capture time as such (T2b).
+    /// before the arrival to 50 ms after it is the capture time as such.
     pub(crate) fn stamp(&mut self, arrived: Instant, composed: Option<Instant>) -> Instant {
         let mut at = match composed {
             Some(composed) if composed + MAX_BEFORE >= arrived && composed <= arrived + MAX_AFTER => composed,

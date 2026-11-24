@@ -1,5 +1,5 @@
 // Which source a native screen share uses, from PYLON_NATIVE_SHARE and the "Native screen
-// share" setting (.plans/native-media-engine-setting.md, T3 and T4). Kept apart from
+// share" setting. Kept apart from
 // mediaEngine.js, which imports Electron, so it can be tested.
 //
 // PYLON_NATIVE_SHARE wins when it is set:
@@ -7,10 +7,10 @@
 //   file:<absolute path>           an Annex-B H264 file (IVF for AV1)
 //   pattern:<width>x<height>@<fps> the sidecar's test pattern
 //   off                            no native share, whatever the setting says
-// Any other value is off, as before the setting existed. Unset (or empty), the setting on
+// Any other value is off. Unset (or empty), the setting on
 // means the screen, where the screen can be shared natively.
 
-// Whether the setting can do anything on this system: Windows, and Linux on Wayland (T3).
+// Whether the setting can do anything on this system: Windows, and Linux on Wayland.
 export function nativeShareSettingApplies({ platform, sessionType }) {
   return platform === 'win32' || (platform === 'linux' && sessionType === 'wayland')
 }

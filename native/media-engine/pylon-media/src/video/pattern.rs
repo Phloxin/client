@@ -1,4 +1,4 @@
-// The test pattern (D13): frames drawn on the CPU as BGRx, on any system. The producer that
+// The test pattern: frames drawn on the CPU as BGRx, on any system. The producer that
 // hands them to the encoder is the system's own (`linux/pattern.rs`, `windows/pattern.rs`).
 
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -81,7 +81,7 @@ impl Scenes {
 /// Which picture the pattern shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PatternKind {
-    /// What a screen shows (D21): still colour bars with a small moving box, and every 10
+    /// What a screen shows: still colour bars with a small moving box, and every 10
     /// seconds a cut to or from a page of text that scrolls slowly after 2 seconds.
     #[default]
     Screen,

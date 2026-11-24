@@ -1,4 +1,4 @@
-// A share's stream is handed back to the backend (op 11, EndStream) once (smooth A5.2). Kept
+// A share's stream is handed back to the backend (op 11, EndStream) once. Kept
 // apart from soup/screenShare.js so it can be tested on its own.
 //   node --test src/renderer/src/lib/soup/shareStream.test.mjs
 //
@@ -8,7 +8,7 @@
 // Chromium's path, which asks for its own) is handed back once in its turn.
 
 // The share's new stream key (op 12). The marker of the key handed back goes with the old one,
-// so a key the backend issues again is handed back again (fix C6).
+// so a key the backend issues again is handed back again.
 export function setShareStreamKey(ctx, key) {
   ctx.streamKey = key
   ctx.releasedStreamKey = null

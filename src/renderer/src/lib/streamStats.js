@@ -226,8 +226,8 @@ export function extractSendAudioMetrics(report, previous) {
   return { metrics, snapshot }
 }
 
-// The standard deviation in milliseconds of the time between frames over a window (smooth
-// A2.2): from the deltas of totalInterFrameDelay and totalSquaredInterFrameDelay (seconds) and
+// The standard deviation in milliseconds of the time between frames over a window:
+// from the deltas of totalInterFrameDelay and totalSquaredInterFrameDelay (seconds) and
 // of framesDecoded, the count Chromium records the delays over. Null when a field is missing
 // at either end, a counter went backwards, or fewer than two frames came. An even 60 is about
 // 0, frames alternating 17 and 33 ms are 8.

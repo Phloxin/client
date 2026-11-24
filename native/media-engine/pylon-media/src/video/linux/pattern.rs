@@ -1,4 +1,4 @@
-// The test pattern producer (D13): frames drawn on the CPU as BGRx, uploaded to a VA surface on
+// The test pattern producer: frames drawn on the CPU as BGRx, uploaded to a VA surface on
 // a display of its own and exported as a DMA-BUF, the way a compositor hands one over.
 
 use std::time::{Duration, Instant};

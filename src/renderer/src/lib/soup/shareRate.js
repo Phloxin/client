@@ -1,10 +1,10 @@
-// The screen share's frame rate in the console (.plans/native-media-engine-fps-line.md, F1 to
-// F5): while a share is live, one line every 5 seconds,
+// The screen share's frame rate in the console,
+// while a share is live: one line every 5 seconds,
 //   [Soup] Screen share: <sent> fps sent, <width>x<height>, <path> <codec>
 // <path> is `native` or `Chromium`. A Chromium share adds the encoder in brackets after the
 // codec when the statistics name it, either share adds `, <n> captured` when the statistics
 // carry what the capture delivered. A native share adds `, frame gap <median>/<p95>/<max> ms,
-// <n> long` when the engine sent the time between frames (smooth A2.1, frameGapSummary). The
+// <n> long` when the engine sent the time between frames (frameGapSummary). The
 // rate is the frames sent between two samples divided by the real time between them. Pure: the
 // callers sample (nativeShare.js from the sidecar's `stats`, screenShare.js from the sender's
 // outbound-rtp) and log.
@@ -14,8 +14,8 @@
 //                   ids are not compared
 //   frames          frames sent, a total
 //   ms              when, in milliseconds (the sidecar's ms_since_open, a report's timestamp)
-//   width, height   the size sent (native: the engine's encoded size when it reports one,
-//                   smooth S10); missing prints ?x?
+//   width, height   the size sent (native: the engine's encoded size when it reports one);
+//                   missing prints ?x?
 //   capturedFrames  frames the capture delivered, a total (native), or
 //   capturedFps     the capture's own rate (Chromium's media-source)
 //   encoder         the encoder's name (Chromium)
@@ -64,7 +64,7 @@ export function shareRateLine(previous, current, { path, codec, frameGap = null 
 
 // A sample from the sidecar's `stats` event (native/media-engine/PROTOCOL.md) and the size the
 // renderer knows is sent, or null. The size the engine encodes at wins when the stats carry it
-// (a share for motion gets smaller on a tight link, smooth S10).
+// (a share for motion gets smaller on a tight link).
 export function nativeRateSample(stats, size) {
   if (!stats) return null
   const encoded = finite(stats.encoded_width) && finite(stats.encoded_height)
@@ -84,7 +84,7 @@ export function nativeRateSample(stats, size) {
   }
 }
 
-// The frame gap over a line's window (smooth A2.1), from `seconds`, the per-second frameGap of
+// The frame gap over a line's window, from `seconds`, the per-second frameGap of
 // the native samples after `start`: the median of their medians, the highest p95, the highest
 // max, and the long gaps since `start` (the engine's count is a total). Null when no second
 // had an interval.

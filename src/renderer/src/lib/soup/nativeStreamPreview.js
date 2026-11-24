@@ -1,28 +1,26 @@
-// The sharer's own picture of a native share as the share itself (smooth P5, P6 of
-// .plans/native-media-engine-smooth-rp.md): the sidecar hands over the frames its encoder made,
+// The sharer's own picture of a native share as the share itself: the sidecar hands over the
+// frames its encoder made,
 // before they are encrypted (`preview_frame` messages, through main), and a WebCodecs
 // VideoDecoder here turns them back into pictures for the preview's canvas. Full size, full
 // frame rate, what viewers get. The frames are the sharer's screen: they are never logged, stored
 // or sent anywhere but the decoder. The JPEG pictures of nativePreview.js stay the fallback.
 // Pure parts and a decoder that takes VideoDecoder from its caller, so it can be tested.
 
-// More chunks than this waiting in the decoder (P5). Half a second at 60 (smooth Q2 of
-// .plans/native-media-engine-smooth-rp2.md).
+// More chunks than this waiting in the decoder. Half a second at 60.
 export const STREAM_QUEUE_LIMIT = 30
 // The decoder is behind once its queue has been over STREAM_QUEUE_LIMIT for this long without a
-// break: frames that queued during a stall of the page come in a burst, which drains sooner (fix
-// C3).
+// break: frames that queued during a stall of the page come in a burst, which drains sooner.
 export const STREAM_BEHIND_MS = 500
 // A kept picture not drawn by an animation frame within this is drawn from a timer: a hidden or
-// minimised main window gets no animation frames while the pop-out may show the tile (fix C9).
+// minimised main window gets no animation frames while the pop-out may show the tile.
 export const PAINT_TIMER_MS = 50
-// A key frame is asked for at most this often (P5).
+// A key frame is asked for at most this often.
 export const KEY_FRAME_ASK_MS = 2000
-// Why a stream preview that fell behind twice in one share gives way to the JPEGs (Q3).
+// Why a stream preview that fell behind twice in one share gives way to the JPEGs.
 export const STREAM_BEHIND = 'stream preview could not keep up'
 
 // Set once a stream preview fell back for not keeping up: later shares of this run of the app
-// start with the JPEG preview (Q5). Cleared only by a restart (and the test hooks).
+// start with the JPEG preview. Cleared only by a restart (and the test hooks).
 let behindThisRun = false
 
 export function streamPreviewBehind() {
@@ -33,7 +31,7 @@ export function setStreamPreviewBehind(value) {
   behindThisRun = value === true
 }
 
-// What P6 asks isConfigSupported about, before any frame said more: Constrained Baseline at
+// What isConfigSupported is asked about, before any frame said more: Constrained Baseline at
 // level 4.2 (1080p at 60) for H264, Main profile 8 bit at level 4.0 for AV1.
 export const STREAM_PROBE_CODECS = { H264: 'avc1.42E02A', AV1: 'av01.0.08M.08' }
 
@@ -203,8 +201,7 @@ export function streamCodecString(codec, bytes) {
 }
 
 // The most a decoder that may be software (no-preference) is given: 1080p at 60, in pixels a
-// second. A 4K60 stream preview decoded in software starved the renderer until the share ended
-// (fix C7).
+// second. A 4K60 stream preview decoded in software starved the renderer until the share ended.
 export const SOFTWARE_PIXEL_RATE = 1920 * 1080 * 60
 
 const pixelRate = (shape) => {
@@ -212,11 +209,11 @@ const pixelRate = (shape) => {
   return Number.isFinite(rate) ? rate : 0
 }
 
-// P6: { mode: 'stream', hardwareAcceleration } when this VideoDecoder says it decodes the share's
+// { mode: 'stream', hardwareAcceleration } when this VideoDecoder says it decodes the share's
 // codec ('H264' or 'AV1'), first with the hardware, else { mode: 'jpeg', reason }. With only
 // 'no-preference' the stream only when the share's `shape` ({ width, height, fps }, what is sent)
-// is at most SOFTWARE_PIXEL_RATE (C7; no shape: no limit). After a stream preview of this run
-// could not keep up, always the JPEGs (Q5).
+// is at most SOFTWARE_PIXEL_RATE (no shape: no limit). After a stream preview of this run
+// could not keep up, always the JPEGs.
 export async function chooseStreamPreview(VideoDecoder, shareCodec, shape = null) {
   if (behindThisRun) {
     return { mode: 'jpeg', reason: `a ${STREAM_BEHIND} earlier in this run of the app` }
@@ -249,16 +246,16 @@ export async function chooseStreamPreview(VideoDecoder, shareCodec, shape = null
   return { mode: 'jpeg', reason: `${codec} is not supported` }
 }
 
-// Decodes the stream preview's frames and draws the newest picture at the display's rate (P5,
-// smooth Q1): the decoder's output only keeps the newest VideoFrame (the one it replaces is
+// Decodes the stream preview's frames and draws the newest picture at the display's rate:
+// the decoder's output only keeps the newest VideoFrame (the one it replaces is
 // closed, counted as superseded), and an animation frame draws it, so drawing never queues and
 // never runs more often than the display. Nothing is decoded before a key frame; the decoder is
 // configured from the first key frame (and again when a key frame's codec string differs). It is
 // behind when more than STREAM_QUEUE_LIMIT chunks have waited at every frame offered over
-// STREAM_BEHIND_MS (fix C3). The first time it is behind it is reset and a key frame is asked for
+// STREAM_BEHIND_MS. The first time it is behind it is reset and a key frame is asked for
 // (at most once every KEY_FRAME_ASK_MS; an ask that would come sooner is sent when that time is
-// up, if still waiting); the second time it falls back with STREAM_BEHIND and marks this run
-// (Q3, Q5). Any failure calls onFallback(reason) once, and nothing more is decoded.
+// up, if still waiting); the second time it falls back with STREAM_BEHIND and marks this run.
+// Any failure calls onFallback(reason) once, and nothing more is decoded.
 //   VideoDecoder, EncodedVideoChunk   WebCodecs (fakes in tests)
 //   hardwareAcceleration   what chooseStreamPreview found
 //   draw(frame)      puts a VideoFrame on the canvas (it is closed after)
@@ -269,7 +266,7 @@ export async function chooseStreamPreview(VideoDecoder, shareCodec, shape = null
 //   requestFrame(fn), cancelFrame(id)   the display's frame clock, for tests
 // counts: received, decoded, drawn, superseded (replaced by a newer one before it was drawn),
 // skipped (waiting for a key frame), late (canDraw() false), behind (passes of the limit),
-// resets, keyAsks, timed (drawn by the timer, no animation frame came first: C9).
+// resets, keyAsks, timed (drawn by the timer, no animation frame came first).
 export function createStreamPreviewDecoder({
   VideoDecoder,
   EncodedVideoChunk,
@@ -302,10 +299,10 @@ export function createStreamPreviewDecoder({
   let closed = false
   let lastAskAt = -Infinity
   let askTimer = null
-  // Since when every frame offered found the queue over the limit, or null (C3).
+  // Since when every frame offered found the queue over the limit, or null.
   let overSince = null
-  // The newest decoded picture not drawn yet, and the animation frame that will draw it (Q1), and
-  // the timer that draws it if no animation frame comes first (fix C9).
+  // The newest decoded picture not drawn yet, and the animation frame that will draw it, and
+  // the timer that draws it if no animation frame comes first.
   let kept = null
   let frameRequest = null
   let paintTimer = null
@@ -394,8 +391,8 @@ export function createStreamPreviewDecoder({
     if (overSince != null && now() - overSince >= STREAM_BEHIND_MS) {
       overSince = null
       counts.behind++
-      // Behind twice in one share: the JPEGs, for this share and the rest of the run (Q3, Q5).
-      // So the preview costs the viewers at most this share's one key frame ask (Q4).
+      // Behind twice in one share: the JPEGs, for this share and the rest of the run.
+      // So the preview costs the viewers at most this share's one key frame ask.
       if (counts.behind > 1) {
         behindThisRun = true
         fail(STREAM_BEHIND)

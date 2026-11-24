@@ -1,4 +1,4 @@
-// Screen capture on Linux (.plans/native-media-engine-m5b-capture.md): the desktop portal's
+// Screen capture on Linux: the desktop portal's
 // ScreenCast for the choice, PipeWire for the frames, which reach the encoder as the DMA-BUFs
 // the compositor made (or, when that cannot be agreed, from memory through an upload).
 //
@@ -82,7 +82,7 @@ pub(crate) struct Held {
     pub buffer: Option<BufferId>,
     pub raw: Raw,
     /// The frame's capture time: when the compositor composed it, or when it arrived when the
-    /// compositor gave no usable time (smooth T1, T2).
+    /// compositor gave no usable time.
     pub arrived: Instant,
 }
 
@@ -104,7 +104,7 @@ pub(crate) struct State {
     pub taken: u64,
     pub dropped: u64,
     pub path: &'static str,
-    /// Frames timed by their arrival (smooth T2), in all.
+    /// Frames timed by their arrival, in all.
     pub untimed: u64,
 }
 
@@ -262,7 +262,7 @@ fn finish(shared: &Shared) {
 /// The longest a wait goes without looking at the stop flag.
 const WAIT_STEP: Duration = Duration::from_millis(20);
 
-/// The capture's frames for one pipeline (D5): the newest wins, no more than `fps` a second.
+/// The capture's frames for one pipeline: the newest wins, no more than `fps` a second.
 pub struct CaptureProducer {
     shared: Arc<Shared>,
     interval: Duration,

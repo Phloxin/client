@@ -26,18 +26,18 @@ pub enum Request {
     Close {},
 }
 
-/// What the sharer's preview should be, after `open` (M6 preview step 1, R1).
+/// What the sharer's preview should be, after `open`.
 #[derive(Debug, Deserialize, PartialEq, Eq)]
 pub struct Preview {
     pub fps: u32,
     pub max_width: u32,
     pub max_height: u32,
-    /// JPEG pictures (the default) or the encoded share itself (smooth P1).
+    /// JPEG pictures (the default) or the encoded share itself.
     #[serde(default)]
     pub mode: PreviewMode,
 }
 
-/// What the preview is made of (smooth P1).
+/// What the preview is made of.
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PreviewMode {
@@ -55,7 +55,7 @@ impl Preview {
     }
 }
 
-/// A preview picture as base64 of its JPEG, which is never printed (R5).
+/// A preview picture as base64 of its JPEG, which is never printed.
 #[derive(Serialize)]
 #[serde(transparent)]
 pub struct Jpeg(pub String);
@@ -66,8 +66,7 @@ impl std::fmt::Debug for Jpeg {
     }
 }
 
-/// An encoded frame of the stream preview as base64, in the clear, which is never printed
-/// (smooth P2).
+/// An encoded frame of the stream preview as base64, in the clear, which is never printed.
 #[derive(Serialize)]
 #[serde(transparent)]
 pub struct FrameData(pub String);
@@ -78,7 +77,7 @@ impl std::fmt::Debug for FrameData {
     }
 }
 
-/// What to capture before `open` (M5b D8). Only the screen for now.
+/// What to capture before `open`. Only the screen for now.
 #[derive(Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum Capture {
@@ -91,10 +90,10 @@ pub struct ScreenCapture {
     /// Windows.
     #[serde(default)]
     pub restore_token: Option<String>,
-    /// The most frames a second to ask of the compositor, the share's rate (M5b D13).
+    /// The most frames a second to ask of the compositor, the share's rate.
     #[serde(default)]
     pub max_fps: Option<u32>,
-    /// What to capture on Windows, the primary monitor when absent (M7.5 C1). Ignored on Linux,
+    /// What to capture on Windows, the primary monitor when absent. Ignored on Linux,
     /// where the portal's dialog chooses.
     #[serde(default)]
     #[cfg_attr(not(all(feature = "capture", target_os = "windows")), allow(dead_code))]
@@ -195,17 +194,17 @@ pub enum PatternKind {
 pub struct Video {
     pub start_bitrate: u64,
     pub max_bitrate: u64,
-    /// `"H264"` (when absent) or `"AV1"` (AV1 step 2, Q1). Anything else does not parse, which
+    /// `"H264"` (when absent) or `"AV1"`. Anything else does not parse, which
     /// makes `open` fail.
     #[serde(default)]
     pub codec: Codec,
     /// What gives way first on a tight link: `"rate"` (when absent, the behaviour before) or
-    /// `"size"` (smooth S1). Anything else does not parse, which makes `open` fail.
+    /// `"size"`. Anything else does not parse, which makes `open` fail.
     #[serde(default)]
     pub degrade: GiveWay,
 }
 
-/// What gives way first, as the protocol names it (smooth S1).
+/// What gives way first, as the protocol names it.
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum GiveWay {
@@ -355,7 +354,7 @@ pub enum Reply {
     CaptureReady {
         width: u32,
         height: u32,
-        /// DRM fourcc text, `XR24` for BGRx. `null` on Windows (M7.5 C12).
+        /// DRM fourcc text, `XR24` for BGRx. `null` on Windows.
         format: Option<String>,
         /// The DMA-BUF modifier as `0x` and 16 hex digits (a number would not survive
         /// JavaScript), `null` on the memory path.
@@ -387,13 +386,13 @@ pub enum Reply {
     Closed {
         reason: &'static str,
     },
-    /// One preview picture (R1), only to the host (R5).
+    /// One preview picture, only to the host.
     Preview {
         width: u32,
         height: u32,
         jpeg: Jpeg,
     },
-    /// One encoded frame of the stream preview (smooth P2), only to the host. Its `t_ms` is the
+    /// One encoded frame of the stream preview, only to the host. Its `t_ms` is the
     /// frame's capture time since `open`, not when it was written.
     PreviewFrame {
         codec: &'static str,
@@ -549,7 +548,7 @@ mod tests {
             parse(r#"{"capture": {"screen": {"restore_token": null, "max_fps": 60}}}"#),
             Ok(Request::Capture(Capture::Screen(ScreenCapture { restore_token: None, max_fps: Some(60), target: None })))
         );
-        // Windows' targets (M7.5 C1).
+        // Windows' targets.
         assert_eq!(
             parse(r#"{"capture": {"screen": {"max_fps": 60, "target": {"window": 1050122}}}}"#),
             Ok(Request::Capture(Capture::Screen(ScreenCapture { restore_token: None, max_fps: Some(60), target: Some(CaptureTarget::Window(1_050_122)) })))
@@ -583,7 +582,7 @@ mod tests {
             json!({"capture_ready": {"width": 2560, "height": 1440, "format": "XR24", "modifier": "0x0200000018fb1b03",
                    "dmabuf": true, "restore_token": "t", "t_ms": 1.0}})
         );
-        // As on Windows (M7.5 C12).
+        // As on Windows.
         assert_eq!(
             line(Reply::CaptureReady { width: 1920, height: 1080, format: None, modifier: None, dmabuf: false, restore_token: None }),
             json!({"capture_ready": {"width": 1920, "height": 1080, "format": null, "modifier": null,
@@ -609,7 +608,7 @@ mod tests {
 
     #[test]
     fn stream_preview_parses_and_its_frames_print() {
-        // The mode is optional, `jpeg` when left out (smooth P1).
+        // The mode is optional, `jpeg` when left out.
         assert_eq!(
             parse(r#"{"preview": {"fps": 10, "max_width": 1280, "max_height": 720, "mode": "stream"}}"#),
             Ok(Request::Preview(Preview { fps: 10, max_width: 1280, max_height: 720, mode: PreviewMode::Stream }))
@@ -622,7 +621,7 @@ mod tests {
             parse(r#"{"preview": {"fps": 10, "max_width": 1280, "max_height": 720, "mode": "png"}}"#),
             Err(ParseError::Invalid { .. })
         ));
-        // The frame keeps its own t_ms, the capture time (smooth P2).
+        // The frame keeps its own t_ms, the capture time.
         let frame = Reply::PreviewFrame { codec: "h264", key: true, t_ms: 1234.5, data: FrameData("AAAAAWdC".into()) };
         let line = frame.to_line(9999.0);
         assert_eq!(

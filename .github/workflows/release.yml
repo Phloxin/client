@@ -118,8 +118,8 @@ jobs:
         shell: bash
         run: node -e "require('./native/audio-capture/index.js'); console.log('audio-capture addon loaded')"
 
-      # The media engine's sidecar for the Windows installer (.plans/native-media-engine-packaging.md,
-      # W3): our lean LGPL FFmpeg from native/media-engine/windows/ffmpeg-build.sh, cached on the
+      # The media engine's sidecar for the Windows installer: our lean LGPL FFmpeg from
+      # native/media-engine/windows/ffmpeg-build.sh, cached on the
       # recipe and its patch (a hit skips MSYS2 and the build), then the sidecar built against it
       # and staged with its DLLs and licence texts into native/media-engine/dist, which
       # electron-builder.yml ships as resources/media-engine.

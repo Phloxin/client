@@ -46,7 +46,6 @@ test('a synchronous play failure is safe during a focus transition', () => {
   )
 })
 
-// B1 of .plans/native-media-engine-preview-cost.md.
 import { selfScreenTileSeen } from './selfPreviewPlayback.js'
 
 const SEEN = { windowFocused: true, documentVisible: true }
@@ -104,7 +103,7 @@ test('popped out, the pop-out window decides, whatever the main window shows', (
   assert.equal(selfScreenTileSeen({ ...out, popoutWindow: SEEN, watchedTileIds: new Set() }), false)
 })
 
-// Fix C8: whether the self screen tile is watched (Stop previewing not chosen).
+// Whether the self screen tile is watched (Stop previewing not chosen).
 import { selfScreenTileWatched } from './selfPreviewPlayback.js'
 
 test('selfScreenTileWatched: the self screen tile there and watched (C8)', () => {

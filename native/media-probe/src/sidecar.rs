@@ -14,7 +14,7 @@ use tokio::{
     process::{Child, ChildStdin, Command},
 };
 
-/// The sharer's preview requests the probes send (M6 preview step 1, R8): PROBE_PREVIEW, a comma
+/// The sharer's preview requests the probes send: PROBE_PREVIEW, a comma
 /// separated list of `<seconds after open>@<fps>:<width>x<height>`, or `<fps>:<width>x<height>`
 /// for one request right after `open`. Unset: no preview is asked for. Anything unreadable ends
 /// the probe.
@@ -114,8 +114,8 @@ pub fn write_previews(log: &SidecarLog, dir: Option<&std::path::Path>) -> String
     summary
 }
 
-/// The video codec the probes ask the sidecar for: PROBE_CODEC, `H264` (the default) or `AV1`
-/// (AV1 step 2, Q11). Anything else ends the probe.
+/// The video codec the probes ask the sidecar for: PROBE_CODEC, `H264` (the default) or `AV1`.
+/// Anything else ends the probe.
 pub fn codec() -> String {
     let codec = std::env::var("PROBE_CODEC").unwrap_or_else(|_| "H264".into());
     if codec != "H264" && codec != "AV1" {
@@ -220,7 +220,7 @@ impl Sidecar {
         write_line(&self.stdin, &message).await
     }
 
-    /// Sends PROBE_PREVIEW's requests on their schedule, from now (R8). Returns whether any are.
+    /// Sends PROBE_PREVIEW's requests on their schedule, from now. Returns whether any are.
     pub fn start_preview_schedule(&self) -> bool {
         let Some(schedule) = preview_schedule() else {
             return false;
@@ -273,7 +273,7 @@ impl Sidecar {
     }
 
     /// `hello`, then `capture` of the screen, waiting up to `timeout` for the person in the
-    /// portal's dialog. `target` (Windows, M7.5 C15) names what to capture, as the protocol's
+    /// portal's dialog. `target` (Windows) names what to capture, as the protocol's
     /// JSON. Returns `capture_ready`.
     pub async fn hello_and_capture(
         &mut self,

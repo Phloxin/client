@@ -57,7 +57,6 @@ test('previewRequestBody passes on only the protocol fields', () => {
   )
 })
 
-// B5 of .plans/native-media-engine-preview-cost.md.
 import { previewOverride } from './previewRequest.js'
 
 test('previewOverride reads <width>x<height>@<fps> within the limits', () => {
@@ -93,7 +92,7 @@ test('previewRequestBody passes a mode of jpeg or stream, and refuses any other 
   const ok = { fps: 10, max_width: 1280, max_height: 720 }
   assert.deepEqual(previewRequestBody({ ...ok, mode: 'stream' }), { ...ok, mode: 'stream' })
   assert.deepEqual(previewRequestBody({ ...ok, mode: 'jpeg' }), { ...ok, mode: 'jpeg' })
-  // No mode: the body is today's, with no mode in it.
+  // No mode: the body has no mode in it.
   assert.deepEqual(previewRequestBody(ok), ok)
   for (const bad of ['png', '', null, 1]) {
     assert.equal(previewRequestBody({ ...ok, mode: bad }), null, JSON.stringify(bad))

@@ -1,10 +1,10 @@
-// Probe 2: the sending half (.plans/native-media-engine-probe2.md, and
-// .plans/native-media-engine-m2-engine.md D21). The `pylon-media-host` sidecar sends H264 from a
+// Probe 2: the sending half.
+// The `pylon-media-host` sidecar sends H264 from a
 // file, encrypted with kid 1 unless the variant is `plain`, to the node. The node gives a viewer a
 // receive transport and a consumer. With PROBE_CODEC=AV1 the sidecar sends AV1 instead: from an
-// IVF file (`--ivf`) or the pattern through the encoder (AV1 step 2, Q11).
+// IVF file (`--ivf`) or the pattern through the encoder.
 //
-// Signalling with viewer/run.mjs is JSON lines on stdin and stdout (probe 2's D4). Everything for
+// Signalling with viewer/run.mjs is JSON lines on stdin and stdout. Everything for
 // a human goes to stderr, the sidecar's log included.
 
 use std::{
@@ -24,14 +24,13 @@ use crate::{
     sidecar::{Sidecar, SidecarLog},
 };
 
-// Probe 2's D5.
 const STREAM_KEY: &str = "probe-stream";
 const STREAM_TAG: u8 = 3;
 const KID: u8 = 1;
 const EPOCH: u8 = 0;
 const FORMAT: u8 = 1;
 // `pylon_e2ee::key::sender_key(b"media-probe static root", 1001)` in base64, the sender key of
-// probe 2's D5. Worked out once with pylon-e2ee, which the probe no longer depends on.
+// probe 2. Worked out once with pylon-e2ee, which the probe does not depend on.
 const SENDER_KEY: &str = "1A/XDsQEv9natW8fWSIG8w==";
 
 const FPS: u64 = 30;
@@ -41,9 +40,9 @@ enum Variant {
     Plain,
     Encrypted,
     WrongKey,
-    /// The pattern through the hardware encoder, encrypted as `Encrypted` (M5a D18).
+    /// The pattern through the hardware encoder, encrypted as `Encrypted`.
     Encoder,
-    /// The screen, captured through the portal, encrypted as `Encrypted` (M5b T2).
+    /// The screen, captured through the portal, encrypted as `Encrypted`.
     Screen,
 }
 
@@ -169,7 +168,7 @@ pub async fn run(args: &[String]) -> i32 {
     });
     let opened = if variant == Variant::Screen {
         // The portal's dialog waits for a person, up to five minutes. With SCREEN_TARGET (the
-        // capture's `target` as the protocol's JSON, a Windows sidecar: M7.5 C15) nobody is
+        // capture's `target` as the protocol's JSON, a Windows sidecar) nobody is
         // asked, so it is not waited for.
         let token = std::env::var("RESTORE_TOKEN_FILE").ok().and_then(|p| std::fs::read_to_string(p).ok()).map(|t| t.trim().to_owned());
         let target = match std::env::var("SCREEN_TARGET") {
@@ -225,7 +224,7 @@ pub async fn run(args: &[String]) -> i32 {
         eprintln!("start: {error}");
         return 1;
     }
-    // PROBE_PREVIEW asks for the sharer's preview from here (M6 preview step 3: the screen source
+    // PROBE_PREVIEW asks for the sharer's preview from here (the screen source
     // on Windows); the pictures go to PROBE_PREVIEW_OUT when set.
     let previewing = sidecar.start_preview_schedule();
     let log = sidecar.log.clone();
@@ -471,8 +470,8 @@ async fn stats(
     })
 }
 
-/// `open.video`: as before AV1 for H264, with `codec` for AV1, and DEGRADE
-/// (`size` or `rate`) as `degrade` when set, as probe 3 (smooth U3).
+/// `open.video` for H264, with `codec` for AV1, and DEGRADE
+/// (`size` or `rate`) as `degrade` when set, as probe 3.
 fn video(start_bps: u64, max_bps: u64, codec: &str) -> Value {
     let mut video = json!({ "start_bitrate": start_bps, "max_bitrate": max_bps });
     if codec != "H264" {

@@ -1,8 +1,8 @@
-// The Windows preview's work on the CPU (.plans/native-media-engine-m6-preview-3-windows.md, W2,
-// W4, W5): the picture area of an NV12 frame read back from the GPU, scaled down by an area
-// average into a planar YUV 4:2:0 picture, and that small picture converted from BT.709 limited
-// range (what the encoder's video processor writes) to BT.601 full range (what a JPEG viewer
-// takes JPEG's YCbCr to be, as on Linux). Portable, so its tests run on any system.
+// The Windows preview's work on the CPU: the picture area of an NV12 frame read back from the GPU,
+// scaled down by an area average into a planar YUV 4:2:0 picture, and that small picture
+// converted from BT.709 limited range (what the encoder's video processor writes) to BT.601
+// full range (what a JPEG viewer takes JPEG's YCbCr to be, as on Linux).
+// Portable, so its tests run on any system.
 
 use crate::Error;
 
@@ -73,8 +73,8 @@ fn divisor(count: usize) -> (u64, u64) {
 }
 
 /// One plane of `CHANNELS` interleaved samples (1 for Y, 2 for NV12's UV) scaled down by an area
-/// average into one output plane per channel (`(plane, stride)`), in integers (preview cost step,
-/// part C1). For each output row: the source rows of its box are added into one row of sums,
+/// average into one output plane per channel (`(plane, stride)`), in integers.
+/// For each output row: the source rows of its box are added into one row of sums,
 /// sample by sample; the sums are made running totals per channel along the row, so that a
 /// column box's sum is the difference of two of them; that is divided by multiplying with the
 /// box's reciprocal. Same results as the per-box average it replaced.
@@ -156,9 +156,9 @@ fn fixed_to_byte(value: i32) -> u8 {
     (value >> FIXED_SHIFT).clamp(0, 255) as u8
 }
 
-/// Converts `planes` in place from BT.709 limited range to BT.601 full range (W4). Each Y sample is
+/// Converts `planes` in place from BT.709 limited range to BT.601 full range. Each Y sample is
 /// converted with the chroma of its 2x2 block. Chroma depends on chroma alone: a grey stays grey
-/// in both matrices. In integers (preview cost step, part C1): the matrix in 1/65536 of a level,
+/// in both matrices. In integers: the matrix in 1/65536 of a level,
 /// each chroma sample's part of Y worked out once for its block, the loops plain enough for the
 /// compiler to run several samples at once.
 pub(crate) fn bt709_limited_to_jpeg(planes: &mut Planes) {
@@ -412,8 +412,8 @@ mod tests {
         assert_eq!((picture.y(0, 0), picture.y(1, 0), picture.uv(0, 0)), (255, 0, (128, 128)));
     }
 
-    /// The code `shrink` and `bt709_limited_to_jpeg` replaced (M6 preview step 3), kept as the
-    /// reference the new code is checked against (preview cost step, part C2).
+    /// The code `shrink` and `bt709_limited_to_jpeg` replaced, kept as the
+    /// reference the new code is checked against.
     mod reference {
         use super::super::{Nv12, Planes, boxes, bt709_to_bt601};
 
@@ -510,7 +510,7 @@ mod tests {
         largest
     }
 
-    /// Part C2: for each source (picture size, texture pitch and rows) and each output size, the
+    /// For each source (picture size, texture pitch and rows) and each output size, the
     /// new shrink, then the new conversion, against the reference's, on noise and on smooth
     /// content. Returns the largest difference seen in each stage.
     fn compare(cases: &[((usize, usize, usize, usize), &[(usize, usize)])]) -> (u8, u8) {

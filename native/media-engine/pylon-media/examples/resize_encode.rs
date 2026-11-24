@@ -1,6 +1,6 @@
-// The encoder fed frames whose size keeps changing, as a window being resized gives them (M5b
-// D14), from pattern producers of several sizes instead of a capture:
-//   cargo run --release --features encode --example resize_encode -- out=/tmp/r.h264 csv=/tmp/r.csv
+// The encoder fed frames whose size keeps changing, as a window being resized gives them,
+// from pattern producers of several sizes instead of a capture:
+//   cargo run --release --features encode --example resize_encode -- out=r.h264 csv=r.csv
 // For 1.5 s the size changes every 3 frames, then it stays at the last one. Writes the stream and
 // one CSV line per frame: frame,ms,input,bytes,key,encode_ms.
 

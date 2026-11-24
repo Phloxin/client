@@ -36,7 +36,7 @@ function localProducers() {
   return list
 }
 
-// Each consumer's inter-frame counters at the last rtcStats() (smooth A2.3): a sample's
+// Each consumer's inter-frame counters at the last rtcStats(): a sample's
 // frameJitterMs is over the time since then, the first one over the consumer's life.
 const interFrameBefore = new Map()
 const NO_FRAMES = { totalInterFrameDelay: 0, totalSquaredInterFrameDelay: 0, framesDecoded: 0 }
@@ -125,11 +125,11 @@ function nativeShare() {
 // canvas size, kept past its end, and how many preview events reached this window per sidecar
 // pid and when the last one did (heard here too, so a picture after a share's end is seen).
 // Counts and times only, never a picture. `streamBehind`: a stream preview of this run could not
-// keep up, so shares start with the JPEGs (smooth Q5); setStreamPreviewBehind sets or clears it.
+// keep up, so shares start with the JPEGs; setStreamPreviewBehind sets or clears it.
 const previewEvents = new Map()
 
 function listenForPreviews() {
-  // `frames` and `lastFrameAt` for the stream preview's frames (smooth P5).
+  // `frames` and `lastFrameAt` for the stream preview's frames.
   window.api?.mediaEngine?.onEvent?.((event) => {
     if (event?.type !== 'preview' && event?.type !== 'preview_frame') return
     const entry = previewEvents.get(event.pid) ?? {

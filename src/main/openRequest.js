@@ -37,7 +37,7 @@ export function openBody(params, source) {
       start_bitrate: params?.video?.start_bitrate,
       max_bitrate: params?.video?.max_bitrate,
       codec,
-      // A share for motion gives way on size first (smooth S1, fix C1).
+      // A share for motion gives way on size first.
       ...(DEGRADES.has(degrade) ? { degrade } : {})
     }
   }

@@ -1,5 +1,5 @@
-// Kids for native encoders, which seal this client's frames with its own sender key
-// (.plans/native-media-engine.md, decision 11). Kid 0 is the worker's own transforms. A kid is
+// Kids for native encoders, which seal this client's frames with its own sender key.
+// Kid 0 is the worker's own transforms. A kid is
 // never handed out twice under one sending key, so a (key, kid, counter) triple is never reused
 // even when an encoder restarts or a key comes back. Keys are known here only by
 // sendingKeyHash, never by their bytes.

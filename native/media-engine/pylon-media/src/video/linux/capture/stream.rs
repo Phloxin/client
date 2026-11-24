@@ -1,4 +1,4 @@
-// The PipeWire side (D4, D5, D7): a video stream on the portal's remote, DMA-BUFs first in the
+// The PipeWire side: a video stream on the portal's remote, DMA-BUFs first in the
 // formats the video processor takes with the modifiers the GPU imports, memory buffers when
 // that cannot be agreed or the compositor's DMA-BUFs do not import.
 
@@ -30,7 +30,7 @@ pub(super) struct Context {
     pub source: &'static str,
     pub cursor: &'static str,
     pub portal_size: Option<(i32, i32)>,
-    /// The most frames a second to ask of the compositor (M5b D13).
+    /// The most frames a second to ask of the compositor.
     pub max_fps: Option<u32>,
 }
 
@@ -103,7 +103,7 @@ fn format_pod(format: VideoFormat, modifiers: Option<&[u64]>, max_fps: Option<u3
         ))),
     ));
     if let Some(fps) = max_fps {
-        // At most the share's rate from the compositor (M5b D13).
+        // At most the share's rate from the compositor.
         properties.push(property(
             spa_sys::SPA_FORMAT_VIDEO_maxFramerate,
             Value::Choice(ChoiceValue::Fraction(Choice(
@@ -172,7 +172,7 @@ struct Negotiated {
 }
 
 /// Whether a newly agreed format needs its DMA-BUFs checked again: only for another format or
-/// modifier, not for another size (M5b D4).
+/// modifier, not for another size.
 fn needs_check(before: Option<Negotiated>, now: Negotiated, verified: bool) -> bool {
     if now.modifier.is_none() {
         return false;
@@ -203,15 +203,15 @@ struct Local {
     format_at: Option<Instant>,
     /// What the capture ended with, once it has.
     over: Option<CaptureEvent>,
-    /// The frames' capture times, DMA-BUF and memory frames alike (smooth T1 to T3), and
-    /// whether the first frame said which clock it is timed by (T4).
+    /// The frames' capture times, DMA-BUF and memory frames alike, and
+    /// whether the first frame said which clock it is timed by.
     clock: CaptureClock,
     clock_logged: bool,
 }
 
 /// How long before `now` (both CLOCK_MONOTONIC, in nanoseconds) the compositor composed a
-/// frame whose header says `pts` (smooth T1), negative for a `pts` after `now`: the capture
-/// clock's window decides whether it is trusted (fix E10). `None` for a `pts` of 0 or less (T2).
+/// frame whose header says `pts`, negative for a `pts` after `now`: the capture
+/// clock's window decides whether it is trusted. `None` for a `pts` of 0 or less.
 fn frame_age(pts: i64, now: u64) -> Option<i64> {
     let now = i64::try_from(now).ok()?;
     if pts <= 0 {
@@ -221,7 +221,7 @@ fn frame_age(pts: i64, now: u64) -> Option<i64> {
 }
 
 /// The compositor's time for a frame that arrived at `arrived` and is `age_ns` old (ahead of
-/// the arrival when negative), as Windows does (fix E10).
+/// the arrival when negative), as Windows does.
 fn composed_at(arrived: Instant, age_ns: i64) -> Option<Instant> {
     let span = Duration::from_nanos(age_ns.unsigned_abs());
     if age_ns >= 0 { arrived.checked_sub(span) } else { arrived.checked_add(span) }
@@ -582,7 +582,7 @@ pub(super) fn run(remote: OwnedFd, node_id: u32, context: Context, shared: Arc<S
                         break;
                     }
                     let arrived = Instant::now();
-                    // The compositor's time for the frame against the same clock now (smooth T1).
+                    // The compositor's time for the frame against the same clock now.
                     // SAFETY: just dequeued; the stream is this callback's own.
                     let age = unsafe { header_pts(buffer).and_then(|pts| frame_age(pts, pw::sys::pw_stream_get_nsec(stream.as_raw_ptr()))) };
                     // SAFETY: just dequeued.
@@ -653,7 +653,7 @@ pub(super) fn run(remote: OwnedFd, node_id: u32, context: Context, shared: Arc<S
                         continue;
                     };
                     // The frame's capture time: when the compositor composed it, else its
-                    // arrival (smooth T1 to T3), the clock said once (T4).
+                    // arrival, the clock said once.
                     let mut held = held;
                     let untimed = {
                         let mut l = l5.borrow_mut();
@@ -839,20 +839,20 @@ mod tests {
         let now = 5_000_000_000u64;
         assert_eq!(frame_age(4_996_000_000, now), Some(4_000_000));
         assert_eq!(frame_age(now as i64, now), Some(0));
-        // A pts of 0 or less is no time (T2).
+        // A pts of 0 or less is no time.
         assert_eq!(frame_age(0, now), None);
         assert_eq!(frame_age(-1, now), None);
         assert_eq!(frame_age(1, u64::MAX), None);
-        // Old, but an age: the capture clock decides it is too old (T2).
+        // Old, but an age: the capture clock decides it is too old.
         assert_eq!(frame_age(1, now), Some(now as i64 - 1));
-        // After now: an age ahead, for the capture clock to judge (fix E10).
+        // After now: an age ahead, for the capture clock to judge.
         assert_eq!(frame_age(now as i64 + 1, now), Some(-1));
         assert_eq!(frame_age(5_010_000_000, now), Some(-10_000_000));
     }
 
     #[test]
     fn a_pts_ahead_of_now_is_trusted_within_the_capture_clocks_window() {
-        // Fix E10: a compositor that stamps the time a frame is shown, as Windows does.
+        // A compositor that stamps the time a frame is shown, as Windows does.
         let arrived = Instant::now() + Duration::from_secs(10);
         let ms = |v: u64| Duration::from_millis(v);
         assert_eq!(composed_at(arrived, 4_000_000), Some(arrived - ms(4)));

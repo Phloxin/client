@@ -1,4 +1,4 @@
-// Priority without elevation (smooth B3): the sidecar asks Windows for a higher CPU class, the
+// Priority without elevation: the sidecar asks Windows for a higher CPU class, the
 // media threads join MMCSS, and the D3D11 device asks for GPU priority. Never the realtime class,
 // no helper, no registry. Every failure is logged and ignored. A no-op off Windows (and on
 // Windows without `encode`, which brings the `windows` crate).
@@ -9,10 +9,10 @@
 //   else above normal).
 // - `gpu-thread`: also `IDXGIDevice::SetGPUThreadPriority(7)` on the capture's device.
 // - `all` (the default): also the process's GPU scheduling class (high).
-// `all` is the default although on the Intel laptop no level sent more frames than `off`: every
+// `all` is the default although on an Intel laptop no level sent more frames than `off`: every
 // call succeeds without elevation, `all` cost the load test's load nothing and cut the encode
 // time by about a tenth, and the case it is for (an NVIDIA card held by an uncapped game) could
-// not be measured there (smooth B3, decision revised by Fable at 04:55).
+// not be measured there.
 
 /// What `PYLON_MEDIA_PRIORITY` asks for, in the order each adds to the one before.
 #[cfg_attr(not(all(target_os = "windows", feature = "encode")), allow(dead_code))]
@@ -24,7 +24,7 @@ enum Level {
     All,
 }
 
-/// The level when the variable is not set (smooth B3, revised at 04:55).
+/// The level when the variable is not set.
 #[cfg_attr(not(all(target_os = "windows", feature = "encode")), allow(dead_code))]
 const DEFAULT: Level = Level::All;
 

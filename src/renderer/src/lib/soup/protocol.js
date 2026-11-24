@@ -1314,7 +1314,7 @@ export const StreamRequest = Object.freeze({
 
 // Whether an op 0 error ({ op, code, message }) is an EndStream refused as stream_not_found: the
 // stream is gone, which is what was asked for. At the end of a native share the backend can end
-// the stream before our op 11 reaches it (smooth P10). Nothing to show.
+// the stream before our op 11 reaches it. Nothing to show.
 export function isEndOfGoneStream(error) {
   return error?.op === StreamOp.END_STREAM && error?.code === 'stream_not_found'
 }

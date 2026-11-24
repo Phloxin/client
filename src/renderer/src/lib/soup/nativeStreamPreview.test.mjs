@@ -279,7 +279,7 @@ function setup({ drawable = true, draw = null } = {}) {
 const key = (t) => ({ codec: 'h264', key: true, t_ms: t, data: b64(IDR) })
 const delta = (t) => ({ codec: 'h264', key: false, t_ms: t, data: b64(DELTA) })
 
-// The queue over the limit at a frame and at one STREAM_BEHIND_MS later: behind (fix C3).
+// The queue over the limit at a frame and at one STREAM_BEHIND_MS later: behind.
 function fallBehind({ decoder, fake, advance }, t) {
   fake.decodeQueueSize = STREAM_QUEUE_LIMIT + 1
   decoder.offer(delta(t))
@@ -540,14 +540,14 @@ test('a closed decoder takes nothing and never falls back', () => {
   assert.equal(fake.chunks.length, 1)
 })
 
-// Fix C3 (finding 3 of .plans/native-media-engine-smooth-review-client.md): behind only after the
+// Behind only after the
 // queue has been over the limit for STREAM_BEHIND_MS without a break.
 test('a burst that drains within 500 ms is not behind (C3)', () => {
   assert.equal(STREAM_BEHIND_MS, 500)
   const { decoder, fake, log, advance } = setup()
   decoder.offer(key(0))
   // A stall of the page: 90 frames come back to back, the queue passes the limit and drains
-  // in about 0.1 s (the review's model: four decodes at a time, 3 ms each).
+  // in about 0.1 s (a model of four decodes at a time, 3 ms each).
   for (let n = 1; n <= 90; n++) {
     decoder.offer(delta(n))
     advance(1)
@@ -605,7 +605,7 @@ test('over the limit at every frame for 500 ms is behind, counted from the first
   setStreamPreviewBehind(false)
 })
 
-// Fix C7: a decoder that may be software gets the stream only up to 1080p at 60.
+// A decoder that may be software gets the stream only up to 1080p at 60.
 import { PAINT_TIMER_MS, SOFTWARE_PIXEL_RATE } from './nativeStreamPreview.js'
 
 test('with only no-preference the stream preview is chosen up to 1080p at 60, else the JPEGs (C7)', async () => {
@@ -644,7 +644,7 @@ test('with only no-preference the stream preview is chosen up to 1080p at 60, el
     (await chooseStreamPreview(software, 'AV1', { width: 3840, height: 2160, fps: 60 })).reason,
     'no hardware decoder for av01.0.08M.08, and 3840x2160 at 60 is over 1080p at 60 for software'
   )
-  // The hardware takes any size, as before.
+  // The hardware takes any size.
   assert.deepEqual(
     await chooseStreamPreview(hardware, 'H264', { width: 3840, height: 2160, fps: 120 }),
     {
@@ -654,7 +654,7 @@ test('with only no-preference the stream preview is chosen up to 1080p at 60, el
   )
 })
 
-// Fix C9: the kept picture is drawn from a timer when no animation frame comes first.
+// The kept picture is drawn from a timer when no animation frame comes first.
 test('a kept picture is drawn after 50 ms when no animation frame comes (C9)', () => {
   assert.equal(PAINT_TIMER_MS, 50)
   const { decoder, fake, log, advance, vsync, pendingFrames } = setup()

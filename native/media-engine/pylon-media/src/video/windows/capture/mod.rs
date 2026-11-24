@@ -1,7 +1,7 @@
-// Screen capture on Windows (.plans/native-media-engine-m7-5-windows-capture.md): Windows Graphics
-// Capture of the monitor or the window the host names (no dialog, the client's own picker chose:
-// C1), its frames handed to the encoder as the capture's own BGRA textures on the encoder's D3D11
-// device, with no copy (C3 to C5).
+// Screen capture on Windows: Windows Graphics
+// Capture of the monitor or the window the host names (no dialog, the client's own picker chose),
+// its frames handed to the encoder as the capture's own BGRA textures on the encoder's D3D11
+// device, with no copy.
 //
 // One thread of its own makes the item, the device, the frame pool and the session
 // (`session.rs`) and then waits for the stop. Frames arrive on the pool's own threads (it is free
@@ -28,7 +28,7 @@ use crate::{
 
 pub use session::{init_runtime, make_dpi_aware};
 
-/// What to capture (C1).
+/// What to capture.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CaptureTarget {
     /// A window, by its handle.
@@ -44,9 +44,9 @@ pub enum CaptureEvent {
     Ready(CaptureInfo),
     /// The capture could not start or broke.
     Failed(String),
-    /// The captured content changed its size (a resized window, C6).
+    /// The captured content changed its size (a resized window).
     Changed { width: u32, height: u32 },
-    /// The item went away by itself (the window closed, C11).
+    /// The item went away by itself (the window closed).
     Ended,
 }
 
@@ -58,12 +58,12 @@ pub struct CaptureInfo {
     pub height: u32,
     /// `monitor` or `window`.
     pub source: &'static str,
-    /// The adapter the capture and the encoder share (C4).
+    /// The adapter the capture and the encoder share.
     pub adapter: String,
-    /// Whether Windows still draws its border around the captured item (C10), `None` when it
+    /// Whether Windows still draws its border around the captured item, `None` when it
     /// did not say.
     pub border: Option<bool>,
-    /// The capture's least time between frames in milliseconds (C9), `None` when Windows has no
+    /// The capture's least time between frames in milliseconds, `None` when Windows has no
     /// such setting.
     pub min_update_ms: Option<f64>,
 }
@@ -76,9 +76,9 @@ pub(crate) struct State {
     pub delivered: u64,
     pub taken: u64,
     pub dropped: u64,
-    /// Frames timed by their arrival, not by the compositor's clock (smooth B1.3).
+    /// Frames timed by their arrival, not by the compositor's clock.
     pub untimed: u64,
-    /// Gaps between the pool's frames over 25 ms, and the longest gap (smooth B2).
+    /// Gaps between the pool's frames over 25 ms, and the longest gap.
     pub late_gaps: u64,
     pub longest_gap: Duration,
 }
@@ -103,8 +103,8 @@ pub struct ScreenCapture {
 
 impl ScreenCapture {
     /// Starts capturing `target` (the primary monitor when `None`), at most `max_fps` frames a
-    /// second where Windows can limit it (C9). A target that does not exist is an error here
-    /// (C2). `events` hears the outcome and what follows, from the capture's threads.
+    /// second where Windows can limit it. A target that does not exist is an error here.
+    /// `events` hears the outcome and what follows, from the capture's threads.
     pub fn start(
         target: Option<CaptureTarget>,
         max_fps: Option<u32>,
@@ -113,7 +113,7 @@ impl ScreenCapture {
         if let Some(fps) = max_fps {
             check_fps(fps)?;
         }
-        // Kept for the process from here on, if the process did not do it at its start (M7.5b Z2).
+        // Kept for the process from here on, if the process did not do it at its start.
         init_runtime();
         let resolved = session::resolve(target).map_err(Error::invalid)?;
         let shared = Arc::new(Shared::default());
@@ -137,7 +137,7 @@ impl ScreenCapture {
     }
 
     /// The hardware encoder on the capture's device, for frames up to `max_width` by
-    /// `max_height`, opened for the item's size (C7). Only once the capture has started.
+    /// `max_height`, opened for the item's size. Only once the capture has started.
     pub fn encoder(&self, fps: u32, max_width: u32, max_height: u32, max_bitrate: u64) -> Result<D3d11Encoder, Error> {
         let started = self.shared.started.lock().map_err(|_| Error::Media("capture state poisoned".into()))?.clone();
         let (device, size) = started.ok_or_else(|| Error::Media("the capture has not started".into()))?;
@@ -188,7 +188,7 @@ fn finish(shared: &Shared) {
 const WAIT_STEP: Duration = Duration::from_millis(20);
 
 /// The capture's frames for one pipeline: the newest wins, no more than `fps` a second (as on
-/// Linux, M5b D5).
+/// Linux).
 pub struct CaptureProducer {
     shared: Arc<Shared>,
     interval: Duration,
@@ -262,8 +262,8 @@ impl FrameProducer for CaptureProducer {
 }
 
 /// The screen source of the protocol: the capture through the hardware encoder, scaled down to
-/// fit `max_width` by `max_height` (and up to the least size, C8), at most `fps` frames a second.
-/// H264 only (AV1 step 2, Q2).
+/// fit `max_width` by `max_height` (and up to the least size), at most `fps` frames a second.
+/// H264 only.
 pub fn capture_source(
     capture: &ScreenCapture,
     fps: u32,
@@ -379,7 +379,7 @@ mod tests {
         assert!(matches!(producer.next_frame(&control, soon()).unwrap(), Produced::End));
     }
 
-    /// In the desktop session, on the GPU: run with `--ignored` through runtask.ps1, capturing a
+    /// In the desktop session, on the GPU: run with `--ignored`, capturing a
     /// still window of the test's own (its handle in PYLON_TEST_CAPTURE_WINDOW), else the primary
     /// monitor with nothing moving on it. Frames stop coming, and a key frame asked for then is
     /// made from the kept frame. With PYLON_TEST_H264 set, the stream is written there.

@@ -1,4 +1,4 @@
-// The requests waiting on a sidecar (engineWaiters.js, smooth A5.1).
+// The requests waiting on a sidecar (engineWaiters.js).
 //   node --test src/main/engineWaiters.test.mjs
 import assert from 'node:assert/strict'
 import test from 'node:test'

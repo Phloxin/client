@@ -1,10 +1,10 @@
-// Probe 2's driver (.plans/native-media-engine-probe2.md, D3). For each variant it starts the
+// Probe 2's driver. For each variant it starts the
 // probe binary and a bare Electron viewer under Xvfb, relays the signalling between them,
 // samples 5 s and 15 s after the consumer is resumed, and writes runs/<variant>/.
 //
 //   node run.mjs [plain] [encrypted] [wrong-key] [encoder] [screen] [--no-sei]
 //
-// `screen` (M5b T2) captures the real screen through the portal, so it waits up to five
+// `screen` captures the real screen through the portal, so it waits up to five
 // minutes for a person in the portal's dialog and is not in the default set. SCREEN_MAX
 // (<w>x<h>, default 1920x1080), SCREEN_FPS (default 60) and SCREEN_TARGET (a Windows sidecar's
 // capture target as JSON, then nobody is waited for) go to the probe. SAMPLE_SECONDS (default 10)
@@ -12,11 +12,11 @@
 //
 // Needs ffmpeg (once, for the H264 file), Xvfb's DISPLAY, the client's nix shell (Electron via
 // ELECTRON_OVERRIDE_DIST_PATH) and a built probe: PROBE_BIN, or
-// $CARGO_TARGET_DIR/release/media-probe, or /tmp/media-probe-target/release/media-probe.
+// $CARGO_TARGET_DIR/release/media-probe.
 // The probe starts the pylon-media-host sidecar: PYLON_MEDIA_HOST, or the one beside the probe.
 // --no-sei uses a copy of the file without SEI and writes runs/<variant>-nosei/.
 //
-// PROBE_CODEC=AV1 (AV1 step 2, Q11) sends AV1: the file variants play an IVF file of the same
+// PROBE_CODEC=AV1 sends AV1: the file variants play an IVF file of the same
 // testsrc2 made by FFmpeg's libaom (made once, CPU only), `encoder` the pattern through the
 // hardware encoder. The viewer's transform is told `video/AV1`, and runs go to
 // runs/<variant>-av1/. The probe reads PROBE_CODEC itself.
@@ -34,7 +34,7 @@ const { _electron: electron } = createRequire(join(CLIENT, 'e2e/package.json'))(
 const { build } = await import('vite')
 
 const VARIANTS = ['plain', 'encrypted', 'wrong-key', 'encoder', 'screen']
-// The `encoder` variant (M5a D18): the pattern at 1920x1080 and 60 through the hardware encoder,
+// The `encoder` variant: the pattern at 1920x1080 and 60 through the hardware encoder,
 // encrypted as `encrypted`, so the numbers scale to 600 frames between the samples.
 const SIZE = { encoder: [1920, 1080] }
 const FRAMES = { encoder: 570 }
@@ -52,7 +52,7 @@ const TRANSFORM = {
   source: { tag: 3, streamKey: 'probe-stream' }
 }
 const FIRST_SAMPLE_MS = 5_000
-// SAMPLE_SECONDS sets the time between the samples (default 10, M7.5's gate runs 60).
+// SAMPLE_SECONDS sets the time between the samples (default 10).
 const SECOND_SAMPLE_MS = FIRST_SAMPLE_MS + 1000 * Number(process.env.SAMPLE_SECONDS ?? 10)
 
 const args = process.argv.slice(2)
@@ -107,7 +107,7 @@ function ffmpeg(args) {
   execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', ...args], { stdio: 'inherit' })
 }
 
-// D6: testsrc2, 1280x720, 30 fps, 20 s, Baseline, GOP 30, no B-frames, one slice per frame,
+// The H264 file: testsrc2, 1280x720, 30 fps, 20 s, Baseline, GOP 30, no B-frames, one slice per frame,
 // parameter sets at every key frame, about 2.5 Mbps, Annex-B. SEI is left as x264 writes it.
 function makeH264() {
   if (!existsSync(H264)) {
@@ -137,7 +137,7 @@ function makeH264() {
   return noSei ? H264_NO_SEI : H264
 }
 
-// The AV1 counterpart of D6: testsrc2, 1280x720, 30 fps, 20 s, a key frame every 30 frames,
+// The AV1 counterpart of the H264 file: testsrc2, 1280x720, 30 fps, 20 s, a key frame every 30 frames,
 // about 2.5 Mbps, libaom in real-time mode with no look-ahead (so one shown frame per temporal
 // unit and no hidden frames), IVF.
 function makeIvf() {
@@ -336,7 +336,7 @@ async function startViewer(dir) {
   return { app, page, pageErrors, write, close }
 }
 
-// ─── Judging (D10) ───────────────────────────────────────────────
+// ─── Judging ───────────────────────────────────────────────
 
 // The encoded size for a capture under a limit, as the encoder works it out: scaled down to
 // fit, never up, even sides (pylon-media's output_size).
@@ -347,8 +347,8 @@ function outputSize(width, height, maxWidth, maxHeight) {
   return [even(Math.round(width * scale)), even(Math.round(height * scale))]
 }
 
-// T2: the real screen. The frame numbers scale to what went to the encoder between the samples
-// (the sidecar's capture_frames_taken, Fable's answer of 2026-11-11), with what the compositor
+// The real screen. The frame numbers scale to what went to the encoder between the samples
+// (the sidecar's capture_frames_taken), with what the compositor
 // delivered recorded beside it.
 function judgeScreen(first, second, pageErrors) {
   const a = first.viewer.inbound ?? {}

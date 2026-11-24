@@ -1,6 +1,5 @@
-// libavcodec's VA-API H264 or AV1 encoder behind a DMA-BUF import and the VA-API video processor
-// (D1, D3, D4, D6, D7), as the encoder spike's m6 program drives them. AV1 (`av1_vaapi`) as AV1
-// step 2 Q8 sets it up: the same context and rules, with the settings of the AV1 spike.
+// libavcodec's VA-API H264 or AV1 encoder behind a DMA-BUF import and the VA-API video processor.
+// AV1 (`av1_vaapi`) uses the same context and rules, with its own settings.
 
 use std::{ffi::CString, ptr, sync::Arc, time::Instant};
 
@@ -95,8 +94,8 @@ fn encoder_name(codec: VideoCodec) -> &'static std::ffi::CStr {
     }
 }
 
-/// AV1's level, 5.1 as `seq_level_idx` 13, the router's `level-idx` (Q8). Unset, `av1_vaapi`
-/// guesses one from size, rate and bitrate (4.1 at 1080p60, AV1 spike section 1).
+/// AV1's level, 5.1 as `seq_level_idx` 13, the router's `level-idx`. Unset, `av1_vaapi`
+/// guesses one from size, rate and bitrate (4.1 at 1080p60).
 const AV1_LEVEL: i32 = 13;
 
 /// An open h264_vaapi or av1_vaapi encoder.
@@ -110,14 +109,14 @@ struct Open {
     fresh: bool,
 }
 
-/// The rate control buffer, 250 ms of the configured bitrate (D22). It bounds a key frame.
+/// The rate control buffer, 250 ms of the configured bitrate. It bounds a key frame.
 fn buffer_bits(bitrate: u64) -> i32 {
     (bitrate / 4).min(i32::MAX as u64) as i32
 }
 
 /// libavcodec's `h264_vaapi` (or `av1_vaapi`) fed with DMA-BUFs.
 pub struct VaapiEncoder {
-    /// The sharer's preview, started on the first offer (R2). It goes first: its frames are
+    /// The sharer's preview, started on the first offer. It goes first: its frames are
     /// references into the import's pool.
     preview: Option<PreviewWorker<PreviewFrame>>,
     config: EncoderConfig,
@@ -125,13 +124,12 @@ pub struct VaapiEncoder {
     va: Buffer,
     drm: Buffer,
     limits: EncodeLimits,
-    /// The last converted frame, for a key frame when nothing new comes (M5b D6). It goes
+    /// The last converted frame, for a key frame when nothing new comes. It goes
     /// before the import whose pool it is from.
     kept: Option<Frame>,
     import: Option<Import>,
     resizes: Resizes,
-    /// The cap on the encoded picture of the size ladder, `None` for the share's own maximum
-    /// (smooth S2, S8).
+    /// The cap on the encoded picture of the size ladder, `None` for the share's own maximum.
     cap: Option<(u32, u32)>,
     /// The newest input frame's size.
     input: Option<(u32, u32)>,
@@ -152,7 +150,7 @@ impl VaapiEncoder {
         Self::with_codec(config, VideoCodec::H264)
     }
 
-    /// As `new`, for `codec`. The size limits are the driver's for that codec (Q8).
+    /// As `new`, for `codec`. The size limits are the driver's for that codec.
     pub fn with_codec(config: EncoderConfig, codec: VideoCodec) -> Result<Self, Error> {
         if config.width < 16 || config.height < 16 || config.width > 4096 || config.height > 4096 {
             return Err(Error::invalid(format!("size {}x{} is not in 16 to 4096", config.width, config.height)));
@@ -200,15 +198,15 @@ impl VaapiEncoder {
     }
 
     /// The size an input of `input` is encoded at under the smaller of the share's maximum and
-    /// `cap` (smooth S8).
+    /// `cap`.
     fn wanted_under(&self, cap: Option<(u32, u32)>, input: (u32, u32)) -> (u32, u32) {
         let (width, height) = cap.map_or((self.config.width, self.config.height), |(w, h)| (self.config.width.min(w), self.config.height.min(h)));
         encoded_size(input.0, input.1, (width, height), self.limits)
     }
 
     /// The import for frames like `frame` and the size they are encoded at. A new size is taken
-    /// up by opening the encoder again only as D14 allows, until then frames are scaled to the
-    /// size the encoder runs at.
+    /// up by opening the encoder again only when the sizing rule allows it,
+    /// until then frames are scaled to the size the encoder runs at.
     fn import_for(&mut self, frame: &DmaBufFrame) -> Result<(), Error> {
         self.input = Some((frame.width, frame.height));
         let wanted = self.wanted_under(self.cap, (frame.width, frame.height));
@@ -304,7 +302,7 @@ impl VaapiEncoder {
                 "buffer sink",
             )?;
 
-            // NV12, BT.709 limited range, set explicitly (D4).
+            // NV12, BT.709 limited range, set explicitly.
             let spec = format!(
                 "scale_vaapi=w={out_width}:h={out_height}:format=nv12:out_color_matrix=bt709:out_range=limited:out_color_primaries=bt709:out_color_transfer=bt709"
             );
@@ -377,13 +375,13 @@ impl VaapiEncoder {
                 return Err(Error::Media("the video processor has no frames context".into()));
             }
             (*c).hw_frames_ctx = ff::av_buffer_ref(frames);
-            // No key frames on a timer, no B frames (D4).
+            // No key frames on a timer, no B frames.
             (*c).gop_size = i32::MAX;
             (*c).max_b_frames = 0;
             (*c).bit_rate = bitrate as i64;
             (*c).rc_max_rate = bitrate as i64;
             (*c).rc_buffer_size = buffer_bits(bitrate);
-            // BT.709 limited range in the VUI (D4).
+            // BT.709 limited range in the VUI.
             (*c).color_range = ff::AVColorRange::AVCOL_RANGE_MPEG;
             (*c).colorspace = ff::AVColorSpace::AVCOL_SPC_BT709;
             (*c).color_primaries = ff::AVColorPrimaries::AVCOL_PRI_BT709;
@@ -394,10 +392,10 @@ impl VaapiEncoder {
                     ("rc_mode", "CBR".into()),
                     ("async_depth", "1".into()),
                     ("slices", "1".into()),
-                    // From ffmpeg-vaapi-rate-change.patch: no filler NAL units (D7).
+                    // From ffmpeg-vaapi-rate-change.patch: no filler NAL units.
                     ("filler", u8::from(self.config.filler).to_string()),
                 ]),
-                // The AV1 spike's settings: one packet per frame needs async_depth 1, and the
+                // The settings for AV1: one packet per frame needs async_depth 1, and the
                 // patch's filler 0 keeps padding OBUs out.
                 VideoCodec::Av1 => {
                     (*c).level = AV1_LEVEL;
@@ -466,7 +464,7 @@ impl VaapiEncoder {
     }
 
     /// Whether frames like `frame` can be imported and converted, by doing it once without
-    /// encoding (M5b D4: the compositor's buffers are checked before they are relied on).
+    /// encoding (the compositor's buffers are checked before they are relied on).
     pub fn try_import(&mut self, frame: &DmaBufFrame) -> Result<(), Error> {
         self.import_for(frame)?;
         self.convert(frame, 0).map(drop)
@@ -503,7 +501,7 @@ impl FrameEncoder for VaapiEncoder {
 
     fn set_size_cap(&mut self, cap: Option<(u32, u32)>) {
         self.cap = cap;
-        // Asked for now, so a still screen takes it up too (D14's rule, through `resize_due`).
+        // Asked for now, so a still screen takes it up too (through `resize_due`).
         if let (Some(input), Some(open)) = (self.input, &self.open) {
             let wanted = self.wanted_under(cap, input);
             self.resizes.want(Instant::now(), wanted, open.size);

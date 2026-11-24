@@ -1,4 +1,4 @@
-// AV1 on the wire (AV1 step 2, Q5, Q6, Q9): the RTP payload format of the Alliance for Open
+// AV1 on the wire: the RTP payload format of the Alliance for Open
 // Media ("RTP Payload Format For AV1", v1.0.0, https://aomediacodec.github.io/av1-rtp-spec/),
 // section 4 (aggregation header, OBU elements), section 5 (packetization rules) and Appendix A
 // (the Dependency Descriptor, A.8.2 syntax and A.8.3 semantics). And an IVF reader for the file
@@ -103,7 +103,7 @@ pub fn obus(mut data: &[u8]) -> Result<Vec<Obu<'_>>, Error> {
     Ok(obus)
 }
 
-/// Whether a temporal unit starts a coded video sequence: it has a sequence header (Q9).
+/// Whether a temporal unit starts a coded video sequence: it has a sequence header.
 pub fn has_sequence_header(data: &[u8]) -> bool {
     obus(data).is_ok_and(|obus| obus.iter().any(|obu| obu.kind() == OBU_SEQUENCE_HEADER))
 }
@@ -228,7 +228,7 @@ pub fn packetize(frame: &[u8], key: bool, limit: usize) -> Result<Vec<Vec<u8>>, 
 
 // ─── The Dependency Descriptor (Appendix A) ──────────────────────
 
-/// The descriptor of one packet (Q6): one spatial and one temporal layer, one decode target,
+/// The descriptor of one packet: one spatial and one temporal layer, one decode target,
 /// one chain, two templates. Template 0 is a key frame that depends on nothing, template 1 a
 /// frame that depends on the frame before. It is the structure libwebrtc's
 /// `ScalableVideoControllerNoLayering` gives (both DTIs Switch, chain diffs 0 and 1, frame
@@ -352,7 +352,7 @@ impl DependencyDescriptor {
     }
 }
 
-// ─── IVF (the file source, Q9) ───────────────────────────────────
+// ─── IVF (the file source) ───────────────────────────────────
 
 const IVF_SIGNATURE: &[u8; 4] = b"DKIF";
 const IVF_AV1: &[u8; 4] = b"AV01";

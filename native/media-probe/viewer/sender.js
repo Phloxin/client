@@ -1,5 +1,5 @@
-// The sender page of probe 3's Chromium baseline (.plans/native-media-engine-m5a-encoder.md,
-// D26): a moving field of noise drawn on a canvas, captured and sent through mediasoup-client on
+// The sender page of probe 3's Chromium baseline:
+// a moving field of noise drawn on a canvas, captured and sent through mediasoup-client on
 // a send transport to the probe's node. With `cuts`, the whole picture changes every 10 s. With
 // `light`, the first picture is still bars with a small moving box (little to send, as a screen),
 // cut every 10 s to and from the noise.

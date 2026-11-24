@@ -1,6 +1,6 @@
 # Builds the Windows sidecar with the `capture` feature (and with it `encode`) and puts FFmpeg's
 # DLLs beside pylon-media-host.exe, so the sidecar runs with no FFmpeg on PATH: Windows looks for
-# DLLs beside the program first (.plans/native-media-engine-m7-5-windows-capture.md, C17). The
+# DLLs beside the program first. The
 # client starts it with no special environment, and the installer ships that one folder.
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -File windows\build-sidecar.ps1 `

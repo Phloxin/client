@@ -1,17 +1,16 @@
-// Probe 3: sender, pacer and encoder against a limited link
-// (.plans/native-media-engine-m5a-encoder.md, D15 to D17).
+// Probe 3: sender, pacer and encoder against a limited link.
 //
 // The sidecar sends the screen test pattern (1920x1080 at 60, unencrypted, at most 8 Mbps) through the
 // hardware encoder to the node, through a relay that limits the link toward the node. Six phases
 // of 20 s: no limit, 3 Mbps, 1.5 Mbps, 6 Mbps, no limit, 3 Mbps with 2 % loss and 40 ms delay.
 // In the middle of each phase the probe asks for a key frame through a consumer. One row is
-// recorded per statistics event of the sidecar, and per phase the figures and floors of D17.
+// recorded per statistics event of the sidecar, and per phase the figures and floors.
 //
 //   media-probe probe3 [--still] [--out <dir>]
 //
 // Env: PHASE_S (20), MAX_MBPS (8), START_KBPS (1500), PATTERN (1920x1080@60, others only to
 // diagnose), KIND (screen, or stress to diagnose), PROBE_CODEC (H264, or AV1), DEGRADE (unset, or
-// `size` or `rate` for the open request's `video.degrade`, smooth S1).
+// `size` or `rate` for the open request's `video.degrade`).
 
 use std::{
     collections::BTreeMap,
@@ -38,7 +37,7 @@ use crate::{
     sidecar::Sidecar,
 };
 
-/// The pattern of D16. PATTERN=<w>x<h>@<fps> overrides it for diagnostic runs only.
+/// The pattern. PATTERN=<w>x<h>@<fps> overrides it for diagnostic runs only.
 fn pattern() -> (u32, u32, u32) {
     let parsed = std::env::var("PATTERN").ok().and_then(|p| {
         let (size, fps) = p.split_once('@')?;
@@ -47,10 +46,10 @@ fn pattern() -> (u32, u32, u32) {
     });
     parsed.unwrap_or((1920, 1080, 60))
 }
-/// The pattern changes its whole picture this often (D13).
+/// The pattern changes its whole picture this often.
 const SCENE_CUT: Duration = Duration::from_secs(10);
 /// Rows this close after a scene cut, a forced key frame or a phase change are not judged for
-/// the queue (D17).
+/// the queue.
 const SETTLE: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy, Debug)]
@@ -94,7 +93,7 @@ struct Frames {
     /// RTP timestamp of the frame being put together, its bytes and whether it is a key frame.
     current: Option<(u32, u64, bool)>,
     /// With a preview asked for and H264: the stream as the consumer gets it, in Annex-B, to
-    /// compare the preview's pictures with (M6 preview step 1).
+    /// compare the preview's pictures with.
     stream: Option<Vec<u8>>,
 }
 
@@ -381,7 +380,7 @@ pub async fn run(args: &[String]) -> i32 {
             return 1;
         }
     };
-    // PROBE_CODEC=AV1 sends AV1 through the encoder (AV1 step 2). H264 as before.
+    // PROBE_CODEC=AV1 sends AV1 through the encoder. H264 otherwise.
     let codec = crate::sidecar::codec();
     let mut video = json!({ "start_bitrate": start_bps, "max_bitrate": max_bps });
     if codec != "H264" {
@@ -430,7 +429,7 @@ pub async fn run(args: &[String]) -> i32 {
             })
             .detach();
     }
-    // PROBE_PREVIEW asks for the sharer's preview after `open` (M6 preview step 1, R8).
+    // PROBE_PREVIEW asks for the sharer's preview after `open`.
     let previewing = sidecar.start_preview_schedule();
     sidecar.send(json!({ "start": {} })).await.expect("start");
     let log = sidecar.log.clone();
@@ -602,7 +601,7 @@ pub async fn run(args: &[String]) -> i32 {
                 lowest as f64 / limit as f64,
                 share * 100.0
             );
-            // D24: this floor does not apply in still mode.
+            // This floor does not apply in still mode.
             sent_ok &= still || (!rates.is_empty() && lowest * 2 >= limit);
             drops_ok &= share < 0.01;
         } else if index > 0 && phases[index - 1].limits.rate_bps.is_some() {

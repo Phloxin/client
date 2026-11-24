@@ -1,7 +1,5 @@
-// The preview's JPEG encoder (.plans/native-media-engine-m6-preview-1-engine.md, R2): a planar
-// YUV 4:2:0 full range picture in memory to libavcodec's `mjpeg`. Shared by the Linux and the
-// Windows maker (.plans/native-media-engine-m6-preview-3-windows.md, W5), moved here unchanged
-// from `linux/preview.rs`.
+// The preview's JPEG encoder: a planar YUV 4:2:0 full range picture in memory to libavcodec's
+// `mjpeg`. Shared by the Linux and the Windows maker.
 
 use std::ptr;
 
@@ -20,7 +18,7 @@ const JPEG_QUALITY: i32 = 5;
 /// `qmin` and `qmax`, 2 and 31 by default.
 const Q_RANGE: std::ops::RangeInclusive<i32> = 2..=31;
 
-/// A test knob for measuring the preview's cost (.plans/native-media-engine-preview-cost.md, A2),
+/// A test knob for measuring the preview's cost,
 /// not a setting: `PYLON_PREVIEW_Q=<2 to 31>` in the sidecar's environment replaces
 /// `JPEG_QUALITY`. Not for the client to set. Anything else is ignored, with a warning.
 fn quality_from(value: Option<&str>) -> Result<i32, String> {

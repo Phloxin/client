@@ -80,7 +80,7 @@ const retireTimers = new Set()
 
 // ─── Native encoders ─────────────────────────────────────────────
 // A native encoder seals this client's frames itself, with the client's own sender key and a kid
-// of its own (.plans/native-media-engine.md, decision 11). Registered engines are told whenever
+// of its own. Registered engines are told whenever
 // that key changes, found by comparing after everything that can change it.
 const engineKids = createEngineKids()
 let nextEngine = 1

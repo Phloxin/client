@@ -1,7 +1,7 @@
 // The one D3D11 device the pattern producer or the capture, the video processor and the encoder
-// share (.plans/native-media-engine-m7-4-windows-encoder.md, N4), on an adapter whose vendor has
+// share, on an adapter whose vendor has
 // an encoder here: Intel's Quick Sync or NVIDIA's NVENC. For a capture it is the adapter that
-// drives the captured monitor (.plans/native-media-engine-m7-5-windows-capture.md, C4).
+// drives the captured monitor.
 
 use std::sync::Arc;
 
@@ -119,7 +119,7 @@ fn drives(adapter: &IDXGIAdapter1, monitor: isize) -> bool {
 }
 
 /// The adapter `which` names (an index, `intel` or `nvidia`), else the one that drives `monitor`
-/// when one is given (the captured screen, M7.5 C4), else the first hardware adapter whose
+/// when one is given (the captured screen), else the first hardware adapter whose
 /// vendor has an encoder here.
 fn choose(adapters: Vec<Adapter>, which: Option<&str>, monitor: Option<isize>) -> Result<(Adapter, Vendor), Error> {
     #[cfg(not(feature = "capture"))]
@@ -166,8 +166,7 @@ fn choose(adapters: Vec<Adapter>, which: Option<&str>, monitor: Option<isize>) -
 
 impl Device {
     /// Runs `f` with the immediate context under FFmpeg's lock of the device (the one its own
-    /// D3D11 code takes around the context), for a call that does not wait for the GPU (M6
-    /// preview step 3, W3).
+    /// D3D11 code takes around the context), for a call that does not wait for the GPU.
     pub(crate) fn with_context<R>(&self, f: impl FnOnce(&ID3D11DeviceContext) -> R) -> R {
         // SAFETY: FFmpeg's device context is initialised (`open`), which set its lock functions.
         let hw = unsafe { &*((*((*self.ffmpeg.0).data as *mut ff::AVHWDeviceContext)).hwctx as *const ff::AVD3D11VADeviceContext) };
@@ -188,13 +187,13 @@ impl Device {
         f(&self.context)
     }
 
-    /// The device on the adapter of N4, with video support and multithread protection.
+    /// The device on the chosen adapter, with video support and multithread protection.
     pub(crate) fn open() -> Result<Arc<Device>, Error> {
         Self::open_for(None)
     }
 
     /// As `open`, but on the adapter that drives `monitor` (an `HMONITOR` as a number) when one
-    /// is given and `PYLON_MEDIA_ADAPTER` is not set (M7.5 C4).
+    /// is given and `PYLON_MEDIA_ADAPTER` is not set.
     pub(crate) fn open_for(monitor: Option<isize>) -> Result<Arc<Device>, Error> {
         let which = std::env::var(ADAPTER_VARIABLE).ok();
         let (adapter, vendor) = choose(adapters()?, which.as_deref(), monitor)?;
@@ -216,7 +215,7 @@ impl Device {
             )
             .map_err(|e| Error::Media(format!("D3D11 device on {name}: {e}")))?;
             let device = device.ok_or_else(|| Error::Media(format!("D3D11 device on {name}: none made")))?;
-            // The GPU's priority for the capture's device (smooth B3).
+            // The GPU's priority for the capture's device.
             crate::priority::gpu(&device);
             // As FFmpeg's own D3D11VA device does it. Quick Sync refuses the device without it.
             let multithread: ID3D11Multithread = device.cast().map_err(|e| Error::Media(format!("{name}: ID3D11Multithread: {e}")))?;

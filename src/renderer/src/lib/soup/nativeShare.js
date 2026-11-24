@@ -9,8 +9,6 @@
 // (main/nativeShareSource.js) and says which in its status. For the screen the sidecar
 // captures it (captureNativeScreen first): on Wayland through the desktop portal, on Windows
 // the source the app's picker chose, which the main process holds.
-// Plans: .plans/native-media-engine-m3-client.md, -m5b-capture.md, -m7-6-client.md,
-// -av1-3-client.md, -m6-preview-2-client.md (the sharer's own picture, soup/nativePreview.js).
 //
 // startNativeShare resolves with a producer-like object that screenShare.js
 // keeps in the share context's `producer`, so stop, pause, the server ending
@@ -177,8 +175,7 @@ function drawPreviewPicture(canvas, image) {
   canvas.getContext('2d').drawImage(image, 0, 0)
 }
 
-// Puts a decoded frame of the stream preview on the canvas, which takes the frame's size
-// (smooth P5).
+// Puts a decoded frame of the stream preview on the canvas, which takes the frame's size.
 function drawPreviewFrame(canvas, frame) {
   if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
     canvas.width = frame.displayWidth
@@ -208,14 +205,14 @@ export function nativePreviewTally() {
   }))
 }
 
-// Starts the native share in D11's order. Everything made is unmade when a
+// Starts the native share step by step. Everything made is unmade when a
 // later step fails, and the error is rethrown.
 //   streamKey      the backend stream it publishes into (already created)
 //   aux            soup/index.js's SendAux functions (configureScreenShare)
 //   isActive()     false once the share was stopped or superseded
 //   superseded()   the error to throw then
-//   onFailed(reason)     the live share failed (D14), called at most once
-//   onEnded(reason)      the live share's capture ended by itself (M5b D11): the
+//   onFailed(reason)     the live share failed, called at most once
+//   onEnded(reason)      the live share's capture ended by itself: the
 //                  share ends, no fallback. Called at most once, never with onFailed
 //   optimizeFor    the share's 'detail' or 'motion'
 //   capture        for the screen: captureNativeScreen's result, its sidecar
@@ -292,9 +289,9 @@ export async function startNativeShare({
   let previewCanvas = null
   let painter = null
   let tally = null
-  // Turns "the self tile is seen" into requests, at most one change in 250 ms (B2).
+  // Turns "the self tile is seen" into requests, at most one change in 250 ms.
   let previewGate = null
-  // The stream preview's decoder while the preview is the share itself (smooth P5, P6), and
+  // The stream preview's decoder while the preview is the share itself, and
   // whether the choice between it and the JPEGs is made (nothing is asked for before).
   let streamDecoder = null
   let previewChosen = false
@@ -363,7 +360,7 @@ export async function startNativeShare({
       lastStats = event
       if (connected && !failed) watchStats()
       // The interval starts at the first stats once live, when there were none at that moment.
-      // Each later second goes into the line's frame gap (smooth A2.1).
+      // Each later second goes into the line's frame gap.
       if (rateLog && !failed) {
         const sample = nativeRateSample(event, sentSize)
         if (rateLog.started) rateLog.observe(sample)
@@ -480,7 +477,7 @@ export async function startNativeShare({
   }
 
   // The sharer's own picture (soup/nativePreview.js): once live, and while the sharer's own
-  // screen tile is seen (B1 and B2 of .plans/native-media-engine-preview-cost.md), the sidecar
+  // screen tile is seen, the sidecar
   // is asked for preview pictures (fps 0 stops them while it is not), drawn on the preview
   // stream's canvas while the share is ours and the
   // placeholder track is still that stream's (a fallback swaps in Chromium's capture track).
@@ -490,7 +487,7 @@ export async function startNativeShare({
     !failed &&
     placeholderTrack?.readyState === 'live' &&
     preview?.getVideoTracks().includes(placeholderTrack) === true
-  // A JPEG request is today's, with no mode in it; the stream's says so (smooth P1).
+  // A JPEG request has no mode in it; the stream's says so.
   const requestPreview = (fps) => {
     if (closed || failed || !engineOpen || pid == null || !engine.preview) return
     const mode = streamDecoder ? 'stream' : 'jpeg'
@@ -504,8 +501,8 @@ export async function startNativeShare({
   const askPreviewKeyFrame = () => {
     if (previewGate?.sent) requestPreview(previewFps(previewOverride))
   }
-  // The stream preview failed: JPEG pictures for the rest of this share (P6). One that could not
-  // keep up also marked the run, so later shares start with the JPEGs (smooth Q3, Q5).
+  // The stream preview failed: JPEG pictures for the rest of this share. One that could not
+  // keep up also marked the run, so later shares start with the JPEGs.
   const streamPreviewFailed = (reason) => {
     console.warn(
       `[Soup] Native share preview: the stream preview failed (${reason}), JPEG pictures from now on`
@@ -516,15 +513,15 @@ export async function startNativeShare({
       tally.mode = 'jpeg'
       tally.fallback = reason
     }
-    // An unseen tile held for the stream preview: the JPEGs stop at once (fix C2).
+    // An unseen tile held for the stream preview: the JPEGs stop at once.
     previewGate?.endHold()
     if (previewGate?.sent) requestPreview(previewFps(previewOverride))
   }
-  // P6: the share itself where this machine's WebCodecs decodes its codec, else the JPEGs.
+  // The share itself where this machine's WebCodecs decodes its codec, else the JPEGs.
   const choosePreview = (choice) => {
     if (closed || failed) return
     if (choice.mode === 'stream') {
-      // Drawn on the animation frames of the window that owns the canvas (fix C5).
+      // Drawn on the animation frames of the window that owns the canvas.
       const canvasWindow = previewCanvas?.ownerDocument?.defaultView ?? globalThis
       try {
         streamDecoder = createStreamPreviewDecoder({
@@ -589,15 +586,15 @@ export async function startNativeShare({
     tally.counts = painter.counts
     previewTally.push(tally)
     if (previewTally.length > PREVIEW_TALLY_LIMIT) previewTally.shift()
-    // While no pictures come the canvas keeps the last one (B3).
+    // While no pictures come the canvas keeps the last one.
     // A stream preview goes on for STREAM_PREVIEW_HOLD_MS after the tile stops being seen, so
-    // coming back within that sends nothing and costs the viewers no key frame (fix C2).
+    // coming back within that sends nothing and costs the viewers no key frame.
     previewGate = createPreviewGate({
       send: (seen) => requestPreview(seen ? previewFps(previewOverride) : 0),
       holdMs: () => (streamDecoder ? STREAM_PREVIEW_HOLD_MS : 0)
     })
     // Nothing is asked for before the choice; the gate then takes the tile as it is.
-    // The shape the share sends: a software decoder gets the stream only up to 1080p60 (fix C7).
+    // The shape the share sends: a software decoder gets the stream only up to 1080p60.
     chooseStreamPreview(globalThis.VideoDecoder, codec, shape)
       .then(choosePreview)
       .catch((err) => {
@@ -648,8 +645,8 @@ export async function startNativeShare({
           source: { tag: STREAM_SOURCE_TAG, stream_key: streamKey }
         },
         source,
-        // Where Chromium's path starts for the same ceiling, 2.5 to 8 Mbps (smooth A4).
-        // A share for motion gives way on size before frame rate on a tight link (smooth S1).
+        // Where Chromium's path starts for the same ceiling, 2.5 to 8 Mbps.
+        // A share for motion gives way on size before frame rate on a tight link.
         video: {
           start_bitrate: screenStartBitrateBps({ maxBitrate }),
           max_bitrate: maxBitrate,
@@ -750,8 +747,8 @@ export async function startNativeShare({
     resume() {
       paused = false
     },
-    // Whether the sharer's own screen tile is seen (B2): pictures only while it is. `stopAsked`: it is
-    // not seen because the person stopped the preview, which is not held (fix C8).
+    // Whether the sharer's own screen tile is seen: pictures only while it is. `stopAsked`: it is
+    // not seen because the person stopped the preview, which is not held.
     setPreviewSeen(seen, { stopAsked = false } = {}) {
       if (!closed && !failed && previewChosen) {
         previewGate?.set(seen === true, { now: seen !== true && stopAsked === true })

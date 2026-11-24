@@ -1,4 +1,4 @@
-// The capture producer's rate limit (.plans/native-media-engine-m5b-capture.md, D5), on any
+// The capture producer's rate limit, on any
 // system.
 
 use std::time::Instant;

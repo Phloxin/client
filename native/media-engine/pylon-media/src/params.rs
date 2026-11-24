@@ -17,7 +17,7 @@ pub struct OpenParams {
     pub video: VideoParams,
 }
 
-/// The video codec of a session (AV1 step 2, Q1). H264 when nothing is said.
+/// The video codec of a session. H264 when nothing is said.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum VideoCodec {
     #[default]
@@ -43,8 +43,8 @@ impl VideoCodec {
     }
 }
 
-/// What gives way first when the link is tighter than the share needs (smooth S1): the frame
-/// rate (today's behaviour, the default) or the picture's size.
+/// What gives way first when the link is tighter than the share needs: the frame
+/// rate (the default) or the picture's size.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Degrade {
     #[default]

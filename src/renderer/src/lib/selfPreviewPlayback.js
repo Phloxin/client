@@ -18,8 +18,8 @@ export function syncSelfPreviewPlayback(video, paused) {
   }
 }
 
-// Whether the sharer's own screen tile is being seen (.plans/native-media-engine-preview-cost.md,
-// B1): the self screen's tile is watched (not "Stop Preview"d), a grid that shows it is mounted
+// Whether the sharer's own screen tile is being seen:
+// the self screen's tile is watched (not "Stop Preview"d), a grid that shows it is mounted
 // (the streams view in the main window, or the pop-out while it is open), and that window is
 // focused and visible by shouldPauseSelfPreview's rule.
 //   streams           the video streams, each { tileId, isSelf, source }
@@ -43,7 +43,7 @@ export function selfScreenTileSeen({
 
 // Whether the sharer's own screen tile is there and watched: false once the person chose "Stop
 // previewing" on it. A native stream preview stops at once then, not after the hold it gets when
-// the tile only went out of sight (fix C8).
+// the tile only went out of sight.
 export function selfScreenTileWatched({ streams, watchedTileIds }) {
   const tile = (streams ?? []).find((s) => s?.isSelf && s.source === 'screen')
   return tile != null && watchedTileIds?.has?.(tile.tileId) === true

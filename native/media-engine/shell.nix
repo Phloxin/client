@@ -1,7 +1,7 @@
-# Environment for the engine's `encode` feature (.plans/native-media-engine-m5a-encoder.md, D2):
+# Environment for the engine's `encode` feature:
 # FFmpeg with ffmpeg-vaapi-rate-change.patch (a changed bit_rate, rc_buffer_size or framerate
 # reaches the open VA-API encoder, and a `filler` option), libva, libdrm, clang for the bindings.
-# The `capture` feature (.plans/native-media-engine-m5b-capture.md) also needs PipeWire's
+# The `capture` feature also needs PipeWire's
 # development files and libEGL (the DMA-BUF modifiers the GPU takes).
 # Nothing is installed.
 #   nix-shell native/media-engine/shell.nix --run 'cargo build --release --features encode'

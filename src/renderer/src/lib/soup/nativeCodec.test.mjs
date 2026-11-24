@@ -1,4 +1,4 @@
-// The codec a native screen share sends (T1 to T3 of .plans/native-media-engine-av1-3-client.md).
+// The codec a native screen share sends.
 //   node --test src/renderer/src/lib/soup/nativeCodec.test.mjs
 import assert from 'node:assert/strict'
 import test from 'node:test'
@@ -20,7 +20,7 @@ const CHANNEL_NAMES = new Map([
   [noH264, 'no H264']
 ])
 
-// Every row of T1: the choice, with and without AV1 listed by the sidecar, with and without the
+// Every row: the choice, with and without AV1 listed by the sidecar, with and without the
 // channel allowing the codec. null: the share goes through Chromium.
 const ROWS = [
   // auto: H264 natively, whatever the sidecar lists

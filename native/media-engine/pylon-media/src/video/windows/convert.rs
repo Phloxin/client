@@ -1,7 +1,6 @@
 // Colour conversion and scaling on the GPU with our own D3D11 video processor
-// (.plans/native-media-engine-m7-4-windows-encoder.md, N5; FFmpeg's scale_d3d11 does not work
-// on the test machine, M7 plan F7): BGRA full range in, NV12 BT.709 limited range out, as the
-// encoder spike's `d3d11.rs` drives it.
+// (FFmpeg's scale_d3d11 does not work
+// on some machines): BGRA full range in, NV12 BT.709 limited range out.
 
 use std::sync::Arc;
 
@@ -108,11 +107,11 @@ impl Converter {
             video_context.VideoProcessorSetStreamAutoProcessingMode(&processor, 0, false);
             video_context.VideoProcessorSetStreamFrameFormat(&processor, 0, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE);
             // Only the picture's own part of the texture: a captured texture can be larger than
-            // its content (M7.5 C6).
+            // its content.
             let content = RECT { left: 0, top: 0, right: input.0 as i32, bottom: input.1 as i32 };
             video_context.VideoProcessorSetStreamSourceRect(&processor, 0, true, Some(&content));
             if rows > out_height {
-                // The picture in the top rows, the rest black in studio range (M7 plan F7).
+                // The picture in the top rows, the rest black in studio range.
                 let picture = RECT { left: 0, top: 0, right: out_width as i32, bottom: out_height as i32 };
                 video_context.VideoProcessorSetStreamDestRect(&processor, 0, true, Some(&picture));
                 let black = D3D11_VIDEO_COLOR {

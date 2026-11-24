@@ -1,18 +1,17 @@
-// The sharer's own picture of a native share (.plans/native-media-engine-m6-preview-2-client.md):
+// The sharer's own picture of a native share:
 // the sidecar sends small JPEGs of what it shares (`preview` messages, through main), and
 // nativeShare.js draws them on the canvas its preview stream is captured from. The pictures
 // are the sharer's screen: they are never logged, stored or sent anywhere but that canvas.
 // Pure parts here, so they can be tested.
 
-// What the renderer asks for once a native share is live (X3). The most the sidecar takes
+// What the renderer asks for once a native share is live. The most the sidecar takes
 // (PROTOCOL.md): 480x270 at 5 a second was too coarse to see what is shared.
 export const PREVIEW_FPS = 10
 export const PREVIEW_MAX_WIDTH = 1280
 export const PREVIEW_MAX_HEIGHT = 720
 
 // The sidecar's `preview` request for `fps` pictures a second (0 stops) within the size above,
-// or within `override`'s size (PYLON_NATIVE_PREVIEW in development, main's status: B5 of
-// .plans/native-media-engine-preview-cost.md).
+// or within `override`'s size (PYLON_NATIVE_PREVIEW in development, main's status).
 export function previewRequest(fps, override = null) {
   return {
     fps,
@@ -26,20 +25,20 @@ export function previewFps(override = null) {
   return override?.fps ?? PREVIEW_FPS
 }
 
-// How often a change of "the self tile is seen" may reach the sidecar (B2).
+// How often a change of "the self tile is seen" may reach the sidecar.
 export const PREVIEW_GATE_MS = 250
 // How long the tile stays unseen before a stream preview is stopped: stopping and starting it
-// again costs every viewer a key frame, so a short loss of focus (an alt-tab) costs nothing (fix
-// C2). The JPEG preview stops at once.
+// again costs every viewer a key frame, so a short loss of focus (an alt-tab) costs nothing.
+// The JPEG preview stops at once.
 export const STREAM_PREVIEW_HOLD_MS = 5000
 
-// Turns "the self tile is seen" into preview requests (B2): send(true) asks for pictures,
+// Turns "the self tile is seen" into preview requests: send(true) asks for pictures,
 // send(false) stops them. Nothing is sent until set(true), a state equal to the last one sent is
 // not sent again, and changes go out at most once in intervalMs: one that comes sooner waits,
 // and the last state set by then is the one sent. A change to "not seen" after "seen" was sent
 // is held for holdMs() first (read at that change; 0: not held), and dropped if the tile is seen
-// again meanwhile (C2). set(false, { now: true }) is not held, and ends a hold (a stop the person
-// asked for, fix C8). endHold() sends a held change now. close() drops a change still waiting.
+// again meanwhile. set(false, { now: true }) is not held, and ends a hold (a stop the person
+// asked for). endHold() sends a held change now. close() drops a change still waiting.
 //   now(), setTimer(fn, ms), clearTimer(id)   the clock, for tests
 export function createPreviewGate({
   send,
@@ -128,7 +127,7 @@ export function jpegBytes(base64) {
 }
 
 // Draws pictures one at a time: a picture that arrives while the one before is still being
-// decoded is dropped (X4), and none is drawn once canDraw() is false (X7).
+// decoded is dropped, and none is drawn once canDraw() is false.
 //   decode(picture)  → a promise of an image
 //   draw(image)      puts it on the canvas
 //   release(image)   frees it, drawn or not

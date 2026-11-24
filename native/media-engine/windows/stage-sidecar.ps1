@@ -1,5 +1,5 @@
-# Builds the Windows sidecar and stages what the installer ships with it into native/media-engine/dist
-# (.plans/native-media-engine-packaging.md, W2 and W4): pylon-media-host.exe, FFmpeg's DLLs beside
+# Builds the Windows sidecar and stages what the installer ships with it into native/media-engine/dist:
+# pylon-media-host.exe, FFmpeg's DLLs beside
 # it, and the licence texts. electron-builder.yml copies that folder to <resources>/media-engine,
 # where a packaged app looks for the sidecar (src/main/mediaEngineHost.js). Run by
 # `npm run build:media-engine:win`; arguments after `--` reach this script:

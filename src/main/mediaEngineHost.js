@@ -1,5 +1,4 @@
-// Where the main process looks for the media engine's sidecar (pylon-media-host), from
-// .plans/native-media-engine-steps/native-media-engine-fps-line.md, S1 as corrected (5.1b).
+// Where the main process looks for the media engine's sidecar (pylon-media-host).
 // Kept apart from mediaEngine.js, which imports Electron, so it can be tested.
 //
 //   1. PYLON_MEDIA_HOST, if set: that path and no other, whether or not the file exists.

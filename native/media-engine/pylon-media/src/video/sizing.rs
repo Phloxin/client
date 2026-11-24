@@ -1,4 +1,4 @@
-// The sizes an encoder puts out and when it takes up a new one (D14), on any system.
+// The sizes an encoder puts out and when it takes up a new one, on any system.
 
 use std::time::{Duration, Instant};
 
@@ -31,12 +31,12 @@ pub(crate) fn encoded_size(width: u32, height: u32, max: (u32, u32), limits: Enc
     (w.max(even_up(limits.min.0)), h.max(even_up(limits.min.1)))
 }
 
-/// A new size must have been asked for this long before the encoder takes it up (D14).
+/// A new size must have been asked for this long before the encoder takes it up.
 const RESIZE_SETTLE: Duration = Duration::from_millis(300);
-/// The encoder is opened again at most this often (D14).
+/// The encoder is opened again at most this often.
 const RESIZE_SPACING: Duration = Duration::from_secs(1);
 
-/// When the encoder takes up a new output size (D14, in place of reopening on every change):
+/// When the encoder takes up a new output size (in place of reopening on every change):
 /// once the size asked for has stayed the same for `RESIZE_SETTLE`, and not sooner than
 /// `RESIZE_SPACING` after the last opening.
 #[derive(Debug, Default)]
@@ -78,7 +78,7 @@ impl Resizes {
 
     /// Records that `size` is asked for at `now`, the encoder running at `running`, without
     /// taking it up: `due` then says when it will be, as for a frame that asked for it (a new cap
-    /// of the size ladder on a still screen, smooth S8).
+    /// of the size ladder on a still screen).
     pub(crate) fn want(&mut self, now: Instant, size: (u32, u32), running: (u32, u32)) {
         if size == running {
             self.wanted = None;
@@ -152,7 +152,7 @@ mod tests {
         assert_eq!(r.due(), Some(ms(2300)));
         r.want(ms(2100), b, a);
         assert_eq!(r.due(), Some(ms(2300)));
-        // A frame then takes it up when due, as D14 says.
+        // A frame then takes it up when due.
         assert_eq!(r.decide(ms(2299), b, Some(a)), (a, false));
         assert_eq!(r.decide(ms(2300), b, Some(a)), (b, true));
         // The running size wanted: nothing pending.

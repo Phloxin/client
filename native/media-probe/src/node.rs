@@ -21,7 +21,7 @@ const DEFAULT_TRANSPORT_BITRATE: u64 = 10_000_000;
 const VIDEO_KEY_FRAME_REQUEST_DELAY_MS: u32 = 1_000;
 
 /// The address the node's WebRtcServer listens on: `PROBE_LISTEN_IP`, default 127.0.0.1. Another
-/// address lets a sidecar on another machine reach it (.plans/native-media-engine-m7a-windows-bringup.md, W5).
+/// address lets a sidecar on another machine reach it.
 fn listen_ip() -> IpAddr {
     crate::env("PROBE_LISTEN_IP", IpAddr::V4(Ipv4Addr::LOCALHOST))
 }
@@ -65,7 +65,7 @@ impl Node {
         Self::start_with(false).await
     }
 
-    /// With `vp8`, the router also offers VP8 (for Chromium as a sender, M5a D26).
+    /// With `vp8`, the router also offers VP8 (for Chromium as a sender).
     pub async fn start_with(vp8: bool) -> Node {
         let manager = WorkerManager::new();
         let worker = manager
@@ -79,8 +79,7 @@ impl Node {
             )))
             .await
             .expect("webrtc server");
-        // AV1 as crates/pylon-sfu/src/config/router.rs declares it, and as there before H264
-        // (AV1 step 2, Q11).
+        // AV1 as crates/pylon-sfu/src/config/router.rs declares it, and as there before H264.
         let mut codecs = vec![RtpCodecCapability::Video {
             mime_type: MimeTypeVideo::AV1,
             preferred_payload_type: None,

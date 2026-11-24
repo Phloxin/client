@@ -1,17 +1,15 @@
 // Windows Graphics Capture and the Windows hardware encoder without the transport, for measuring
-// them alone: the Windows twin of capture_encode (.plans/native-media-engine-m7-5-windows-capture.md,
-// C13). Run in the desktop session (pylon-scratch\runtask.ps1), with FFmpeg's DLLs on PATH or
+// them alone: the Windows twin of capture_encode. Run in the desktop session, with FFmpeg's DLLs on PATH or
 // beside the program:
 //   cargo run --release -p pylon-media --features capture --example capture_encode_windows -- \
 //     seconds=20 fps=60 bitrate=8000000 target=primary max=1920x1080 [max_fps=60] \
-//     out=C:\x\t.h264 csv=C:\x\t.csv json=C:\x\t.json [encode=0]
+//     out=t.h264 csv=t.csv json=t.json [encode=0]
 // `target` is `primary`, `window:<handle>` or `monitor:<x>,<y>` (a point in physical pixels).
 // Encodes what comes for `seconds` (or until the item closes) at no more than `fps`, keeping the
 // last frame as the pipeline does, and writes the Annex-B stream, one CSV line per frame
 // (frame,ms,bytes,key,encode_ms,delay_ms,width,height,capture_ms) and the totals as JSON. `capture_ms` is
-// the frame's capture time from the start, signed (a compositor time may be ahead, smooth T2b).
-// With `encode=0` the frames are taken and let go with no encoder, to measure the capture alone
-// (smooth B2.1).
+// the frame's capture time from the start, signed (a compositor time may be ahead).
+// With `encode=0` the frames are taken and let go with no encoder, to measure the capture alone.
 
 #[cfg(not(windows))]
 fn main() {
@@ -129,7 +127,7 @@ mod imp {
         let mut changes = Vec::new();
         let mut ended = false;
         let mut sizes = Vec::new();
-        // Kept as the pipeline keeps the newest frame (C5).
+        // Kept as the pipeline keeps the newest frame.
         let mut last = None;
         let mut per_second: Vec<u64> = vec![0; seconds as usize + 1];
         while began.elapsed() < Duration::from_secs(seconds) {
@@ -237,7 +235,7 @@ mod imp {
         // In the pipeline's order: the encoder before the kept frame, so that the capture, which
         // closes its pool once its frames are back, never closes it while the encoder is being
         // torn down on the same device. The other order ended the process with an access
-        // violation in two runs of three after a resize (M7.5 report).
+        // violation in two runs of three after a resize.
         eprintln!("dropping the encoder");
         drop(encoder);
         eprintln!("dropping the last frame");

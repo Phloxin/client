@@ -18,7 +18,7 @@ use crate::{
 };
 
 /// The render node both VA displays and the DRM device are opened on. Fixed to the first
-/// render node for now (accepted in M5a), a choice among several GPUs comes later.
+/// render node for now, a choice among several GPUs comes later.
 pub(crate) const RENDER_NODE: &CStr = c"/dev/dri/renderD128";
 
 /// Exports a VA surface as a DMA-BUF frame with duplicated file descriptors, so the frame

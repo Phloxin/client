@@ -1,14 +1,14 @@
-// The sharer's preview (.plans/native-media-engine-m6-preview-1-engine.md, R1 to R8): on request,
+// The sharer's preview: on request,
 // a few times a second, a small JPEG of the frame the encoder has just converted, made on a
 // worker thread of its own so that nothing on the encode path waits for it.
 //
-// The portable parts are here, on any system and with no features: the request and its limits
-// (R1), the fit of sizes, the slot that holds one frame and never blocks (R2), the rate and the
-// first picture from the kept frame (R3), and the worker's loop. What scales the frame down and
+// The portable parts are here, on any system and with no features: the request and its limits,
+// the fit of sizes, the slot that holds one frame and never blocks, the rate and the
+// first picture from the kept frame, and the worker's loop. What scales the frame down and
 // reads it back is per system (on Linux `linux/preview.rs`, VA-API; on Windows `windows/preview.rs`,
 // a read back and `preview_cpu.rs`), the JPEG is libavcodec's (`jpeg.rs`).
 //
-// Preview pictures are the sharer's screen (R5): they go only to the `Preview`'s own callback,
+// Preview pictures are the sharer's screen: they go only to the `Preview`'s own callback,
 // are never logged and never reach the transport.
 
 use std::{
@@ -22,9 +22,9 @@ use std::{
 
 use crate::Error;
 
-/// The most pictures a second a request may ask for (R1).
+/// The most pictures a second a request may ask for.
 pub const MAX_FPS: u32 = 10;
-/// The sides a request may ask for (R1).
+/// The sides a request may ask for.
 pub const MIN_SIDE: u32 = 16;
 pub const MAX_WIDTH: u32 = 1280;
 pub const MAX_HEIGHT: u32 = 720;
@@ -39,7 +39,7 @@ pub struct PreviewRequest {
 }
 
 impl PreviewRequest {
-    /// The limits of R1: `fps` 0 to 10, `max_width` 16 to 1280, `max_height` 16 to 720.
+    /// The limits: `fps` 0 to 10, `max_width` 16 to 1280, `max_height` 16 to 720.
     pub fn check(&self) -> Result<(), Error> {
         if self.fps > MAX_FPS {
             return Err(Error::invalid(format!("preview fps {} is not in 0 to {MAX_FPS}", self.fps)));
@@ -74,7 +74,7 @@ impl PreviewRequest {
 }
 
 /// The size of a preview of a `width` by `height` frame: fitted into `max_width` by
-/// `max_height` with its shape kept, never larger than the frame, even sides (R2).
+/// `max_height` with its shape kept, never larger than the frame, even sides.
 pub fn fit(width: u32, height: u32, max_width: u32, max_height: u32) -> (u32, u32) {
     super::sizing::output_size(width, height, max_width, max_height)
 }
@@ -87,7 +87,7 @@ pub struct PreviewPicture {
     pub jpeg: Vec<u8>,
 }
 
-// Never the picture's bytes (R5).
+// Never the picture's bytes.
 impl std::fmt::Debug for PreviewPicture {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PreviewPicture")
@@ -102,7 +102,7 @@ impl std::fmt::Debug for PreviewPicture {
 #[derive(Debug)]
 pub enum PreviewEvent {
     Picture(PreviewPicture),
-    /// Making a picture failed: the preview has stopped (R4). A new request starts it again.
+    /// Making a picture failed: the preview has stopped. A new request starts it again.
     Failed(String),
 }
 
@@ -163,7 +163,7 @@ impl Preview {
     }
 
     /// Making a picture for `generation` failed: the preview stops, unless the host asked again
-    /// meanwhile, and the host is told (R4).
+    /// meanwhile, and the host is told.
     pub(crate) fn fail(&self, generation: u32, message: impl Into<String>) {
         let message = message.into();
         let stopped = self.update(|state| ((state >> 32) as u32 == generation).then(|| next_generation(state)));
@@ -177,7 +177,7 @@ fn next_generation(state: u64) -> u64 {
     u64::from(((state >> 32) as u32).wrapping_add(1)) << 32
 }
 
-/// When the pipeline offers the preview a frame (R2, R3): the first picture after a request from
+/// When the pipeline offers the preview a frame: the first picture after a request from
 /// the kept frame, then a new frame at most `fps` times a second.
 #[derive(Debug, Default)]
 pub(crate) struct PreviewRate {
@@ -191,7 +191,7 @@ pub(crate) struct PreviewRate {
 
 impl PreviewRate {
     /// Takes up what the preview asks for now. Every request, also one that changes a running
-    /// preview, starts with a picture of the kept frame (R3), and the rate counts from there.
+    /// preview, starts with a picture of the kept frame, and the rate counts from there.
     pub(crate) fn follow(&mut self, generation: u32, request: Option<PreviewRequest>) {
         if generation == self.generation {
             return;
@@ -206,7 +206,7 @@ impl PreviewRate {
         self.request.is_some()
     }
 
-    /// The first picture after a request is wanted from the kept frame (R3).
+    /// The first picture after a request is wanted from the kept frame.
     pub(crate) fn wants_kept(&self) -> bool {
         self.request.is_some() && self.first
     }
@@ -229,7 +229,7 @@ impl PreviewRate {
 }
 
 /// Holds the one frame waiting for the worker. Offering never blocks: if the worker holds the
-/// lock that moment, the frame is not previewed; a frame still waiting is replaced (R2).
+/// lock that moment, the frame is not previewed; a frame still waiting is replaced.
 pub(crate) struct PreviewSlot<F> {
     state: Mutex<SlotState<F>>,
     ready: Condvar,
@@ -304,12 +304,12 @@ pub(crate) trait PreviewMaker {
     type Frame;
     /// A picture of `frame` fitted into `max` (width, height). `None` when this frame is skipped,
     /// which is not a failure: the next frame offered is tried (on Windows, a GPU too busy to
-    /// hand the frame back in time, M6 preview step 3, W3). The maker times its stages into
+    /// hand the frame back in time). The maker times its stages into
     /// `times`, which does nothing unless the timing is on.
     fn make(&mut self, frame: &Self::Frame, max: (u32, u32), times: &mut StageTimes) -> Result<Option<PreviewPicture>, Error>;
 }
 
-// The preview's timing (.plans/native-media-engine-preview-cost.md, A1): a measurement aid, off
+// The preview's timing: a measurement aid, off
 // unless PYLON_PREVIEW_TIMING=1 is in the sidecar's environment. When on, the worker logs one line
 // a second with each stage's mean and maximum time per picture, the count and the JPEG's size.
 // Nothing is sent to the host.
@@ -476,7 +476,7 @@ impl<F: Send + 'static> PreviewWorker<F> {
         Ok(PreviewWorker { slot, thread: Some(thread) })
     }
 
-    /// Offers `frame`, never waiting (R2).
+    /// Offers `frame`, never waiting.
     pub(crate) fn offer(&self, frame: F) -> bool {
         self.slot.offer(frame)
     }

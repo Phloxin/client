@@ -1,15 +1,14 @@
-// The I/O loop's wait between polls (smooth B4). Off Windows it is the sleep the loop always had.
-// On Windows a sleep of 200 microseconds took about 0.87 ms, and the pacer fell behind
-// (.plans/native-media-engine-m7-7a-limited-link-cure.md, cause B).
+// The I/O loop's wait between polls. Off Windows it is a sleep.
+// On Windows a sleep of 200 microseconds took about 0.87 ms, and the pacer fell behind.
 //
 // PYLON_MEDIA_WAIT chooses the Windows way, a switch for measurement and support:
-// - `sleep`: the thread sleeps until the deadline, as before.
+// - `sleep`: the thread sleeps until the deadline.
 // - `event`: the socket's read event (`WSAEventSelect`) and a high resolution waitable timer in
 //   one `WaitForMultipleObjects`: a packet from the node wakes the loop at once, the timer at the
 //   deadline.
 // - `spin`: `event` for a wait of 1 ms or more, and for a shorter one a spin that looks at the
 //   socket's read event until the deadline.
-// The default is `DEFAULT` below (smooth B4.5).
+// The default is `DEFAULT` below.
 
 use std::{net::UdpSocket, time::Instant};
 
@@ -52,7 +51,7 @@ mod imp {
         Spin,
     }
 
-    /// The way when the variable is not set (smooth B4.5): `event` cost no more CPU than `sleep`
+    /// The way when the variable is not set: `event` cost no more CPU than `sleep`
     /// (35.9 against 36.8 % of one core, 3 runs each), kept the send queue under 50 ms as both
     /// did, and was not worse in probe 3; `spin` cost 1.3 cores.
     const DEFAULT: Way = Way::Event;

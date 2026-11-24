@@ -40,7 +40,7 @@ impl ScreenCapture {
 /// Once the process has decided to exit, it is gone this long after whatever its threads do.
 const EXIT_WATCHDOG: Duration = Duration::from_secs(2);
 /// Stream preview frames handed to the main loop and not yet written, at most: one more is dropped
-/// for the preview, never waited for (smooth P2).
+/// for the preview, never waited for.
 const PREVIEW_FRAMES_IN_FLIGHT: usize = 8;
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -57,25 +57,25 @@ enum Input {
     #[cfg_attr(not(all(feature = "capture", any(target_os = "linux", target_os = "windows"))), allow(dead_code))]
     Capture(CaptureNews),
     Preview(PreviewNews),
-    /// A frame of the stream preview (smooth P2), with the generation of the tap it came through
-    /// (fix E12). Plaintext video: never logged.
+    /// A frame of the stream preview, with the generation of the tap it came through.
+    /// Plaintext video: never logged.
     PreviewFrame(u64, PreviewFrame),
 }
 
-/// What the sharer's preview reports (M6 preview step 1). No `Debug`: it holds the picture (R5).
+/// What the sharer's preview reports. No `Debug`: it holds the picture.
 enum PreviewNews {
     /// The JPEG as base64.
     Picture { width: u32, height: u32, jpeg: String },
-    /// The preview stopped (R4).
+    /// The preview stopped.
     Failed(String),
 }
 
-/// What the screen capture reports (M5b D8).
+/// What the screen capture reports.
 #[derive(Debug)]
 #[cfg_attr(not(all(feature = "capture", any(target_os = "linux", target_os = "windows"))), allow(dead_code))]
 enum CaptureNews {
     Ready(Reply),
-    /// Never on Windows, where nobody is asked (M7.5 C2).
+    /// Never on Windows, where nobody is asked.
     #[cfg_attr(target_os = "windows", allow(dead_code))]
     Cancelled,
     Failed(String),
@@ -103,14 +103,14 @@ struct Host<W: FnMut(&str) -> bool> {
     capture_ready: bool,
     /// The source's preview, once opened with a source that has a picture.
     preview: Option<Arc<Preview>>,
-    /// Why there is none, for a source without a picture (R6).
+    /// Why there is none, for a source without a picture.
     preview_refused: Option<&'static str>,
-    /// Whether a JPEG preview or the stream preview was asked for last (smooth P1).
+    /// Whether a JPEG preview or the stream preview was asked for last.
     jpeg_preview_on: bool,
     stream_preview_on: bool,
     /// Stream preview frames handed over and not yet written.
     preview_in_flight: Arc<AtomicUsize>,
-    /// The generation of the stream preview's tap now: only its frames are written (fix E12).
+    /// The generation of the stream preview's tap now: only its frames are written.
     stream_generation: u64,
     /// Armed on the first decision to exit, `None` in tests.
     exit_watchdog: Option<Duration>,
@@ -309,7 +309,7 @@ impl<W: FnMut(&str) -> bool> Host<W> {
                 let result = match asked.mode {
                     PreviewMode::Jpeg => self.jpeg_preview(&asked),
                     PreviewMode::Stream if asked.fps > 0 => self.stream_preview(true),
-                    // `fps` 0 in either mode stops both (fix E9).
+                    // `fps` 0 in either mode stops both.
                     PreviewMode::Stream => self.stop_jpeg_preview().and_then(|()| self.stream_preview(false)),
                 };
                 match result {
@@ -343,18 +343,18 @@ impl<W: FnMut(&str) -> bool> Host<W> {
             return self.fatal("open: e2ee null is refused without --insecure-plain");
         }
         let codec = open.video.codec.to_engine();
-        // No AV1 on Windows in this step, whatever the source (AV1 step 2, Q2).
+        // No AV1 on Windows, whatever the source.
         if codec != VideoCodec::H264 && cfg!(target_os = "windows") {
             return self.fatal(format!("open: {} is not supported on Windows, only H264", codec.name()));
         }
-        // Only the pattern and the screen have a picture to preview (R6).
+        // Only the pattern and the screen have a picture to preview.
         let preview_refused = match &open.source {
             SourceSpec::File { .. } => Some("the file source has no picture to preview"),
             SourceSpec::Synthetic { .. } => Some("the synthetic source has no picture to preview"),
             SourceSpec::Pattern(_) | SourceSpec::Screen(_) => None,
         };
         let mut source: Box<dyn Source> = match open.source {
-            // Annex-B for H264, IVF for AV1 (Q9).
+            // Annex-B for H264, IVF for AV1.
             SourceSpec::File { path, fps } => match FileSource::open_for(&path, fps, codec) {
                 Ok(source) => Box::new(source),
                 Err(e) => return self.fatal(format!("open: source: {e}")),
@@ -389,7 +389,7 @@ impl<W: FnMut(&str) -> bool> Host<W> {
                 }
             }
         };
-        // What gives way first on a tight link (smooth S1).
+        // What gives way first on a tight link.
         source.set_degrade(open.video.degrade.to_engine());
         let e2ee = match open.e2ee.as_ref().map(protocol::E2ee::to_params).transpose() {
             Ok(e2ee) => e2ee,
@@ -401,7 +401,7 @@ impl<W: FnMut(&str) -> bool> Host<W> {
             e2ee,
             video: open.video.to_params(),
         };
-        // Made nothing until asked, on Linux and Windows (M6 preview step 3, W6).
+        // Made nothing until asked, on Linux and Windows.
         let preview = preview_refused.is_none()
             .then(|| preview(self.inputs.clone()))
             .filter(|preview| source.attach_preview(preview.clone()));
@@ -456,12 +456,12 @@ impl<W: FnMut(&str) -> bool> Host<W> {
     fn preview_news(&mut self, news: PreviewNews) -> Next {
         match news {
             PreviewNews::Picture { width, height, jpeg } => self.go_on(Reply::Preview { width, height, jpeg: protocol::Jpeg(jpeg) }),
-            // The preview stopped, the share goes on (R4).
+            // The preview stopped, the share goes on.
             PreviewNews::Failed(message) => self.error(message),
         }
     }
 
-    /// Today's JPEG preview. Asking for it stops the stream preview (smooth P1).
+    /// The JPEG preview. Asking for it stops the stream preview.
     fn jpeg_preview(&mut self, asked: &protocol::Preview) -> Result<(), String> {
         let Some(preview) = &self.preview else {
             return Err("this source has no picture to preview".into());
@@ -471,15 +471,14 @@ impl<W: FnMut(&str) -> bool> Host<W> {
         self.stream_preview(false)
     }
 
-    /// The stream preview on or off (smooth P1, P2). On, again too, it waits for a key frame and
+    /// The stream preview on or off. On, again too, it waits for a key frame and
     /// asks for one; it stops the JPEG preview.
     fn stream_preview(&mut self, on: bool) -> Result<(), String> {
         let Some(engine) = self.engine.as_ref() else {
             return Err("before opened".into());
         };
         if on {
-            // A new tap each time: frames of an earlier one still on their way are not written
-            // (fix E12).
+            // A new tap each time: frames of an earlier one still on their way are not written.
             self.stream_generation += 1;
             let tap = stream_preview_tap(self.inputs.clone(), self.preview_in_flight.clone(), self.stream_generation);
             engine.set_stream_preview(Some(tap)).map_err(|e| e.to_string())?;
@@ -505,8 +504,8 @@ impl<W: FnMut(&str) -> bool> Host<W> {
         Ok(())
     }
 
-    /// Writes a stream preview frame of tap `generation`, only to stdout (smooth P2). One that
-    /// comes after the preview was turned off, or through an earlier tap (fix E12), is dropped.
+    /// Writes a stream preview frame of tap `generation`, only to stdout. One that
+    /// comes after the preview was turned off, or through an earlier tap, is dropped.
     fn preview_frame(&mut self, generation: u64, frame: PreviewFrame) -> Next {
         self.preview_in_flight.fetch_sub(1, Ordering::AcqRel);
         if !self.stream_preview_on || generation != self.stream_generation {
@@ -530,7 +529,7 @@ impl<W: FnMut(&str) -> bool> Host<W> {
     }
 }
 
-/// What `hello.codecs` says: H264 always, AV1 when this build on this machine encodes it (Q2).
+/// What `hello.codecs` says: H264 always, AV1 when this build on this machine encodes it.
 fn hello_codecs() -> Vec<&'static str> {
     let mut codecs = vec![VideoCodec::H264.name()];
     if pylon_media::video::av1_encode_available() {
@@ -559,7 +558,7 @@ fn pattern_source(_pattern: &protocol::Pattern, _max_bitrate: u64, _codec: Video
 }
 
 /// Starts the portal's screen capture, its news going into the main loop. The `target` is
-/// ignored on Linux (M7.5 C1): the portal's dialog chooses.
+/// ignored on Linux: the portal's dialog chooses.
 #[cfg(all(feature = "capture", target_os = "linux"))]
 fn start_capture(screen: protocol::ScreenCapture, inputs: Sender<Input>) -> Result<ScreenCapture, String> {
     let inputs = std::sync::Mutex::new(inputs);
@@ -586,7 +585,7 @@ fn start_capture(screen: protocol::ScreenCapture, inputs: Sender<Input>) -> Resu
 }
 
 /// Starts Windows Graphics Capture of the target the host named (the primary monitor when none),
-/// its news going into the main loop (M7.5 C1, C2, C12). `restore_token` is ignored here.
+/// its news going into the main loop. `restore_token` is ignored here.
 #[cfg(all(feature = "capture", target_os = "windows"))]
 fn start_capture(screen: protocol::ScreenCapture, inputs: Sender<Input>) -> Result<ScreenCapture, String> {
     use pylon_media::video::capture::CaptureTarget;
@@ -640,7 +639,7 @@ fn screen_source(_capture: &ScreenCapture, _screen: &protocol::Screen, _max_bitr
 }
 
 /// A preview whose pictures (as base64, made on the preview's own thread) and failures go into
-/// the main loop, and from there only to stdout (R5).
+/// the main loop, and from there only to stdout.
 fn preview(inputs: Sender<Input>) -> Arc<Preview> {
     let inputs = Mutex::new(inputs);
     Preview::new(move |event| {
@@ -658,10 +657,10 @@ fn preview(inputs: Sender<Input>) -> Arc<Preview> {
     })
 }
 
-/// The stream preview's tap (smooth P2): frames go into the main loop, and from there only to
+/// The stream preview's tap: frames go into the main loop, and from there only to
 /// stdout. While `PREVIEW_FRAMES_IN_FLIGHT` wait there, the main loop's writes are not keeping up
 /// and a frame is not taken (the engine then waits for a key frame and asks for one). Its frames
-/// carry its `generation` (fix E12).
+/// carry its `generation`.
 fn stream_preview_tap(inputs: Sender<Input>, in_flight: Arc<AtomicUsize>, generation: u64) -> PreviewTap {
     Box::new(move |frame| {
         if in_flight.fetch_add(1, Ordering::AcqRel) >= PREVIEW_FRAMES_IN_FLIGHT {
@@ -787,14 +786,13 @@ fn main() {
         test_hooks = flags.test_hooks,
         "pylon-media-host"
     );
-    // Window and monitor sizes and points in physical pixels (M7.5 C1).
+    // Window and monitor sizes and points in physical pixels.
     #[cfg(all(feature = "capture", target_os = "windows"))]
     pylon_media::video::capture::make_dpi_aware();
-    // The Windows Runtime for as long as the sidecar lives, so that no capture object outlives it
-    // (M7.5b Z2).
+    // The Windows Runtime for as long as the sidecar lives, so that no capture object outlives it.
     #[cfg(all(feature = "capture", target_os = "windows"))]
     pylon_media::video::capture::init_runtime();
-    // Priority without elevation (smooth B3), a no-op off Windows.
+    // Priority without elevation, a no-op off Windows.
     pylon_media::priority::process();
 
     let (inputs, receiver) = mpsc::channel();
@@ -870,7 +868,7 @@ mod tests {
             json!(["file"])
         };
         assert_eq!(lines.borrow()[1]["hello"]["sources"], sources);
-        // AV1 only where this build on this machine encodes it (Q2).
+        // AV1 only where this build on this machine encodes it.
         let codecs = if pylon_media::video::av1_encode_available() { json!(["H264", "AV1"]) } else { json!(["H264"]) };
         assert_eq!(lines.borrow()[1]["hello"]["codecs"], codecs);
         if !cfg!(all(feature = "encode", target_os = "linux")) {
@@ -992,7 +990,7 @@ mod tests {
     #[test]
     fn av1_opens_are_checked() {
         let _serial = serial();
-        // The synthetic source stays H264 (Q9).
+        // The synthetic source stays H264.
         let (mut host, lines) = make(Flags { insecure_plain: true, test_hooks: true });
         host.line(r#"{"hello": {"protocol": 1}}"#);
         let mut line: Value = serde_json::from_str(&open(Value::Null, json!({ "synthetic": { "fps": 30 } }))).unwrap();
@@ -1043,12 +1041,12 @@ mod tests {
             }});
             assert_eq!(exit_code(host.line(&open.to_string())), None);
             assert!(lines.borrow()[2].get("opened").is_some(), "{}", lines.borrow()[2]);
-            // Not fatal (R6), and the session goes on.
+            // Not fatal, and the session goes on.
             assert_eq!(exit_code(host.line(PREVIEW)), None);
             let wanted = format!("preview: the {name} source has no picture to preview");
             assert_eq!(lines.borrow()[3]["error"]["message"], wanted.as_str());
             assert_eq!(lines.borrow()[3]["error"]["fatal"], false);
-            // The stream preview the same (smooth P1).
+            // The stream preview the same.
             assert_eq!(exit_code(host.line(STREAM)), None);
             assert_eq!(lines.borrow()[4]["error"]["message"], wanted.as_str());
             assert!(!host.stream_preview_on);
@@ -1118,7 +1116,7 @@ mod tests {
         assert!(!host.stream_preview_on && !host.jpeg_preview_on);
         assert_eq!(lines.borrow().len(), before);
 
-        // And a stream stop stops a running JPEG preview (fix E9).
+        // And a stream stop stops a running JPEG preview.
         assert_eq!(exit_code(host.line(r#"{"preview": {"fps": 10, "max_width": 1280, "max_height": 720}}"#)), None);
         assert!(host.jpeg_preview_on && !host.stream_preview_on);
         assert_eq!(exit_code(host.line(STREAM_OFF)), None);
@@ -1131,7 +1129,7 @@ mod tests {
 
     #[test]
     fn a_frame_of_an_earlier_stream_preview_tap_is_not_written() {
-        // Fix E12: off then on again, and a frame the transport handed to the old tap arrives
+        // Off then on again, and a frame the transport handed to the old tap arrives
         // after both lines were handled.
         let _serial = serial();
         let path = std::env::temp_dir().join(format!("pylon-media-host-generation-{}.h264", std::process::id()));

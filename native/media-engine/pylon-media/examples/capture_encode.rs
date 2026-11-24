@@ -1,8 +1,8 @@
 // Screen capture through the portal and the VA-API encoder without the transport, for measuring
-// them alone (.plans/native-media-engine-m5b-capture.md, T1 and T3):
+// them alone:
 //   cargo run --release --features capture --example capture_encode -- \
-//     seconds=10 fps=60 bitrate=8000000 out=/tmp/m5b/t1.h264 csv=/tmp/m5b/t1.csv json=/tmp/m5b/t1.json \
-//     [token=/tmp/m5b/token] [wait=300] [max_fps=60]
+//     seconds=10 fps=60 bitrate=8000000 out=t.h264 csv=t.csv json=t.json \
+//     [token=token] [wait=300] [max_fps=60]
 // Opens the portal's dialog (unless the restore token in `token` is honoured), encodes what comes
 // for `seconds` at no more than `fps`, and writes the Annex-B stream, one CSV line per frame
 // (frame,ms,bytes,key,encode_ms,delay_ms) and the totals as JSON. The new restore token goes back
@@ -43,7 +43,7 @@ fn main() {
     let fps = num("fps", "60") as u32;
     let bitrate = num("bitrate", "8000000");
     let wait = Duration::from_secs(num("wait", "300"));
-    // max_fps=<n> asks the compositor for at most that rate (M5b D13), 0 for no limit.
+    // max_fps=<n> asks the compositor for at most that rate, 0 for no limit.
     let max_fps = Some(num("max_fps", "0") as u32).filter(|f| *f > 0);
     let token_path = args.get("token").cloned();
     let token = token_path

@@ -1,4 +1,4 @@
-// A share's stream is handed back once (shareStream.js, smooth A5.2).
+// A share's stream is handed back once (shareStream.js).
 //   node --test src/renderer/src/lib/soup/shareStream.test.mjs
 import assert from 'node:assert/strict'
 import test from 'node:test'
@@ -38,7 +38,6 @@ test('no stream, nothing handed back', () => {
   assert.deepEqual(released, [])
 })
 
-// Fix C6 (finding 7 of .plans/native-media-engine-smooth-review-client.md).
 import { setShareStreamKey } from './shareStream.js'
 
 test('a key issued again after it was handed back is handed back again (fix C6)', () => {

@@ -182,7 +182,7 @@ test('nativeRateSample: from the sidecar stats and the size sent', () => {
     capturedFrames: 240,
     frameGap: { median: 16.667, p95: 17.1, max: 33.4, long: 3 }
   })
-  // A sidecar from before smooth A1: no intervals.
+  // A sidecar that sends no intervals.
   assert.deepEqual(nativeRateSample({ ms_since_open: 1, frames_sent: 2 }, null), {
     id: null,
     frames: 2,

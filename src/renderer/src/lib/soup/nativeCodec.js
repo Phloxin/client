@@ -1,6 +1,6 @@
 // Which video codec a native screen share sends (soup/nativeShare.js), or none, in which case
 // the share goes through Chromium. Kept apart from screenShare.js so it can be tested on its
-// own. Plan: .plans/native-media-engine-av1-3-client.md, T1 to T3.
+// own.
 //   node --test src/renderer/src/lib/soup/nativeCodec.test.mjs
 
 // The codecs the sidecar can send, by its protocol's names, and their mime types.

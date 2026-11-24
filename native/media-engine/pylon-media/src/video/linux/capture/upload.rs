@@ -1,4 +1,4 @@
-// The memory path (D4): a frame copied out of a PipeWire memory buffer is uploaded to a VA
+// The memory path: a frame copied out of a PipeWire memory buffer is uploaded to a VA
 // surface and handed on as that surface's DMA-BUF, the way the pattern producer does it.
 
 use std::time::Instant;

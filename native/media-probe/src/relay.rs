@@ -1,8 +1,8 @@
-// A UDP relay between the sidecar and the node, for probe 3
-// (.plans/native-media-engine-m5a-encoder.md, D15). The sidecar is given the relay's address as
+// A UDP relay between the sidecar and the node, for probe 3.
+// The sidecar is given the relay's address as
 // the node's candidate. Its front, the side the sidecar sends to, listens on `PROBE_LISTEN_IP`
-// (default 127.0.0.1) as the node does, so a sidecar on another machine reaches it (M7 plan,
-// D19). Its back side stays on loopback. Toward the node the relay applies a rate limit (a token
+// (default 127.0.0.1) as the node does, so a sidecar on another machine reaches it.
+// Its back side stays on loopback. Toward the node the relay applies a rate limit (a token
 // bucket whose queue drops what would wait longer than 300 ms), a fixed delay and random loss.
 // Toward the sidecar it forwards at once.
 

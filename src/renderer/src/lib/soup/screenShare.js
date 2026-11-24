@@ -832,7 +832,7 @@ async function stopShareContext(ctx, { notifyServer = true } = {}) {
 
   if (notifyServer) {
     void Promise.all(producerIds.map((id) => closeServerProducer(id)))
-    // The stream is handed back with op 11, once (smooth A5.2). Without
+    // The stream is handed back with op 11, once. Without
     // notifyServer the session is gone, and the stream with it.
     releaseShareStream(ctx, releaseStream)
   }
@@ -1533,11 +1533,11 @@ export async function shareScreen({
 // ─── Native screen share ─────────────────────────────────────────
 // Whether the sharer's own screen tile is seen (Main.jsx works it out: selfScreenTileSeen in
 // lib/selfPreviewPlayback.js). A native share asks its sidecar for preview pictures only while
-// it is (.plans/native-media-engine-preview-cost.md, B1 and B2).
+// it is.
 let selfScreenPreviewSeen = false
 
 // `stopAsked`: the tile is not watched (the person chose Stop previewing), so a stream preview
-// stops at once instead of after its hold (fix C8).
+// stops at once instead of after its hold.
 export function setSelfScreenPreviewSeen(seen, { stopAsked = false } = {}) {
   selfScreenPreviewSeen = seen === true
   const producer = shares.screen?.producer
@@ -1628,7 +1628,7 @@ async function startNativeScreenShare(ctx, audioMode, audioTargets) {
     // A capture startNativeShare did not take over is closed here.
     if (capture && !native) void window.api?.mediaEngine?.close?.(capture.pid).catch(() => {})
     // Chromium's path asks for a stream of its own. A stop meanwhile handed it back already,
-    // then this is a no-op (smooth A5.2).
+    // then this is a no-op.
     releaseShareStream(ctx, releaseStream)
     ctx.streamKey = null
     if (isShareSupersededError(error) || !isActiveShare(ctx)) throw shareSupersededError()

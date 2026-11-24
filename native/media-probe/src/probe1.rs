@@ -1,5 +1,4 @@
 // Probe 1: does the engine work as a sender against the node's mediasoup transports?
-// (.plans/native-media-engine.md, section 7, and .plans/native-media-engine-m2-engine.md D20.)
 //
 // The engine is the `pylon-media-host` sidecar, started with `--insecure-plain --test-hooks` and
 // driven over its control protocol with the synthetic source and no E2EE. It only sees what a
@@ -16,7 +15,7 @@
 //   7. With its stdin closed and no `close`, the sidecar exits within 2 s with status 0.
 //
 // Env: MAX_MBPS (8), START_KBPS (1500), FPS (30), BURSTS ("5,40"), PROBE_CODEC (H264, or AV1:
-// then the source is the pattern at 1920x1080 and FPS through the hardware encoder, AV1 step 2 Q11).
+// then the source is the pattern at 1920x1080 and FPS through the hardware encoder).
 
 use std::{
     net::UdpSocket,
@@ -128,7 +127,7 @@ pub async fn run() -> i32 {
             .unwrap_or_default(),
     );
 
-    // H264 from the synthetic source, as before AV1. AV1 from the pattern through the encoder.
+    // H264 from the synthetic source. AV1 from the pattern through the encoder.
     let codec = crate::sidecar::codec();
     let (source, video) = if codec == "H264" {
         (
@@ -169,7 +168,7 @@ pub async fn run() -> i32 {
         }
     };
     println!("sidecar rtp parameters: {}", opened["rtp_parameters"]);
-    // PROBE_PREVIEW asks for the sharer's preview after `open` (M6 preview step 1, R8).
+    // PROBE_PREVIEW asks for the sharer's preview after `open`.
     let previewing = sidecar.start_preview_schedule();
 
     // `ConnectTransport`, then `CreateSource`, then media.

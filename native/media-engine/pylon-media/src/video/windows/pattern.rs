@@ -1,4 +1,4 @@
-// The test pattern producer on Windows (.plans/native-media-engine-m7-4-windows-encoder.md, N10):
+// The test pattern producer on Windows:
 // frames drawn on the CPU as BGRx and uploaded into a BGRA D3D11 texture on the shared device,
 // the way a capture will hand one over.
 
@@ -104,7 +104,7 @@ impl FrameProducer for PatternProducer {
         Duration::from_nanos(1_000_000_000 / self.fps as u64)
     }
 
-    // A still pattern hands over its first picture again and again (M6 preview step 1, 5.2 item 1).
+    // A still pattern hands over its first picture again and again.
     fn repeats_last(&self) -> bool {
         self.still && self.frame > 1
     }

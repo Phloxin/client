@@ -1,9 +1,8 @@
-// A stdin and stdout bridge over a local TCP port (.plans/native-media-engine-m7-5-windows-capture.md,
-// C14). ssh on the Windows laptop lands in session 0, which has no desktop, so a sidecar that
-// captures the screen must run in the desktop session. There `serve` starts it with its stdin and
-// stdout joined to one connection on 127.0.0.1, and from the ssh session `connect` joins its own
-// stdin and stdout to that port. The probe's wrapper script runs `connect` over ssh as it ran the
-// sidecar before.
+// A stdin and stdout bridge over a local TCP port. ssh on the Windows machine lands in session 0,
+// which has no desktop, so a sidecar that captures the screen must run in the desktop session.
+// There `serve` starts it with its stdin and stdout joined to one connection on 127.0.0.1, and
+// from the ssh session `connect` joins its own stdin and stdout to that port. The probe's
+// wrapper script runs `connect` over ssh as it ran the sidecar before.
 //
 //   media-bridge serve <port> <wait_s> <program> [args...]
 //     Listens on 127.0.0.1:<port>, takes one connection within <wait_s> seconds, starts <program>

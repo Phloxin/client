@@ -3,7 +3,7 @@
 // process handling so it can be tested under node.
 //
 // A sidecar that is gone answers nothing, so every request fails at once when it exits, and
-// a waiter made after that fails at once too (smooth A5.1): a capture must never wait on a
+// a waiter made after that fails at once too: a capture must never wait on a
 // sidecar that died right after its hello, however its exit and its last lines are ordered.
 
 // The error requests fail with once `engine` is gone: its exit's own, set by mediaEngine.js.

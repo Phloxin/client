@@ -1,4 +1,4 @@
-// The driver of probe 3's Chromium baseline (.plans/native-media-engine-m5a-encoder.md, D26).
+// The driver of probe 3's Chromium baseline.
 // Starts `media-probe chrome` and a bare Electron sender under Xvfb, relays the signalling, and
 // sends the page's statistics to the probe once a second until the probe is done.
 //

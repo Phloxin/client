@@ -1,4 +1,4 @@
-// The video pipeline's Linux half (.plans/native-media-engine-m7-2-seams.md, S3): raw frames
+// The video pipeline's Linux half: raw frames
 // as DMA-BUFs, libavcodec's VA-API encoder, the pattern producer's upload, and screen capture
 // through the desktop portal and PipeWire.
 
@@ -75,7 +75,7 @@ pub fn pattern_source(
     Ok(Box::new(VideoPipeline::new(producer, encoder)))
 }
 
-/// Whether this build on this machine encodes AV1 (Q2): FFmpeg has `av1_vaapi` and the driver
+/// Whether this build on this machine encodes AV1: FFmpeg has `av1_vaapi` and the driver
 /// an AV1 Profile 0 encode config, asked of VA-API as for H264. No encoder is opened. Asked once
 /// per process.
 pub fn av1_encode_available() -> bool {

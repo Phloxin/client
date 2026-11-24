@@ -1,7 +1,7 @@
-// The video pipeline's Windows half (.plans/native-media-engine-m7-4-windows-encoder.md): raw
+// The video pipeline's Windows half: raw
 // frames as BGRA D3D11 textures on one device, our own D3D11 video processor, libavcodec's Quick
 // Sync or NVENC encoder, the pattern producer's upload, and with the `capture` feature Windows
-// Graphics Capture (`capture/`, .plans/native-media-engine-m7-5-windows-capture.md).
+// Graphics Capture (`capture/`).
 
 #[cfg(feature = "capture")]
 pub mod capture;
@@ -21,9 +21,9 @@ use crate::{Error, source::Source};
 pub use encoder::D3d11Encoder;
 pub use pattern::PatternProducer;
 
-/// A raw frame on the GPU: a BGRA texture on the pipeline's D3D11 device (N3). The picture is
+/// A raw frame on the GPU: a BGRA texture on the pipeline's D3D11 device. The picture is
 /// the top left `width` by `height` of the texture, which may be larger (a captured window that
-/// shrank, M7.5 C6).
+/// shrank).
 #[derive(Debug)]
 pub struct D3d11Frame {
     pub texture: ID3D11Texture2D,
@@ -31,7 +31,7 @@ pub struct D3d11Frame {
     pub height: u32,
     pub capture_time: Instant,
     /// What must live as long as the frame: the capture's own frame object, whose buffer goes back
-    /// to the capture when this frame is dropped (M7.5 C5). `None` for the pattern. Held, never
+    /// to the capture when this frame is dropped. `None` for the pattern. Held, never
     /// read.
     #[allow(dead_code)]
     pub(crate) hold: Option<Hold>,
@@ -54,7 +54,7 @@ impl RawFrame for D3d11Frame {
 }
 
 /// The pattern source of the protocol: a test pattern through the hardware encoder. H264 only:
-/// there is no AV1 encoder on Windows (AV1 step 2, Q2).
+/// there is no AV1 encoder on Windows.
 pub fn pattern_source(
     width: u32,
     height: u32,
@@ -81,7 +81,7 @@ pub fn pattern_source(
     Ok(Box::new(VideoPipeline::new(producer, encoder)))
 }
 
-/// The encoders here are H264's (AV1 step 2, Q2).
+/// The encoders here are H264's.
 pub(crate) fn refuse_other_than_h264(codec: crate::VideoCodec) -> Result<(), Error> {
     match codec {
         crate::VideoCodec::H264 => Ok(()),

@@ -1,4 +1,4 @@
-# The native media engine (.plans/native-media-engine-m2-engine.md): the `pylon-media` library
+# The native media engine: the `pylon-media` library
 # and the `pylon-media-host` sidecar around it. Own workspace and lock. Builds in the client's
 # dev shell:
 #   nix develop ~/dev/pylon/client -c cargo build --release
@@ -14,7 +14,7 @@ debug = false
 panic = "abort"
 
 # Our fork of str0m 0.25.0 with the four line fix to the delay controller's timing
-# (.plans/native-media-engine-m5a-encoder.md, section 10), a submodule pinned to cfb77a1c. Its
+# a submodule pinned to cfb77a1c. Its
 # helper crates are path dependencies inside it, so they come from the fork too.
 [patch.crates-io]
 str0m = { path = "vendor/str0m" }

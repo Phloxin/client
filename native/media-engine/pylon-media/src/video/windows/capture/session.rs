@@ -1,7 +1,6 @@
-// Windows Graphics Capture's side (.plans/native-media-engine-m7-5-windows-capture.md, C1 to C6
-// and C9 to C11): the item made from a window or a monitor without the system's picker, a free
-// threaded pool of BGRA textures on the encoder's own device, the session with the cursor drawn
-// in and, where Windows allows it, no border.
+// Windows Graphics Capture's side: the item made from a window or a monitor without the system's
+// picker, a free threaded pool of BGRA textures on the encoder's own device, the session with
+// the cursor drawn in and, where Windows allows it, no border.
 
 use std::{
     sync::{
@@ -48,7 +47,7 @@ use crate::video::{
     windows::{D3d11Frame, Hold, device::Device},
 };
 
-/// The pool's buffers: one being encoded, one kept, one waiting, one for Windows to draw (C5).
+/// The pool's buffers: one being encoded, one kept, one waiting, one for Windows to draw.
 const BUFFERS: i32 = 4;
 const FORMAT: DirectXPixelFormat = DirectXPixelFormat::B8G8R8A8UIntNormalized;
 /// Without a first frame this long after the start, `Ready` goes out anyway (as on Linux).
@@ -58,7 +57,7 @@ const STOP_POLL: Duration = Duration::from_millis(50);
 /// How long the capture waits at its end for the pipeline to let go of its frames.
 const FRAMES_BACK: Duration = Duration::from_secs(1);
 
-/// What `PYLON_MEDIA_MIN_UPDATE_MS` asks of the capture's least update interval (fix E13).
+/// What `PYLON_MEDIA_MIN_UPDATE_MS` asks of the capture's least update interval.
 /// Unset it is one frame time; why, at `SetMinUpdateInterval`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum MinUpdate {
@@ -108,11 +107,11 @@ impl MinUpdate {
         }
     }
 }
-/// A gap between two frames from the pool longer than this is counted (smooth B2).
+/// A gap between two frames from the pool longer than this is counted.
 const LATE_GAP: Duration = Duration::from_millis(25);
 
 /// Makes the process per-monitor DPI aware, so that window and monitor sizes and points are
-/// physical pixels (C1). Call it at start, before any window or monitor is looked at.
+/// physical pixels. Call it at start, before any window or monitor is looked at.
 pub fn make_dpi_aware() {
     // SAFETY: a plain call.
     match unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) } {
@@ -123,14 +122,14 @@ pub fn make_dpi_aware() {
 }
 
 /// Keeps the process's multithreaded apartment, and with it the Windows Runtime, for the life of
-/// the process (M7.5b Z2). Once, whoever calls first; never undone. Call it when a process that
+/// the process. Once, whoever calls first; never undone. Call it when a process that
 /// will capture starts.
 ///
 /// Without it the apartment lived only as long as the threads that had entered it: the capture's
 /// own thread and Windows Graphics Capture's frame thread. When the last of them left, COM
 /// unloaded GraphicsCapture.dll, and when that happened while the frame thread was still running
 /// in the DLL, the process ended with an access violation in `GraphicsCapture.dll_unloaded`: about
-/// half the teardowns (.plans/native-media-engine-m7-5b-capture-teardown.md, section 6).
+/// half the teardowns.
 pub fn init_runtime() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
@@ -156,7 +155,7 @@ impl Resolved {
     }
 }
 
-/// The window or monitor `target` names, or why there is none (C2).
+/// The window or monitor `target` names, or why there is none.
 pub(super) fn resolve(target: Option<CaptureTarget>) -> Result<Resolved, String> {
     // SAFETY: plain calls on values that need not be valid handles.
     unsafe {
@@ -166,7 +165,7 @@ pub(super) fn resolve(target: Option<CaptureTarget>) -> Result<Resolved, String>
                 if handle == 0 || !IsWindow(Some(hwnd)).as_bool() {
                     return Err(format!("window {handle} does not exist"));
                 }
-                // The monitor it is mostly on (C4).
+                // The monitor it is mostly on.
                 let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
                 Ok(Resolved { window: Some(handle as isize), monitor: monitor.0 as isize })
             }
@@ -228,7 +227,7 @@ impl Drop for Returned {
 
 /// The frames out of the pool. The pool is closed only once they are back: closing it while the
 /// pipeline still held a frame, or while the encoder was being torn down on the same device, ended
-/// the process with an access violation after a resize (seen on the laptop). The pipeline drops
+/// the process with an access violation after a resize. The pipeline drops
 /// its encoder before its kept frame, so waiting for the frames also waits for the encoder.
 #[derive(Default)]
 struct Outstanding {
@@ -287,7 +286,7 @@ struct Started {
 }
 
 impl Started {
-    /// The first half of the end (M7.5b Z3): the handlers are removed and the session is closed, so
+    /// The first half of the end: the handlers are removed and the session is closed, so
     /// nothing more is delivered. The pool stays open for the frames the pipeline still holds.
     fn stop_delivering(&self) {
         let removed = (self.pool.RemoveFrameArrived(self.arrived), self.item.RemoveClosed(self.closed));
@@ -295,7 +294,7 @@ impl Started {
         tracing::debug!(?removed, ?session, "capture stopped delivering");
     }
 
-    /// The second half, once every frame is back (C5): the pool is closed, then the item, the pool
+    /// The second half, once every frame is back: the pool is closed, then the item, the pool
     /// and the session are released.
     fn close_pool(self) {
         let pool = self.pool.Close();
@@ -306,12 +305,12 @@ impl Started {
 /// The capture's thread: starts it, then waits until it is stopped or the item went away.
 pub(super) fn run(resolved: Resolved, max_fps: Option<u32>, shared: Arc<Shared>, events: Events) {
     // No apartment of its own: the thread is in the process's multithreaded apartment, which
-    // `init_runtime` keeps for the life of the process (M7.5b Z2). This thread ending must not end
+    // `init_runtime` keeps for the life of the process. This thread ending must not end
     // it, or Windows unloads GraphicsCapture.dll while the capture's frame thread still runs in it.
     init_runtime();
     // The item's closed event comes through the thread that made the item, which needs a
-    // dispatcher queue and must pump its messages: without them it never came on the laptop
-    // (M7.5 C11). Frames come on the pool's own threads either way.
+    // dispatcher queue and must pump its messages: without them it never came.
+    // Frames come on the pool's own threads either way.
     let options = DispatcherQueueOptions {
         dwSize: size_of::<DispatcherQueueOptions>() as u32,
         threadType: DQTYPE_THREAD_CURRENT,
@@ -340,17 +339,17 @@ pub(super) fn run(resolved: Resolved, max_fps: Option<u32>, shared: Arc<Shared>,
         }
         pump(STOP_POLL);
     }
-    // An orderly end (M7.5b Z3): nothing more is delivered (the waiting frame goes back and no new
+    // An orderly end: nothing more is delivered (the waiting frame goes back and no new
     // one is kept), the handlers go and the session closes, then the pool closes once every frame
-    // the pipeline held is back (C5). The pipeline lets go of its own when it stops.
+    // the pipeline held is back. The pipeline lets go of its own when it stops.
     finish(&shared);
     started.stop_delivering();
     if !started.live.outstanding.wait_all_back(FRAMES_BACK) {
         tracing::warn!(after_ms = FRAMES_BACK.as_millis() as u64, "capture frames still held, the pool closes anyway");
     }
     started.close_pool();
-    // The frames untimed by the compositor's clock with the capture's end (smooth B1.3), and the
-    // gaps between frames (B2).
+    // The frames untimed by the compositor's clock with the capture's end, and the
+    // gaps between frames.
     if let Ok(state) = shared.state.lock() {
         tracing::info!(
             delivered = state.delivered,
@@ -406,7 +405,7 @@ fn start(resolved: Resolved, max_fps: Option<u32>, shared: &Arc<Shared>, events:
         let winrt_device: IDirect3DDevice = inspectable.cast().map_err(|e| winrt("IDirect3DDevice", e))?;
         let pool = Direct3D11CaptureFramePool::CreateFreeThreaded(&winrt_device, FORMAT, BUFFERS, size).map_err(|e| winrt("frame pool", e))?;
         let session = pool.CreateCaptureSession(&item).map_err(|e| winrt("session", e))?;
-        // The cursor in the picture, no border where Windows allows it (C10).
+        // The cursor in the picture, no border where Windows allows it.
         if let Err(error) = session.SetIsCursorCaptureEnabled(true) {
             tracing::warn!(%error, "the cursor could not be drawn in");
         }
@@ -414,13 +413,13 @@ fn start(resolved: Resolved, max_fps: Option<u32>, shared: &Arc<Shared>, events:
             tracing::info!(%error, "the capture border could not be turned off");
         }
         let border = session.IsBorderRequired().ok();
-        // At most `max_fps` from Windows where it has the setting (C9), or what
-        // PYLON_MEDIA_MIN_UPDATE_MS asks (fix E13). The token bucket limits either way.
+        // At most `max_fps` from Windows where it has the setting, or what
+        // PYLON_MEDIA_MIN_UPDATE_MS asks. The token bucket limits either way.
         // One frame time pushes a frame that comes a little early to the next refresh on a
-        // monitor above 60 Hz: on a 240 Hz desktop 41 to 55 sent a second of 60, in a game at
+        // monitor above 60 Hz: on a 240 Hz monitor 41 to 55 sent a second of 60, in a game at
         // 144 Hz 48 to 58 (45 to 51 with `off`, where Windows applies 16.0 ms). A shorter
         // interval gives them back there (1 ms: 60.0 sent of 169.5 captured, 52.0 to 55.6 in
-        // the game), but on a 60 Hz laptop with the real client any interval under a frame time
+        // the game), but on a 60 Hz laptop with an integrated GPU any interval under a frame time
         // took about 9 frames a second from the shared content (53 to 54 a second down to 42 to
         // 45 with 1 ms, 45.5 with 10 ms) while the viewer gained 3. So one frame time stays the
         // default, and PYLON_MEDIA_MIN_UPDATE_MS=1 is there for a fast monitor.
@@ -447,7 +446,7 @@ fn start(resolved: Resolved, max_fps: Option<u32>, shared: &Arc<Shared>, events:
             let shared = shared.clone();
             let live = live.clone();
             let pool_size = Mutex::new(size);
-            // One clock per capture (smooth B1.2).
+            // One clock per capture.
             let clock = Mutex::new(Clock::default());
             let device = Agile(winrt_device);
             TypedEventHandler::<Direct3D11CaptureFramePool, IInspectable>::new(move |pool, _| {
@@ -473,12 +472,12 @@ fn start(resolved: Resolved, max_fps: Option<u32>, shared: &Arc<Shared>, events:
     }
 }
 
-/// The capture's clock (smooth T1 to T4) and the gaps between the pool's frames (B2), owned by
+/// The capture's clock and the gaps between the pool's frames, owned by
 /// the frame handler.
 #[derive(Default)]
 struct Clock {
     times: CaptureClock,
-    /// Whether the first frame's clock was logged (T4).
+    /// Whether the first frame's clock was logged.
     logged: bool,
     last_arrival: Option<Instant>,
 }
@@ -494,7 +493,7 @@ struct Counts {
 impl Clock {
     /// The capture time of a frame that arrived at `arrived`, shown by the compositor at
     /// `composed` (with how far ahead of the arrival that is, in ms), or why there is no
-    /// compositor time (T1, T2b).
+    /// compositor time.
     fn stamp(&mut self, arrived: Instant, composed: Result<(Instant, f64), String>) -> (Instant, Counts) {
         let untimed = self.times.untimed;
         let at = self.times.stamp(arrived, composed.as_ref().ok().map(|(at, _)| *at));
@@ -513,7 +512,7 @@ impl Clock {
 }
 
 /// The compositor's time for `frame`, its `SystemRelativeTime`, and the performance counter now,
-/// both in 100 ns units of the counter (smooth T1).
+/// both in 100 ns units of the counter.
 fn clock_of(frame: &Direct3D11CaptureFrame) -> Result<(i64, i64), String> {
     let composed = frame.SystemRelativeTime().map_err(|e| format!("SystemRelativeTime: {e}"))?.Duration;
     let (mut counter, mut frequency) = (0i64, 0i64);
@@ -530,8 +529,8 @@ fn clock_of(frame: &Direct3D11CaptureFrame) -> Result<(i64, i64), String> {
 }
 
 /// The compositor's time for the frame as an `Instant`: `arrived` plus how far the
-/// compositor's time is ahead of the counter now (on the laptop it is the time the frame is
-/// shown, 5 to 12 ms ahead), or minus how far it is behind (T2b), with that difference in ms.
+/// compositor's time is ahead of the counter now (it can be the time the frame is
+/// shown, 5 to 12 ms ahead), or minus how far it is behind, with that difference in ms.
 fn composed_at(arrived: Instant, composed: i64, now: i64) -> Result<(Instant, f64), String> {
     let ahead = composed - now;
     let span = Duration::from_nanos(ahead.unsigned_abs().saturating_mul(100));
@@ -540,14 +539,14 @@ fn composed_at(arrived: Instant, composed: i64, now: i64) -> Result<(Instant, f6
 }
 
 /// Takes every frame the pool has: the newest waits for the pipeline, an older one waiting is
-/// replaced and counted as dropped (C5). Every frame is stamped by the compositor's clock, also
-/// one replaced later (smooth B1.2).
+/// replaced and counted as dropped. Every frame is stamped by the compositor's clock, also
+/// one replaced later.
 fn frames(pool: &Direct3D11CaptureFramePool, device: &IDirect3DDevice, pool_size: &Mutex<SizeInt32>, clock: &Mutex<Clock>, shared: &Shared, live: &Live) {
     while let Ok(frame) = pool.TryGetNextFrame() {
         let arrived = Instant::now();
         let times = clock_of(&frame);
         if let Ok((composed, now)) = times {
-            // For measuring the compositor's clock against the arrival (smooth B1).
+            // For measuring the compositor's clock against the arrival.
             tracing::trace!(composed, ahead_us = (composed - now) / 10, "capture frame");
         }
         let composed = times.and_then(|(composed, now)| composed_at(arrived, composed, now));
@@ -589,7 +588,7 @@ fn frames(pool: &Direct3D11CaptureFramePool, device: &IDirect3DDevice, pool_size
 }
 
 /// The pipeline's frame for `frame`, `None` when it has no picture. Remakes the pool when the
-/// content's size changed (C6).
+/// content's size changed.
 fn frame_of(
     frame: Direct3D11CaptureFrame,
     capture_time: Instant,
@@ -628,7 +627,7 @@ fn frame_of(
     Ok(Some(D3d11Frame { texture, width, height, capture_time, hold: Some(Hold(Box::new(Returned::new(frame, &live.outstanding)))) }))
 }
 
-/// The item went away by itself: the share ends (C11).
+/// The item went away by itself: the share ends.
 fn item_closed(shared: &Shared, live: &Live) {
     if shared.stop.load(Ordering::Relaxed) {
         return;
@@ -644,7 +643,7 @@ mod tests {
 
     #[test]
     fn the_least_update_interval_follows_the_variable() {
-        // Fix E13: unset and `frame` are one frame time, a number is milliseconds, `off` sets
+        // Unset and `frame` are one frame time, a number is milliseconds, `off` sets
         // nothing.
         assert_eq!(MinUpdate::from_text(None), Some(MinUpdate::FrameTime));
         assert_eq!(MinUpdate::from_text(None).and_then(|m| m.interval(Some(60))), Some(166_666));

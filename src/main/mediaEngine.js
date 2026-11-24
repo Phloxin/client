@@ -70,7 +70,7 @@ const EVENTS = new Set([
   'error',
   'capture_changed',
   'preview',
-  // The stream preview's encoded frames (smooth P4): relayed as they come, base64 and all, as
+  // The stream preview's encoded frames: relayed as they come, base64 and all, as
   // the JPEGs are.
   'preview_frame',
   'closed'
@@ -156,7 +156,7 @@ function hostBinary() {
 }
 
 // Whether the setting's row is shown: where the setting can work, and a sidecar binary is
-// there (T3).
+// there.
 function settingShown() {
   if (
     !nativeShareSettingApplies({
@@ -237,7 +237,7 @@ function onLine(engine, line) {
   }
   if (name === 'closed') failWaiters(engine, new Error(`media engine closed (${body.reason})`))
   // Pictures of the screen stop once the sidecar is being closed: after a reload or a crashed
-  // renderer the page there does not own it (fix C4).
+  // renderer the page there does not own it.
   if (engine.closing && PICTURES.has(name)) return
   if (EVENTS.has(name)) sendEvent(engine, { type: name, ...body })
 }
@@ -274,7 +274,7 @@ function startEngine(sender) {
   engine.exited = new Promise((resolve) => {
     const gone = (code, signal) => {
       if (engine.gone) return
-      // Every request waiting on it fails now, and any made later at once (smooth A5.1).
+      // Every request waiting on it fails now, and any made later at once.
       engineGone(engine, new Error(`media engine exited (${signal ?? code})`))
       clearTimeout(engine.killTimer)
       if (engines.get(sender.id) === engine) engines.delete(sender.id)
@@ -391,8 +391,8 @@ async function capture(sender, options = {}) {
     if (await liveEngine(sender)) throw new Error('A media engine is already open for this window')
     if (pending.cancelled) throw new Error('The screen capture was cancelled')
     if (!available()) throw new Error('The media engine is unavailable')
-    // On Windows what is captured is the source main holds for this share (K3 of
-    // .plans/native-media-engine-m7-6-client.md). Nothing to capture fails here.
+    // On Windows what is captured is the source main holds for this share.
+    // Nothing to capture fails here.
     if (isWindows && !windowsCaptureTarget) throw new Error('No capture target on Windows')
     const target = isWindows ? windowsCaptureTarget().target : null
     pending.engine = startEngine(sender)

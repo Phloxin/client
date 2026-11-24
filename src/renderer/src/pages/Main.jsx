@@ -1133,8 +1133,8 @@ function Main() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selfTileKey])
 
-  // Whether the sharer's own screen tile is being seen, here or in the pop-out (B1 of
-  // .plans/native-media-engine-preview-cost.md). A native share asks its sidecar for preview
+  // Whether the sharer's own screen tile is being seen, here or in the pop-out.
+  // A native share asks its sidecar for preview
   // pictures only while it is. The pop-out says its focus and visibility over the bridge.
   const mainPreviewWindow = usePreviewWindow()
   const [popoutPreviewWindow, setPopoutPreviewWindow] = useState(null)
@@ -1149,7 +1149,7 @@ function Main() {
     mainWindow: mainPreviewWindow,
     popoutWindow: popoutPreviewWindow
   })
-  // Not watched: the person stopped the preview, which a stream preview obeys at once (fix C8).
+  // Not watched: the person stopped the preview, which a stream preview obeys at once.
   const selfScreenWatched = selfScreenTileWatched({ streams: allVideoStreams, watchedTileIds })
   useEffect(() => {
     setSelfScreenPreviewSeen(selfScreenSeen, { stopAsked: !selfScreenWatched })
@@ -3336,7 +3336,7 @@ function Main() {
           // the socket. It may answer one of soup's stream or ticket requests; a
           // failed share start or ticket wait is reported by its owner, so it
           // isn't shown twice. An EndStream for a stream already gone is what we asked
-          // for: nothing is shown (smooth P10).
+          // for: nothing is shown.
           case 0:
             if (isEndOfGoneStream(msg.data)) {
               console.debug('[Events] EndStream: the stream had already ended', msg.data)

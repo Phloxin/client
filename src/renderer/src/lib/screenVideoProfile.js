@@ -57,7 +57,7 @@ export function screenCodecOptionsFor(encoding) {
   return { videoGoogleStartBitrate }
 }
 
-// The same start in bits per second, for a native share (smooth A4): the sidecar starts its
+// The same start in bits per second, for a native share: the sidecar starts its
 // estimate and encoder where Chromium's path would for the same ceiling.
 export function screenStartBitrateBps(encoding) {
   return screenCodecOptionsFor(encoding).videoGoogleStartBitrate * 1000

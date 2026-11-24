@@ -1,4 +1,4 @@
-// The preview's Linux half (.plans/native-media-engine-m6-preview-1-engine.md, R2, R7): the
+// The preview's Linux half: the
 // frame the encoder converted (an NV12 VA surface at the size being encoded) scaled down by the
 // VA-API video processor on the preview's own thread, read back, and compressed with
 // libavcodec's JPEG encoder (`video/jpeg.rs`). Nothing here runs on the encode path.
@@ -84,7 +84,7 @@ impl PreviewMaker for VaapiPreview {
         // SAFETY: a valid frame.
         let (width, height) = unsafe { ((*frame.0).width as u32, (*frame.0).height as u32) };
         let output = fit(width, height, max.0, max.1);
-        // Timed from the scale to the end of the read back (A1).
+        // Timed from the scale to the end of the read back.
         let readable = times.start();
         let small = {
             let scaler = self.scaler_for(frame, output)?;
@@ -179,7 +179,7 @@ fn build_scaler(frame: &Frame, input: (*const u8, u32, u32), output: (u32, u32))
         (*parameters).height = height as i32;
         (*parameters).time_base = ff::AVRational { num: 1, den: 1000 };
         (*parameters).hw_frames_ctx = (*frame.0).hw_frames_ctx;
-        // What the encoder's converter puts out (encoder.rs, D4).
+        // What the encoder's converter puts out (encoder.rs).
         (*parameters).color_range = ff::AVColorRange::AVCOL_RANGE_MPEG;
         (*parameters).color_space = ff::AVColorSpace::AVCOL_SPC_BT709;
         let set = ff::av_buffersrc_parameters_set(source, parameters);

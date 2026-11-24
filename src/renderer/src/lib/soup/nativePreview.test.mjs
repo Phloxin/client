@@ -1,4 +1,4 @@
-// The sharer's own preview of a native share (.plans/native-media-engine-m6-preview-2-client.md).
+// The sharer's own preview of a native share.
 //   node --test src/renderer/src/lib/soup/nativePreview.test.mjs
 import assert from 'node:assert/strict'
 import test from 'node:test'
@@ -157,7 +157,6 @@ test('a draw that throws still releases the image and frees the painter', async 
   assert.equal(painter.counts.failed, 1)
 })
 
-// B2 and B5 of .plans/native-media-engine-preview-cost.md.
 import {
   PREVIEW_GATE_MS,
   createPreviewGate,
@@ -250,7 +249,7 @@ test('a closed gate sends nothing, not even a change that was waiting', () => {
   assert.deepEqual(sent, [{ seen: true, t: 1_000 }])
 })
 
-// Fix C2 (finding 2 of .plans/native-media-engine-smooth-review-client.md): the stream preview
+// The stream preview
 // is held for STREAM_PREVIEW_HOLD_MS after the tile stops being seen.
 import { STREAM_PREVIEW_HOLD_MS } from './nativePreview.js'
 
@@ -370,7 +369,7 @@ test('a closed gate drops a held stop (C2)', () => {
   assert.equal(pending(), 0)
 })
 
-// Fix C8: a stop the person asked for is not held.
+// A stop the person asked for is not held.
 test('set(false, { now: true }) stops a stream preview at once, and ends a hold (C8)', () => {
   const { gate, sent, advance, pending } = heldGate({ value: STREAM_PREVIEW_HOLD_MS })
   gate.set(true)
