@@ -1,15 +1,19 @@
-/* Fire screensaver for the disconnected chat area (see IdleAnimation.jsx).
-   The root fills the flex region; the fire <pre> fills the root; the caption
-   sits centered in a carved-out hole the flames never touch. */
+/* Pylon-tower screensaver for the disconnected chat area (see IdleAnimation.jsx).
+   The root fills the flex region; the waves <pre> fills the root; the caption
+   sits in a carved-out hole the waves never touch, and the tower is drawn
+   standing on top of that hole. */
 .idle-animation {
   position: relative;
   flex: 1;
   min-height: 0;
   overflow: hidden;
   user-select: none;
+  /* One grid line; the caption (wordmark + text) is pushed down by about half
+     the tower (17 rows + the gap) so tower + caption sit centered together. */
+  --idle-line: calc(13px * 1.15);
 }
 
-.idle-fire {
+.idle-waves {
   position: absolute;
   inset: 0;
   margin: 0;
@@ -23,7 +27,7 @@
 
 .idle-caption {
   position: absolute;
-  top: 50%;
+  top: calc(50% + 10 * var(--idle-line));
   left: 50%;
   transform: translate(-50%, -50%);
   display: flex;
@@ -32,4 +36,29 @@
   max-width: 80%;
   text-align: center;
   pointer-events: none;
+}
+
+/* Frosted patch behind the caption: the (already dimmed) waves passing under
+   the text blur out, and the radial mask fades the blur to nothing at the
+   edges so there's no visible box. */
+.idle-caption::before {
+  content: '';
+  position: absolute;
+  inset: -16px -32px;
+  z-index: -1;
+  backdrop-filter: blur(1px);
+  mask-image: radial-gradient(closest-side, #000 55%, transparent);
+}
+
+/* "Pylon" wordmark at the top of the caption, smaller than the wave grid. */
+.idle-logo {
+  align-self: center;
+  margin: 0 0 var(--spacing-sm);
+  font-family: var(--font-family-mono);
+  font-size: 10px;
+  line-height: 1;
+  white-space: pre;
+  text-align: left;
+  color: var(--color-primary);
+  opacity: 0.85;
 }

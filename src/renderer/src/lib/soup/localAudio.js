@@ -5,6 +5,13 @@ import rnnoiseWorkletPath from '@sapphi-red/web-noise-suppressor/rnnoiseWorklet.
 import { createVoiceGraph } from '../voiceAudio'
 import { micConstraints, micProfileUsesRnnoise, micProfileWantsStereo } from '../micAudioProfile'
 import { createSerialQueue } from '../serialQueue'
+import {
+  createLevelGateController,
+  createSpeakingActivity,
+  DEFAULT_VOLUME_GATE_THRESHOLD
+} from '../levelActivity'
+
+export { createLevelGateController } from '../levelActivity'
 
 // The RNNoise WASM binary is fetched once and reused across AudioContexts.
 let rnnoiseBinaryPromise = null
@@ -232,6 +239,7 @@ export async function buildAudioProcessor(stream, micSettings, hooks = {}) {
   const stop = () => {
     stopGateTicker?.()
     stopGateTicker = null
+    gateController?.release()
     try {
       rnnoiseNode?.destroy()
     } catch {
@@ -329,6 +337,7 @@ function createSpeechLevelReader(audioContext) {
 
   const data = new Float32Array(analyser.fftSize)
   let smoothedLevel = 0
+  let lastRawLevel = 0
   let lastReadAt = null
 
   const read = () => {
@@ -345,6 +354,7 @@ function createSpeechLevelReader(audioContext) {
         ((db - SPEECH_LEVEL_FLOOR_DB) / (SPEECH_LEVEL_CEILING_DB - SPEECH_LEVEL_FLOOR_DB)) * 100
       )
     )
+    lastRawLevel = rawLevel
 
     const now = performance.now()
     if (lastReadAt == null) {
@@ -365,13 +375,10 @@ function createSpeechLevelReader(audioContext) {
     input: highpass,
     analyser,
     nodes: [highpass, lowpass, analyser],
-    read
+    read,
+    raw: () => lastRawLevel
   }
 }
-
-// Opening level for the volume gate when nothing has set one, on the shared
-// speech-band RMS scale (see createSpeechLevelReader).
-const DEFAULT_VOLUME_GATE_THRESHOLD = 15
 
 // The threshold the *live* mic gate is currently using. Held at module scope
 // because the controller already accepts a per-tick threshold: the value can
@@ -385,57 +392,6 @@ export function setVolumeGateThreshold(threshold) {
   const value = Number(threshold)
   if (!Number.isFinite(value)) return
   liveGateThreshold = value
-}
-
-// Gate state shared by the live mic path and the settings test. A lower release
-// threshold plus a short hold bridges syllable gaps; gain ramps avoid clicks.
-export function createLevelGateController(
-  audioContext,
-  gate,
-  read,
-  {
-    threshold = DEFAULT_VOLUME_GATE_THRESHOLD,
-    hysteresis = 3,
-    holdMs = 200,
-    rampSeconds = 0.03,
-    onOpenChange = () => {}
-  } = {}
-) {
-  let open = false
-  let lastVoiceAt = 0
-  gate.gain.setValueAtTime(0, audioContext.currentTime)
-
-  const setOpen = (next) => {
-    if (next === open) return
-    open = next
-    const now = audioContext.currentTime
-    const current = gate.gain.value
-    gate.gain.cancelScheduledValues(now)
-    gate.gain.setValueAtTime(current, now)
-    gate.gain.linearRampToValueAtTime(next ? 1 : 0, now + rampSeconds)
-    onOpenChange(next)
-  }
-
-  const update = (nextThreshold = threshold) => {
-    const level = read()
-    const now = performance.now()
-    const releaseThreshold = Math.max(0, nextThreshold - hysteresis)
-
-    if (!open) {
-      if (level >= nextThreshold) {
-        lastVoiceAt = now
-        setOpen(true)
-      }
-    } else if (level >= releaseThreshold) {
-      lastVoiceAt = now
-    } else if (now - lastVoiceAt >= holdMs) {
-      setOpen(false)
-    }
-
-    return { level, open }
-  }
-
-  return { update, isOpen: () => open }
 }
 
 // Build the same post-browser/post-RNNoise analysis sidechain used by the live
@@ -489,6 +445,7 @@ export async function createMicLevelMonitor(audioContext, stream, micSettings) {
 // ─── Detect speaking activity on an audio stream ──────────────────
 // Returns a stop function. Calls onChange(isSpeaking) whenever the
 // speaking state changes, and once more with false on stop.
+// The on-level follows the stream's noise floor (createSpeakingActivity).
 export function createSpeakingDetector(
   stream,
   onChange,
@@ -514,26 +471,15 @@ export function createSpeakingDetector(
   const source = providedSource ?? audioContext.createMediaStreamSource(stream)
   source.connect(reader.input)
 
+  const activity = createSpeakingActivity({ threshold, hysteresis, holdMs })
   let speaking = false
-  let lastVoiceAt = 0
 
   const tick = () => {
     const level = reader.read()
-    const now = performance.now()
-    const releaseThreshold = Math.max(0, threshold - hysteresis)
-
-    if (!speaking) {
-      if (level >= threshold) {
-        speaking = true
-        lastVoiceAt = now
-        onChange(true)
-      }
-    } else if (level >= releaseThreshold) {
-      lastVoiceAt = now
-    } else if (now - lastVoiceAt >= holdMs) {
-      speaking = false
-      onChange(false)
-    }
+    const next = activity.update(level, reader.raw(), performance.now())
+    if (next === speaking) return
+    speaking = next
+    onChange(next)
   }
   // 25Hz via the shared hidden-window-safe ticker. Registration invokes the
   // callback once immediately, matching the previous startup behavior.

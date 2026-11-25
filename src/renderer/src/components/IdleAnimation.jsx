@@ -2,63 +2,168 @@ import { useEffect, useRef, useState } from 'react'
 import { prefersReducedMotion } from '../lib/animation'
 import './IdleAnimation.css'
 
-// Doom-style fire that fills the disconnected chat area, echoing Omarchy's
-// terminal screensavers. The grid is sized to the container (measured cell ×
-// ResizeObserver) and a centered hole is carved around the caption so flames
-// frame the text without ever touching it. The <pre> is updated imperatively
-// so there's no per-tick React render.
-const TICK_MS = 110
-const SHADE = ' .:-=+*#%@' // dark → light ramp
-const GAP = 2 // empty cells kept around the caption
+// ASCII pylon tower broadcasting into the disconnected chat area. A lattice
+// tower stands on a "Pylon" wordmark above the caption and its tip sends out
+// radio waves in bursts of three rings that expand across the whole area and
+// fade with distance. The grid is sized to the container (measured cell ×
+// ResizeObserver); waves dim as they pass behind the caption (wordmark
+// included) and never cross the tower's silhouette. The <pre> is updated
+// imperatively so there's no per-tick React render.
+const TICK_MS = 70
+const GAP = 2 // cells around the caption over which waves fade back in
+const HOLE_DIM = 0.6 // wave opacity factor behind the caption itself
 
-// Brightness 0..1 for a SHADE char, so paint() can give the flames depth.
-function levelOf(ch) {
-  return SHADE.indexOf(ch) / (SHADE.length - 1)
+// Tower art: antenna + beacon on a zig-zag lattice mast that flares into a
+// braced base. The 'o' on row 0 is the emitter; every row is centered on it.
+const TOWER = [
+  '          o',
+  '          |',
+  '          |',
+  '         _|_',
+  '         |\\|',
+  '         |/|',
+  '         |\\|',
+  '         |/|',
+  '         |\\|',
+  '         |/|',
+  '        /___\\',
+  '       /\\   /\\',
+  '      /  \\ /  \\',
+  '     /    X    \\',
+  '    /    / \\    \\',
+  '   /    /   \\    \\',
+  '  /____/_____\\____\\'
+]
+const TOWER_MID = TOWER[0].indexOf('o')
+
+// Wordmark under the tower, rendered at the top of the caption in a smaller
+// font than the wave grid, so it sits inside the caption's dimmed patch.
+const LOGO = [
+  '██████╗ ██╗   ██╗██╗      ██████╗ ███╗   ██╗',
+  '██╔══██╗╚██╗ ██╔╝██║     ██╔═══██╗████╗  ██║',
+  '██████╔╝ ╚████╔╝ ██║     ██║   ██║██╔██╗ ██║',
+  '██╔═══╝   ╚██╔╝  ██║     ██║   ██║██║╚██╗██║',
+  '██║        ██║   ███████╗╚██████╔╝██║ ╚████║',
+  '╚═╝        ╚═╝   ╚══════╝ ╚═════╝ ╚═╝  ╚═══╝'
+].join('\n')
+
+const RINGS_PER_BURST = 3
+const RING_GAP_MS = 420 // between rings within a burst
+const BURST_PERIOD_MS = 3200 // between the first rings of consecutive bursts
+const SPEED = 0.2 // px per ms a ring's radius grows
+const FLASH_MS = 180 // tip shows '*' this long after each ring leaves
+
+// Ring glyph by the cell's angle around the emitter (pixel space, y down),
+// eight 45° sectors starting at "right": the char follows the ring's tangent.
+const RING_CHARS = [')', '/', '-', '\\', '(', '/', '-', '\\']
+
+function ringChar(dx, dy) {
+  const a = Math.atan2(dy, dx) // -π..π, 0 = right, π/2 = down
+  return RING_CHARS[Math.round(a / (Math.PI / 4)) & 7]
 }
 
-// Wrap each lit cell in a span whose opacity tracks its brightness; blanks and
-// newlines pass through. Set via innerHTML.
-function paint(text) {
-  let html = ''
-  for (const ch of text) {
-    if (ch === '\n' || ch === ' ') html += ch
-    else html += `<span style="opacity:${levelOf(ch).toFixed(2)}">${ch}</span>`
+const lit = (ch, op) => `<span style="opacity:${op}">${ch}</span>`
+
+// Wave factory. Returns step(t) → innerHTML for the <pre>, t in ms since start.
+// `hole` is the caption's cell rect (wordmark included); the tower stands on
+// top of it, centered.
+function makeWaves(cols, rows, charW, lineH, hole) {
+  const baseRow = hole.y0 - 1
+  const topRow = baseRow - (TOWER.length - 1)
+  const left = Math.floor((hole.x0 + hole.x1) / 2) - TOWER_MID
+  const tipX = left + TOWER_MID
+
+  // Tower cells by index, spaces inside the silhouette included so waves don't
+  // show through the lattice.
+  const tower = new Map()
+  TOWER.forEach((line, i) => {
+    const y = topRow + i
+    if (y < 0 || y >= rows) return
+    for (let j = line.search(/\S/); j < line.length; j++) {
+      const x = left + j
+      if (x >= 0 && x < cols) tower.set(y * cols + x, line[j])
+    }
+  })
+
+  // Emitter center in px; the farthest corner sets how far a ring travels.
+  const ex = (tipX + 0.5) * charW
+  const ey = (topRow + 0.5) * lineH
+  const W = cols * charW
+  const H = rows * lineH
+  const rMax = Math.max(
+    Math.hypot(ex, ey),
+    Math.hypot(W - ex, ey),
+    Math.hypot(ex, H - ey),
+    Math.hypot(W - ex, H - ey)
+  )
+  const lifeMs = rMax / SPEED + RING_GAP_MS * RINGS_PER_BURST
+
+  // Wave opacity factor at a cell: HOLE_DIM behind the caption, ramping back
+  // to 1 across the GAP band so the dimmed patch has no hard edge.
+  const dim = (x, y) => {
+    if (x < hole.x0 || x >= hole.x1 || y < hole.y0 || y >= hole.y1) return 1
+    const out = Math.max(
+      hole.x0 + GAP - x,
+      x - (hole.x1 - 1 - GAP),
+      hole.y0 + GAP - y,
+      y - (hole.y1 - 1 - GAP),
+      0
+    )
+    return HOLE_DIM + ((1 - HOLE_DIM) * out) / (GAP + 1)
   }
-  return html
-}
 
-// Fire factory: seed the bottom row hot, propagate upward with cooling, and
-// zero out the caption hole each frame so flames never cross it.
-function makeFire(cols, rows, holeRef) {
-  const heat = Array.from({ length: rows }, () => Array(cols).fill(0))
-  return () => {
-    for (let x = 0; x < cols; x++) heat[rows - 1][x] = Math.random()
-    for (let y = 0; y < rows - 1; y++) {
-      const b = heat[y + 1]
-      const row = heat[y]
-      for (let x = 0; x < cols; x++) {
-        const v = (b[x] + b[(x - 1 + cols) % cols] + b[(x + 1) % cols] + row[x]) / 4 - 0.02
-        row[x] = v < 0 ? 0 : v
+  // Radii of every ring alive at time t.
+  function radii(t) {
+    const out = []
+    for (let k = Math.floor(t / BURST_PERIOD_MS); k >= 0; k--) {
+      const start = k * BURST_PERIOD_MS
+      if (t - start > lifeMs) break
+      for (let i = 0; i < RINGS_PER_BURST; i++) {
+        const r = (t - start - i * RING_GAP_MS) * SPEED
+        if (r >= 0 && r < rMax) out.push(r)
       }
     }
-    const hole = holeRef.current
-    let s = ''
+    return out
+  }
+
+  // Whether a ring has just left the tip, for the emitter flash.
+  function flashing(t) {
+    const into = t % BURST_PERIOD_MS
+    return into < RINGS_PER_BURST * RING_GAP_MS && into % RING_GAP_MS < FLASH_MS
+  }
+
+  return (t) => {
+    const rs = radii(t)
+    let html = ''
     for (let y = 0; y < rows; y++) {
+      const py = (y + 0.5) * lineH - ey
       for (let x = 0; x < cols; x++) {
-        if (hole && x >= hole.x0 && x < hole.x1 && y >= hole.y0 && y < hole.y1) {
-          heat[y][x] = 0
-          s += ' '
-        } else {
-          s += SHADE[Math.floor(heat[y][x] * (SHADE.length - 1))]
+        const tc = tower.get(y * cols + x)
+        if (tc !== undefined) {
+          if (y === topRow && x === tipX) html += flashing(t) ? lit('*', 1) : lit('o', 0.85)
+          else html += tc === ' ' ? ' ' : lit(tc, 0.85)
+          continue
         }
+        if (rs.length === 0) {
+          html += ' '
+          continue
+        }
+        const px = (x + 0.5) * charW - ex
+        const d = Math.hypot(px, py)
+        // Half the cell's extent along the radial direction, so rings stay one
+        // cell thick whether they cross columns (narrow) or rows (tall).
+        const half = d > 0 ? (0.5 * (Math.abs(px) * charW + Math.abs(py) * lineH)) / d : charW
+        const r = rs.find((r) => Math.abs(d - r) <= half)
+        const op = r === undefined ? 0 : Math.pow(1 - r / rMax, 1.3) * 0.9 * dim(x, y)
+        html += op < 0.04 ? ' ' : lit(ringChar(px, py), op.toFixed(2))
       }
-      if (y < rows - 1) s += '\n'
+      if (y < rows - 1) html += '\n'
     }
-    return s
+    return html
   }
 }
 
-export default function IdleAnimation({ connecting = false }) {
+export default function IdleAnimation({ connecting = false, hasBookmarks = false }) {
   // Cycle 0..3 trailing dots while connecting for a simple "…" animation.
   const [dots, setDots] = useState(0)
   useEffect(() => {
@@ -70,7 +175,6 @@ export default function IdleAnimation({ connecting = false }) {
   const rootRef = useRef(null)
   const preRef = useRef(null)
   const capRef = useRef(null)
-  const holeRef = useRef(null)
 
   useEffect(() => {
     const root = rootRef.current
@@ -87,6 +191,11 @@ export default function IdleAnimation({ connecting = false }) {
     const lineH = box.height
     pre.removeChild(probe)
 
+    // Reduced motion: one still frame with a full burst in flight.
+    const reduced = prefersReducedMotion()
+    const t0 = performance.now()
+    const now = () => (reduced ? RING_GAP_MS * RINGS_PER_BURST + 600 : performance.now() - t0)
+
     let step = () => ''
     const build = () => {
       // The ResizeObserver can fire once more as the container collapses during
@@ -97,24 +206,23 @@ export default function IdleAnimation({ connecting = false }) {
       const rows = Math.max(6, Math.floor(r.height / lineH))
       // Caption rect → grid cells, expanded by GAP, clamped to the grid.
       const cap = capRef.current.getBoundingClientRect()
-      holeRef.current = {
+      const hole = {
         x0: Math.max(0, Math.floor((cap.left - r.left) / charW) - GAP),
         x1: Math.min(cols, Math.ceil((cap.right - r.left) / charW) + GAP),
         y0: Math.max(0, Math.floor((cap.top - r.top) / lineH) - GAP),
         y1: Math.min(rows, Math.ceil((cap.bottom - r.top) / lineH) + GAP)
       }
-      step = makeFire(cols, rows, holeRef)
-      pre.innerHTML = paint(step())
+      step = makeWaves(cols, rows, charW, lineH, hole)
+      pre.innerHTML = step(now())
     }
 
     build()
-    // Reduced motion: leave the static first frame, don't animate.
-    if (prefersReducedMotion()) return
-
     const ro = new ResizeObserver(build)
     ro.observe(root)
+    if (reduced) return () => ro.disconnect()
+
     const id = setInterval(() => {
-      pre.innerHTML = paint(step())
+      pre.innerHTML = step(now())
     }, TICK_MS)
     return () => {
       clearInterval(id)
@@ -124,8 +232,11 @@ export default function IdleAnimation({ connecting = false }) {
 
   return (
     <div className="idle-animation" ref={rootRef}>
-      <pre className="idle-fire" aria-hidden="true" ref={preRef} />
+      <pre className="idle-waves" aria-hidden="true" ref={preRef} />
       <div className="idle-caption" ref={capRef}>
+        <pre className="idle-logo" aria-hidden="true">
+          {LOGO}
+        </pre>
         {connecting ? (
           <>
             <p className="disconnected-title">Connecting{'.'.repeat(dots)}</p>
@@ -133,9 +244,11 @@ export default function IdleAnimation({ connecting = false }) {
           </>
         ) : (
           <>
-            <p className="disconnected-title">No Server Connected</p>
+            <p className="disconnected-title">No Server Currently Connected</p>
             <p className="disconnected-subtitle">
-              Pick a server from the <strong>Connect</strong> menu to get started.
+              {hasBookmarks
+                ? 'Pick a server from your bookmarks to connect.'
+                : 'Add a server to your bookmarks to connect.'}
             </p>
           </>
         )}

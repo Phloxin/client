@@ -1,14 +1,32 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useSettings } from '../context/SettingsContext'
-import { createAutoIdleController, IDLE_POLL_INTERVAL_MS } from './autoIdle'
+import { createAutoIdleController, IDLE_POLL_INTERVAL_MS, idleSecondsWithVoice } from './autoIdle'
 
-export function useAutoIdle({ scope, connected, status, send }) {
+// `speaking`: we are talking unmuted in voice right now. It resets the idle
+// clock like input does, so someone mid-conversation never drifts to Away.
+export function useAutoIdle({ scope, connected, status, send, speaking = false }) {
   const { autoIdleSettings } = useSettings()
   const [controller] = useState(createAutoIdleController)
+  // Read by the poll, so speech flips don't restart the polling effect.
+  const speakingRef = useRef(speaking)
+  const lastSpokeAtRef = useRef(null)
 
   // Keep ownership through a transient reconnect, but never across logouts,
   // account changes or server switches.
-  useEffect(() => controller.reset(), [controller, scope])
+  useEffect(() => {
+    controller.reset()
+    lastSpokeAtRef.current = null
+  }, [controller, scope])
+
+  // Stamp the end of each burst of speech; while speaking the poll uses now.
+  useEffect(() => {
+    speakingRef.current = speaking
+    if (!speaking) return
+    lastSpokeAtRef.current = Date.now()
+    return () => {
+      lastSpokeAtRef.current = Date.now()
+    }
+  }, [speaking])
 
   useEffect(() => {
     const ipc = window.electron?.ipcRenderer
@@ -19,8 +37,13 @@ export function useAutoIdle({ scope, connected, status, send }) {
       if (reading) return
       reading = true
       try {
-        const idleSeconds = autoIdleSettings.enabled ? await ipc.invoke('get-system-idle-time') : 0
+        const systemIdle = autoIdleSettings.enabled ? await ipc.invoke('get-system-idle-time') : 0
         if (!cancelled) {
+          const idleSeconds = idleSecondsWithVoice(systemIdle, {
+            speaking: speakingRef.current,
+            lastSpokeAt: lastSpokeAtRef.current,
+            now: Date.now()
+          })
           controller.tick({ status, idleSeconds, settings: autoIdleSettings, send })
         }
       } catch {

@@ -15,7 +15,6 @@ import SegmentedTabs from './SegmentedTabs'
 import './SideBar.css'
 import {
   IconSettings,
-  IconDoorExit,
   IconHeadphones,
   IconHeadphonesOff,
   IconMicrophone,
@@ -95,11 +94,9 @@ function Sidebar({
   onToggleMic,
   onToggleDeafen,
   // Main's latest voice media state ({ channelId, state }) for the dock's
-  // connection indicator, plus the Connection Info tab buttons it hosts
-  // (see VoiceConnectionBar).
+  // connection indicator, plus the Connection Info tab toggle its status strip
+  // drives (see VoiceConnectionBar).
   voiceMediaState,
-  connectionInfoOpen,
-  connectionInfoActive,
   onToggleConnectionInfo
 }) {
   const { keybindSettings, appearanceSettings } = useSettings()
@@ -695,9 +692,8 @@ function Sidebar({
             mediaState={
               voiceMediaState?.channelId === voice.channelId ? voiceMediaState.state : undefined
             }
-            connectionInfoOpen={connectionInfoOpen}
-            connectionInfoActive={connectionInfoActive}
             onToggleConnectionInfo={onToggleConnectionInfo}
+            onLeave={voice.leave}
           />
         )}
         <div className="dock-actions">
@@ -746,14 +742,6 @@ function Sidebar({
             ) : (
               <IconVideo className="control-icon" size={18} />
             )}
-          </button>
-          <button
-            className="control-btn"
-            title="Leave Channel"
-            disabled={!voice.joined}
-            onClick={voice.leave}
-          >
-            <IconDoorExit size={18} />
           </button>
           <button
             className="control-btn"

@@ -2,18 +2,21 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { motion } from 'motion/react'
 import { IconX, IconDownload, IconZoomReset } from '@tabler/icons-react'
 import { useAnimationCategory } from '../context/SettingsContext'
-import { scrimFade } from '../lib/motionPresets'
+import { lightboxScrim, lightboxImage } from '../lib/motionPresets'
 import './ImageViewer.css'
 
 const MIN_SCALE = 1
 const MAX_SCALE = 8
 const ZOOM_STEP = 0.0015
+// A backdrop press that moves farther than this is a pan, not a click.
+const CLICK_SLOP_PX = 5
 
 function ImageViewer({ src, name, onClose }) {
   const [scale, setScale] = useState(1)
   const [offset, setOffset] = useState({ x: 0, y: 0 })
   const [downloading, setDownloading] = useState(false)
   const draggingRef = useRef(null)
+  const pressRef = useRef(null)
   const imageRef = useRef(null)
 
   const reset = useCallback(() => {
@@ -55,6 +58,14 @@ function ImageViewer({ src, name, onClose }) {
   }
 
   const handlePointerDown = (e) => {
+    // Remember where the press started so a click on the backdrop (outside the
+    // image) can close the viewer, but a pan that ends there, or a press that
+    // began on the image, doesn't.
+    pressRef.current = {
+      onBackdrop: e.target === e.currentTarget,
+      x: e.clientX,
+      y: e.clientY
+    }
     if (scale <= 1) return
     e.preventDefault()
     draggingRef.current = { startX: e.clientX, startY: e.clientY, origin: offset }
@@ -74,6 +85,16 @@ function ImageViewer({ src, name, onClose }) {
     draggingRef.current = null
   }
 
+  // The stage fills the overlay, so it has to handle backdrop clicks itself.
+  const handleStageClick = (e) => {
+    e.stopPropagation()
+    const press = pressRef.current
+    pressRef.current = null
+    if (!press?.onBackdrop || e.target !== e.currentTarget) return
+    const moved = Math.hypot(e.clientX - press.x, e.clientY - press.y)
+    if (moved <= CLICK_SLOP_PX) onClose?.()
+  }
+
   const handleDownload = async () => {
     setDownloading(true)
     try {
@@ -86,7 +107,8 @@ function ImageViewer({ src, name, onClose }) {
   const overlayAnim = useAnimationCategory('overlays')
 
   return (
-    <motion.div className="image-viewer-overlay" onClick={onClose} {...scrimFade(overlayAnim)}>
+    // Callers render this inside <AnimatePresence> so the exit animations play.
+    <motion.div className="image-viewer-overlay" onClick={onClose} {...lightboxScrim(overlayAnim)}>
       <div className="image-viewer-controls" onClick={(e) => e.stopPropagation()}>
         <button
           type="button"
@@ -111,9 +133,10 @@ function ImageViewer({ src, name, onClose }) {
         </button>
       </div>
 
-      <div
+      <motion.div
         className="image-viewer-stage"
-        onClick={(e) => e.stopPropagation()}
+        {...lightboxImage(overlayAnim)}
+        onClick={handleStageClick}
         onWheel={handleWheel}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
@@ -131,7 +154,7 @@ function ImageViewer({ src, name, onClose }) {
             transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})`
           }}
         />
-      </div>
+      </motion.div>
     </motion.div>
   )
 }

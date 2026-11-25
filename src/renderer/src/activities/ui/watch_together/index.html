@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="../shared/base.css" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main class="wt" id="app" data-view="theatre" hidden>
+      <div class="house" id="house">
+        <div class="fill top" id="fill-top"></div>
+        <div class="fill bottom" id="fill-bottom"></div>
+        <div class="fill side" id="fill-left"></div>
+        <div class="fill side" id="fill-right"></div>
+        <div class="scene-box" id="scene-box">
+          <div class="scene-host" id="scene-host"></div>
+          <div class="chairs" id="chairs"></div>
+        </div>
+        <div class="screen" id="screen">
+          <div class="drape left"></div>
+          <div class="drape right"></div>
+          <div class="countdown" id="countdown"></div>
+          <div class="scrim" id="scrim" hidden></div>
+          <div class="screen-msg" id="screen-msg" hidden></div>
+        </div>
+        <div class="bar-slot" id="bar-slot">
+          <div class="bar" id="bar"></div>
+        </div>
+        <div class="standing" id="standing" hidden></div>
+      </div>
+      <aside class="queue" id="queue">
+        <button
+          class="icon-btn queue-close"
+          id="queue-close"
+          type="button"
+          title="Close queue"
+          aria-label="Close queue"
+        ></button>
+        <section class="now" id="now" hidden></section>
+        <div class="add-row">
+          <input
+            id="add-input"
+            type="text"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="Paste a YouTube link"
+          />
+          <button class="btn primary" id="add-btn" type="button">Add</button>
+          <button class="icon-btn" id="add-lock" type="button" hidden></button>
+        </div>
+        <p class="add-msg" id="add-msg" role="status"></p>
+        <div class="section-title">Up next <span class="count" id="up-count">0</span></div>
+        <ol class="entries" id="up-list"></ol>
+        <button class="btn" id="clear-btn" type="button" hidden>Clear queue</button>
+        <button
+          class="played-toggle"
+          id="played-toggle"
+          type="button"
+          aria-expanded="false"
+        ></button>
+        <span class="count" id="played-count" hidden></span>
+        <ol class="entries played" id="played-list" hidden></ol>
+      </aside>
+      <div class="seat-card" id="seat-card" hidden></div>
+      <div class="fly" id="fly"></div>
+      <p class="notice" id="notice" role="status"></p>
+    </main>
+    <script src="../shared/bridge.js"></script>
+    <script src="../shared/room.js"></script>
+    <script src="../shared/player.js"></script>
+    <script src="sync.js"></script>
+    <script src="icons.js"></script>
+    <script src="scene.js"></script>
+    <script src="main.js"></script>
+  </body>
+</html>

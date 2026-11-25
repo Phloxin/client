@@ -24,6 +24,8 @@ import { setupGlobalKeybinds, stopGlobalKeybinds } from './keybinds'
 import { matchScreenSource } from './screenSourceMatch'
 import { appRoot, pickFollowTarget } from './windowFollow'
 import { setupAudioCapture, stopAudioCaptureHost } from './audioCapture'
+import { setupMediaEngine } from './mediaEngine'
+import { captureTarget } from './captureTarget'
 import { setupUpdater } from './updater'
 import { setupTray, setTrayVoiceState, destroyTray } from './tray'
 import {
@@ -40,6 +42,17 @@ import {
   installProductionDiagnostics,
   registerDiagnosticsIpc
 } from './diagnostics'
+
+// `electron-vite dev` runs beside the installed app: its own userData keeps the
+// settings, session, and single-instance lock apart. PYLON_PROFILE=<name> gives a
+// further dev copy its own userData (`-dev-<name>`), so two dev clients run at once.
+if (process.env['ELECTRON_RENDERER_URL']) {
+  const profile = process.env.PYLON_PROFILE?.trim()
+  if (profile && !/^[A-Za-z0-9_-]+$/.test(profile)) {
+    throw new Error(`PYLON_PROFILE="${profile}" may only contain letters, digits, - and _`)
+  }
+  app.setPath('userData', `${app.getPath('userData')}-dev${profile ? `-${profile}` : ''}`)
+}
 
 // Install before startup settings are read so early persistence/configuration
 // failures are retained in packaged builds.
@@ -122,6 +135,8 @@ const DEFAULT_APP_SETTINGS = {
   // Silent update check on launch; the popup lets the user opt out ("don't show
   // me again"), which flips this off.
   checkUpdatesOnLaunch: true
+  // nativeScreenShare (absent means off): screen shares through the native media engine
+  // where it can run (main/mediaEngine.js). Read at each share, not only at startup.
 }
 
 function readAppSettings() {
@@ -1004,6 +1019,31 @@ app.whenReady().then(() => {
     }
   })
 
+  // Save a PNG an activity made (the whiteboard's picture) to a user-chosen location. The bytes
+  // and name are checked again here, since this writes to disk.
+  const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+  ipcMain.handle('save-png', async (event, { name, data } = {}) => {
+    const isPng =
+      data instanceof Uint8Array &&
+      data.length <= 8 * 1024 * 1024 &&
+      PNG_SIGNATURE.every((byte, i) => data[i] === byte)
+    const plainName =
+      typeof name === 'string' && /^[A-Za-z0-9][A-Za-z0-9 ._-]{0,95}\.png$/.test(name)
+    if (!isPng || !plainName) return { ok: false, error: 'Not a PNG to save' }
+    try {
+      const { canceled, filePath } = await dialog.showSaveDialog(
+        BrowserWindow.fromWebContents(event.sender),
+        { defaultPath: name, filters: [{ name: 'PNG image', extensions: ['png'] }] }
+      )
+      if (canceled || !filePath) return { ok: false, canceled: true }
+      writeFileSync(filePath, data)
+      return { ok: true, filePath }
+    } catch (err) {
+      console.error('[save-png] Saving failed:', err)
+      return { ok: false, error: err.message }
+    }
+  })
+
   // ─── Session (see session.js) ─────────────────────────────────────
   // The renderer hands over the login/register response and asks for refreshes;
   // only the events-WS identify ever gets a token back.
@@ -1082,6 +1122,24 @@ app.whenReady().then(() => {
 
   // Native per-app screenshare audio capture (audiocapture:* IPC).
   setupAudioCapture()
+
+  // The native media engine's sidecar (mediaengine:* IPC), behind the "Native screen share"
+  // setting (nativeScreenShare in app-settings.json, absent means off), with
+  // PYLON_NATIVE_SHARE as the override (main/nativeShareSource.js). The setting is read at
+  // each share, so a change needs no relaunch.
+  // On Windows it captures the source the picker chose, as this process holds it.
+  setupMediaEngine({
+    nativeShareEnabled: () => readAppSettings().nativeScreenShare === true,
+    captureTarget: () =>
+      captureTarget({
+        sourceId: selectedScreenSourceId,
+        sources: cachedScreenSources,
+        displays: screen.getAllDisplays().map((display) => ({
+          id: display.id,
+          bounds: screen.dipToScreenRect(null, display.bounds)
+        }))
+      })
+  })
 
   app.on('activate', function () {
     // On macOS it's common to re-create a window in the app when the

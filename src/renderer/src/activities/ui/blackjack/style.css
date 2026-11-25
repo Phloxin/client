@@ -1,0 +1,680 @@
+/* Blackjack: the half-round table with the dealer at the top, the shoe and the discard tray beside
+   it, and seven spots (hands, bet circle, plate). Wide, the spots follow the table's curve; under
+   520 px they run down the two sides with the centre spot at the bottom. The dock holds the chip
+   rack and the play buttons. */
+
+.table.bj {
+  --th: min(100cqh, 60cqw);
+  --tw: min(100cqw, calc(var(--th) * 2.1));
+  --u: calc(var(--tw) / 100);
+  --card-base: clamp(18px, calc(var(--u) * 5.2), 58px);
+  --card-w: var(--card-base);
+  --chip: clamp(10px, calc(var(--u) * 1.9), 20px);
+  --av: clamp(18px, calc(var(--u) * 3.2), 32px);
+  --bet-h: calc(var(--chip) * 1.9);
+  --spot-w: calc(var(--u) * 13);
+  --hand-gap: calc(var(--u) * 0.7);
+}
+
+.bj .felt {
+  --r: calc(var(--u) * 3);
+  --felt-radius: var(--r) var(--r) 50% 50% / var(--r) var(--r) 84% 84%;
+  bottom: calc(var(--u) * 2.4);
+}
+
+/* ── What is printed on the cloth ────────────────────────────────────────── */
+
+.print {
+  position: absolute;
+  top: 27%;
+  left: 50%;
+  width: 54%;
+  fill: var(--cs-gold);
+  opacity: 0.5;
+  translate: -50% 0;
+}
+
+.print text {
+  font-weight: 700;
+  text-anchor: middle;
+}
+
+.print-a {
+  font-size: 15px;
+  letter-spacing: 3px;
+}
+
+.print-b {
+  font-size: 9px;
+  letter-spacing: 2.5px;
+  text-transform: uppercase;
+}
+
+/* ── Dealer, shoe, discard ───────────────────────────────────────────────── */
+
+.dealer {
+  position: absolute;
+  top: calc(var(--rail) + var(--u) * 1.1);
+  left: 50%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: calc(var(--u) * 0.5);
+  translate: -50% 0;
+}
+
+.dealer-label {
+  color: var(--cs-ink-soft);
+  font-weight: 700;
+  font-size: var(--fs-tiny);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.dealer .hand {
+  --card-w: calc(var(--card-base) * 1.12);
+  --hand-w: calc(var(--u) * 30);
+  --fan: 1.08;
+  min-width: var(--card-w);
+  min-height: calc(var(--card-w) * 1.4);
+}
+
+.tray {
+  --card-w: calc(var(--card-base) * 0.9);
+  position: absolute;
+  top: calc(var(--rail) + var(--u) * 2.2);
+  display: grid;
+  justify-items: center;
+  padding: calc(var(--u) * 0.5);
+  border-radius: calc(var(--u) * 0.9);
+  background: rgb(0 0 0 / 28%);
+  box-shadow:
+    inset 0 1px 3px rgb(0 0 0 / 55%),
+    0 0 0 1px rgb(255 255 255 / 10%);
+}
+
+.shoe {
+  right: 9%;
+  rotate: 7deg;
+}
+
+.discard {
+  left: 9%;
+  rotate: -7deg;
+}
+
+/* A thick edge under the shoe's top card stands for the cards below it. */
+.shoe .back {
+  box-shadow:
+    0 0 0 1px var(--cs-card-edge),
+    calc(var(--card-w) * 0.03) calc(var(--card-w) * 0.04) 0 #d9d5c9,
+    calc(var(--card-w) * 0.06) calc(var(--card-w) * 0.08) 0 #b9b4a6,
+    calc(var(--card-w) * 0.09) calc(var(--card-w) * 0.12) 3px rgb(0 0 0 / 50%);
+}
+
+.discard .back {
+  visibility: hidden;
+}
+
+.discard.has .back {
+  visibility: visible;
+}
+
+.shoe-count {
+  position: absolute;
+  top: 100%;
+  margin-top: calc(var(--u) * 0.7);
+  color: var(--cs-ink-soft);
+  font-weight: 600;
+  font-size: var(--fs-tiny);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Hands ───────────────────────────────────────────────────────────────── */
+
+.hand {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* Cards overlap by what the hand's width allows; --n is the number of cards, set on the hand. */
+.cards {
+  --step: min(
+    calc(var(--card-w) * var(--fan, 0.56)),
+    calc((var(--hand-w) - var(--card-w)) / max(1, var(--n, 2) - 1))
+  );
+  display: flex;
+}
+
+.cards .card + .card {
+  margin-left: calc(var(--step) - var(--card-w));
+}
+
+.hand .total {
+  position: absolute;
+  z-index: 3;
+  top: 0;
+  left: 100%;
+  translate: -60% -45%;
+}
+
+.hand.active .card {
+  box-shadow:
+    0 0 0 2px var(--cs-gold),
+    0 0 calc(var(--card-w) * 0.3) rgb(243 197 82 / 70%);
+}
+
+.hand.active .cards {
+  translate: 0 -7%;
+}
+
+.hand.lost .cards {
+  opacity: 0.6;
+}
+
+/* The card a double drew lies askew. */
+.hand.doubled .card:nth-child(3) {
+  rotate: 12deg;
+  translate: 4% 5%;
+}
+
+.outcome {
+  position: absolute;
+  z-index: 4;
+  top: calc(var(--card-w) * 0.82);
+  left: 50%;
+  display: flex;
+  gap: 0.45em;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  box-shadow: 0 2px 6px rgb(0 0 0 / 45%);
+  translate: -50% 0;
+}
+
+.outcome i {
+  font-style: normal;
+  opacity: 0.9;
+}
+
+/* Under split hands the word and the net are stacked, so the label is no wider than the hand. */
+.spot:not([data-hands='1']) .outcome {
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+  padding: 0.15em 0.5em;
+  border-radius: 0.8em;
+  line-height: 1.1;
+}
+
+.hand-bet,
+.next-bet {
+  position: relative;
+  display: grid;
+  place-items: center;
+  height: var(--bet-h);
+}
+
+.hand-bet .amount,
+.next-bet .amount {
+  position: absolute;
+  top: 50%;
+  left: calc(50% + var(--chip) * 0.8);
+  translate: 0 -50%;
+}
+
+/* A hand with no stake on the table keeps the room for one. */
+.hand-bet.off {
+  visibility: hidden;
+}
+
+/* The bet being built in the dock, before Bet is pressed. */
+.next-bet.pending {
+  opacity: 0.65;
+}
+
+/* The last round's cards step back once the viewer starts the next bet. */
+.table.stale .hands,
+.table.stale .dealer .hand {
+  opacity: 0.4;
+}
+
+/* ── Spots ───────────────────────────────────────────────────────────────── */
+
+.spot {
+  --k: 1;
+  --s: 1;
+  --hands: 1;
+  --spread: 1;
+  --room: calc(var(--spot-w) * var(--spread));
+  --card-w: calc(var(--card-base) * var(--k) * var(--s));
+  --hand-w: calc(
+    (var(--room) - var(--hand-gap) * (var(--hands) - 1)) / var(--hands) - var(--u) * 0.6
+  );
+  position: absolute;
+  top: var(--y);
+  left: var(--x);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: calc(var(--u) * 0.5);
+  width: var(--spot-w);
+  translate: -50% -100%;
+}
+
+.spot.me {
+  --k: 1.2;
+  --spot-w: calc(var(--u) * 14.5);
+}
+
+/* Split hands may reach a little past the spot's own width. */
+.spot[data-hands='2'] {
+  --s: 0.8;
+  --hands: 2;
+  --spread: 1.3;
+}
+
+.spot[data-hands='3'],
+.spot[data-hands='4'] {
+  --s: 0.64;
+  --hands: 2;
+  --spread: 1.3;
+}
+
+.spot[data-slot='0'] {
+  --x: 10%;
+  --y: 67.5%;
+}
+
+.spot[data-slot='1'] {
+  --x: 23.3%;
+  --y: 87%;
+}
+
+.spot[data-slot='2'] {
+  --x: 36.7%;
+  --y: 96.5%;
+}
+
+.spot[data-slot='3'] {
+  --x: 50%;
+  --y: 100%;
+}
+
+.spot[data-slot='4'] {
+  --x: 63.3%;
+  --y: 96.5%;
+}
+
+.spot[data-slot='5'] {
+  --x: 76.7%;
+  --y: 87%;
+}
+
+.spot[data-slot='6'] {
+  --x: 90%;
+  --y: 67.5%;
+}
+
+.spot-top {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  width: 100%;
+  min-height: calc(var(--card-w) * 1.4 + var(--bet-h));
+}
+
+.hands {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 0 var(--hand-gap);
+  width: max-content;
+  max-width: var(--room);
+}
+
+.bet-circle {
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  width: var(--bet-h);
+  height: var(--bet-h);
+  translate: -50% 0;
+}
+
+.bet-circle::before {
+  position: absolute;
+  inset: 0;
+  border: 1.5px solid rgb(255 255 255 / 30%);
+  border-radius: 50%;
+  background: rgb(0 0 0 / 14%);
+  content: '';
+}
+
+.spot.empty .bet-circle::before {
+  border-style: dashed;
+  opacity: 0.6;
+}
+
+/* Split hands do not line up with the one circle, so it is not drawn under them. */
+.spot:not([data-hands='1']) .bet-circle::before {
+  display: none;
+}
+
+.spot .btn.sit {
+  padding: 3px 12px;
+  border-color: rgb(255 255 255 / 35%);
+  background: var(--cs-plate);
+  color: var(--cs-ink);
+  font-size: var(--fs-name);
+}
+
+.spot .btn.sit:hover:not(:disabled) {
+  border-color: var(--cs-gold);
+}
+
+/* ── Under 520 px: the spots run down the two sides ──────────────────────── */
+
+@container (max-width: 519px) {
+  .table.bj {
+    --tw: 100cqw;
+    --th: 100cqh;
+    --u: min(1cqw, 0.72cqh);
+    --rail: calc(var(--u) * 2);
+    --card-base: calc(var(--u) * 9);
+    --chip: calc(var(--u) * 3.6);
+    --av: calc(var(--u) * 8);
+    --spot-w: calc(var(--tw) * 0.47);
+    --hand-gap: calc(var(--u) * 1.2);
+    --fs-name: 10px;
+    --fs-small: 10px;
+    --fs-tiny: 9px;
+  }
+
+  .bj .felt {
+    --felt-radius: calc(var(--u) * 11);
+    bottom: 0;
+  }
+
+  .print {
+    display: none;
+  }
+
+  /* "soft 17" is "s17" here. */
+  .total .soft {
+    font-size: 0;
+  }
+
+  .total .soft::before {
+    content: 's';
+    font-size: var(--fs-small);
+  }
+
+  /* The outcome's short word, and no net beside it when a side spot holds split hands. */
+  .outcome b[data-short] {
+    font-size: 0;
+  }
+
+  .outcome b[data-short]::before {
+    content: attr(data-short);
+    font-size: var(--fs-small);
+  }
+
+  .spot:not([data-slot='3'], [data-hands='1']) .outcome i {
+    display: none;
+  }
+
+  .spot .cards {
+    --fan: 0.64;
+  }
+
+  .dealer .hand {
+    --card-w: calc(var(--card-base) * 1.3);
+    --hand-w: calc(var(--tw) * 0.46);
+  }
+
+  .tray {
+    --card-w: calc(var(--card-base) * 0.8);
+    top: calc(var(--rail) + var(--u) * 4);
+  }
+
+  .shoe {
+    right: 9%;
+  }
+
+  .discard {
+    left: 9%;
+  }
+
+  .spot {
+    --room: calc(var(--spot-w) - var(--u) * 19);
+    --hand-w: calc((var(--room) - var(--hand-gap) * (var(--hands) - 1)) / var(--hands));
+    left: calc(var(--rail) * 0.6);
+    flex-direction: row;
+    gap: calc(var(--u) * 1.2);
+    translate: 0 -50%;
+  }
+
+  .spot[data-slot='4'],
+  .spot[data-slot='5'],
+  .spot[data-slot='6'] {
+    right: calc(var(--rail) * 0.6);
+    left: auto;
+    flex-direction: row-reverse;
+  }
+
+  .spot[data-slot='0'],
+  .spot[data-slot='6'] {
+    --y: 31%;
+  }
+
+  .spot[data-slot='1'],
+  .spot[data-slot='5'] {
+    --y: 48%;
+  }
+
+  .spot[data-slot='2'],
+  .spot[data-slot='4'] {
+    --y: 65%;
+  }
+
+  .spot .spot-top {
+    order: 2;
+    flex: 1;
+    justify-content: flex-start;
+    width: auto;
+    min-width: 0;
+  }
+
+  .spot[data-slot='4'] .spot-top,
+  .spot[data-slot='5'] .spot-top,
+  .spot[data-slot='6'] .spot-top {
+    justify-content: flex-end;
+  }
+
+  .spot .hands {
+    justify-content: inherit;
+  }
+
+  /* A side spot's hands start at its plate, with the bet under the first card and the circle
+     there too. */
+  .spot .hand {
+    align-items: flex-start;
+  }
+
+  .spot .hand-bet {
+    width: var(--card-w);
+  }
+
+  .spot .bet-circle {
+    left: calc((var(--card-w) - var(--bet-h)) / 2);
+    translate: none;
+  }
+
+  .spot[data-slot='4'] .hand,
+  .spot[data-slot='5'] .hand,
+  .spot[data-slot='6'] .hand {
+    align-items: flex-end;
+  }
+
+  .spot[data-slot='4'] .bet-circle,
+  .spot[data-slot='5'] .bet-circle,
+  .spot[data-slot='6'] .bet-circle {
+    right: calc((var(--card-w) - var(--bet-h)) / 2);
+    left: auto;
+  }
+
+  .spot[data-slot='4'] .amount,
+  .spot[data-slot='5'] .amount,
+  .spot[data-slot='6'] .amount {
+    right: calc(50% + var(--chip) * 0.8);
+    left: auto;
+  }
+
+  /* A side plate is a small column: the avatar over the name over the chips. */
+  .spot .plate {
+    flex: none;
+    flex-direction: column;
+    gap: 0;
+    width: calc(var(--u) * 17);
+    padding: calc(var(--u) * 0.8) calc(var(--u) * 0.6);
+    border-radius: calc(var(--u) * 3);
+    text-align: center;
+  }
+
+  .spot .plate-text {
+    align-items: center;
+    width: 100%;
+  }
+
+  .spot .plate-name {
+    max-width: 100%;
+  }
+
+  .spot[data-slot='3'] {
+    --k: 1.4;
+    --spot-w: calc(var(--tw) * 0.6);
+    --room: var(--spot-w);
+    top: auto;
+    bottom: calc(var(--u) * 0.6);
+    left: 50%;
+    flex-direction: column;
+    gap: calc(var(--u) * 0.6);
+    translate: -50% 0;
+  }
+
+  .spot[data-slot='3'].me {
+    --k: 1.75;
+  }
+
+  .spot[data-slot='3'] .spot-top {
+    order: 0;
+    flex: none;
+    justify-content: center;
+    width: 100%;
+  }
+
+  .spot[data-slot='3'] .hand {
+    align-items: center;
+  }
+
+  .spot[data-slot='3'] .hand-bet {
+    width: auto;
+  }
+
+  .spot[data-slot='3'] .bet-circle {
+    left: 50%;
+    translate: -50% 0;
+  }
+
+  .spot[data-slot='3'] .plate {
+    flex-direction: row;
+    gap: calc(var(--av) * 0.22);
+    width: auto;
+    padding: calc(var(--av) * 0.1);
+    padding-right: calc(var(--av) * 0.4);
+    border-radius: 999px;
+    text-align: left;
+  }
+
+  .spot[data-slot='3'] .plate-text {
+    align-items: flex-start;
+  }
+
+  .spot[data-slot='3'][data-hands='3'],
+  .spot[data-slot='3'][data-hands='4'] {
+    --hands: 3;
+    --s: 0.64;
+    --spot-w: calc(var(--tw) * 0.88);
+  }
+
+  .spot[data-slot='3'][data-hands='4'] {
+    --hands: 4;
+  }
+}
+
+/* ── Dock ────────────────────────────────────────────────────────────────── */
+
+.betting {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px 18px;
+}
+
+.rack {
+  display: flex;
+  gap: 8px;
+  padding-bottom: 4px;
+}
+
+.bet-row {
+  display: flex;
+  gap: 6px;
+}
+
+.bet-row .btn {
+  min-height: 32px;
+  white-space: nowrap;
+}
+
+#bet-place {
+  min-width: 84px;
+}
+
+#bet-amount {
+  font-variant-numeric: tabular-nums;
+}
+
+.playing {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+  max-width: 440px;
+  margin: 0 auto;
+}
+
+.broke {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--color-text-secondary);
+}
+
+@media (max-width: 519px) {
+  .actions {
+    --actions-h: 88px;
+  }
+
+  .playing .btn.act {
+    min-height: 48px;
+  }
+}

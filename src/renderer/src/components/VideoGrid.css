@@ -139,8 +139,10 @@
   padding: 0;
 }
 
-/* Clicking focuses / unfocuses only while there's more than one stream. */
-.stream-tile.focusable {
+/* Clicking focuses / unfocuses only while there's more than one stream, but
+   clicking a stream we aren't watching always starts it. */
+.stream-tile.focusable,
+.stream-tile.stopped {
   cursor: pointer;
 }
 

@@ -45,3 +45,87 @@ test('a synchronous play failure is safe during a focus transition', () => {
     )
   )
 })
+
+import { selfScreenTileSeen } from './selfPreviewPlayback.js'
+
+const SEEN = { windowFocused: true, documentVisible: true }
+const BLURRED = { windowFocused: false, documentVisible: true }
+const HIDDEN = { windowFocused: true, documentVisible: false }
+const STREAMS = [
+  { tileId: 'me:camera', isSelf: true, source: 'camera' },
+  { tileId: 'me:screen', isSelf: true, source: 'screen' },
+  { tileId: 'you:screen', isSelf: false, source: 'screen' }
+]
+const base = {
+  streams: STREAMS,
+  watchedTileIds: new Set(['me:screen']),
+  streamsShown: true,
+  poppedOut: false,
+  mainWindow: SEEN,
+  popoutWindow: null
+}
+
+test('the self screen tile is seen when watched, shown in the main window, focused and visible', () => {
+  assert.equal(selfScreenTileSeen(base), true)
+})
+
+test('it is not seen when not watched, not shown, or the window is blurred or hidden', () => {
+  assert.equal(selfScreenTileSeen({ ...base, watchedTileIds: new Set() }), false)
+  assert.equal(selfScreenTileSeen({ ...base, watchedTileIds: new Set(['me:camera']) }), false)
+  assert.equal(selfScreenTileSeen({ ...base, watchedTileIds: new Set(['you:screen']) }), false)
+  assert.equal(selfScreenTileSeen({ ...base, streamsShown: false }), false)
+  assert.equal(selfScreenTileSeen({ ...base, mainWindow: BLURRED }), false)
+  assert.equal(selfScreenTileSeen({ ...base, mainWindow: HIDDEN }), false)
+})
+
+test('there is nothing to see without a self screen tile', () => {
+  assert.equal(
+    selfScreenTileSeen({
+      ...base,
+      streams: STREAMS.filter((s) => s.source !== 'screen' || !s.isSelf)
+    }),
+    false
+  )
+  assert.equal(selfScreenTileSeen({ ...base, streams: [] }), false)
+  assert.equal(selfScreenTileSeen({ ...base, streams: undefined }), false)
+})
+
+test('popped out, the pop-out window decides, whatever the main window shows', () => {
+  const out = { ...base, poppedOut: true }
+  assert.equal(selfScreenTileSeen({ ...out, popoutWindow: SEEN }), true)
+  assert.equal(
+    selfScreenTileSeen({ ...out, popoutWindow: SEEN, streamsShown: false, mainWindow: BLURRED }),
+    true
+  )
+  assert.equal(selfScreenTileSeen({ ...out, popoutWindow: null }), false)
+  assert.equal(selfScreenTileSeen({ ...out, popoutWindow: BLURRED }), false)
+  assert.equal(selfScreenTileSeen({ ...out, popoutWindow: HIDDEN }), false)
+  assert.equal(selfScreenTileSeen({ ...out, popoutWindow: SEEN, watchedTileIds: new Set() }), false)
+})
+
+// Whether the self screen tile is watched (Stop previewing not chosen).
+import { selfScreenTileWatched } from './selfPreviewPlayback.js'
+
+test('selfScreenTileWatched: the self screen tile there and watched (C8)', () => {
+  const streams = [
+    { tileId: 'a', isSelf: false, source: 'screen' },
+    { tileId: 's', isSelf: true, source: 'screen' },
+    { tileId: 'c', isSelf: true, source: 'camera' }
+  ]
+  assert.equal(selfScreenTileWatched({ streams, watchedTileIds: new Set(['s']) }), true)
+  assert.equal(selfScreenTileWatched({ streams, watchedTileIds: new Set(['a', 'c']) }), false)
+  assert.equal(selfScreenTileWatched({ streams: [], watchedTileIds: new Set(['s']) }), false)
+  assert.equal(selfScreenTileWatched({ streams, watchedTileIds: null }), false)
+  // Watched but out of sight: not seen, still watched (held, not stopped at once).
+  const focusLost = { windowFocused: false, documentVisible: true }
+  const args = {
+    streams,
+    watchedTileIds: new Set(['s']),
+    streamsShown: true,
+    poppedOut: false,
+    mainWindow: focusLost,
+    popoutWindow: null
+  }
+  assert.equal(selfScreenTileSeen(args), false)
+  assert.equal(selfScreenTileWatched(args), true)
+})

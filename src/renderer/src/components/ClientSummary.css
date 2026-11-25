@@ -178,6 +178,7 @@
 }
 
 .client-summary-edit-input {
+  field-sizing: content;
   width: 100%;
   resize: none;
   padding: 8px 10px;

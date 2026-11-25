@@ -385,6 +385,31 @@
   letter-spacing: normal;
 }
 
+/* Whether the address answers, and the server's name when it does. */
+.add-server-field .add-server-probe {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.add-server-field .add-server-probe svg {
+  flex-shrink: 0;
+}
+
+.add-server-field .add-server-probe-checking {
+  color: var(--color-text-muted);
+}
+
+.add-server-field .add-server-probe-ok {
+  color: var(--color-success);
+}
+
+.add-server-field .add-server-probe-down {
+  color: var(--color-danger);
+}
+
 /* Password field with an inline reveal (eye) toggle. */
 .add-server-password {
   position: relative;

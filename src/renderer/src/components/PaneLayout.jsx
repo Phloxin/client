@@ -94,9 +94,10 @@ function swallowNextClick() {
 // The content canvas: one pane, or two side by side ('row') or stacked
 // ('column'), each a tab strip over its view. Owns the tab drag (reorder, move
 // to the other pane, drop on an edge to split) and the divider between panes.
-// panes: [{ id, tabs, header, error, body, bodyKey }] in layout order; `tabs`
-// are TabStrip descriptions and `header`, `error`, `body` elements Main has
-// rendered, so a drag in progress never re-renders the views.
+// panes: [{ id, tabs, banner, error, body, bodyKey }] in layout order; `tabs`
+// are TabStrip descriptions and `banner` (the view's DM call bar slot),
+// `error`, `body` elements Main has rendered, so a drag in progress never
+// re-renders the views.
 function PaneLayout({ layout, panes, menuItems, dispatch }) {
   const rootRef = useRef(null)
   const ghostRef = useRef(null)
@@ -135,7 +136,11 @@ function PaneLayout({ layout, panes, menuItems, dispatch }) {
   }
 
   // Pointer pressed on a tab: track it until release; past the threshold it
-  // is a drag. Escape, a lost pointer or a lost window cancel it.
+  // is a drag. Escape, a lost pointer or a lost window cancel it. From the
+  // press on, iframes (activities, embedded players) take no pointer input:
+  // over one, the moves and the release would go to its document instead of
+  // this window, and the drag would hang with the ghost stuck where it last
+  // saw the pointer.
   const startDrag = (e, tab, paneId) => {
     if (sessionRef.current) return
     const rect = e.currentTarget.getBoundingClientRect()
@@ -159,6 +164,7 @@ function PaneLayout({ layout, panes, menuItems, dispatch }) {
       window.removeEventListener('pointercancel', onCancel)
       window.removeEventListener('blur', onCancel)
       window.removeEventListener('keydown', onKey, true)
+      document.documentElement.classList.remove('tab-pressed')
       sessionRef.current = null
       if (!s.started) return
       document.documentElement.classList.remove('tab-dragging')
@@ -169,6 +175,12 @@ function PaneLayout({ layout, panes, menuItems, dispatch }) {
     }
     const onMove = (ev) => {
       if (ev.pointerId !== s.pointerId) return
+      // A move with no button held means the release went somewhere this
+      // window never heard about; drop the drag rather than carry it on.
+      if (ev.pointerType === 'mouse' && (ev.buttons & 1) === 0) {
+        finish(false)
+        return
+      }
       if (!s.started) {
         if (Math.hypot(ev.clientX - s.x0, ev.clientY - s.y0) < DRAG_THRESHOLD) return
         s.started = true
@@ -206,6 +218,7 @@ function PaneLayout({ layout, panes, menuItems, dispatch }) {
     }
     s.cancel = onCancel
     sessionRef.current = s
+    document.documentElement.classList.add('tab-pressed')
     window.addEventListener('pointermove', onMove)
     window.addEventListener('pointerup', onUp)
     window.addEventListener('pointercancel', onCancel)
@@ -312,9 +325,9 @@ function PaneLayout({ layout, panes, menuItems, dispatch }) {
                   menuItems={menuItems}
                   ariaLabel={split ? `Open views, pane ${i + 1}` : 'Open views'}
                 />
-                {view.header && <div className="pane-bar-actions">{view.header}</div>}
               </div>
               <div className="pane-body">
+                {view.banner}
                 {view.error}
                 {/* Keyed so a change of content remounts and replays the
                     switch animation (see Main's bodyKey). */}

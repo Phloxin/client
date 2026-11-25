@@ -77,7 +77,8 @@ const DEFAULT_ANIMATIONS = {
   overlays: 'on', // modals, menus, toasts — 'on' | 'off'
   messages: 'slide', // new chat messages — 'slide' | 'off'
   streamFocus: 'on', // stream tiles moving into/out of focus — 'on' | 'off'
-  tabs: 'on' // tabs sliding aside for a dragged tab, drop zones — 'on' | 'off'
+  tabs: 'on', // tabs sliding aside for a dragged tab, drop zones — 'on' | 'off'
+  callBar: 'on' // the DM call bar and a tab's call symbol — 'on' | 'off'
 }
 
 // 'slide' was retired for user-join / channel-list (only 'pop' read well there)

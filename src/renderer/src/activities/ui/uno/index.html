@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="../shared/base.css" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main class="game" id="game" hidden>
+      <header class="seats"></header>
+      <div class="direction" id="direction" hidden></div>
+      <section class="table" id="table" hidden>
+        <div class="pile" id="pile"></div>
+        <div class="deck-spot">
+          <button class="deck" id="deck" type="button" disabled></button>
+          <span class="deck-count" id="deck-count"></span>
+        </div>
+      </section>
+      <section class="revealed" id="revealed" hidden></section>
+      <footer class="footer">
+        <div class="status-row">
+          <span class="status" id="status"></span>
+          <span class="watching" id="watching" hidden>Watching</span>
+        </div>
+        <p class="notice" id="notice" role="status"></p>
+        <button class="btn primary" id="action" type="button" hidden>Start</button>
+      </footer>
+      <section class="hand" id="hand" hidden></section>
+      <label class="reveal" id="reveal-row" hidden>
+        <input type="checkbox" id="reveal" />
+        <span>Show my hand to spectators</span>
+      </label>
+      <div class="colors" id="colors" hidden></div>
+    </main>
+    <script src="../shared/bridge.js"></script>
+    <script src="../shared/room.js"></script>
+    <script src="../shared/seats.js"></script>
+    <script src="main.js"></script>
+  </body>
+</html>

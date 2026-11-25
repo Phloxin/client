@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useLayoutEffect } from 'react'
+import { AnimatePresence } from 'motion/react'
 import './ClientSummary.css'
 import { IconVolume, IconPencil, IconTrash, IconPhotoUp, IconZoomIn } from '@tabler/icons-react'
 import ChannelPermissions from './ChannelPermissions'
@@ -19,16 +20,10 @@ function DescriptionEditor({ initialText, onSave, onCancel }) {
   useLayoutEffect(() => {
     const el = ref.current
     if (!el) return
-    el.focus()
+    el.focus({ preventScroll: true })
     el.setSelectionRange(el.value.length, el.value.length)
+    el.parentElement.scrollIntoView({ block: 'nearest' })
   }, [])
-
-  useLayoutEffect(() => {
-    const el = ref.current
-    if (!el) return
-    el.style.height = 'auto'
-    el.style.height = `${el.scrollHeight}px`
-  }, [value])
 
   const submit = () => {
     const trimmed = value.trim()
@@ -231,13 +226,15 @@ function ChannelSummary({
         />
       )}
 
-      {viewerOpen && hasIcon && (
-        <ImageViewer
-          src={assetUrl(channel.channel_icon)}
-          name={`${channel?.name ?? 'Channel'} icon`}
-          onClose={() => setViewerOpen(false)}
-        />
-      )}
+      <AnimatePresence>
+        {viewerOpen && hasIcon && (
+          <ImageViewer
+            src={assetUrl(channel.channel_icon)}
+            name={`${channel?.name ?? 'Channel'} icon`}
+            onClose={() => setViewerOpen(false)}
+          />
+        )}
+      </AnimatePresence>
 
       {iconMenu && (
         <div className="channel-context-menu" ref={iconMenuRef} style={iconMenuStyle}>

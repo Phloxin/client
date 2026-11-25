@@ -43,7 +43,7 @@ export function wsBase() {
 
 // Signaling protocol version spoken on the voice socket. The voice node closes
 // any other (or a missing) `v` with 4000.
-export const VOICE_PROTOCOL_VERSION = 1
+export const VOICE_PROTOCOL_VERSION = 2
 
 // REST version sent as Pylon-Api-Version on every API request (see http.js).
 // main/session.js keeps its own copy for the refresh request.
@@ -52,6 +52,11 @@ export const API_VERSION = 1
 // Event socket protocol version. The server closes any other (or a missing) `v`
 // with 4000.
 export const EVENTS_PROTOCOL_VERSION = 1
+
+// Room session protocol version, appended as `v` to the ticket's `url`. The room endpoint refuses
+// any other (or a missing) `v` before the session opens, which a browser cannot see, so callers
+// check the server's `protocols.activities` first.
+export const ROOMS_PROTOCOL_VERSION = 1
 
 export function eventSocketUrl() {
   return `${wsBase()}/ws?v=${EVENTS_PROTOCOL_VERSION}`

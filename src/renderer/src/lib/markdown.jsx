@@ -17,6 +17,7 @@ import sql from 'highlight.js/lib/languages/sql'
 import mdLang from 'highlight.js/lib/languages/markdown'
 import yaml from 'highlight.js/lib/languages/yaml'
 import 'highlight.js/styles/github-dark.css'
+import { MermaidBlock } from './mermaidBlock'
 
 // Discord-flavoured restricted markdown, built on simple-markdown (the same
 // engine Discord's chat markdown uses). We keep only chat-appropriate rules —
@@ -29,8 +30,11 @@ import 'highlight.js/styles/github-dark.css'
 // rendering via JSX here goes through the app's own React 19 runtime instead.
 //
 // XSS-safe by construction: output is React elements (no dangerouslySetInnerHTML
-// on raw user text), link targets pass through sanitizeUrl, and the one HTML
-// injection — highlight.js output — is safe because hljs HTML-escapes the code.
+// on raw user text), link targets pass through sanitizeUrl, and there are two
+// HTML injections: highlight.js output, safe because hljs HTML-escapes the code,
+// and Mermaid's SVG (mermaidBlock.jsx), safe because Mermaid sanitizes it with its
+// bundled DOMPurify under securityLevel 'strict', which also strips click
+// handlers and scripts.
 
 // Register a focused language set (each also registers its own aliases, e.g.
 // js → javascript, py → python, sh → bash, html → xml).
@@ -80,13 +84,23 @@ const everyone = {
   parse: () => ({})
 }
 
+// A fenced block carries the click handler from parse state, so a diagram can
+// open in the image viewer while the render pass stays context-free.
+const fence = {
+  ...d.fence,
+  parse: (capture, parse, state) => ({
+    ...d.fence.parse(capture, parse, state),
+    onImageClick: state.onImageClick
+  })
+}
+
 const rules = {
   mention,
   everyone,
   // Block-level
   heading: d.heading,
   codeBlock: d.codeBlock,
-  fence: d.fence,
+  fence,
   blockQuote: d.blockQuote,
   table: d.table,
   nptable: d.nptable,
@@ -183,6 +197,9 @@ function renderNode(node, key) {
         </a>
       )
     case 'codeBlock': {
+      if (node.lang?.toLowerCase() === 'mermaid') {
+        return <MermaidBlock key={key} code={node.content} onOpen={node.onImageClick} />
+      }
       const highlighted = highlightCode(node.content, node.lang)
       return (
         <pre key={key}>
@@ -250,20 +267,28 @@ function isTableSeparator(line) {
   return /^ *\|?[ :|-]*-[ :|-]*\|? *$/.test(line) && line.includes('-')
 }
 
-// Discord treats a single newline before a block construct (heading, blockquote)
-// as a block boundary, but CommonMark/simple-markdown require a blank line. Bridge
-// the gap by inserting blank lines around those constructs — skipping fenced code
-// so code contents are never touched. Consecutive blockquote lines stay grouped.
+// Discord treats a single newline around a block construct (heading, blockquote,
+// code fence) as a block boundary, but CommonMark/simple-markdown require a blank
+// line. Bridge the gap by inserting blank lines around those constructs, never
+// inside a fence, so code contents are untouched. Consecutive blockquote lines
+// stay grouped.
 function normalizeBlocks(source) {
   const lines = source.split('\n')
   const out = []
   let inFence = false
+  const isFence = (line) => /^\s*```/.test(line)
+  // A fence that never closes isn't padded, so it stays part of the paragraph.
+  const lastFence = lines.findLastIndex(isFence)
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
-    if (/^\s*```/.test(line)) {
+    if (isFence(line)) {
       inFence = !inFence
+      if (inFence && i < lastFence && out.length && out[out.length - 1].trim() !== '') {
+        out.push('')
+      }
       out.push(line)
+      if (!inFence && i + 1 < lines.length && lines[i + 1].trim() !== '') out.push('')
       continue
     }
     if (inFence) {
@@ -304,11 +329,15 @@ function normalizeBlocks(source) {
 // Parse a message string into React nodes. Soft (single) newlines are preserved
 // by the .chat-message-text { white-space: pre-wrap } styling; blank lines split
 // paragraphs.
-export function renderMarkdown(source, resolveMention) {
+export function renderMarkdown(source, resolveMention, onImageClick) {
   if (!source) return null
   // Normalize block spacing (Discord-style), then add the trailing blank line
   // simple-markdown's block grammar expects.
-  const tree = parser(`${normalizeBlocks(source)}\n\n`, { inline: false, resolveMention })
+  const tree = parser(`${normalizeBlocks(source)}\n\n`, {
+    inline: false,
+    resolveMention,
+    onImageClick
+  })
   return renderNodes(tree)
 }
 

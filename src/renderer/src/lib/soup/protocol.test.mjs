@@ -1,4 +1,4 @@
-// pylon-voice v1 wire protocol: encoders, answer matching, channel state,
+// pylon-voice v2 wire protocol: encoders, answer matching, channel state,
 // view roles, and the event-socket stream requests and directory.
 //   node --test src/renderer/src/lib/soup/protocol.test.mjs
 import assert from 'node:assert/strict'
@@ -26,6 +26,7 @@ import {
   createStreamRequests,
   decodeFrame,
   decodeMessage,
+  isEndOfGoneStream,
   mapTransportParams,
   messageType,
   producedTypeForSource,
@@ -45,6 +46,10 @@ const CODECS = { allowed: ['Av1', 'Vp9', 'H264', 'Vp8'], preferred: 'Av1' }
 
 // Another client's source, as the server names it: "<owner's session>:<its LocalId>".
 const remote = (local) => `7318226815121408:${local}`
+
+// The LocalIds of our send and receive transports, wherever a test needs one.
+const SEND = 90
+const RECEIVE = 91
 
 function matcherHarness(options = {}) {
   const sent = []
@@ -87,28 +92,30 @@ test('requests encode as externally tagged enums, with LocalId numbers and NodeI
   })
   assert.throws(() => Request.resume('1', 'tok', -1), TypeError)
   assert.throws(() => Request.resume('1', 'tok', '4'), TypeError)
-  assert.deepEqual(Request.restartIce(Direction.Receive), {
-    RestartIce: { direction: 'Receive' }
+  assert.deepEqual(Request.restartIce(RECEIVE), {
+    RestartIce: { transport: RECEIVE }
   })
-  assert.deepEqual(Request.connectTransport(Direction.Send, { role: 'client' }), {
+  assert.deepEqual(Request.connectTransport(SEND, { role: 'client' }), {
     ConnectTransport: {
-      transport_parameters: { dtlsParameters: { role: 'client' } },
-      direction: 'Send'
+      transport: SEND,
+      transport_parameters: { dtlsParameters: { role: 'client' } }
     }
   })
   // Microphone and Webcam never carry a stream key.
-  assert.deepEqual(Request.createSource(1, 'Microphone', { codecs: [] }), {
+  assert.deepEqual(Request.createSource(1, SEND, 'Microphone', { codecs: [] }), {
     CreateSource: {
       new_node: 1,
+      transport: SEND,
       kind: 'Microphone',
       rtp_parameters: { codecs: [] },
       replaces: null,
       stream_key: null
     }
   })
-  assert.deepEqual(Request.createSource(2, 'Stream', { codecs: [] }, null, '1:2:abc'), {
+  assert.deepEqual(Request.createSource(2, SEND, 'Stream', { codecs: [] }, null, '1:2:abc'), {
     CreateSource: {
       new_node: 2,
+      transport: SEND,
       kind: 'Stream',
       rtp_parameters: { codecs: [] },
       replaces: null,
@@ -116,9 +123,10 @@ test('requests encode as externally tagged enums, with LocalId numbers and NodeI
     }
   })
   // A replacement may leave the key out: it inherits its predecessor's.
-  assert.deepEqual(Request.createSource(5, 'Stream', { codecs: [] }, 4), {
+  assert.deepEqual(Request.createSource(5, SEND, 'Stream', { codecs: [] }, 4), {
     CreateSource: {
       new_node: 5,
+      transport: SEND,
       kind: 'Stream',
       rtp_parameters: { codecs: [] },
       replaces: 4,
@@ -126,15 +134,15 @@ test('requests encode as externally tagged enums, with LocalId numbers and NodeI
     }
   })
   assert.equal(
-    JSON.stringify(Request.createSink(6, remote(3))),
-    `{"CreateSink":{"new_node":6,"source":"${remote(3)}"}}`
+    JSON.stringify(Request.createSink(6, RECEIVE, remote(3))),
+    `{"CreateSink":{"new_node":6,"transport":${RECEIVE},"source":"${remote(3)}"}}`
   )
   assert.equal(JSON.stringify(Request.close(0)), '{"Close":{"node":0}}')
 })
 
 test('sink config is flattened into CreateSink and ConfigureSink', () => {
-  assert.deepEqual(Request.createSink(6, remote(3), { paused: false }), {
-    CreateSink: { new_node: 6, source: remote(3), paused: false }
+  assert.deepEqual(Request.createSink(6, RECEIVE, remote(3), { paused: false }), {
+    CreateSink: { new_node: 6, transport: RECEIVE, source: remote(3), paused: false }
   })
   assert.deepEqual(Request.configureSink(7, { paused: false }), {
     ConfigureSink: { node: 7, paused: false }
@@ -264,9 +272,9 @@ test('Identify is answered by the pushed RoutingParams, SetCapabilities by the f
 
 test('answers resolve the request they name, and new ids come from one counter', async () => {
   const { matcher, sent, reply } = matcherHarness()
-  const source = matcher.create((node) => Request.createSource(node, 'Microphone', {}))
-  const sink = matcher.create((node) => Request.createSink(node, remote(3)))
-  const connect = matcher.request(Request.connectTransport(Direction.Receive, {}))
+  const source = matcher.create((node) => Request.createSource(node, SEND, 'Microphone', {}))
+  const sink = matcher.create((node) => Request.createSink(node, RECEIVE, remote(3)))
+  const connect = matcher.request(Request.connectTransport(RECEIVE, {}))
   const configured = matcher.requestSynced(Request.configureSink(2, { paused: false }))
   // Sources, sinks and Sync callbacks share the counter.
   assert.equal(sent[0].CreateSource.new_node, 1)
@@ -280,10 +288,10 @@ test('answers resolve the request they name, and new ids come from one counter',
   // Paired by what they name, not by position.
   assert.equal(reply({ Sink: { node: 2, rtp_parameters: {} } }), true)
   assert.deepEqual(await sink, { node: 2, rtp_parameters: {} })
-  assert.equal(reply({ TransportConnected: { direction: 'Receive' } }), true)
+  assert.equal(reply({ TransportConnected: { transport: RECEIVE } }), true)
   assert.equal(reply({ Source: { node: 1, kind: { type: 'Microphone' } } }), true)
   assert.equal(reply({ Done: { callback: 3 } }), true)
-  assert.deepEqual(await connect, { direction: 'Receive' })
+  assert.deepEqual(await connect, { transport: RECEIVE })
   assert.deepEqual(await source, { node: 1, kind: { type: 'Microphone' } })
   assert.equal(await configured, undefined)
   assert.equal(matcher.size, 0)
@@ -291,7 +299,7 @@ test('answers resolve the request they name, and new ids come from one counter',
 
 test('events are handed on and settle nothing', async () => {
   const { matcher, reply } = matcherHarness()
-  const sink = matcher.create((node) => Request.createSink(node, remote(3)))
+  const sink = matcher.create((node) => Request.createSink(node, RECEIVE, remote(3)))
   const stream = (node, paused) => ({
     node,
     owner: '2',
@@ -333,13 +341,16 @@ test('Close is sent and forgotten, and every Closed is an event', async () => {
   assert.equal(protocolErrors.length, 0)
 
   // A request that gets an answer can't be sent and forgotten.
-  assert.throws(() => matcher.notify(Request.createSink(6, remote(3))), /send it with request/)
+  assert.throws(
+    () => matcher.notify(Request.createSink(6, RECEIVE, remote(3))),
+    /send it with request/
+  )
 })
 
 test('an Error rejects the request whose object it names and is not fatal', async () => {
   const { matcher, protocolErrors, reply } = matcherHarness()
-  const first = matcher.create((node) => Request.createSink(node, remote(3)))
-  const second = matcher.create((node) => Request.createSink(node, remote(4)))
+  const first = matcher.create((node) => Request.createSink(node, RECEIVE, remote(3)))
+  const second = matcher.create((node) => Request.createSink(node, RECEIVE, remote(4)))
   // A failed create names its new node, not the source it was for.
   assert.equal(
     reply({ Error: { object: { Sink: 2 }, code: 'NotFound', message: 'source not in channel' } }),
@@ -373,8 +384,10 @@ test('sourceGone is a NotFound on a source or sink, never on the session', () =>
 
 test('Denied marks a request refused for want of a stream lease', async () => {
   const { matcher, reply } = matcherHarness()
-  const source = matcher.create((node) => Request.createSource(node, 'Stream', {}, null, '1:2:abc'))
-  const sink = matcher.create((node) => Request.createSink(node, remote(4)))
+  const source = matcher.create((node) =>
+    Request.createSource(node, SEND, 'Stream', {}, null, '1:2:abc')
+  )
+  const sink = matcher.create((node) => Request.createSink(node, RECEIVE, remote(4)))
   // What the server sends for each (session.rs): both refusals name the new node.
   reply({
     Error: { object: { Source: 1 }, code: 'Denied', message: 'not allowed to publish this source' }
@@ -396,9 +409,9 @@ test('Denied marks a request refused for want of a stream lease', async () => {
 
 test('a request without a success answer settles on the Sync behind it', async () => {
   const { matcher, sent, protocolErrors, reply } = matcherHarness()
-  const sink = matcher.create((node) => Request.createSink(node, remote(3)))
-  const stream = matcher.create((node) => Request.createSource(node, 'Stream', {}, null, 'k'))
-  const mic = matcher.create((node) => Request.createSource(node, 'Microphone', {}))
+  const sink = matcher.create((node) => Request.createSink(node, RECEIVE, remote(3)))
+  const stream = matcher.create((node) => Request.createSource(node, SEND, 'Stream', {}, null, 'k'))
+  const mic = matcher.create((node) => Request.createSource(node, SEND, 'Microphone', {}))
   reply({ Sink: { node: 1, rtp_parameters: {} } })
   reply({ Source: { node: 2, kind: { type: 'Stream', attr: { codec: 'Vp9', stream_key: 'k' } } } })
   reply({ Source: { node: 3, kind: { type: 'Microphone' } } })
@@ -462,7 +475,7 @@ test('the removed requests and replies are gone', async () => {
 
 test('an answer nothing is waiting for is a protocol error', async () => {
   const { matcher, protocolErrors, reply } = matcherHarness()
-  const sink = matcher.create((node) => Request.createSink(node, remote(3)))
+  const sink = matcher.create((node) => Request.createSink(node, RECEIVE, remote(3)))
   // A Source for the node a CreateSink named, and a Done nobody asked for.
   assert.equal(reply({ Source: { node: 1, kind: { type: 'Microphone' } } }), true)
   assert.equal(reply({ Done: { callback: 9 } }), true)
@@ -476,8 +489,8 @@ test('an answer nothing is waiting for is a protocol error', async () => {
 
 test('only the oldest waiting request has a running timeout', async () => {
   const { matcher, timers, timeouts, reply } = matcherHarness({ timeoutMs: 100 })
-  matcher.create((node) => Request.createSink(node, remote(3))).catch(() => {})
-  matcher.create((node) => Request.createSink(node, remote(4))).catch(() => {})
+  matcher.create((node) => Request.createSink(node, RECEIVE, remote(3))).catch(() => {})
+  matcher.create((node) => Request.createSink(node, RECEIVE, remote(4))).catch(() => {})
   assert.equal(timers.filter((t) => !t.cleared).length, 1)
 
   reply({ Sink: { node: 1, rtp_parameters: {} } })
@@ -490,14 +503,14 @@ test('only the oldest waiting request has a running timeout', async () => {
 
 test('close rejects everything in flight and refuses new requests', async () => {
   const { matcher, sent } = matcherHarness()
-  const first = matcher.create((node) => Request.createSink(node, remote(3)))
+  const first = matcher.create((node) => Request.createSink(node, RECEIVE, remote(3)))
   const synced = matcher.requestSynced(Request.configureSink(1, { paused: false }))
   const closed = new Error('socket closed')
   matcher.close(closed)
   assert.equal(await first.catch((e) => e), closed)
   assert.equal(await synced.catch((e) => e), closed)
   assert.equal(
-    await matcher.create((node) => Request.createSink(node, remote(4))).catch((e) => e),
+    await matcher.create((node) => Request.createSink(node, RECEIVE, remote(4))).catch((e) => e),
     closed
   )
   assert.throws(() => matcher.notify(Request.close(1)), closed)
@@ -513,13 +526,13 @@ test('a transmit failure rejects without leaving a stale entry', async () => {
     timeoutMs: 0
   })
   await assert.rejects(
-    matcher.create((node) => Request.createSink(node, remote(3))),
+    matcher.create((node) => Request.createSink(node, RECEIVE, remote(3))),
     /send failed/
   )
   assert.equal(matcher.size, 0)
   fail = false
   // The failed create used up its id all the same.
-  const next = matcher.create((node) => Request.createSink(node, remote(3)))
+  const next = matcher.create((node) => Request.createSink(node, RECEIVE, remote(3)))
   matcher.handle({ type: 'Sink', data: { node: 2, rtp_parameters: {} } })
   assert.deepEqual(await next, { node: 2, rtp_parameters: {} })
 })
@@ -897,20 +910,20 @@ test('ticket refusals are told apart by their code', () => {
 
 // ─── Resume ──────────────────────────────────────────────────────
 
-test('RestartIce is answered by IceRestarted for its direction', async () => {
+test('RestartIce is answered by IceRestarted for its transport', async () => {
   const { matcher, sent, reply } = matcherHarness()
-  const send = matcher.request(Request.restartIce(Direction.Send))
-  const receive = matcher.request(Request.restartIce(Direction.Receive))
+  const send = matcher.request(Request.restartIce(SEND))
+  const receive = matcher.request(Request.restartIce(RECEIVE))
   assert.deepEqual(sent, [
-    { RestartIce: { direction: 'Send' } },
-    { RestartIce: { direction: 'Receive' } }
+    { RestartIce: { transport: SEND } },
+    { RestartIce: { transport: RECEIVE } }
   ])
   const ice = { usernameFragment: 'u', password: 'p', iceLite: true }
-  assert.equal(reply({ IceRestarted: { direction: 'Receive', ice_parameters: ice } }), true)
-  assert.deepEqual(await receive, { direction: 'Receive', ice_parameters: ice })
+  assert.equal(reply({ IceRestarted: { transport: RECEIVE, ice_parameters: ice } }), true)
+  assert.deepEqual(await receive, { transport: RECEIVE, ice_parameters: ice })
   // A failure names the transport.
   assert.equal(
-    reply({ Error: { object: { Transport: 'Send' }, code: 'Internal', message: 'x' } }),
+    reply({ Error: { object: { Transport: SEND }, code: 'Internal', message: 'x' } }),
     true
   )
   await assert.rejects(send, (err) => err instanceof VoiceRequestError && err.code === 'Internal')
@@ -919,7 +932,7 @@ test('RestartIce is answered by IceRestarted for its direction', async () => {
 
 test('a detached matcher holds what is in flight, refuses new requests, and times nothing', async () => {
   const { matcher, sent, timers } = matcherHarness()
-  const sink = matcher.create((node) => Request.createSink(node, remote(3)))
+  const sink = matcher.create((node) => Request.createSink(node, RECEIVE, remote(3)))
   assert.equal(timers.filter((timer) => !timer.cleared).length, 1)
   matcher.detach(new Error('socket gone'))
   assert.equal(matcher.detached, true)
@@ -927,7 +940,7 @@ test('a detached matcher holds what is in flight, refuses new requests, and time
   assert.equal(timers.filter((timer) => !timer.cleared).length, 0)
   await assert.rejects(matcher.request(Request.sync(9)), /socket gone/)
   await assert.rejects(
-    matcher.create((node) => Request.createSink(node, remote(4))),
+    matcher.create((node) => Request.createSink(node, RECEIVE, remote(4))),
     /socket gone/
   )
   await assert.rejects(matcher.requestSynced(Request.configureSink(1, {})), /socket gone/)
@@ -941,13 +954,13 @@ test('a detached matcher holds what is in flight, refuses new requests, and time
 
 test('after a resume, the replay answers what arrived and the Done behind it resends what was lost', async () => {
   const { matcher, sent, reply, timers, protocolErrors } = matcherHarness()
-  const source = matcher.create((node) => Request.createSource(node, 'Webcam', {})) // 1
-  const lostSink = matcher.create((node) => Request.createSink(node, remote(3))) // 2
+  const source = matcher.create((node) => Request.createSource(node, SEND, 'Webcam', {})) // 1
+  const lostSink = matcher.create((node) => Request.createSink(node, RECEIVE, remote(3))) // 2
   const synced = matcher.requestSynced(Request.configureSink(9, { paused: false })) // Sync 3
   const lostConfig = matcher.requestSynced(Request.configureSink(9, { priority: 2 })) // Sync 4
-  const connectSend = matcher.request(Request.connectTransport(Direction.Send, {}))
-  const lostConnect = matcher.request(Request.connectTransport(Direction.Receive, {}))
-  const lostRestart = matcher.request(Request.restartIce(Direction.Send))
+  const connectSend = matcher.request(Request.connectTransport(SEND, {}))
+  const lostConnect = matcher.request(Request.connectTransport(RECEIVE, {}))
+  const lostRestart = matcher.request(Request.restartIce(SEND))
   const lostGroup = matcher.requestSynced(Request.group({ Ready: { epoch: 2 } })) // Sync 5
   matcher.detach(new Error('socket gone'))
   sent.length = 0
@@ -961,13 +974,13 @@ test('after a resume, the replay answers what arrived and the Done behind it res
   // The replay answers whatever reached the server, like any answer.
   assert.equal(reply({ Source: { node: 1, kind: { type: 'Webcam' } } }), true)
   assert.equal(reply({ Done: { callback: 3 } }), true)
-  assert.equal(reply({ TransportConnected: { direction: 'Send' } }), true)
+  assert.equal(reply({ TransportConnected: { transport: SEND } }), true)
   assert.deepEqual(await source, { node: 1, kind: { type: 'Webcam' } })
   assert.equal(await synced, undefined)
-  assert.deepEqual(await connectSend, { direction: 'Send' })
+  assert.deepEqual(await connectSend, { transport: SEND })
 
   // A request made before the Done goes out after the Sync, so it is never in doubt.
-  const fresh = matcher.create((node) => Request.createSink(node, remote(7))) // 7
+  const fresh = matcher.create((node) => Request.createSink(node, RECEIVE, remote(7))) // 7
   sent.length = 0
 
   // The Done: everything sent before the drop and still waiting was lost. Creates and
@@ -976,13 +989,11 @@ test('after a resume, the replay answers what arrived and the Done behind it res
   assert.equal(reply({ Done: { callback: 6 } }), true)
   await resumed
   assert.deepEqual(sent, [
-    { CreateSink: { new_node: 8, source: remote(3) } },
+    { CreateSink: { new_node: 8, transport: RECEIVE, source: remote(3) } },
     { ConfigureSink: { node: 9, priority: 2 } },
     { Sync: { callback: 9 } },
-    {
-      ConnectTransport: { transport_parameters: { dtlsParameters: {} }, direction: 'Receive' }
-    },
-    { RestartIce: { direction: 'Send' } },
+    { ConnectTransport: { transport: RECEIVE, transport_parameters: { dtlsParameters: {} } } },
+    { RestartIce: { transport: SEND } },
     { Group: { Ready: { epoch: 2 } } },
     { Sync: { callback: 10 } }
   ])
@@ -992,26 +1003,26 @@ test('after a resume, the replay answers what arrived and the Done behind it res
   reply({ Sink: { node: 7, rtp_parameters: {} } })
   reply({ Sink: { node: 8, rtp_parameters: { codecs: ['x'] } } })
   reply({ Done: { callback: 9 } })
-  reply({ TransportConnected: { direction: 'Receive' } })
-  reply({ IceRestarted: { direction: 'Send', ice_parameters: {} } })
+  reply({ TransportConnected: { transport: RECEIVE } })
+  reply({ IceRestarted: { transport: SEND, ice_parameters: {} } })
   reply({ Done: { callback: 10 } })
   assert.deepEqual(await fresh, { node: 7, rtp_parameters: {} })
   assert.deepEqual(await lostSink, { node: 8, rtp_parameters: { codecs: ['x'] } })
   assert.equal(await lostConfig, undefined)
-  assert.deepEqual(await lostConnect, { direction: 'Receive' })
-  assert.deepEqual(await lostRestart, { direction: 'Send', ice_parameters: {} })
+  assert.deepEqual(await lostConnect, { transport: RECEIVE })
+  assert.deepEqual(await lostRestart, { transport: SEND, ice_parameters: {} })
   assert.equal(await lostGroup, undefined)
   assert.equal(matcher.size, 0)
   assert.equal(protocolErrors.length, 0)
 
   // New ids continue above everything this session used.
-  matcher.create((node) => Request.createSink(node, remote(6)))
+  matcher.create((node) => Request.createSink(node, RECEIVE, remote(6)))
   assert.equal(sent.at(-1).CreateSink.new_node, 11)
 })
 
 test('a replayed Error settles a request in doubt, and only its Sync can still be lost', async () => {
   const { matcher, sent, reply } = matcherHarness()
-  const sink = matcher.create((node) => Request.createSink(node, remote(3))) // 1
+  const sink = matcher.create((node) => Request.createSink(node, RECEIVE, remote(3))) // 1
   const paused = matcher.requestSynced(Request.setSourcePaused(4, true)) // Sync 2
   matcher.detach(new Error('socket gone'))
   sent.length = 0
@@ -1029,7 +1040,7 @@ test('a replayed Error settles a request in doubt, and only its Sync can still b
 
 test('a drop before the Done leaves everything for the next resume, whose Sync takes over', async () => {
   const { matcher, sent, reply, protocolErrors } = matcherHarness()
-  const lost = matcher.create((node) => Request.createSink(node, remote(3))) // 1
+  const lost = matcher.create((node) => Request.createSink(node, RECEIVE, remote(3))) // 1
   matcher.detach(new Error('socket gone'))
   const first = matcher.resume() // Sync 2
   matcher.detach(new Error('socket gone again'))
@@ -1045,7 +1056,9 @@ test('a drop before the Done leaves everything for the next resume, whose Sync t
   assert.deepEqual(sent, [{ Sync: { callback: 3 } }])
   reply({ Done: { callback: 3 } })
   await second
-  assert.deepEqual(sent.at(-1), { CreateSink: { new_node: 4, source: remote(3) } })
+  assert.deepEqual(sent.at(-1), {
+    CreateSink: { new_node: 4, transport: RECEIVE, source: remote(3) }
+  })
   reply({ Sink: { node: 4, rtp_parameters: {} } })
   assert.equal((await lost).node, 4)
   assert.equal(protocolErrors.length, 0)
@@ -1528,4 +1541,293 @@ test('snapshots keep the group params', () => {
   assert.deepEqual(state.group, group)
   state.reset()
   assert.equal(state.group, null)
+})
+
+// ─── Transports ──────────────────────────────────────────────────
+
+test('the transport requests serialize as the node reads them', () => {
+  assert.equal(
+    JSON.stringify(Request.createTransport(1, Direction.Send)),
+    '{"CreateTransport":{"new_transport":1,"direction":"Send"}}'
+  )
+  assert.equal(
+    JSON.stringify(Request.createTransport(2, Direction.Receive)),
+    '{"CreateTransport":{"new_transport":2,"direction":"Receive"}}'
+  )
+  assert.equal(
+    JSON.stringify(Request.connectTransport(1, { role: 'client', fingerprints: [] })),
+    '{"ConnectTransport":{"transport":1,' +
+      '"transport_parameters":{"dtlsParameters":{"role":"client","fingerprints":[]}}}}'
+  )
+  assert.equal(JSON.stringify(Request.restartIce(1)), '{"RestartIce":{"transport":1}}')
+  assert.equal(JSON.stringify(Request.closeTransport(1)), '{"CloseTransport":{"transport":1}}')
+  assert.equal(
+    JSON.stringify(Request.createSource(3, 1, 'Webcam', { codecs: [] })),
+    '{"CreateSource":{"new_node":3,"transport":1,"kind":"Webcam","rtp_parameters":{"codecs":[]},' +
+      '"replaces":null,"stream_key":null}}'
+  )
+  assert.equal(
+    JSON.stringify(Request.createSink(4, 2, '7318226815121408:3', { paused: false })),
+    '{"CreateSink":{"new_node":4,"transport":2,"source":"7318226815121408:3","paused":false}}'
+  )
+  assert.deepEqual(Object.values(Direction), ['Send', 'Receive'])
+})
+
+test('a transport id that is missing or not a u32 throws before anything is sent', async () => {
+  for (const bad of [undefined, null, -1, 1.5, 2 ** 32, '1', 'Send']) {
+    const label = String(bad)
+    assert.throws(() => Request.createTransport(bad, Direction.Send), TypeError, label)
+    assert.throws(() => Request.connectTransport(bad, {}), TypeError, label)
+    assert.throws(() => Request.restartIce(bad), TypeError, label)
+    assert.throws(() => Request.closeTransport(bad), TypeError, label)
+    assert.throws(() => Request.createSource(3, bad, 'Webcam', {}), TypeError, label)
+    assert.throws(() => Request.createSink(4, bad, remote(3)), TypeError, label)
+  }
+  // Left out, the kind or the source lands where the transport goes.
+  assert.throws(() => Request.createSource(3, 'Webcam', {}), TypeError)
+  assert.throws(() => Request.createSink(4, remote(3)), TypeError)
+
+  const { matcher, sent } = matcherHarness()
+  await assert.rejects(
+    matcher.create((node) => Request.createSource(node, undefined, 'Webcam', {})),
+    TypeError
+  )
+  await assert.rejects(
+    matcher.create((node) => Request.createSink(node, undefined, remote(3))),
+    TypeError
+  )
+  assert.deepEqual(sent, [])
+  assert.equal(matcher.size, 0)
+})
+
+test('CreateTransport takes its id from the counter sources, sinks and Syncs share', async () => {
+  const { matcher, sent, reply, protocolErrors } = matcherHarness()
+  const synced = matcher.requestSynced(Request.configureSink(7, { paused: false }))
+  const created = matcher.create((id) => Request.createTransport(id, Direction.Send))
+  const source = matcher.create((node) => Request.createSource(node, 2, 'Microphone', {}))
+  assert.deepEqual(sent, [
+    { ConfigureSink: { node: 7, paused: false } },
+    { Sync: { callback: 1 } },
+    { CreateTransport: { new_transport: 2, direction: 'Send' } },
+    {
+      CreateSource: {
+        new_node: 3,
+        transport: 2,
+        kind: 'Microphone',
+        rtp_parameters: {},
+        replaces: null,
+        stream_key: null
+      }
+    }
+  ])
+
+  reply({ Done: { callback: 1 } })
+  const parameters = {
+    id: 't1',
+    ice_parameters: { usernameFragment: 'u', password: 'p', iceLite: true },
+    ice_candidates: [{ protocol: 'udp', ip: '1.2.3.4', port: 4000 }],
+    dtls_parameters: { role: 'auto', fingerprints: [] }
+  }
+  assert.equal(reply({ Transport: { transport: 2, parameters } }), true)
+  // The node's parameters come back untouched, for mapTransportParams.
+  const answer = await created
+  assert.deepEqual(answer, { transport: 2, parameters })
+  assert.deepEqual(mapTransportParams(answer.parameters).iceParameters, parameters.ice_parameters)
+  reply({ Source: { node: 3, kind: { type: 'Microphone' } } })
+  assert.equal((await source).node, 3)
+  assert.equal(await synced, undefined)
+  assert.equal(matcher.size, 0)
+  assert.equal(protocolErrors.length, 0)
+})
+
+test('transport answers are keyed by the transport they name', async () => {
+  const { matcher, protocolErrors, reply } = matcherHarness()
+  const created = matcher.create((id) => Request.createTransport(id, Direction.Receive)) // 1
+  const connected = matcher.request(Request.connectTransport(SEND, {}))
+  const restarted = matcher.request(Request.restartIce(SEND))
+  const closed = matcher.request(Request.closeTransport(SEND))
+  // Answers for another transport settle none of them, and nothing waits for them.
+  for (const other of [
+    { Transport: { transport: 2, parameters: {} } },
+    { Transport: { transport: SEND, parameters: {} } },
+    { TransportConnected: { transport: 1 } },
+    { IceRestarted: { transport: RECEIVE, ice_parameters: {} } },
+    { TransportClosed: { transport: RECEIVE } }
+  ]) {
+    assert.equal(reply(other), true)
+  }
+  assert.equal(protocolErrors.length, 5)
+  assert.ok(protocolErrors.every((error) => error instanceof VoiceProtocolError))
+  assert.equal(matcher.size, 4)
+
+  reply({ Transport: { transport: 1, parameters: { id: 't' } } })
+  reply({ TransportConnected: { transport: SEND } })
+  reply({ IceRestarted: { transport: SEND, ice_parameters: { usernameFragment: 'u' } } })
+  reply({ TransportClosed: { transport: SEND } })
+  assert.equal((await created).parameters.id, 't')
+  assert.deepEqual(await connected, { transport: SEND })
+  assert.deepEqual((await restarted).ice_parameters, { usernameFragment: 'u' })
+  assert.deepEqual(await closed, { transport: SEND })
+  assert.equal(matcher.size, 0)
+  assert.equal(protocolErrors.length, 5)
+})
+
+test('an Error on a transport rejects the request about that transport and no other', async () => {
+  const { matcher, protocolErrors, reply } = matcherHarness()
+  const first = matcher.request(Request.connectTransport(SEND, {}))
+  const second = matcher.request(Request.connectTransport(RECEIVE, {}))
+  assert.equal(
+    reply({ Error: { object: { Transport: RECEIVE }, code: 'Internal', message: 'dtls' } }),
+    true
+  )
+  const err = await second.catch((e) => e)
+  assert.ok(err instanceof VoiceRequestError)
+  assert.equal(err.request, 'ConnectTransport')
+  assert.deepEqual(err.object, { Transport: RECEIVE })
+  assert.match(err.message, new RegExp(`Transport\\(${RECEIVE}\\) Internal`))
+  assert.equal(matcher.size, 1)
+  reply({ TransportConnected: { transport: SEND } })
+  assert.deepEqual(await first, { transport: SEND })
+
+  // A fifth transport is refused on the id its create named.
+  const fifth = matcher.create((id) => Request.createTransport(id, Direction.Send)) // 1
+  const closing = matcher.request(Request.closeTransport(SEND))
+  assert.equal(
+    reply({
+      Error: { object: { Transport: 1 }, code: 'InvalidState', message: 'at most 4 transports' }
+    }),
+    true
+  )
+  const refused = await fifth.catch((e) => e)
+  assert.ok(refused instanceof VoiceRequestError)
+  assert.equal(refused.request, 'CreateTransport')
+  assert.equal(refused.code, ErrorCode.InvalidState)
+  assert.deepEqual(refused.object, { Transport: 1 })
+  // One about a transport no request waits on is no one's.
+  assert.equal(
+    reply({ Error: { object: { Transport: 1 }, code: 'NotFound', message: 'x' } }),
+    false
+  )
+  assert.equal(matcher.size, 1)
+  reply({ TransportClosed: { transport: SEND } })
+  assert.deepEqual(await closing, { transport: SEND })
+  assert.equal(protocolErrors.length, 0)
+})
+
+test('an Error on the session is not claimed by transport requests', async () => {
+  const { matcher, reply } = matcherHarness()
+  const created = matcher.create((id) => Request.createTransport(id, Direction.Send)) // 1
+  const connected = matcher.request(Request.connectTransport(SEND, {}))
+  const restarted = matcher.request(Request.restartIce(SEND))
+  const closed = matcher.request(Request.closeTransport(RECEIVE))
+  const group = matcher.requestSynced(Request.group({ Ready: { epoch: 2 } })) // Sync 2
+  // The group request's error goes to it, not to the older transport requests.
+  assert.equal(
+    reply({ Error: { object: 'Session', code: 'InvalidState', message: 'not in a group' } }),
+    true
+  )
+  // Its Sync settles it as failed.
+  reply({ Done: { callback: 2 } })
+  const groupError = await group.catch((e) => e)
+  assert.ok(groupError instanceof VoiceRequestError)
+  assert.equal(groupError.request, 'Group')
+  // With nothing else waiting on the session, its error is no one's.
+  assert.equal(
+    reply({ Error: { object: 'Session', code: 'InvalidState', message: 'session not ready' } }),
+    false
+  )
+  assert.equal(matcher.size, 4)
+  reply({ Transport: { transport: 1, parameters: { id: 't' } } })
+  reply({ TransportConnected: { transport: SEND } })
+  reply({ IceRestarted: { transport: SEND, ice_parameters: {} } })
+  reply({ TransportClosed: { transport: RECEIVE } })
+  assert.equal((await created).parameters.id, 't')
+  assert.deepEqual(await connected, { transport: SEND })
+  assert.deepEqual(await restarted, { transport: SEND, ice_parameters: {} })
+  assert.deepEqual(await closed, { transport: RECEIVE })
+})
+
+test('CloseTransport hands on the Closed for what was on it and settles on TransportClosed', async () => {
+  const { matcher, sent, protocolErrors, reply } = matcherHarness()
+  const closed = matcher.request(Request.closeTransport(SEND))
+  assert.deepEqual(sent, [{ CloseTransport: { transport: SEND } }])
+  // The sources and sinks on it close first, as an event.
+  assert.equal(reply({ Closed: { nodes: [4, 5] } }), false)
+  assert.equal(matcher.size, 1)
+  assert.equal(reply({ TransportClosed: { transport: SEND } }), true)
+  assert.deepEqual(await closed, { transport: SEND })
+
+  // With nothing on it, TransportClosed comes alone.
+  const empty = matcher.request(Request.closeTransport(RECEIVE))
+  assert.equal(reply({ TransportClosed: { transport: RECEIVE } }), true)
+  assert.deepEqual(await empty, { transport: RECEIVE })
+  assert.equal(matcher.size, 0)
+  assert.equal(protocolErrors.length, 0)
+})
+
+test('after a resume, a lost CreateTransport gets a new id and a lost CloseTransport goes out as it was', async () => {
+  const { matcher, sent, reply, protocolErrors } = matcherHarness()
+  const arrived = matcher.create((id) => Request.createTransport(id, Direction.Send)) // 1
+  const lostCreate = matcher.create((id) => Request.createTransport(id, Direction.Send)) // 2
+  const arrivedClose = matcher.request(Request.closeTransport(SEND))
+  const lostClose = matcher.request(Request.closeTransport(RECEIVE))
+  matcher.detach(new Error('socket gone'))
+  sent.length = 0
+
+  const resumed = matcher.resume() // Sync 3
+  assert.deepEqual(sent, [{ Sync: { callback: 3 } }])
+  // The replay answers what reached the node.
+  assert.equal(reply({ Transport: { transport: 1, parameters: { id: 'a' } } }), true)
+  assert.equal(reply({ Closed: { nodes: [5] } }), false)
+  assert.equal(reply({ TransportClosed: { transport: SEND } }), true)
+  assert.equal((await arrived).transport, 1)
+  assert.deepEqual(await arrivedClose, { transport: SEND })
+  sent.length = 0
+
+  // The Done: the create goes out around an id above the resume's Sync, the
+  // close as it was.
+  reply({ Done: { callback: 3 } })
+  await resumed
+  assert.deepEqual(sent, [
+    { CreateTransport: { new_transport: 4, direction: 'Send' } },
+    { CloseTransport: { transport: RECEIVE } }
+  ])
+  reply({ Transport: { transport: 4, parameters: { id: 'b' } } })
+  reply({ TransportClosed: { transport: RECEIVE } })
+  // The caller takes the transport's id from the answer.
+  assert.deepEqual(await lostCreate, { transport: 4, parameters: { id: 'b' } })
+  assert.deepEqual(await lostClose, { transport: RECEIVE })
+  assert.equal(matcher.size, 0)
+  assert.equal(protocolErrors.length, 0)
+})
+
+test('a Transport answer vouches for what was notified before its CreateTransport', async () => {
+  const { matcher, sent, reply } = matcherHarness()
+  matcher.notify(Request.close(4))
+  const created = matcher.create((id) => Request.createTransport(id, Direction.Send)) // 1
+  // The node answered the CreateTransport, so it got the Close sent before it.
+  reply({ Transport: { transport: 1, parameters: {} } })
+  await created
+  matcher.notify(Request.close(6))
+  matcher.detach(new Error('socket gone'))
+  sent.length = 0
+
+  const resumed = matcher.resume() // Sync 2
+  reply({ Done: { callback: 2 } })
+  await resumed
+  assert.deepEqual(sent, [{ Sync: { callback: 2 } }, { Close: { node: 6 } }])
+})
+
+test('an EndStream refused as stream_not_found is a stream already gone, nothing else is (smooth P10)', () => {
+  assert.equal(
+    isEndOfGoneStream({ op: 11, code: 'stream_not_found', message: 'Stream not found' }),
+    true
+  )
+  // Every other code for op 11, and that code for any other op, stays a refusal.
+  assert.equal(isEndOfGoneStream({ op: 11, code: 'forbidden', message: 'No' }), false)
+  assert.equal(isEndOfGoneStream({ op: StreamOp.WATCH_STREAM, code: 'stream_not_found' }), false)
+  assert.equal(isEndOfGoneStream({ op: StreamOp.CREATE_STREAM, code: 'stream_not_found' }), false)
+  assert.equal(isEndOfGoneStream({ op: '11', code: 'stream_not_found' }), false)
+  for (const odd of [null, undefined, {}, 'stream_not_found'])
+    assert.equal(isEndOfGoneStream(odd), false)
 })

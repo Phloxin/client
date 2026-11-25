@@ -29,7 +29,8 @@ import {
 import { setVideoStreamRoles, subscribeStreamViewers } from '../lib/soup'
 import { useImageColors } from '../lib/imageColors'
 import { useWheelSlider } from '../lib/useWheelSlider'
-import { shouldPauseSelfPreview, syncSelfPreviewPlayback } from '../lib/selfPreviewPlayback'
+import { syncSelfPreviewPlayback } from '../lib/selfPreviewPlayback'
+import { useSelfPreviewPaused } from '../lib/useSelfPreviewWindow'
 import { resolveStreamFocus } from '../lib/streamView'
 import { sortTiles } from '../lib/streamTiles'
 import { spring } from '../lib/motionPresets'
@@ -131,36 +132,6 @@ function StreamAvatar({ avatar, name, small = false }) {
       )}
     </span>
   )
-}
-
-function readSelfPreviewPaused() {
-  if (typeof window === 'undefined' || typeof document === 'undefined') return false
-  const documentVisible =
-    document.visibilityState == null
-      ? document.hidden !== true
-      : document.visibilityState === 'visible'
-  const windowFocused = typeof document.hasFocus === 'function' ? document.hasFocus() : true
-  return shouldPauseSelfPreview({ windowFocused, documentVisible })
-}
-
-function useSelfPreviewPaused() {
-  const [selfPreviewPaused, setSelfPreviewPaused] = useState(readSelfPreviewPaused)
-
-  useEffect(() => {
-    if (typeof window === 'undefined' || typeof document === 'undefined') return undefined
-    const update = () => setSelfPreviewPaused(readSelfPreviewPaused())
-    window.addEventListener('focus', update)
-    window.addEventListener('blur', update)
-    document.addEventListener('visibilitychange', update)
-    update()
-    return () => {
-      window.removeEventListener('focus', update)
-      window.removeEventListener('blur', update)
-      document.removeEventListener('visibilitychange', update)
-    }
-  }, [])
-
-  return selfPreviewPaused
 }
 
 // eslint-disable-next-line react/prop-types -- The renderer does not use runtime PropTypes.
@@ -540,13 +511,18 @@ function VideoGrid({
   // fullscreen). A ResizeObserver on the stage keeps it in sync without polling.
   // `theatre` is a dep because entering/leaving it portals the stage to a new
   // parent, which remounts the node — the observer must follow to the new one.
+  // Measured fractionally: clientWidth rounds, so a 2247.6px stage reads 2248,
+  // two width-bound tiles then need 0.4px more than there is, and the row
+  // wraps into an overflowing column.
   const gridShown = !focusedStream
   const gridTileCount = sortedStreams.length
   useEffect(() => {
     const el = stageRef.current
     if (!gridShown || !el) return
-    const recompute = () =>
-      setGridTileWidth(bestUniformTileWidth(el.clientWidth, el.clientHeight, gridTileCount))
+    const recompute = () => {
+      const { width, height } = el.getBoundingClientRect()
+      setGridTileWidth(bestUniformTileWidth(width, height, gridTileCount))
+    }
     recompute()
     const ro = new ResizeObserver(recompute)
     ro.observe(el)
@@ -632,8 +608,10 @@ function VideoGrid({
   }
 
   // Focus toggling only exists with two or more streams: a grid tile or
-  // thumbnail focuses, the focused tile goes back to the grid. A click that
-  // ends a drag-pan, or that dismissed the menu, does neither.
+  // thumbnail focuses, the focused tile goes back to the grid. Clicking a
+  // stream we aren't watching always starts watching it — the focused (or
+  // sole) tile stays focused rather than toggling back to the grid. A click
+  // that ends a drag-pan, or that dismissed the menu, does none of these.
   const handleTileMouseDown = (s, e) => {
     if (e.button === 0) swallowClickRef.current = menuOpen
     if (s.tileId === focusedTileId) handlePanStart(e)
@@ -646,7 +624,9 @@ function VideoGrid({
         suppressClickRef.current = false
         return
       }
-      if (!dismissedMenu && canToggleFocus) onSelect?.(null)
+      if (dismissedMenu) return
+      if (isStopped(s)) onSetStreamWatched?.(s.tileId, true)
+      else if (canToggleFocus) onSelect?.(null)
       return
     }
     if (!dismissedMenu && canToggleFocus) focusStream(s)

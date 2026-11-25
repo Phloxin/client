@@ -1,0 +1,224 @@
+/* The activity tab: a header with who is in the room and the room's controls, the activity's
+   frame filling the rest, and a banner over the frame while reconnecting or once it is over. */
+
+.activity-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--color-background-soft);
+}
+
+.activity-header {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--spacing-sm);
+  min-width: 0;
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-bottom: 1px solid var(--hairline);
+}
+
+.activity-header-icon {
+  flex: none;
+  color: var(--color-text-tertiary);
+}
+
+.activity-heading {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.3;
+}
+
+.activity-name,
+.activity-channel {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.activity-name {
+  color: var(--color-text);
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-semibold);
+}
+
+.activity-channel {
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-xs);
+}
+
+.activity-clients {
+  display: flex;
+  flex: none;
+  align-items: center;
+}
+
+.activity-avatar {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  margin-left: -6px;
+  overflow: hidden;
+  border: 2px solid var(--color-background-soft);
+  border-radius: 50%;
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+}
+
+.activity-avatar:first-child {
+  margin-left: 0;
+}
+
+.activity-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.activity-avatar-more {
+  width: auto;
+  min-width: 24px;
+  padding: 0 4px;
+  border-radius: 999px;
+}
+
+.activity-btn {
+  flex: none;
+  padding: 5px 12px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  font-family: var(--font-family-primary);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.activity-btn:hover {
+  border-color: var(--color-border-light);
+  color: var(--color-text);
+}
+
+.activity-btn.danger {
+  color: var(--color-danger);
+}
+
+.activity-btn.danger:hover {
+  border-color: var(--color-danger);
+  background: color-mix(in srgb, var(--color-danger) 12%, var(--color-surface));
+}
+
+.activity-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+/* Where the host layer lays a player bundle's body. */
+.activity-body-slot {
+  flex: 1;
+  min-height: 0;
+}
+
+.activity-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: var(--color-background-soft);
+}
+
+/* A `player` bundle's frame: see-through where its screen is, over the video surface.
+   Positioned, so it paints after the surface and before the banner. */
+.activity-frame-clear {
+  position: relative;
+  background: transparent;
+}
+
+.activity-empty {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  padding: var(--spacing-lg);
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-md);
+  text-align: center;
+}
+
+/* Over the frame: the last state stays readable under a scrim that also keeps input from it. */
+.activity-banner-layer {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: var(--spacing-md);
+  background: color-mix(in srgb, var(--color-background-soft) 45%, transparent);
+}
+
+.activity-banner {
+  max-width: 100%;
+  padding: 8px 16px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 999px;
+  background: var(--color-surface);
+  box-shadow: var(--shadow-2);
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  text-align: center;
+}
+
+/* The confirmation before leaving would forfeit the round. */
+.activity-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgb(var(--shadow-tint) / 0.55);
+  backdrop-filter: blur(3px);
+}
+
+.activity-dialog {
+  width: min(360px, calc(100vw - 48px));
+  overflow: hidden;
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-lg);
+  background: var(--color-background-soft);
+  box-shadow: var(--shadow-3);
+}
+
+.activity-dialog-body {
+  padding: 20px 18px 16px;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-md);
+  line-height: 1.5;
+}
+
+.activity-dialog-heading {
+  margin-bottom: 6px;
+  color: var(--color-text);
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-semibold);
+}
+
+.activity-dialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--spacing-sm);
+  padding: 12px 16px;
+  border-top: 1px solid var(--hairline);
+  background: color-mix(in srgb, var(--color-background-mute) 40%, transparent);
+}

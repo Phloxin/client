@@ -16,6 +16,17 @@ export function normalizeAutoIdleSettings(settings) {
   }
 }
 
+// Talking unmuted in voice counts as activity: someone in a call can go many
+// minutes without touching the mouse or keyboard. The effective idle time is
+// the shorter of system input idle and time since we last spoke (0 while
+// speaking). Invalid system readings pass through so tick() still ignores them.
+export function idleSecondsWithVoice(systemIdleSeconds, { speaking, lastSpokeAt, now }) {
+  if (!Number.isFinite(systemIdleSeconds) || systemIdleSeconds < 0) return systemIdleSeconds
+  if (speaking) return 0
+  if (!Number.isFinite(lastSpokeAt)) return systemIdleSeconds
+  return Math.min(systemIdleSeconds, Math.max(0, (now - lastSpokeAt) / 1000))
+}
+
 // Own only transitions made by this session. The server remains authoritative;
 // wait for its echo before restoring Online, and never restore manual Away/DND/
 // Invisible. A missing echo is retried at a bounded rate, not on every poll.
