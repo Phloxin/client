@@ -90,7 +90,8 @@ export function applyAnimationSettings({
   userJoin = 'pop',
   channelList = 'pop',
   overlays = 'on',
-  messages = 'slide'
+  messages = 'slide',
+  callBar = 'on'
 }) {
   const html = document.documentElement
   // An attribute is present only when animations are on and the category isn't
@@ -105,4 +106,5 @@ export function applyAnimationSettings({
   apply('data-anim-channel-list', channelList)
   apply('data-anim-overlays', overlays)
   apply('data-anim-messages', messages)
+  apply('data-anim-call-bar', callBar)
 }

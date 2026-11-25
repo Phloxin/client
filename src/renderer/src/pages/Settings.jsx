@@ -421,7 +421,8 @@ function Settings({ account }) {
                     { key: 'messages', label: 'New Messages', on: 'slide' },
                     { key: 'overlays', label: 'Menus & Dialogs', on: 'on' },
                     { key: 'streamFocus', label: 'Stream Focus', on: 'on' },
-                    { key: 'tabs', label: 'Tab Dragging', on: 'on' }
+                    { key: 'tabs', label: 'Tab Dragging', on: 'on' },
+                    { key: 'callBar', label: 'Call Bar', on: 'on' }
                   ].map(({ key, label, on }) => (
                     <div key={key} className="settings-section settings-toggle-row">
                       <div className="settings-toggle-copy">

@@ -134,3 +134,13 @@ export const avatarStackItem = {
   hidden: { opacity: 0, scale: 0.5, x: -6 },
   shown: { opacity: 1, scale: 1, x: 0, transition: spring }
 }
+
+// A tab's call symbol: pops up from small on a spring, shrinks quickly away.
+export function tabCallPop(enabled) {
+  if (!enabled) return noMotion
+  return {
+    initial: { opacity: 0, scale: 0.4 },
+    animate: { opacity: 1, scale: 1, transition: spring },
+    exit: { opacity: 0, scale: 0.6, transition: { duration: 0.1, ease: 'easeIn' } }
+  }
+}

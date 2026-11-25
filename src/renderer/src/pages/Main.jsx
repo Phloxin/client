@@ -36,7 +36,7 @@ import ImageViewer from '../components/ImageViewer'
 import FileViewer from '../components/FileViewer'
 import ScreenSourcePicker from '../components/ScreenSourcePicker'
 import IdleAnimation from '../components/IdleAnimation'
-import { DmMemberStrip } from '../components/DmCallHeader'
+import { DmCallBarSlot } from '../components/DmCallBar'
 import IncomingCallOverlay from '../components/IncomingCallOverlay'
 import PaneLayout from '../components/PaneLayout'
 import ActivityView, { ActivityLeaveDialog } from '../components/ActivityView'
@@ -105,6 +105,7 @@ import { endRoom, listActivities, openRoom, roomTicket } from '../lib/activities
 import { activitySessions } from '../lib/activities/sessionStore'
 import { WATCH_TOGETHER, addVideo } from '../lib/activities/watchTogether'
 import { dmDisplayName, dmOthers, inCallText } from '../lib/dm'
+import { callBarEntries, callStartedAt, dmCallState } from '../lib/dmCall'
 import {
   applyReady,
   applyRingEnded,
@@ -969,9 +970,19 @@ function Main() {
   }, [micMuted, deafened, voice.selfSpeaking])
 
   // Who is screen streaming in each channel (channel id -> owner ids), for the
-  // DM call's member strip. SideBar keeps its own copy for its rows.
+  // DM call bar. SideBar keeps its own copy for its rows.
   const [liveStreams, setLiveStreams] = useState(() => new Map())
   useEffect(() => subscribeLiveStreams(setLiveStreams), [])
+
+  // The DM call bar's stage form (expanded) or slim one, remembered across runs.
+  const [callBarExpanded, setCallBarExpanded] = useState(
+    () => localStorage.getItem('dmCallBarExpanded') === '1'
+  )
+  const toggleCallBarExpanded = () => {
+    const next = !callBarExpanded
+    setCallBarExpanded(next)
+    localStorage.setItem('dmCallBarExpanded', next ? '1' : '0')
+  }
 
   // The caller's local "Ringing…" ({ channelId, rings: recipient id -> deadline }):
   // the server doesn't say who it rang when a call starts. Only the session's DM
@@ -1785,7 +1796,7 @@ function Main() {
     voice.join(dm.id)
   }
 
-  // Ring one participant who isn't in the DM's call (the member strip's Ring).
+  // Ring one participant who isn't in the DM's call (the call bar's Ring).
   const handleRingParticipant = async (dmId, userId) => {
     const name = clients.find((c) => c.id === userId)?.name || 'Someone'
     try {
@@ -4233,9 +4244,6 @@ function Main() {
   const serverDisplayName = serverName ?? connectedServer?.nickname ?? 'Connected'
   const titleText = connectedServer ? serverDisplayName : ''
 
-  // The joined voice channel or DM call.
-  const joinedChannel = channels.find((c) => c.id === selfChannelId)
-
   // Names of other clients typing in a channel (self excluded).
   const typingUsersIn = (channelId) =>
     typingEntries
@@ -4252,39 +4260,8 @@ function Main() {
   }
   const isGroupDm = (dm) => dmOthers(dm, client?.id).length > 1
 
-  // The DM whose call we're in, for the joined header: one strip entry per
-  // participant, us first.
-  const joinedDm = joinedChannel?.type === 'dm' ? joinedChannel : null
-  const dmStripEntries = (() => {
-    if (!joinedDm) return []
-    const tileOwners = new Set(
-      allVideoStreams.filter((s) => s.kind === 'video').map((s) => s.clientId)
-    )
-    const streamers = new Set(liveStreams.get(joinedDm.id) ?? [])
-    const others = dmOthers(joinedDm, client?.id)
-    return [{ id: client?.id }, ...others].map((p) => {
-      const c = clients.find((x) => x.id === p.id) ?? {}
-      const isSelf = p.id === client?.id
-      const inCall = c.channel_id === joinedDm.id
-      const ringing = outgoingRings.channelId === joinedDm.id && outgoingRings.rings.has(p.id)
-      return {
-        id: p.id,
-        name: c.name || p.name || 'Unknown',
-        avatar: c.avatar,
-        inCall,
-        speaking: inCall && !!speakingClients[p.id],
-        // Our own toggles beat the roster echo, as in the theatre rail.
-        muted: isSelf ? micMuted : !!c.self_mute || !!c.server_mute,
-        deafened: isSelf ? deafened : !!c.self_deaf,
-        streaming: streamers.has(p.id) || tileOwners.has(p.id),
-        watchable: tileOwners.has(p.id),
-        status: ringing ? 'ringing' : statusOf(presences[p.id]) === 'offline' ? 'offline' : 'ring'
-      }
-    })
-  })()
-
-  // The session's error has no sidebar row in a DM call, so it shows under the
-  // header of a pane showing that DM's Chat or Streams.
+  // The session's error has no sidebar row in a DM call, so it shows at the top
+  // of a pane showing that DM's Chat or Streams, under its call bar.
   const dmCallErrorIn = (tab) => {
     const dmId =
       (tab?.kind === 'chat' || tab?.kind === 'streams') &&
@@ -4359,28 +4336,60 @@ function Main() {
     return { state: 'join', title: `Join call — ${inCallText(names)}`, onClick }
   }
 
-  // Who is in the connected group: the DM call's participant strip. A voice
-  // channel adds nothing — a head count here would resize the tabs as you
-  // switch into the tab.
-  const joinedStatus = (channelId) => {
-    const dm = channelOf(channelId)?.type === 'dm' ? channelId : null
-    if (dm == null) return null
-    return (
-      <DmMemberStrip
-        entries={dmStripEntries}
-        onRing={(userId) => handleRingParticipant(dm, userId)}
-        onWatchStream={handleWatchStream}
-      />
-    )
-  }
-
-  // What rides a pane's header bar beside its tabs: nothing but a DM call's
-  // participant strip. Counts and other per-view meta are deliberately absent
-  // — anything here resizes the tabs as you switch between views.
-  const renderTabHeader = (tab) => {
-    if (!tab) return null
-    if (tab.kind === 'streams' || isGroupTab(layout, tab.id)) return joinedStatus(tab.ref)
-    return null
+  // The call bar over a DM's Chat or Streams view while the DM has a call, or
+  // null. With the DM's Chat in front in another pane, its Streams has none.
+  const callBarFor = (tab) => {
+    if (tab?.kind !== 'chat' && tab?.kind !== 'streams') return null
+    const dm = channelOf(tab.ref)
+    if (dm?.type !== 'dm') return null
+    const state = dmCallState(dm.id, selfChannelId, clients)
+    if (state == null) return null
+    const chatInFront =
+      tab.kind === 'streams' &&
+      layout.panes.some((p) => {
+        const shown = layout.tabs[p.activeTabId]
+        return shown?.kind === 'chat' && shown.ref === dm.id
+      })
+    if (chatInFront) return null
+    const joined = state === 'joined'
+    // Join follows the composer's call button.
+    const action = joined ? null : chatCallAction(tab)
+    let join = null
+    if (action?.state === 'join') {
+      join = { label: 'Join', title: action.title, onClick: action.onClick }
+    } else if (action?.state === 'joining') {
+      join = { label: 'Joining…', title: action.title, disabled: true }
+    } else if (action?.state === 'switching') {
+      join = { label: 'Join', title: action.title, disabled: true }
+    }
+    const tileOwners = joined
+      ? allVideoStreams.filter((s) => s.kind === 'video').map((s) => s.clientId)
+      : []
+    return {
+      channelId: dm.id,
+      entries: callBarEntries({
+        channelId: dm.id,
+        participants: [{ id: client?.id }, ...dmOthers(dm, client?.id)],
+        selfId: client?.id,
+        joined,
+        clientsById: new Map(clients.map((c) => [c.id, c])),
+        speaking: speakingClients,
+        selfMuted: micMuted,
+        selfDeafened: deafened,
+        streamers: new Set(liveStreams.get(dm.id) ?? []),
+        tileOwners: new Set(tileOwners),
+        ringing: new Set(outgoingRings.channelId === dm.id ? outgoingRings.rings.keys() : []),
+        isOffline: (id) => statusOf(presences[id]) === 'offline'
+      }),
+      joined,
+      startedAt: callStartedAt(feed, dm.id),
+      compact: tab.kind === 'streams',
+      expanded: callBarExpanded,
+      onToggleExpanded: toggleCallBarExpanded,
+      join,
+      onRing: (userId) => handleRingParticipant(dm.id, userId),
+      onWatchStream: handleWatchStream
+    }
   }
 
   const focusPopout = () => {
@@ -4574,10 +4583,12 @@ function Main() {
     const glyph = (Icon) => <Icon size={17} stroke={2} />
     let title = serverDisplayName
     let icon = glyph(tab.kind === 'server-summary' ? IconServer : IconUsersGroup)
+    let call = null
     if (tab.kind === 'chat') {
       const ch = channelOf(tab.ref)
       title = channelName(ch)
       icon = channelIconOf(ch, glyph(IconMessage))
+      if (ch?.type === 'dm') call = dmCallState(ch.id, selfChannelId, clients)
     } else if (tab.kind === 'streams') {
       title = 'Streams'
       icon = glyph(IconVideo)
@@ -4612,6 +4623,7 @@ function Main() {
       preview: pane.previewTabId === tab.id,
       pinned: tab.pinned,
       unread: tab.kind === 'chat' && !active && unreadChannelIds.has(tab.ref),
+      call,
       group,
       // Streams extends its channel's tab rather than standing on its own.
       narrow: tab.kind === 'streams',
@@ -4692,24 +4704,26 @@ function Main() {
     ]
   }
 
-  // Each pane's strip, header and view, rendered here so a drag inside
+  // Each pane's strip, call bar and view, rendered here so a drag inside
   // PaneLayout never re-renders the views. A view is keyed by its tab's
   // content identity (tabKey), not the tab, so a change of content remounts it
   // and replays the switch animation: a preview of channel X and the group
   // Chat it folds into on joining are both `chat:X`, so the fade doesn't
-  // redundantly replay when only the header gains its voice counter, while a
-  // preview replaced in place, a channel switch, or Chat ↔ Streams still
-  // changes the key. The traffic tab shares the home view's key.
+  // redundantly replay, while a preview replaced in place, a channel switch,
+  // or Chat ↔ Streams still changes the key. The traffic tab shares the home
+  // view's key. The call bar gets the same key, to tell a view switch from a
+  // call starting or ending.
   const paneViews = connected
     ? layout.panes.map((pane) => {
         const tab = pane.activeTabId != null ? layout.tabs[pane.activeTabId] : null
+        const bodyKey = !tab || tab.kind === 'server-traffic' ? 'lobby' : tabKey(tab)
         return {
           id: pane.id,
           tabs: pane.tabIds.map((id) => describeTab(layout.tabs[id], pane)),
-          header: renderTabHeader(tab),
+          banner: <DmCallBarSlot viewKey={bodyKey} call={callBarFor(tab)} />,
           error: dmCallErrorIn(tab),
           body: renderTab(tab),
-          bodyKey: !tab || tab.kind === 'server-traffic' ? 'lobby' : tabKey(tab)
+          bodyKey
         }
       })
     : null

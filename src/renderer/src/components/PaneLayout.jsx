@@ -94,9 +94,10 @@ function swallowNextClick() {
 // The content canvas: one pane, or two side by side ('row') or stacked
 // ('column'), each a tab strip over its view. Owns the tab drag (reorder, move
 // to the other pane, drop on an edge to split) and the divider between panes.
-// panes: [{ id, tabs, header, error, body, bodyKey }] in layout order; `tabs`
-// are TabStrip descriptions and `header`, `error`, `body` elements Main has
-// rendered, so a drag in progress never re-renders the views.
+// panes: [{ id, tabs, banner, error, body, bodyKey }] in layout order; `tabs`
+// are TabStrip descriptions and `banner` (the view's DM call bar slot),
+// `error`, `body` elements Main has rendered, so a drag in progress never
+// re-renders the views.
 function PaneLayout({ layout, panes, menuItems, dispatch }) {
   const rootRef = useRef(null)
   const ghostRef = useRef(null)
@@ -324,9 +325,9 @@ function PaneLayout({ layout, panes, menuItems, dispatch }) {
                   menuItems={menuItems}
                   ariaLabel={split ? `Open views, pane ${i + 1}` : 'Open views'}
                 />
-                {view.header && <div className="pane-bar-actions">{view.header}</div>}
               </div>
               <div className="pane-body">
+                {view.banner}
                 {view.error}
                 {/* Keyed so a change of content remounts and replays the
                     switch animation (see Main's bodyKey). */}

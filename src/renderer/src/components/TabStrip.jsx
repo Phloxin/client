@@ -1,9 +1,9 @@
 /* eslint-disable react/prop-types -- The renderer does not use runtime PropTypes. */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { motion, AnimatePresence } from 'motion/react'
-import { IconPin, IconPinFilled, IconX } from '@tabler/icons-react'
+import { IconPhone, IconPhoneFilled, IconPin, IconPinFilled, IconX } from '@tabler/icons-react'
 import { useAnimationCategory } from '../context/SettingsContext'
-import { menuPop, spring } from '../lib/motionPresets'
+import { menuPop, spring, tabCallPop } from '../lib/motionPresets'
 import { useMenuPosition } from '../lib/menuPosition'
 import './TabStrip.css'
 
@@ -64,8 +64,9 @@ function TabMenu({ pos, items, onClose }) {
 
 // One pane's browser-style tab strip. Main describes each tab and supplies the
 // menu items; PaneLayout runs the drag and tells this how to show it.
-// tabs: [{ id, title, icon, active, preview, pinned, unread, group, narrow,
-// closable, pinnable }]
+// tabs: [{ id, title, icon, active, preview, pinned, unread, call, group,
+// narrow, closable, pinnable }]; `call` is a DM's call: 'joined' (we're in it),
+// 'live' (it runs without us) or null.
 // drag: while a tab is dragged anywhere, { tab, order }: the dragged tab's
 // description, and the tab ids to show in place of `tabs` (null keeps them),
 // which may include the dragged tab from the other pane.
@@ -88,6 +89,7 @@ function TabStrip({
   const stripRef = useRef(null)
   const [menu, setMenu] = useState(null)
   const closeMenu = useCallback(() => setMenu(null), [])
+  const callAnim = useAnimationCategory('callBar')
   const activeId = tabs.find((t) => t.active)?.id ?? null
 
   // Keep the active tab in view when it changes (or the strip overflows).
@@ -150,6 +152,23 @@ function TabStrip({
     >
       <span className="tab-icon">{tab.icon}</span>
       <span className="tab-title">{tab.title}</span>
+      <AnimatePresence initial={false}>
+        {tab.call && (
+          <motion.span
+            key="call"
+            className={`tab-call ${tab.call}`}
+            role="img"
+            aria-label={tab.call === 'joined' ? 'In call' : 'Call in progress'}
+            {...tabCallPop(callAnim)}
+          >
+            {tab.call === 'joined' ? (
+              <IconPhoneFilled size={14} />
+            ) : (
+              <IconPhone size={14} stroke={2} />
+            )}
+          </motion.span>
+        )}
+      </AnimatePresence>
       {tab.unread && <span className="tab-unread" role="img" aria-label="Unread messages" />}
       {tab.pinnable && (
         <button
