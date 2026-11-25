@@ -18,7 +18,7 @@ export async function listActivities() {
   return Array.isArray(list) ? list : []
 }
 
-// Opens a room in the channel: { room, ticket, url?, ttl_ms }.
+// Opens a room in the channel: { room, ticket, url?, cert_hashes?, ttl_ms }.
 export async function openRoom(channelId, activityId) {
   const res = await authFetch(
     `${apiBase()}/channels/${encodeURIComponent(channelId)}/activities`,
@@ -28,7 +28,7 @@ export async function openRoom(channelId, activityId) {
   return res.json()
 }
 
-// A ticket for the room session: { ticket, url?, ttl_ms }.
+// A ticket for the room session: { ticket, url?, cert_hashes?, ttl_ms }.
 export async function roomTicket(roomId) {
   const res = await authFetch(
     `${apiBase()}/activities/rooms/${encodeURIComponent(roomId)}/ticket`,

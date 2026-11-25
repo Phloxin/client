@@ -27,6 +27,17 @@ export function sessionUrl(url) {
   return u.toString()
 }
 
+// The ticket's certificate hashes in the shape WebTransport's serverCertificateHashes takes.
+export function certificateHashes(list) {
+  if (!Array.isArray(list)) return []
+  return list
+    .filter((hex) => typeof hex === 'string' && /^[0-9a-f]{64}$/i.test(hex))
+    .map((hex) => ({
+      algorithm: 'sha-256',
+      value: Uint8Array.from(hex.match(/../g), (byte) => parseInt(byte, 16))
+    }))
+}
+
 const OVER = new Set(['closed', 'failed'])
 
 function createController(room, deps, onChange) {
@@ -154,7 +165,10 @@ function createController(room, deps, onChange) {
         drop()
       }
     }
-    session = { token, ...deps.openSession(url, ticket.ticket, handlers) }
+    session = {
+      token,
+      ...deps.openSession(url, ticket.ticket, handlers, certificateHashes(ticket.cert_hashes))
+    }
     deps.clearTimer(joinTimer)
     joinTimer = deps.setTimer(() => {
       joinTimer = null

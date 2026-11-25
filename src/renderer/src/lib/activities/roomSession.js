@@ -33,7 +33,7 @@ async function readFrames(readable, onBody) {
   }
 }
 
-export function openRoomSession(url, ticket, handlers) {
+export function openRoomSession(url, ticket, handlers, certHashes = []) {
   let ended = false
   let wt = null
   let control = null
@@ -55,7 +55,10 @@ export function openRoomSession(url, ticket, handlers) {
   }
 
   try {
-    wt = new WebTransport(url)
+    wt = new WebTransport(
+      url,
+      certHashes.length ? { serverCertificateHashes: certHashes } : undefined
+    )
   } catch (error) {
     queueMicrotask(() => end(error))
     return { send() {}, sendDatagram() {}, leave() {}, close() {} }

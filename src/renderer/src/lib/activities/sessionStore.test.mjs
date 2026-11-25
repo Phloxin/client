@@ -2,7 +2,13 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { decodeControl } from './frames.js'
-import { JOIN_TIMEOUT_MS, createSessionStore, reconnectDelay, sessionUrl } from './sessionStore.js'
+import {
+  JOIN_TIMEOUT_MS,
+  certificateHashes,
+  createSessionStore,
+  reconnectDelay,
+  sessionUrl
+} from './sessionStore.js'
 
 // A store on fakes: manual timers, sessions that record what they were sent, and a ticket queue.
 function harness() {
@@ -20,8 +26,17 @@ function harness() {
       return id
     },
     clearTimer: (id) => timers.delete(id),
-    openSession: (url, ticket, handlers) => {
-      const s = { url, ticket, handlers, sent: [], datagrams: [], left: false, closed: false }
+    openSession: (url, ticket, handlers, certHashes) => {
+      const s = {
+        url,
+        ticket,
+        handlers,
+        certHashes,
+        sent: [],
+        datagrams: [],
+        left: false,
+        closed: false
+      }
       s.send = (frame) => s.sent.push(decodeControl(frame.subarray(4)))
       s.sendDatagram = (payload) => s.datagrams.push(payload)
       s.leave = () => (s.left = true)
@@ -88,11 +103,69 @@ const joined = (s, extra = {}) =>
     ...extra
   })
 const err = (code) => Object.assign(new Error(code), { code })
+const hashOf = (byte) => ({ algorithm: 'sha-256', value: new Uint8Array(32).fill(byte) })
 
 test('the session URL is the ticket url with v=1, through searchParams', () => {
   assert.equal(sessionUrl('https://h:9876/rooms/abc'), 'https://h:9876/rooms/abc?v=1')
   assert.equal(sessionUrl('https://h:9876/rooms/abc?v=7&x=1'), 'https://h:9876/rooms/abc?v=1&x=1')
   assert.throws(() => sessionUrl('not a url'))
+})
+
+test('certificate hashes decode 64 hex characters to sha-256 bytes and skip anything else', () => {
+  for (const list of [undefined, null, 'ab'.repeat(32), {}]) {
+    assert.deepEqual(certificateHashes(list), [])
+  }
+  const known = Uint8Array.from({ length: 32 }, (_, i) => (i % 2 ? 0xff : 0x00))
+  const [one] = certificateHashes(['00ff'.repeat(16)])
+  assert.equal(one.algorithm, 'sha-256')
+  assert.ok(one.value instanceof Uint8Array)
+  assert.deepEqual(one.value, known)
+  assert.deepEqual(certificateHashes(['00FF'.repeat(16)]), [{ algorithm: 'sha-256', value: known }])
+  assert.deepEqual(
+    certificateHashes([
+      'ab'.repeat(32),
+      'a'.repeat(63),
+      'cd'.repeat(31) + 'cg',
+      7,
+      'ef'.repeat(32)
+    ]),
+    [hashOf(0xab), hashOf(0xef)]
+  )
+  assert.deepEqual(certificateHashes(['01'.repeat(32), '02'.repeat(32), '03'.repeat(32)]), [
+    hashOf(0x01),
+    hashOf(0x02),
+    hashOf(0x03)
+  ])
+})
+
+test('a session opens with the decoded hashes of its ticket', () => {
+  const h = harness()
+  h.store.join(room(), { ...firstTicket, cert_hashes: ['ab'.repeat(32), 'cd'.repeat(32)] })
+  assert.deepEqual(h.last().certHashes, [hashOf(0xab), hashOf(0xcd)])
+})
+
+test('a ticket without hashes opens a session with none', () => {
+  const h = harness()
+  h.store.join(room(), firstTicket)
+  assert.deepEqual(h.last().certHashes, [])
+})
+
+test('a reconnect uses the hashes of the new ticket, not the first one', async () => {
+  const h = harness()
+  h.store.join(room(), { ...firstTicket, cert_hashes: ['ab'.repeat(32), 'cd'.repeat(32)] })
+  h.store.syncRooms([room()])
+  joined(h.last())
+  h.tickets.push({
+    ticket: 't1',
+    url: 'https://rooms.example:9876/rooms/r1',
+    cert_hashes: ['cd'.repeat(32), 'ef'.repeat(32)],
+    ttl_ms: 30000
+  })
+  h.last().handlers.onEnd(null)
+  await h.advance(1000)
+  assert.equal(h.sessions.length, 2)
+  assert.equal(h.last().ticket, 't1')
+  assert.deepEqual(h.last().certHashes, [hashOf(0xcd), hashOf(0xef)])
 })
 
 test('reconnect delays are 1, 2, 4, then 8 seconds each time', () => {
