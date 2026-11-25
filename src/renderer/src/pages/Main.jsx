@@ -4918,7 +4918,7 @@ function Main() {
                       will once connected. */}
                   <div className="pane-bar" />
                   <div className="chat-switch-region" key="disconnected">
-                    <IdleAnimation connecting={connecting} />
+                    <IdleAnimation connecting={connecting} hasBookmarks={servers.length > 0} />
                   </div>
                 </>
               )}

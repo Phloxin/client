@@ -76,14 +76,14 @@ html[data-transparency='true'] .chat-area {
 
 .disconnected-title {
   margin: 0;
-  font-size: var(--font-size-lg);
+  font-size: calc(var(--font-size-lg) + 1px);
   font-weight: var(--font-weight-semibold);
   color: var(--color-text);
 }
 
 .disconnected-subtitle {
   margin: 0;
-  font-size: var(--font-size-sm);
+  font-size: calc(var(--font-size-sm) + 2px);
   color: var(--color-text-secondary);
 }
 

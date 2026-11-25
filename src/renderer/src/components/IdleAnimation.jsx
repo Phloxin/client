@@ -3,13 +3,15 @@ import { prefersReducedMotion } from '../lib/animation'
 import './IdleAnimation.css'
 
 // ASCII pylon tower broadcasting into the disconnected chat area. A lattice
-// tower stands above the caption and its tip sends out radio waves in bursts of
-// three rings that expand across the whole area and fade with distance. The
-// grid is sized to the container (measured cell × ResizeObserver); a hole is
-// carved around the caption and the tower's silhouette so waves never cross
-// either. The <pre> is updated imperatively so there's no per-tick React render.
+// tower stands on a "Pylon" wordmark above the caption and its tip sends out
+// radio waves in bursts of three rings that expand across the whole area and
+// fade with distance. The grid is sized to the container (measured cell ×
+// ResizeObserver); waves dim as they pass behind the caption (wordmark
+// included) and never cross the tower's silhouette. The <pre> is updated
+// imperatively so there's no per-tick React render.
 const TICK_MS = 70
-const GAP = 2 // empty cells kept around the caption
+const GAP = 2 // cells around the caption over which waves fade back in
+const HOLE_DIM = 0.6 // wave opacity factor behind the caption itself
 
 // Tower art: antenna + beacon on a zig-zag lattice mast that flares into a
 // braced base. The 'o' on row 0 is the emitter; every row is centered on it.
@@ -34,6 +36,17 @@ const TOWER = [
 ]
 const TOWER_MID = TOWER[0].indexOf('o')
 
+// Wordmark under the tower, rendered at the top of the caption in a smaller
+// font than the wave grid, so it sits inside the caption's dimmed patch.
+const LOGO = [
+  '██████╗ ██╗   ██╗██╗      ██████╗ ███╗   ██╗',
+  '██╔══██╗╚██╗ ██╔╝██║     ██╔═══██╗████╗  ██║',
+  '██████╔╝ ╚████╔╝ ██║     ██║   ██║██╔██╗ ██║',
+  '██╔═══╝   ╚██╔╝  ██║     ██║   ██║██║╚██╗██║',
+  '██║        ██║   ███████╗╚██████╔╝██║ ╚████║',
+  '╚═╝        ╚═╝   ╚══════╝ ╚═════╝ ╚═╝  ╚═══╝'
+].join('\n')
+
 const RINGS_PER_BURST = 3
 const RING_GAP_MS = 420 // between rings within a burst
 const BURST_PERIOD_MS = 3200 // between the first rings of consecutive bursts
@@ -52,7 +65,8 @@ function ringChar(dx, dy) {
 const lit = (ch, op) => `<span style="opacity:${op}">${ch}</span>`
 
 // Wave factory. Returns step(t) → innerHTML for the <pre>, t in ms since start.
-// `hole` is the caption's cell rect; the tower stands on top of it, centered.
+// `hole` is the caption's cell rect (wordmark included); the tower stands on
+// top of it, centered.
 function makeWaves(cols, rows, charW, lineH, hole) {
   const baseRow = hole.y0 - 1
   const topRow = baseRow - (TOWER.length - 1)
@@ -84,7 +98,19 @@ function makeWaves(cols, rows, charW, lineH, hole) {
   )
   const lifeMs = rMax / SPEED + RING_GAP_MS * RINGS_PER_BURST
 
-  const inHole = (x, y) => x >= hole.x0 && x < hole.x1 && y >= hole.y0 && y < hole.y1
+  // Wave opacity factor at a cell: HOLE_DIM behind the caption, ramping back
+  // to 1 across the GAP band so the dimmed patch has no hard edge.
+  const dim = (x, y) => {
+    if (x < hole.x0 || x >= hole.x1 || y < hole.y0 || y >= hole.y1) return 1
+    const out = Math.max(
+      hole.x0 + GAP - x,
+      x - (hole.x1 - 1 - GAP),
+      hole.y0 + GAP - y,
+      y - (hole.y1 - 1 - GAP),
+      0
+    )
+    return HOLE_DIM + ((1 - HOLE_DIM) * out) / (GAP + 1)
+  }
 
   // Radii of every ring alive at time t.
   function radii(t) {
@@ -118,7 +144,7 @@ function makeWaves(cols, rows, charW, lineH, hole) {
           else html += tc === ' ' ? ' ' : lit(tc, 0.85)
           continue
         }
-        if (rs.length === 0 || inHole(x, y)) {
+        if (rs.length === 0) {
           html += ' '
           continue
         }
@@ -128,7 +154,7 @@ function makeWaves(cols, rows, charW, lineH, hole) {
         // cell thick whether they cross columns (narrow) or rows (tall).
         const half = d > 0 ? (0.5 * (Math.abs(px) * charW + Math.abs(py) * lineH)) / d : charW
         const r = rs.find((r) => Math.abs(d - r) <= half)
-        const op = r === undefined ? 0 : Math.pow(1 - r / rMax, 1.3) * 0.9
+        const op = r === undefined ? 0 : Math.pow(1 - r / rMax, 1.3) * 0.9 * dim(x, y)
         html += op < 0.04 ? ' ' : lit(ringChar(px, py), op.toFixed(2))
       }
       if (y < rows - 1) html += '\n'
@@ -137,7 +163,7 @@ function makeWaves(cols, rows, charW, lineH, hole) {
   }
 }
 
-export default function IdleAnimation({ connecting = false }) {
+export default function IdleAnimation({ connecting = false, hasBookmarks = false }) {
   // Cycle 0..3 trailing dots while connecting for a simple "…" animation.
   const [dots, setDots] = useState(0)
   useEffect(() => {
@@ -208,6 +234,9 @@ export default function IdleAnimation({ connecting = false }) {
     <div className="idle-animation" ref={rootRef}>
       <pre className="idle-waves" aria-hidden="true" ref={preRef} />
       <div className="idle-caption" ref={capRef}>
+        <pre className="idle-logo" aria-hidden="true">
+          {LOGO}
+        </pre>
         {connecting ? (
           <>
             <p className="disconnected-title">Connecting{'.'.repeat(dots)}</p>
@@ -215,9 +244,11 @@ export default function IdleAnimation({ connecting = false }) {
           </>
         ) : (
           <>
-            <p className="disconnected-title">No Server Connected</p>
+            <p className="disconnected-title">No Server Currently Connected</p>
             <p className="disconnected-subtitle">
-              Pick a server from the <strong>Connect</strong> menu to get started.
+              {hasBookmarks
+                ? 'Pick a server from your bookmarks to connect.'
+                : 'Add a server to your bookmarks to connect.'}
             </p>
           </>
         )}
