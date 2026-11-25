@@ -511,13 +511,18 @@ function VideoGrid({
   // fullscreen). A ResizeObserver on the stage keeps it in sync without polling.
   // `theatre` is a dep because entering/leaving it portals the stage to a new
   // parent, which remounts the node — the observer must follow to the new one.
+  // Measured fractionally: clientWidth rounds, so a 2247.6px stage reads 2248,
+  // two width-bound tiles then need 0.4px more than there is, and the row
+  // wraps into an overflowing column.
   const gridShown = !focusedStream
   const gridTileCount = sortedStreams.length
   useEffect(() => {
     const el = stageRef.current
     if (!gridShown || !el) return
-    const recompute = () =>
-      setGridTileWidth(bestUniformTileWidth(el.clientWidth, el.clientHeight, gridTileCount))
+    const recompute = () => {
+      const { width, height } = el.getBoundingClientRect()
+      setGridTileWidth(bestUniformTileWidth(width, height, gridTileCount))
+    }
     recompute()
     const ro = new ResizeObserver(recompute)
     ro.observe(el)
