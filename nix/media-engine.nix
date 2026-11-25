@@ -53,6 +53,11 @@ rustPlatform.buildRustPackage {
 
   buildFeatures = [ "pylon-media-host/capture" ];
 
+  # nixpkgs 26.11's cargoSetupHook exports AWS_LC_SYS_USE_SYSTEM=1, which makes aws-lc-sys
+  # refuse to build the AWS-LC it vendors. Keep the vendored one, the build str0m's crypto
+  # is tested against. Older nixpkgs ignore the attribute.
+  dontCargoUseSystemLibs = true;
+
   nativeBuildInputs = [
     pkg-config
     rustPlatform.bindgenHook # libclang for ffmpeg-sys-next and the pipewire crates
