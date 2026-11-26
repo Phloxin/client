@@ -1,7 +1,7 @@
 // The YouTube embed the shell drives for a bundle with the `player` capability, spoken to over
 // the embed's own postMessage protocol: `listening` until it answers, then `command` messages. What comes back
-// (`initialDelivery`, `infoDelivery`, `onStateChange`, `onError`) is folded into the bridge's
-// `status` and `error`. Pure.
+// (`initialDelivery`, `infoDelivery`, `apiInfoDelivery`, `onStateChange`, `onError`) is folded
+// into the bridge's `status` and `error`. Pure.
 
 export const EMBED_ORIGIN = 'https://www.youtube-nocookie.com'
 
@@ -41,9 +41,10 @@ export function commandsFor(op) {
     case 'unload':
       return [commandMessage('stopVideo')]
     case 'volume':
+      // Volume 0 mutes too: YouTube's unMute at volume 0 brings the sound back.
       return [
         commandMessage('setVolume', [Math.round(op.volume)]),
-        commandMessage(op.muted ? 'mute' : 'unMute')
+        commandMessage(op.muted || Math.round(op.volume) === 0 ? 'mute' : 'unMute')
       ]
     case 'rate':
       return [commandMessage('setPlaybackRate', [op.rate / 100])]
@@ -91,12 +92,21 @@ export function nextPlayer(player, event) {
   switch (event.type) {
     case 'load':
     case 'unload': {
-      return { ...withoutError(player), loaded: event.type === 'load', fresh: false }
+      // A new video's subtitle tracks are not known until the embed says.
+      const next = { ...withoutError(player), loaded: event.type === 'load', fresh: false }
+      delete next.captions
+      return next
     }
     case 'embed': {
       const { event: name, info } = event.message
       if (name === 'onReady') return { ...player, ready: true }
       if (name === 'onError') return { ...player, error: Number(info) }
+      if (name === 'apiInfoDelivery') {
+        const captions = info?.captions
+        if (!captions || typeof captions !== 'object') return player
+        const tracklist = Array.isArray(captions.tracklist) ? captions.tracklist : []
+        return { ...player, captions: { track: captions.track, tracklist } }
+      }
       if (name === 'onStateChange' || name === 'infoDelivery' || name === 'initialDelivery') {
         const merged =
           name === 'onStateChange'
@@ -129,6 +139,42 @@ export function statusOf(player) {
     rate
   }
 }
+
+const isLanguage = (v) => typeof v === 'string' && v !== ''
+const baseOf = (code) => code.split('-')[0].toLowerCase()
+
+// The languageCode of the subtitle track to turn on, or null: one in the viewer's language (made
+// by a person before auto-generated), then the one the embed has on, then one made by a person,
+// then any, then the viewer's language itself. The embed lists no auto-generated track, but
+// turns one on when asked for its language.
+export function pickTrack(tracklist, current, uiLang) {
+  const tracks = (Array.isArray(tracklist) ? tracklist : []).filter((t) =>
+    isLanguage(t?.languageCode)
+  )
+  const asr = (t) => t.kind === 'asr'
+  const mine = isLanguage(uiLang)
+    ? tracks.filter((t) => baseOf(t.languageCode) === baseOf(uiLang))
+    : []
+  const found =
+    mine.find((t) => !asr(t)) ??
+    mine.find(asr) ??
+    (isLanguage(current?.languageCode) ? current : null) ??
+    tracks.find((t) => !asr(t)) ??
+    tracks[0]
+  if (found) return found.languageCode
+  return (isLanguage(uiLang) && baseOf(uiLang)) || null
+}
+
+// The embed commands that turn subtitles on or off; none to turn them on when there is no
+// language to ask for.
+export function captionCommands(player, on, uiLang) {
+  if (!on) return [commandMessage('setOption', ['captions', 'track', {}])]
+  const languageCode = pickTrack(player.captions?.tracklist, player.captions?.track, uiLang)
+  return languageCode ? [commandMessage('setOption', ['captions', 'track', { languageCode }])] : []
+}
+
+// Whether the embed shows subtitles, as it last said.
+export const captionsShowing = (player) => isLanguage(player.captions?.track?.languageCode)
 
 // The oEmbed request for a video, and what its answer means.
 export const oembedUrl = (videoId) =>

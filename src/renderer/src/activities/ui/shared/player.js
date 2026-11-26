@@ -24,7 +24,7 @@
     if (m.type !== 'player') return
     switch (m.event) {
       case 'ready':
-        handlers.ready({ volume: m.volume, muted: !!m.muted })
+        handlers.ready({ volume: m.volume, muted: !!m.muted, captions: !!m.captions })
         break
       case 'status':
         handlers.status({
@@ -80,6 +80,8 @@
       op({ op: 'volume', volume: Math.min(100, Math.max(0, Math.round(volume))), muted: !!muted }),
     // The speed as the server's percentage.
     setRate: (rate) => op({ op: 'rate', rate }),
+    // Subtitles on or off, for this viewer only.
+    setCaptions: (on) => op({ op: 'captions', on: !!on }),
     // Resolves with { title, playable }.
     describe(videoId) {
       const id = nextId

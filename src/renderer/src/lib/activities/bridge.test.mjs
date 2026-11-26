@@ -176,6 +176,9 @@ test('player ops are read as the player protocol gives them', () => {
   for (const rate of [25, 50, 75, 100, 125, 150, 175, 200]) {
     assert.deepEqual(read({ op: 'rate', rate }), { type: 'player', op: 'rate', rate })
   }
+  for (const on of [true, false]) {
+    assert.deepEqual(read({ op: 'captions', on }), { type: 'player', op: 'captions', on })
+  }
   assert.deepEqual(read({ op: 'describe', id: 4294967295, videoId: 'M7lc1UVf-VE' }), {
     type: 'player',
     op: 'describe',
@@ -213,6 +216,9 @@ test('a malformed player op is dropped with a reason', () => {
     { op: 'rate', rate: 110 },
     { op: 'rate', rate: '100' },
     { op: 'rate', rate: 1.5 },
+    { op: 'captions' },
+    { op: 'captions', on: 'true' },
+    { op: 'captions', on: 1 },
     { op: 'describe', id: -1, videoId: 'M7lc1UVf-VE' },
     { op: 'describe', id: 1.5, videoId: 'M7lc1UVf-VE' },
     { op: 'describe', id: 2 ** 32, videoId: 'M7lc1UVf-VE' },

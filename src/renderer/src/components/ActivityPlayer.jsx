@@ -3,6 +3,8 @@ import { useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } fro
 import {
   EMBED_ORIGIN,
   SUBSCRIBE,
+  captionCommands,
+  captionsShowing,
   commandsFor,
   describedFrom,
   embedUrl,
@@ -17,6 +19,8 @@ import './ActivityPlayer.css'
 
 // The viewer's own volume and mute, for every player.
 const VOLUME_KEY = 'activities.player.volume'
+// The viewer's own subtitles choice, for every player.
+const CAPTIONS_KEY = 'activities.player.captions'
 const DESCRIBE_TIMEOUT_MS = 5000
 // At most this often while only the position moves.
 const STATUS_GAP_MS = 250
@@ -42,6 +46,23 @@ function saveVolume(value) {
   }
 }
 
+// Off unless the viewer turned them on.
+function readCaptions() {
+  try {
+    return JSON.parse(localStorage.getItem(CAPTIONS_KEY))?.on === true
+  } catch {
+    return false
+  }
+}
+
+function saveCaptions(on) {
+  try {
+    localStorage.setItem(CAPTIONS_KEY, JSON.stringify({ on }))
+  } catch {
+    // Not kept; it still applies to this player.
+  }
+}
+
 // Looks a video up through oEmbed for its title and whether it can be embedded.
 async function describe(videoId) {
   try {
@@ -56,9 +77,9 @@ async function describe(videoId) {
 }
 
 // The surface's workings, outside React: the embed's state, the commands waiting for it to be
-// ready, the viewer's volume, and the `status` throttle. The component connects its view:
-// frame() for the embed's window, mount(videoId) for a new embed element, place(rect) and
-// emit(event).
+// ready, the viewer's volume and subtitles, and the `status` throttle. The component connects
+// its view: frame() for the embed's window, mount(videoId) for a new embed element, place(rect)
+// and emit(event).
 function createSurface() {
   let view = {
     frame: () => null,
@@ -74,6 +95,7 @@ function createSurface() {
   let loadedVideo = null
   let waiting = []
   let volume = readVolume()
+  let captions = readCaptions()
   const sent = { key: null, at: 0, timer: null }
 
   const send = (messages) => {
@@ -84,6 +106,7 @@ function createSurface() {
     for (const m of messages) view.frame()?.postMessage(m, EMBED_ORIGIN)
   }
   const volumeCommands = () => commandsFor({ op: 'volume', ...volume })
+  const showCaptions = () => send(captionCommands(player, captions, navigator.language))
   // Playing with sound, for the tab's speaker; told when it changes.
   const tellAudible = () => {
     const now = statusOf(player).state === 'playing' && !volume.muted && volume.volume > 0
@@ -119,6 +142,15 @@ function createSurface() {
     if (player.error != null && player.error !== before.error) {
       view.emit({ event: 'error', code: player.error })
     }
+    // The embed can turn subtitles on with each video it loads; the viewer's choice stands.
+    if (
+      event.type === 'embed' &&
+      event.message.event === 'apiInfoDelivery' &&
+      player.loaded &&
+      captionsShowing(player) !== captions
+    ) {
+      showCaptions()
+    }
     emitStatus()
   }
 
@@ -145,6 +177,11 @@ function createSurface() {
           saveVolume(volume)
           send(commandsFor(op))
           return
+        case 'captions':
+          captions = op.on
+          saveCaptions(captions)
+          if (player.loaded) showCaptions()
+          return
         case 'load': {
           // A load of the video already loaded is a reload, and gets a new embed
           // element; the command waits for that embed to be ready.
@@ -167,7 +204,7 @@ function createSurface() {
           if (player.loaded) send(commandsFor(op))
       }
     },
-    readyEvent: () => ({ event: 'ready', ...volume }),
+    readyEvent: () => ({ event: 'ready', ...volume, captions }),
     // A new bundle instance starts from an empty screen.
     reset() {
       view.place(null)

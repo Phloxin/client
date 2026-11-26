@@ -94,6 +94,9 @@ function readPlayerOp(data) {
     case 'rate':
       if (!RATES.has(data.rate)) return drop('player rate is not one of the eight')
       return player({ rate: data.rate })
+    case 'captions':
+      if (typeof data.on !== 'boolean') return drop('player captions on is not a boolean')
+      return player({ on: data.on })
     case 'describe':
       if (!isId(data.id)) return drop('player describe id is not an integer from 0 to 2^32 - 1')
       if (!isVideoId(data.videoId)) return drop('player describe videoId is not a video id')
