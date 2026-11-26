@@ -20,6 +20,7 @@
     "build:e2ee": "node scripts/build-e2ee.mjs",
     "build:media-engine": "cargo build --release --manifest-path native/media-engine/Cargo.toml",
     "build:media-engine:win": "powershell -NoProfile -ExecutionPolicy Bypass -File native/media-engine/windows/stage-sidecar.ps1",
+    "build:media-engine:linux": "bash native/media-engine/linux/stage-sidecar.sh",
     "postinstall": "node scripts/postinstall.cjs",
     "build:unpack": "npm run build && electron-builder --dir",
     "build:win": "npm run build && electron-builder --win",

@@ -33,7 +33,8 @@ jobs:
         include:
           - os: ubuntu-latest
             script: build:linux
-            timeout: 30
+            # 45: the media engine's FFmpeg and sidecar when their caches miss.
+            timeout: 45
           # 60: the media engine's FFmpeg (about 20 minutes when its cache misses) and sidecar.
           - os: windows-latest
             script: build:win
@@ -170,6 +171,51 @@ jobs:
           LIBCLANG_PATH: C:\Program Files\LLVM\bin
         run: npm run build:media-engine:win
 
+      # The media engine's sidecar for the AppImage and deb, the Linux twin of the Windows steps
+      # above: our lean LGPL FFmpeg from native/media-engine/linux/ffmpeg-build.sh, cached on the
+      # recipe, its patch and the runner's distribution (the libraries link the runner's libva,
+      # libdrm and glibc), then the sidecar built against it and staged with its libraries ($ORIGIN
+      # run path) and licence texts into native/media-engine/dist. libva, libdrm, PipeWire and
+      # libEGL are the user's system's. The package lists are refreshed by the X11 step above.
+      - name: Install the media engine's build dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            nasm pkg-config patchelf libva-dev libdrm-dev libegl-dev libclang-dev
+
+      - name: Read the runner's distribution (Linux)
+        id: os-release
+        if: runner.os == 'Linux'
+        run: echo "id=$(. /etc/os-release && echo "${ID}-${VERSION_ID}")" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the media engine's FFmpeg (Linux)
+        id: ffmpeg-cache-linux
+        if: runner.os == 'Linux'
+        uses: actions/cache/restore@v5
+        with:
+          path: native/media-engine/ffmpeg-linux
+          key: ffmpeg-linux-${{ steps.os-release.outputs.id }}-${{ hashFiles('native/media-engine/linux/ffmpeg-build.sh', 'native/media-engine/ffmpeg-vaapi-rate-change.patch') }}
+
+      - name: Build the media engine's FFmpeg (Linux, FFmpeg not cached)
+        if: runner.os == 'Linux' && steps.ffmpeg-cache-linux.outputs.cache-hit != 'true'
+        run: |
+          bash native/media-engine/linux/ffmpeg-build.sh \
+            "$RUNNER_TEMP/ffbuild" "$GITHUB_WORKSPACE/native/media-engine/ffmpeg-linux"
+
+      # Saved at once, so a later failure in the job does not lose the build.
+      - name: Save the media engine's FFmpeg (Linux, FFmpeg not cached)
+        if: runner.os == 'Linux' && steps.ffmpeg-cache-linux.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: native/media-engine/ffmpeg-linux
+          key: ${{ steps.ffmpeg-cache-linux.outputs.cache-primary-key }}
+
+      - name: Build and stage the media engine's sidecar (Linux)
+        if: runner.os == 'Linux'
+        env:
+          FFMPEG_DIR: ${{ github.workspace }}/native/media-engine/ffmpeg-linux
+        run: npm run build:media-engine:linux
+
       - name: Build + Package
         run: npm run ${{ matrix.script }} -- --publish=never
 
@@ -188,6 +234,45 @@ jobs:
           $hello = @($answer) | Where-Object { $_ -like '{"hello"*' } | Select-Object -First 1
           if (-not $hello) { throw "the packaged sidecar did not answer hello (exit $LASTEXITCODE): $answer" }
           "hello: $hello"
+
+      # The unpacked app, the AppImage and the deb each hold the sidecar, its libraries are taken
+      # from its own folder ($ORIGIN) and nothing is missing, and it answers hello. The snap's
+      # listing is printed for the record.
+      - name: Check the packaged sidecar (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          check() {
+            local dir exe links answer
+            dir=$(realpath "$1"); exe=$dir/pylon-media-host
+            echo "== $2: $dir"
+            test -x "$exe" || { echo "::error::no sidecar in the $2 ($exe)"; exit 1; }
+            find "$dir" -type f -printf '  %P  %s\n' | sort
+            links=$(env -u LD_LIBRARY_PATH ldd "$exe")
+            echo "$links"
+            if grep -q 'not found' <<<"$links"; then echo "::error::the $2's sidecar is missing a library"; exit 1; fi
+            for lib in libavcodec libavfilter libavutil; do
+              grep -q -E "^\s*$lib\.so\.[0-9]+ => $dir/" <<<"$links" || { echo "::error::the $2's $lib is not its own"; exit 1; }
+            done
+            answer=$(printf '{"hello":{"protocol":1}}\n' | env -u LD_LIBRARY_PATH "$exe" 2>/dev/null | grep -m1 '^{"hello"' || true)
+            test -n "$answer" || { echo "::error::the $2's sidecar did not answer hello"; exit 1; }
+            echo "hello: $answer"
+          }
+          check dist/linux-unpacked/resources/media-engine 'unpacked app'
+          appimage=$(realpath dist/*.AppImage)
+          (cd "$RUNNER_TEMP" && "$appimage" --appimage-extract >/dev/null)
+          check "$RUNNER_TEMP/squashfs-root/resources/media-engine" AppImage
+          mkdir -p "$RUNNER_TEMP/deb"
+          dpkg-deb -x dist/*.deb "$RUNNER_TEMP/deb"
+          check "$RUNNER_TEMP/deb/opt/Pylon/resources/media-engine" deb
+          echo "== snap"
+          if ! command -v unsquashfs >/dev/null; then
+            echo "unsquashfs is not on the runner: the snap is not listed"
+          elif unsquashfs -l dist/*.snap | grep '/resources/media-engine'; then
+            echo "the snap holds the sidecar"
+          else
+            echo "the snap holds no sidecar"
+          fi
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7

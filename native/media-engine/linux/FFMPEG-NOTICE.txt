@@ -1,0 +1,17 @@
+FFmpeg in Pylon's media engine (Linux)
+
+The libraries in this folder (libavcodec, libavfilter, libavutil) are FFmpeg 9.0.2, licensed
+under the GNU Lesser General Public License version 2.1 or later (COPYING.LGPLv2.1 in licenses/).
+They were built without --enable-gpl and without --enable-nonfree. pylon-media-host links them
+dynamically and loads them from this folder (its run path is $ORIGIN); they may be replaced by a
+compatible build.
+
+The build carries one patch, ffmpeg-vaapi-rate-change.patch (a changed bit rate, rate control
+buffer or frame rate reaches an open VA-API encoder, and a `filler` option). The source is the
+release tarball https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz
+(SHA-256 8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e) with that patch
+applied. The patch, and the recipe that configures and builds it (linux/ffmpeg-build.sh), are in
+the Pylon client's repository under native/media-engine/: https://github.com/Phloxin/client
+
+Nothing else is linked into the libraries. libva, libdrm and the C library they use are the
+system's own.
