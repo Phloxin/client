@@ -120,7 +120,7 @@ import {
   nextVoiceRebuildKind,
   selfChannelChime
 } from '../lib/voiceRecoveryState'
-import { EVERYONE_ROLE_ID, permBit, viewChannelOverride } from '../lib/permissions'
+import { EVERYONE_ROLE_ID, permBit, toBits, viewChannelOverride } from '../lib/permissions'
 import { formatResetCode, parseInviteInput } from '../lib/invite'
 import {
   activePane,
@@ -502,7 +502,9 @@ function Main() {
   // on Streams when it does.
   const streamsFocusPendingRef = useRef(false)
   const [servers, setServers] = useState([])
+  // The server's roles minus @everyone, whose permissions every member holds.
   const [roles, setRoles] = useState([])
+  const [everyonePermissions, setEveryonePermissions] = useState(0n)
   // Vanity items (cosmetic server groups: name + icon, no permissions).
   const [vanity, setVanity] = useState([])
   // Activities: what a room can be opened for (GET /activities), the open rooms
@@ -517,14 +519,14 @@ function Main() {
   const [speakerRooms, setSpeakerRooms] = useState(() => new Set())
 
   // Our effective permissions: the OR of every role we hold (explicit role_ids
-  // plus the implicit 'everyone' role). ADMINISTRATOR implies all. Computed from
-  // the live roster entry so it tracks role changes via ClientModified.
+  // plus the implicit @everyone). ADMINISTRATOR implies all. Computed from the
+  // live roster entry so it tracks role changes via ClientModified.
   const myPermissions = useMemo(() => {
     const self = clients.find((c) => c.id === client?.id)
     const myRoleIds = new Set(self?.role_ids || client?.role_ids || [])
-    let bits = 0n
+    let bits = everyonePermissions
     for (const r of roles) {
-      if (String(r.id) === EVERYONE_ROLE_ID || myRoleIds.has(r.id)) {
+      if (myRoleIds.has(r.id)) {
         try {
           bits |= BigInt(r.permissions ?? 0)
         } catch {
@@ -533,7 +535,7 @@ function Main() {
       }
     }
     return bits
-  }, [roles, clients, client])
+  }, [roles, everyonePermissions, clients, client])
 
   const isAdmin = (myPermissions & PERM_ADMINISTRATOR) !== 0n
 
@@ -1863,14 +1865,22 @@ function Main() {
 
   // Load the server's role list once per connection. It feeds both the Assign
   // Role menu and our own permission computation (which gates kick/ban below).
+  // The list includes @everyone, which every member holds: its permissions are
+  // kept apart so no role menu, filter or picker lists it.
   useEffect(() => {
     if (!token) {
       setRoles([])
+      setEveryonePermissions(0n)
       return
     }
     authFetch(`${apiBase()}/roles`)
       .then((res) => res.json())
-      .then((data) => setRoles(Array.isArray(data) ? data : []))
+      .then((data) => {
+        const list = Array.isArray(data) ? data : []
+        const everyone = list.find((r) => String(r.id) === EVERYONE_ROLE_ID)
+        setEveryonePermissions(toBits(everyone?.permissions))
+        setRoles(list.filter((r) => r !== everyone))
+      })
       .catch((err) => console.error('Failed to load roles:', err))
   }, [token])
 

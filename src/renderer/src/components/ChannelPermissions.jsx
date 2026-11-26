@@ -89,16 +89,14 @@ function ChannelPermissions({ channel, roles = [], clients = [], canManage, onSe
   }
 
   // Targets that don't yet have an overwrite, for the "Add override" picker.
-  // @everyone is listed first and synthesised rather than taken from `roles` —
-  // it's the server's implicit default role, so it may not come back from
-  // /roles at all, and it's the one you deny to gate a channel.
+  // @everyone is listed first, and added here because Main keeps it out of
+  // `roles` (it is the implicit role every member holds). It is the one you
+  // deny to gate a channel.
   const addable = useMemo(() => {
     const taken = new Set(overwrites.map((o) => `${o.type}:${o.id}`))
     const roleOpts = [
       { id: EVERYONE_ROLE_ID, type: 'role', name: '@everyone' },
-      ...roles
-        .filter((r) => String(r.id) !== EVERYONE_ROLE_ID)
-        .map((r) => ({ id: String(r.id), type: 'role', name: r.name }))
+      ...roles.map((r) => ({ id: String(r.id), type: 'role', name: r.name }))
     ]
     const userOpts = clients.map((c) => ({ id: String(c.id), type: 'user', name: c.name }))
     return [...roleOpts, ...userOpts].filter((t) => !taken.has(`${t.type}:${t.id}`))

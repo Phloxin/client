@@ -69,9 +69,8 @@ export const toBits = (decimal) => {
 // base role permissions decide.
 //
 // ponytail: deliberately ignores base role permissions, so this can only ever
-// answer "explicitly denied" — the client can't compute a trustworthy base (the
-// implicit @everyone role isn't in /roles), and guessing wrong there
-// would hide channels the server actually grants. The server stays authoritative.
+// answer "explicitly denied". Guessing the base wrong would hide channels the
+// server actually grants. The server stays authoritative.
 export function viewChannelOverride(overwrites = [], { roleIds = [], userId } = {}) {
   const says = (overwrite, field) => (toBits(overwrite[field]) & VIEW_CHANNEL_BIT) !== 0n
   // deny first, then allow, so an overwrite setting both resolves to allow.
