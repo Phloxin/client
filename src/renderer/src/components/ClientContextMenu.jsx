@@ -216,12 +216,9 @@ function ClientContextMenu({ client, pos, onClose, opts, caps }) {
     fileToAvatarDataUrl(file, opts.onSetAvatar)
   }
 
-  // 'everyone' is implicit (every client has it) and 'owner' isn't hand-assigned,
-  // so neither is an assignable option in the role picker.
-  const assignableRoles = roles.filter((r) => {
-    const name = r.name?.toLowerCase() ?? ''
-    return name !== 'everyone' && !name.includes('owner')
-  })
+  // 'owner' isn't hand-assigned, so it isn't an option in the role picker.
+  // (@everyone never reaches `roles`: Main keeps it apart.)
+  const assignableRoles = roles.filter((r) => !(r.name?.toLowerCase() ?? '').includes('owner'))
 
   const gagged = !!client.server_mute
 
