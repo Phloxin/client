@@ -147,7 +147,7 @@ function ChannelPermissions({ channel, roles = [], clients = [], canManage, onSe
                         type="button"
                         title="Remove"
                         className="danger"
-                        onClick={() => onDelete?.(channel.id, o.id)}
+                        onClick={() => onDelete?.(channel.id, o.id, o.type)}
                       >
                         <IconTrash size={15} />
                       </button>

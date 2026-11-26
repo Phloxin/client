@@ -2421,12 +2421,16 @@ function Main() {
     }
   }
 
-  const handleDeleteChannelOverwrite = async (channelId, targetId) => {
+  // The server needs `?type=role|user` to resolve the target id (a bare id is
+  // ambiguous); without it the Query extractor rejects the request with a 400.
+  const handleDeleteChannelOverwrite = async (channelId, targetId, targetType) => {
     markSelfChannelAction()
     try {
-      const res = await authFetch(`${apiBase()}/channels/${channelId}/permissions/${targetId}`, {
-        method: 'DELETE'
-      })
+      const query = new URLSearchParams({ type: targetType })
+      const res = await authFetch(
+        `${apiBase()}/channels/${channelId}/permissions/${targetId}?${query}`,
+        { method: 'DELETE' }
+      )
       await throwIfError(res)
       playUiSound('channel_edited')
       showSuccess('Channel permission removed', 'channel_edited')
