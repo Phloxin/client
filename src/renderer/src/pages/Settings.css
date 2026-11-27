@@ -765,7 +765,9 @@
   bottom: 0;
   background: linear-gradient(90deg, var(--color-success), var(--color-primary));
   border-radius: 5px;
-  transition: width 0.06s linear;
+  /* No transition here. The width is rewritten every animation frame and the level is
+     already smoothed in createSpeechLevelReader (lib/soup/localAudio.js). A transition
+     retargeted every frame can be held at zero progress, which left the bar empty. */
 }
 
 /* Transparent range input laid over the track; only its thumb is visible and it

@@ -10,6 +10,7 @@ import {
   createSpeakingActivity,
   DEFAULT_VOLUME_GATE_THRESHOLD
 } from '../levelActivity'
+import { createRnnoiseNodePool } from './rnnoiseNodePool'
 
 export { createLevelGateController } from '../levelActivity'
 
@@ -85,8 +86,8 @@ function getRnnoiseBinary() {
 // RNNoise worklet module is fetched/compiled once, not on every publish or
 // settings Apply (which used to rebuild the context and re-addModule each
 // time). Suspended on media reset rather than closed, so the compiled module
-// survives for the next publish. RNNoise is trained on 48 kHz audio, so the
-// rate is pinned.
+// and the pooled RNNoise nodes (micRnnoisePool) survive for the next publish.
+// RNNoise is trained on 48 kHz audio, so the rate is pinned.
 let micContext = null
 // Set when the context reports that its output device failed (it renders to
 // the default output even though nothing here is audible). Such a context
@@ -115,6 +116,12 @@ async function createRnnoiseProcessor(audioContext) {
   const [binary] = await Promise.all([getRnnoiseBinary(), ensureRnnoiseWorklet(audioContext)])
   return new RnnoiseWorkletNode(audioContext, { maxChannels: 1, wasmBinary: binary })
 }
+
+// The mic chain's RNNoise nodes, reused across rebuilds in the same context. A
+// node's destroy() never reaches its processor, so a retired node would keep its
+// WASM instance until the context closes, and the renderer runs out of WASM
+// memory after about 124 of them. A stopped chain hands its node back instead.
+const micRnnoisePool = createRnnoiseNodePool(createRnnoiseProcessor)
 
 // Fires when the live mic context failed, so the caller can move the chain
 // onto a new one. Returns an unsubscribe.
@@ -201,50 +208,23 @@ export async function buildAudioProcessor(stream, micSettings, hooks = {}) {
 
   if (needsRnnoise) {
     try {
-      rnnoiseNode = await createRnnoiseProcessor(audioContext)
+      rnnoiseNode = await micRnnoisePool.acquire(audioContext)
       node.connect(rnnoiseNode)
       node = rnnoiseNode
       console.log('[Soup] RNNoise denoiser applied')
     } catch (err) {
+      // A node acquired but not wired in goes back to the pool.
+      if (rnnoiseNode) micRnnoisePool.release(audioContext, rnnoiseNode)
+      rnnoiseNode = null
       // Fall through to the mono fold and whatever processing remains.
       console.error('[Soup] RNNoise init failed, skipping:', err)
     }
   }
 
-  if (needsGate) {
-    const reader = createSpeechLevelReader(audioContext)
-    const gate = audioContext.createGain()
-    gateController = createLevelGateController(audioContext, gate, reader.read, {
-      threshold: micSettings.volumeGateThreshold,
-      onOpenChange: hooks.onGateOpenChange
-    })
-    chainNodes.push(...reader.nodes, gate)
-    // Analysis is a sidechain so the speech-band filters never color outgoing
-    // audio. The untouched denoised signal passes through the controlled gain.
-    node.connect(reader.input)
-    node.connect(gate)
-    node = gate
-
-    // 25Hz via the shared ticker, not rAF: level detection needs far less than
-    // display rate, and rAF is throttled/paused when the window is hidden — which
-    // would stall the gate and stick outgoing audio gated/ungated while minimized.
-    // The threshold is read per tick from module state rather than captured, so
-    // dragging the slider moves the gate live instead of needing a republish.
-    stopGateTicker = registerAudioTickerCallback(() => gateController.update(liveGateThreshold))
-    console.log('[Soup] Volume gate applied, threshold:', micSettings.volumeGateThreshold)
-  }
-
-  node.connect(destination)
-
   const stop = () => {
     stopGateTicker?.()
     stopGateTicker = null
     gateController?.release()
-    try {
-      rnnoiseNode?.destroy()
-    } catch {
-      // The worklet may already have torn itself down.
-    }
     for (const chainNode of chainNodes) {
       try {
         chainNode.disconnect()
@@ -252,8 +232,47 @@ export async function buildAudioProcessor(stream, micSettings, hooks = {}) {
         // A partially built or already-stopped chain is safe to ignore.
       }
     }
+    // Never destroy() a pooled node: hand it back for the next chain in this
+    // context. Cleared so a second stop() can't release a node another chain
+    // has taken since.
+    if (rnnoiseNode) micRnnoisePool.release(audioContext, rnnoiseNode)
+    rnnoiseNode = null
     // The shared context stays open (suspended on media reset) so the
-    // compiled worklet module is reused by the next publish.
+    // compiled worklet module and the pooled RNNoise nodes are reused by the
+    // next publish.
+  }
+
+  try {
+    if (needsGate) {
+      const reader = createSpeechLevelReader(audioContext)
+      const gate = audioContext.createGain()
+      gateController = createLevelGateController(audioContext, gate, reader.read, {
+        threshold: micSettings.volumeGateThreshold,
+        onOpenChange: hooks.onGateOpenChange
+      })
+      chainNodes.push(...reader.nodes, gate)
+      // Analysis is a sidechain so the speech-band filters never color outgoing
+      // audio. The untouched denoised signal passes through the controlled gain.
+      node.connect(reader.input)
+      node.connect(gate)
+      node = gate
+
+      // 25Hz via the shared ticker, not rAF: level detection needs far less than
+      // display rate, and rAF is throttled/paused when the window is hidden — which
+      // would stall the gate and stick outgoing audio gated/ungated while minimized.
+      // The threshold is read per tick from module state rather than captured, so
+      // dragging the slider moves the gate live instead of needing a republish.
+      stopGateTicker = registerAudioTickerCallback(() => gateController.update(liveGateThreshold))
+      console.log('[Soup] Volume gate applied, threshold:', micSettings.volumeGateThreshold)
+    }
+
+    node.connect(destination)
+  } catch (err) {
+    // Tear the half-built chain down like a finished one. Its source must be
+    // detached before the pooled node goes back, or the next chain to take
+    // that node would also hear this chain's capture.
+    stop()
+    throw err
   }
 
   // `tap` is the last graph node before the destination — everything that decides
