@@ -509,7 +509,7 @@
   box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.55);
 }
 
-/* ── Focused stream's name, codec badge, viewer count ────────────────────── */
+/* ── Focused stream's name, debug overlay, viewer count ──────────────────── */
 
 .focus-label {
   position: absolute;
@@ -541,32 +541,70 @@
   opacity: 1;
 }
 
-/* Codec badge, top-left of the focused frame. */
-.focus-codec-badge {
+/* Debug Information (the stream menu's toggle), top-left of each main-area
+   tile. Stays up whatever the chrome does: it is there to be read while
+   watching. Over the video, so white on a dark scrim in every theme. */
+.stream-debug-overlay {
   position: absolute;
   top: 12px;
   left: 12px;
-  padding: 3px 8px;
+  z-index: 2;
+  max-width: calc(100% - 24px);
+  padding: 6px 9px;
   border-radius: 6px;
-  font-size: 0.72rem;
-  font-weight: 600;
-  letter-spacing: 0.04em;
+  display: grid;
+  grid-template-columns: auto auto;
+  column-gap: 10px;
+  row-gap: 1px;
+  font-family: ui-monospace, 'SF Mono', 'Cascadia Mono', 'DejaVu Sans Mono', monospace;
+  font-size: 0.7rem;
+  line-height: 1.35;
   color: #fff;
-  background: rgba(0, 0, 0, 0.55);
+  background: rgba(0, 0, 0, 0.62);
   backdrop-filter: blur(4px);
   pointer-events: none;
-  display: flex;
-  gap: 6px;
-  align-items: center;
+  font-variant-numeric: tabular-nums;
 }
 
-/* HW = green (accelerated, good), SW = amber (software fallback — the case worth
-   spotting, e.g. software AV1 on a GPU without AV1 encode). Only shown on the
-   sharer's own tile. */
-.focus-codec-badge .enc-hw {
+/* Each line's label and value sit in the overlay's two columns. */
+.stream-debug-line {
+  display: contents;
+}
+
+.stream-debug-label {
+  color: rgba(255, 255, 255, 0.62);
+  white-space: nowrap;
+}
+
+.stream-debug-value {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Worth a look: software coding, a limited encoder, drops, loss. */
+.stream-debug-value.warn {
+  color: #fbbf24;
+}
+
+/* The codec line's HW / SW: green accelerated, amber software (the case worth
+   spotting, e.g. software AV1 on a GPU without AV1 encode or decode). */
+.stream-debug-chip {
+  padding: 0 4px;
+  border-radius: 3px;
+  font-weight: 700;
+  font-size: 0.62rem;
+  letter-spacing: 0.04em;
+  background: rgba(255, 255, 255, 0.12);
+}
+.stream-debug-chip.good {
   color: #4ade80;
 }
-.focus-codec-badge .enc-sw {
+.stream-debug-chip.warn {
   color: #fbbf24;
 }
 

@@ -1,6 +1,8 @@
 import { useState, useRef, useEffect } from 'react'
 import {
   IconAdjustmentsHorizontal,
+  IconBug,
+  IconCheck,
   IconChevronRight,
   IconDeviceDesktop,
   IconExternalLink,
@@ -54,6 +56,9 @@ function StreamContextMenu({
   onPopout,
   theatre,
   onToggleTheatre,
+  // The Debug Information overlay (every main-area tile at once), and its toggle.
+  debugInfo,
+  onToggleDebugInfo,
   isFullscreen,
   onToggleFullscreen
 }) {
@@ -349,6 +354,22 @@ function StreamContextMenu({
         {isFullscreen ? <IconMinimize size={16} /> : <IconMaximize size={16} />}
         {isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
       </button>
+      {onToggleDebugInfo && (
+        <>
+          <div className="client-context-menu-divider" aria-hidden="true" />
+          <button
+            type="button"
+            className="client-context-menu-item"
+            role="menuitemcheckbox"
+            aria-checked={!!debugInfo}
+            onClick={act(onToggleDebugInfo)}
+          >
+            <IconBug size={16} />
+            Debug Information
+            {debugInfo && <IconCheck size={16} className="client-context-menu-trailing" />}
+          </button>
+        </>
+      )}
     </div>
   )
 }

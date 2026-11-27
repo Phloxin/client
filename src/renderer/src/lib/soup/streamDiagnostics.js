@@ -1,6 +1,7 @@
 import {
   codecLabel,
   computeOutboundVideoSample,
+  extractNativeSendMetrics,
   extractRecvAudioMetrics,
   extractRecvVideoMetrics,
   extractSendAudioMetrics,
@@ -87,7 +88,34 @@ export function startStreamDebugStats(onSample, intervalMs = 1000) {
       // the share contexts / remoteConsumers churn constantly, so a captured reference
       // would go stale. Referencing the module bindings each tick always sees the
       // current media state (a mid-tick resetMediaState just yields fewer streams).
+      // A native screen share has no RTCRtpSender: its numbers are the engine's
+      // latest statistics, read synchronously off the producer.
+      const pushNativeSend = (producer, producedType) => {
+        const key = `send:${producer.id}`
+        seenKeys.add(key)
+        const { metrics, snapshot } = extractNativeSendMetrics(
+          producer.debugStats,
+          prevByKey.get(key)
+        )
+        if (snapshot) prevByKey.set(key, snapshot)
+        jobs.push(
+          Promise.resolve({
+            key,
+            direction: 'send',
+            kind: 'video',
+            producedType,
+            producerId: producer.id,
+            codec: codecLabel(producer.rtpParameters),
+            metrics
+          })
+        )
+      }
+
       const pushSend = (producer, kind, producedType) => {
+        if (producer.native) {
+          pushNativeSend(producer, producedType)
+          return
+        }
         const sender = producer.rtpSender
         // Mirror startEncoderStatsLog's guard: no sender/getStats → omit the stream.
         if (!sender?.getStats) return

@@ -60,6 +60,7 @@ import {
   setStreamAudioState,
   setVideoStreamRoles,
   setWatchedProducers,
+  startStreamDebugStats,
   subscribeLiveStreams,
   subscribeStreamAudio,
   subscribeStreamViewers,
@@ -1281,6 +1282,9 @@ function Main() {
       select: (tileId) => setSelectedTileId(tileId),
       setStreamWatched: (tileId, watched) => handleSetStreamWatched(tileId, watched),
       shareControl,
+      // The popout's Debug Information overlay: the stats are this window's
+      // producers and consumers, so the poll runs here and calls back there.
+      startStreamDebugStats,
       // Per-stream audio plays in this window's soup, so the popout's volume and
       // mute controls write here; the change comes back via streamAudio.
       setStreamAudio: (clientId, patch) => setStreamAudioState(clientId, patch),

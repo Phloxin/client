@@ -95,6 +95,7 @@ function Popout() {
         onStopSharing={bridge.shareControl?.stop}
         shareControl={bridge.shareControl}
         streamViewers={data.streamViewers}
+        startDebugStats={bridge.startStreamDebugStats}
       />
     </div>
   )

@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react'
 import { IconAlertTriangle, IconCircleCheck, IconDownload } from '@tabler/icons-react'
-import { useSettings } from '../context/SettingsContext'
 import { resetCameraCodecPreference, resetScreenCodecPreference } from '../lib/soup'
 
 // The keep-awake blocker is only wired up for Windows and Linux in main.
@@ -15,16 +14,14 @@ let cachedSettings = null
 // sidecar binary): asked at each mount, cached like the settings above.
 let cachedNativeShareShown = null
 
-// Advanced settings. Two kinds live here:
-//   - Codec badge: a renderer-only appearance pref (localStorage via context).
+// Advanced settings. (The stream codec badge became the stream view's Debug
+// Information overlay, toggled from a stream's right-click menu.)
 //   - Hardware acceleration: a Chromium startup flag the MAIN process applies
 //     before app 'ready', so it's persisted main-side and needs a relaunch.
 //   - Keep system awake: a power-save blocker main starts/stops on the fly.
 //   - Native screen share: main reads it at each share (main/mediaEngine.js), so it applies
 //     to the next share with no relaunch. Shown only where main says it can work.
 function AdvancedSettings() {
-  const { appearanceSettings, updateAppearanceSettings } = useSettings()
-
   // Seed from the cache so a remount shows the right state immediately; null
   // only on the very first mount, before the main process has ever answered.
   const seedHwAccel = cachedSettings ? cachedSettings.hardwareAcceleration !== false : null
@@ -163,8 +160,8 @@ function AdvancedSettings() {
             <label htmlFor="hw-accel-toggle">Hardware Acceleration</label>
             <p className="settings-section-desc">
               Use the GPU for video encoding and rendering. Leave on for the best screen-share
-              performance. Turn off only if you see black frames, crashes, or graphical glitches —
-              this forces slower software encoding. Restarts the app.
+              performance. Turn off only if you see black frames, crashes, or graphical glitches,
+              since this forces slower software encoding. Restarts the app.
             </p>
           </div>
           <label className="toggle-switch">
@@ -188,25 +185,6 @@ function AdvancedSettings() {
             </button>
           </div>
         )}
-
-        <div className="settings-section settings-toggle-row">
-          <div className="settings-toggle-copy">
-            <label htmlFor="codec-badge-toggle">Stream Codec Badge</label>
-            <p className="settings-section-desc">
-              Show the video codec and hardware/software encoder (e.g. “AV1 HW”) on the focused
-              stream, so you can confirm what a share is actually using.
-            </p>
-          </div>
-          <label className="toggle-switch">
-            <input
-              type="checkbox"
-              id="codec-badge-toggle"
-              checked={appearanceSettings.showCodecBadge !== false}
-              onChange={(e) => updateAppearanceSettings({ showCodecBadge: e.target.checked })}
-            />
-            <span className="toggle-slider" />
-          </label>
-        </div>
 
         {supportsIdleInhibitor && (
           <div className="settings-section settings-toggle-row">
@@ -234,11 +212,12 @@ function AdvancedSettings() {
         {nativeShareShown && (
           <div className="settings-section settings-toggle-row">
             <div className="settings-toggle-copy">
-              <label htmlFor="native-share-toggle">Native screen share (experimental)</label>
+              <label htmlFor="native-share-toggle">Native Screen Share (Experimental)</label>
               <p className="settings-section-desc">
-                Screen shares are captured and encoded outside the browser engine, which keeps the
-                frame rate up while a game uses the GPU. If it cannot start, the share falls back to
-                the normal path by itself.
+                Captures and encodes your screen with Pylon's own native encoder instead of the
+                browser's, which can keep the frame rate up while a game is using the GPU. If it
+                cannot start, the share falls back to the standard method automatically. If you are
+                already streaming, restart the stream for the change to take effect.
               </p>
             </div>
             <label className="toggle-switch">

@@ -204,6 +204,44 @@ export function computeOutboundVideoSample(stats, previousByOutboundId) {
   }
 }
 
+// A native screen share's latest engine statistics (the sidecar's once-a-second
+// `stats` event, snake_case) in the same shape computeOutboundVideoSample gives
+// a browser share, so the two read alike. The frame rate is the frames sent over
+// the time between this and `previous` (the engine's own clock), null on the
+// first sample or after a reset. `native` marks it: the encoder is the engine's,
+// and whether that is hardware is not reported.
+export function extractNativeSendMetrics(stats, previous) {
+  if (!stats) return { metrics: {}, snapshot: previous ?? null }
+  const frames = counterDelta(stats.frames_sent, previous?.frames)
+  const elapsedMs = counterDelta(stats.ms_since_open, previous?.ms)
+  const finiteOrNull = (value) => (Number.isFinite(value) ? value : null)
+  const outputBps = finiteOrNull(stats.encoder_output_bps)
+  const skipped =
+    (Number.isFinite(stats.frames_skipped_backlog) ? stats.frames_skipped_backlog : 0) +
+    (Number.isFinite(stats.frames_skipped_rate) ? stats.frames_skipped_rate : 0)
+  return {
+    metrics: {
+      native: true,
+      implementation: 'Pylon native engine',
+      hardware: null,
+      width: finiteOrNull(stats.encoded_width),
+      height: finiteOrNull(stats.encoded_height),
+      fps: frames != null && elapsedMs ? (frames * 1000) / elapsedMs : null,
+      sendKbps: outputBps == null ? null : outputBps / 1000,
+      encodeMsPerFrame: finiteOrNull(stats.encode_ms_median),
+      availableOutgoingBitrate: finiteOrNull(stats.bandwidth_estimate_bps),
+      rttMs: finiteOrNull(stats.rtt_ms),
+      fractionLost: finiteOrNull(stats.loss_fraction),
+      framesSkipped: skipped,
+      frameIntervalP95Ms: finiteOrNull(stats.frame_interval_ms_p95),
+      captureBufferPath: stats.capture_buffer_path ?? null,
+      nackCount: finiteOrNull(stats.nacks),
+      pliCount: finiteOrNull(stats.plis)
+    },
+    snapshot: { frames: stats.frames_sent, ms: stats.ms_since_open }
+  }
+}
+
 export function extractSendAudioMetrics(report, previous) {
   let outbound = null
   let remoteInbound = null

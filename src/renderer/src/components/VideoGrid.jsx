@@ -26,7 +26,7 @@ import {
   IconHeadphones,
   IconHeadphonesOff
 } from '@tabler/icons-react'
-import { setVideoStreamRoles, subscribeStreamViewers } from '../lib/soup'
+import { setVideoStreamRoles, startStreamDebugStats, subscribeStreamViewers } from '../lib/soup'
 import { useImageColors } from '../lib/imageColors'
 import { useWheelSlider } from '../lib/useWheelSlider'
 import { syncSelfPreviewPlayback } from '../lib/selfPreviewPlayback'
@@ -39,8 +39,14 @@ import {
 } from '../lib/streamView'
 import { sortTiles } from '../lib/streamTiles'
 import { spring } from '../lib/motionPresets'
-import { useAnimationCategory, useSettings } from '../context/SettingsContext'
+import { useAnimationCategory } from '../context/SettingsContext'
+import {
+  setStreamDebugInfo,
+  useStreamDebugInfoEnabled,
+  useStreamDebugPoll
+} from '../lib/useStreamDebugInfo'
 import StreamContextMenu from './StreamContextMenu'
+import StreamDebugOverlay from './StreamDebugOverlay'
 
 // Stable empty default so the role effect doesn't churn when no watched set is
 // passed (e.g. the popout's first render before the bridge data arrives).
@@ -214,10 +220,15 @@ function VideoGrid({
   micMuted = false,
   deafened = false,
   onToggleMic,
-  onToggleDeafen
+  onToggleDeafen,
+  // Starts the per-stream stats poll behind the Debug Information overlay. The
+  // pop-out has no media of its own, so it passes the opener's.
+  startDebugStats = startStreamDebugStats
 }) {
-  const { appearanceSettings } = useSettings()
-  const showCodecBadge = appearanceSettings.showCodecBadge !== false
+  // Debug Information (the stream menu's toggle): the overlay on every tile in
+  // the main area, fed by one poll for all of them while it is on.
+  const debugInfo = useStreamDebugInfoEnabled()
+  const debugStore = useStreamDebugPoll(debugInfo && streams.length > 0, startDebugStats)
   // Focus/unfocus tweens the tiles between layouts (Motion layout animation),
   // gated by the Stream Focus animation setting and reduced motion.
   const animateFocus = useAnimationCategory('streamFocus')
@@ -732,7 +743,7 @@ function VideoGrid({
   )
 
   // One stream's tile, in whichever role the layout gives it: `focused` (fills
-  // the main area, with zoom/pan, minimap, codec badge and viewer count), `grid`
+  // the main area, with zoom/pan, minimap and viewer count), `grid`
   // (one of several equal tiles sharing the main area when nothing is focused) or
   // `thumb` (everything else, in the strip). The element is the same in every
   // role — only its class changes — so the <video> inside survives a move between
@@ -847,14 +858,9 @@ function VideoGrid({
             />
           </div>
         )}
-        {isFocused && showCodecBadge && s.codec && (
-          <div className="focus-codec-badge" title="Video codec / encoder">
-            {s.codec}
-            {s.hardware != null && (
-              <span className={s.hardware ? 'enc-hw' : 'enc-sw'}>{s.hardware ? 'HW' : 'SW'}</span>
-            )}
-          </div>
-        )}
+        {/* Debug Information, on the main area's tiles while there's a picture
+            (a strip thumbnail is too small for it). */}
+        {debugInfo && !compact && !stopped && <StreamDebugOverlay store={debugStore} stream={s} />}
         {/* Top-right: the focused stream's viewer count (with the chrome), then
             start watching, or close the stream once we are (on hover). */}
         <div className="stream-tile-actions" onClick={(e) => e.stopPropagation()}>
@@ -1162,6 +1168,8 @@ function VideoGrid({
         onPopout={onPopout}
         theatre={theatre}
         onToggleTheatre={onToggleTheatre}
+        debugInfo={debugInfo}
+        onToggleDebugInfo={() => setStreamDebugInfo(!debugInfo)}
         isFullscreen={isFullscreen}
         onToggleFullscreen={() => {
           if (document.fullscreenElement) {
