@@ -55,22 +55,24 @@ function Popout() {
   // Escape unfocuses the focused stream, as the main window's Escape cascade
   // does there. Bubble phase, so anything above it that claims the key (the
   // stream's right-click menu closing) wins; skipped while OS-fullscreen, where
-  // Escape belongs to the browser, and with a sole stream (always focused).
+  // Escape belongs to the browser, and when unfocusing would change nothing (a
+  // sole stream or the only watched stream, always focused).
   useEffect(() => {
     if (!bridge) return
     const onKeyDown = (e) => {
       if (e.key !== 'Escape' || e.defaultPrevented || document.fullscreenElement) return
-      const { focusedTileId, canToggleFocus } = resolveStreamFocus({
+      const { canUnfocus } = resolveStreamFocus({
         streams: data.streams,
-        selectedTileId: data.selectedTileId
+        selectedTileId: data.selectedTileId,
+        watchedTileIds: data.watchedTileIds
       })
-      if (focusedTileId == null || !canToggleFocus) return
+      if (!canUnfocus) return
       e.preventDefault()
       bridge.select(null)
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [bridge, data.streams, data.selectedTileId])
+  }, [bridge, data.streams, data.selectedTileId, data.watchedTileIds])
 
   if (!bridge) {
     return <div className="popout-empty">This window must be opened from the main app.</div>

@@ -4175,18 +4175,20 @@ function Main() {
   // (defaultPrevented, e.g. an open picker or a right-click menu) so it never
   // yanks a layer out from under one. Incoming calls are only hidden, never
   // declined. Pinned tabs never close on Escape. The stream layer is last:
-  // with 2+ streams it drops back to the grid (a sole stream is always focused),
-  // never while OS-fullscreen, where Escape belongs to the browser, and theatre
-  // mode's own captured Escape runs before this ever sees the key.
+  // with 2+ streams it drops back to the grid, unless that would change nothing
+  // (a sole stream and the only watched stream are always focused), never while
+  // OS-fullscreen, where Escape belongs to the browser, and theatre mode's own
+  // captured Escape runs before this ever sees the key.
   useEffect(() => {
     const activeShowsStreams = activeTab(layout)?.kind === 'streams'
     const streamFocusEscapable = () => {
       if (!activeShowsStreams || poppedOut || document.fullscreenElement) return false
-      const { focusedTileId, canToggleFocus } = resolveStreamFocus({
+      const { canUnfocus } = resolveStreamFocus({
         streams: allVideoStreamsRef.current,
-        selectedTileId: selectedTileIdRef.current
+        selectedTileId: selectedTileIdRef.current,
+        watchedTileIds: watchedTileIdsRef.current
       })
-      return focusedTileId != null && canToggleFocus
+      return canUnfocus
     }
     const { activeTabId, previewTabId } = activePane(layout)
     const previewActive = activeTabId != null && activeTabId === previewTabId

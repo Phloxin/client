@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { motion } from 'motion/react'
 import './VideoGrid.css'
@@ -31,7 +31,12 @@ import { useImageColors } from '../lib/imageColors'
 import { useWheelSlider } from '../lib/useWheelSlider'
 import { syncSelfPreviewPlayback } from '../lib/selfPreviewPlayback'
 import { useSelfPreviewPaused } from '../lib/useSelfPreviewWindow'
-import { resolveStreamFocus } from '../lib/streamView'
+import {
+  GRID_GAP,
+  layoutUniformTiles,
+  partitionStreamView,
+  resolveStreamFocus
+} from '../lib/streamView'
 import { sortTiles } from '../lib/streamTiles'
 import { spring } from '../lib/motionPresets'
 import { useAnimationCategory, useSettings } from '../context/SettingsContext'
@@ -47,10 +52,6 @@ const EMPTY_SPEAKING = {}
 const EMPTY_AUDIO = {}
 // A stream with no audio override plays at 100%, unmuted.
 const DEFAULT_STREAM_AUDIO = { volume: 1, muted: false }
-
-// Gap (px) between grid tiles — must match the `gap` in .video-stage.grid.
-const GRID_GAP = 12
-const TILE_AR = 16 / 9
 
 // How long the pointer can sit still before the overlay chrome fades out.
 const CHROME_IDLE_MS = 4000
@@ -72,25 +73,6 @@ function volumeGlyph(percent, size) {
   if (percent < 10) return <IconVolume4 size={size} />
   if (percent <= 50) return <IconVolume2 size={size} />
   return <IconVolume size={size} />
-}
-
-// Largest uniform 16:9 tile width that fits `n` tiles inside a W×H area without
-// scrolling. Tries every column count and, for each, takes the tile size capped
-// by both the available width (per column) and height (per row), then keeps the
-// biggest. This is the CSS-impossible part of a Discord-style grid: all tiles
-// stay equal AND scale down together so the whole set is always on screen.
-function bestUniformTileWidth(W, H, n, gap = GRID_GAP) {
-  if (!W || !H || !n) return 0
-  let best = 0
-  for (let cols = 1; cols <= n; cols++) {
-    const rows = Math.ceil(n / cols)
-    const wByWidth = (W - (cols - 1) * gap) / cols
-    const hByRow = (H - (rows - 1) * gap) / rows
-    const wByHeight = hByRow * TILE_AR
-    const w = Math.min(wByWidth, wByHeight)
-    if (w > best) best = w
-  }
-  return Math.floor(best)
 }
 
 // Stands in for the video on a tile we aren't watching: the sharer's avatar over
@@ -186,16 +168,19 @@ function StreamPausedOverlay({ compact = false, isSelf = false }) {
   )
 }
 
-// The stream view. Every stream is one always-mounted tile (keyed by tile id:
-// the publishing client and its source) inside a single stage, so moving a
-// stream into or out of focus restyles and re-places its tile rather than
-// remounting it — no <video> ever restarts, and Motion tweens the tile between
-// its old and new boxes. The stage is either a grid (no focus: uniform tiles
-// spread over the area) or a focus layout (the focused tile fills the top, the
-// rest wrap underneath as thumbnails). A sole stream is always focused and
-// can't be unfocused; see resolveStreamFocus. Per-stream actions live in the
-// right-click menu (StreamContextMenu); the bottom bar keeps the focused
-// stream's volume and the view controls.
+// The stream view. The main area shows what you are looking at and a strip of
+// thumbnails below it holds every other stream (partitionStreamView): the
+// focused stream fills the main area alone, or with nothing focused the watched
+// streams share it as equal tiles, so a stream nobody is watching never costs a
+// full tile's room. Every stream is one always-mounted tile (keyed by tile id:
+// the publishing client and its source), a direct child of a single stage in
+// every layout, so moving a stream between the main area and the strip restyles
+// and re-places its tile rather than remounting it — no <video> ever restarts,
+// and Motion tweens the tile between its old and new boxes. A sole stream is
+// always focused, and so is the only watched stream, and neither can be
+// unfocused (there is nothing else to show); see resolveStreamFocus. Per-stream
+// actions live in the right-click menu (StreamContextMenu); the bottom bar keeps
+// the focused stream's volume and the view controls.
 function VideoGrid({
   streams,
   clients,
@@ -239,6 +224,7 @@ function VideoGrid({
   const selfPreviewPaused = useSelfPreviewPaused()
   const viewerRef = useRef(null)
   const stageRef = useRef(null)
+  const mainRef = useRef(null)
   // Each tile's element, by tile id; zoom/pan measure against the focused
   // one. Looked up rather than held in a ref that moves between tiles, because
   // Motion only forwards a ref on mount/unmount, so moving one onto an
@@ -277,9 +263,12 @@ function VideoGrid({
   // that would otherwise fire when the drag ends.
   const dragRef = useRef(null)
   const suppressClickRef = useRef(false)
-  // Computed uniform tile width (px) for the unfocused grid, so every tile is
-  // the same size and the whole set fits without scrolling. Null until measured.
-  const [gridTileWidth, setGridTileWidth] = useState(null)
+  // The main area's size (px), which the watched tiles are laid out in when
+  // nothing is focused (layoutUniformTiles). `stage` is the theatre flag it was
+  // measured under, since toggling theatre remounts the stage and the old numbers
+  // belong to a different box; `live` is whether it has been seen again since, so
+  // tiles never tween in from where they were first placed. Null until measured.
+  const [mainArea, setMainArea] = useState(null)
 
   // Track fullscreen state from the browser (covers Esc-to-exit too)
   useEffect(() => {
@@ -317,6 +306,8 @@ function VideoGrid({
     return () => window.removeEventListener('keydown', onKey, true)
   }, [theatre, onToggleTheatre, menuOpen])
 
+  const clientOf = (id) => clients?.find((c) => c.id === id)
+
   // Resolve the display label from the live clients list so a stream's
   // name stays correct even if it arrived before the clients list caught
   // up with that client's channel move. A camera tile says so; a screen
@@ -344,11 +335,15 @@ function VideoGrid({
   // Focus/watch intent is keyed by tile (the publishing client and its source),
   // not by the transient mediasoup consumer id. Codec fallback re-produces the
   // same logical stream with a new consumer id, and must not stop playback,
-  // drop focus, or remount its tile. A sole stream is always the focused one;
-  // with more, nothing selected means the grid.
-  const { focusedTileId, canToggleFocus } = resolveStreamFocus({
+  // drop focus, or remount its tile. A sole stream is always the focused one,
+  // and so is the only watched stream; with more watched, nothing selected means
+  // the grid. canUnfocus is what the focused tile's affordances follow: while
+  // unfocusing would change nothing, the click, menu entry and pointer stay out
+  // of it.
+  const { focusedTileId, canToggleFocus, canUnfocus } = resolveStreamFocus({
     streams: sortedStreams,
-    selectedTileId
+    selectedTileId,
+    watchedTileIds
   })
   const focusedStream =
     focusedTileId == null ? null : sortedStreams.find((s) => s.tileId === focusedTileId)
@@ -366,6 +361,19 @@ function VideoGrid({
 
   const watchedStreams = sortedStreams.filter((s) => watchedTileIds.has(s.tileId))
   const isStopped = (s) => !watchedTileIds.has(s.tileId)
+
+  // The main area gets what is being looked at, the strip every other stream.
+  const { main, strip } = partitionStreamView({
+    streams: sortedStreams,
+    watchedTileIds,
+    focusedTileId
+  })
+  const stripTileIds = new Set(strip.map((s) => s.tileId))
+  // The strip shows (and needs the room above the control bar) while it holds
+  // anything and isn't collapsed; the collapse toggle exists for it in either
+  // layout.
+  const hasThumbs = strip.length > 0
+  const thumbsShown = hasThumbs && !carouselCollapsed
 
   // Zoom needs a picture: a sole stream we aren't watching is still the focused
   // view, but shows its placeholder, so there's nothing to zoom into.
@@ -482,10 +490,12 @@ function VideoGrid({
 
   // Ration video bandwidth: the focused stream (a sole stream included) gets
   // full quality, the rest get a cheaper layer (medium in grid view, tiny as
-  // thumbnails), and a collapsed thumbnail strip pauses them entirely. When
-  // popped out, onSetStreamRoles routes this to the opener window's soup
-  // instance; otherwise apply locally. Only streams the user has chosen to
-  // watch are visible (consumed); everything else stays paused.
+  // thumbnails), and a collapsed thumbnail strip pauses them entirely (with
+  // nothing focused every watched stream is in the main area, so the strip
+  // never hides one). When popped out, onSetStreamRoles routes this to the
+  // opener window's soup instance; otherwise apply locally. Only streams the
+  // user has chosen to watch are visible (consumed); everything else stays
+  // paused.
   const allVisible = !focusedStream || !carouselCollapsed
   const visibleIds = allVisible ? watchedStreams.map((s) => s.consumerId) : []
   const visibleStreamKey = visibleIds.join(',')
@@ -506,28 +516,84 @@ function VideoGrid({
     return () => applyRoles({ focusedConsumerId: null, visibleConsumerIds: [] })
   }, [])
 
-  // Recompute the uniform grid tile size whenever the stage switches to grid
-  // mode, its tile count changes, or the area resizes (window/sidebar/
-  // fullscreen). A ResizeObserver on the stage keeps it in sync without polling.
-  // `theatre` is a dep because entering/leaving it portals the stage to a new
-  // parent, which remounts the node — the observer must follow to the new one.
-  // Measured fractionally: clientWidth rounds, so a 2247.6px stage reads 2248,
-  // two width-bound tiles then need 0.4px more than there is, and the row
-  // wraps into an overflowing column.
-  const gridShown = !focusedStream
-  const gridTileCount = sortedStreams.length
-  useEffect(() => {
-    const el = stageRef.current
-    if (!gridShown || !el) return
-    const recompute = () => {
-      const { width, height } = el.getBoundingClientRect()
-      setGridTileWidth(bestUniformTileWidth(width, height, gridTileCount))
+  // Measure the main area the unfocused tiles are laid out in, and keep it current
+  // as it changes: the window or sidebar resizing, fullscreen, thumbnails coming
+  // or going or the strip collapsing (each moves the area's bottom edge), the
+  // strip wrapping onto another row. A ResizeObserver keeps it in sync without
+  // polling; the stream and strip counts re-measure straight away so the frame
+  // that adds a thumbnail already has the right area. `theatre` is a dep because
+  // entering/leaving it portals the stage to a new parent, which remounts the
+  // nodes — the observer must follow to the new ones.
+  // The width is the stage's, not the main area element's: the stage's columns
+  // are fixed 200px ones that don't fill it (see .stream-tile.focused), so the
+  // element stops short of the right edge, while the tiles are positioned in the
+  // stage's padding box. The height is the element's: the row the thumbnails
+  // leave. Measured fractionally: clientWidth rounds, so a 2247.6px stage reads
+  // 2248, two width-bound tiles then need 0.4px more than there is, and the row
+  // wraps into an overflowing column. Layout effect so the first painted frame
+  // is already positioned.
+  const hasStreams = sortedStreams.length > 0
+  const stripCount = strip.length
+  useLayoutEffect(() => {
+    const stage = stageRef.current
+    const mainEl = mainRef.current
+    if (!stage || !mainEl) return
+    const measure = (fromObserver) => {
+      const width = stage.getBoundingClientRect().width
+      const height = mainEl.getBoundingClientRect().height
+      setMainArea((prev) => {
+        const sameStage = prev?.stage === theatre
+        const live = sameStage && (prev.live || fromObserver)
+        if (sameStage && prev.width === width && prev.height === height && prev.live === live) {
+          return prev
+        }
+        return { width, height, stage: theatre, live }
+      })
     }
-    recompute()
-    const ro = new ResizeObserver(recompute)
-    ro.observe(el)
+    measure(false)
+    const ro = new ResizeObserver(() => measure(true))
+    ro.observe(stage)
+    ro.observe(mainEl)
     return () => ro.disconnect()
-  }, [gridShown, gridTileCount, theatre])
+  }, [hasStreams, stripCount, thumbsShown, theatre])
+  // No stage left to have measured: start over when streams come back.
+  if (!hasStreams && mainArea) setMainArea(null)
+
+  // Where the unfocused tiles go. Derived here rather than in the effect so a
+  // tile that joins the main area is placed in the very render that adds it.
+  // Until the area has been measured for this stage the tiles stay hidden, and
+  // the layout tween stays off until the measurement has been seen again (see
+  // `live` and tileLayoutGate), so they appear in place instead of sliding in
+  // from the corner.
+  const areaMeasured = mainArea?.stage === theatre
+  const gridLayout = areaMeasured
+    ? layoutUniformTiles({
+        width: mainArea.width,
+        height: mainArea.height,
+        count: focusedStream ? 0 : main.length,
+        gap: GRID_GAP
+      })
+    : null
+  const gridTilesLive = areaMeasured && mainArea.live
+  // When the tiles tween, as their layoutDependency. Every tile and media
+  // wrapper is a layout node from mount, whatever its role: Motion reads the
+  // `layout` prop only when the node is created, so a tile first rendered
+  // without it (a grid tile before the area was measured, i.e. every tile of a
+  // view opened with nothing watched) would never tween again. What is shown
+  // where decides instead: Motion snapshots the tiles only in a render where
+  // this changes, so a change of focus, watched set, strip contents or collapse
+  // tweens every tile together, while a re-render that only re-measures the
+  // area (a resize, fullscreen) is followed at once rather than chased by a
+  // spring, and one that swaps a placeholder for the arrived video leaves a
+  // running tween alone. Held still while the setting or reduced motion turns
+  // the tween off, and until the area is live.
+  const viewLayout = [
+    focusedTileId,
+    main.map((s) => s.tileId).join(','),
+    strip.map((s) => s.tileId).join(','),
+    carouselCollapsed
+  ].join('|')
+  const tileLayoutGate = animateFocus && gridTilesLive ? viewLayout : 'still'
 
   // Per-stream audio, shared by the bottom bar (focused stream) and the menu.
   // The sliders run 0..200 (%), showing 0 while muted; dragging to 0 mutes and
@@ -587,7 +653,7 @@ function VideoGrid({
       </div>
     )
 
-  // Clicking a tile body focuses it (resuming it first if it was closed).
+  // Clicking a tile body focuses it, resuming it first if it was closed.
   const focusStream = (s) => {
     if (isStopped(s)) onSetStreamWatched?.(s.tileId, true)
     onSelect?.(s.tileId)
@@ -595,10 +661,28 @@ function VideoGrid({
 
   // Start or stop consuming a stream. Can't watch a stream big once it's
   // stopped, so stopping the focused one drops focus — unless it's the only
-  // stream, which is always the focused view (it shows its placeholder).
+  // stream, which is always the focused view (it shows its placeholder). This
+  // stays on canToggleFocus rather than canUnfocus: stopping the only watched
+  // stream must clear the selection so the view lands on the placeholder grid.
+  //
+  // Starting a second stream beside the only watched one, which is the focused
+  // view, is meant to put both in the main area. That focus may be an explicit
+  // selection rather than the automatic one, and the two look the same, so the
+  // selection is dropped for both to behave alike. With two or more already
+  // watched, an explicit focus is a real choice and stays.
   const setWatched = (s, watch) => {
     onSetStreamWatched?.(s.tileId, watch)
     if (!watch && s.tileId === focusedTileId && canToggleFocus) onSelect?.(null)
+    if (
+      watch &&
+      isStopped(s) &&
+      focusedStream &&
+      s.tileId !== focusedTileId &&
+      !isStopped(focusedStream) &&
+      watchedStreams.length === 1
+    ) {
+      onSelect?.(null)
+    }
   }
 
   // The top-right watch/close button: stop consuming a stream, or resume it.
@@ -608,10 +692,12 @@ function VideoGrid({
   }
 
   // Focus toggling only exists with two or more streams: a grid tile or
-  // thumbnail focuses, the focused tile goes back to the grid. Clicking a
-  // stream we aren't watching always starts watching it — the focused (or
-  // sole) tile stays focused rather than toggling back to the grid. A click
-  // that ends a drag-pan, or that dismissed the menu, does none of these.
+  // thumbnail focuses, the focused tile goes back to the grid. The focused tile
+  // only does so while that changes the view (canUnfocus): the sole stream and
+  // the only watched stream have nowhere to go back to. Clicking a stream we
+  // aren't watching always starts watching it — the focused (or sole) tile
+  // stays focused rather than toggling back to the grid. A click that ends a
+  // drag-pan, or that dismissed the menu, does none of these.
   const handleTileMouseDown = (s, e) => {
     if (e.button === 0) swallowClickRef.current = menuOpen
     if (s.tileId === focusedTileId) handlePanStart(e)
@@ -626,7 +712,7 @@ function VideoGrid({
       }
       if (dismissedMenu) return
       if (isStopped(s)) onSetStreamWatched?.(s.tileId, true)
-      else if (canToggleFocus) onSelect?.(null)
+      else if (canUnfocus) onSelect?.(null)
       return
     }
     if (!dismissedMenu && canToggleFocus) focusStream(s)
@@ -646,21 +732,31 @@ function VideoGrid({
   )
 
   // One stream's tile, in whichever role the layout gives it: `focused` (fills
-  // the top of the focus layout, with zoom/pan, minimap, codec badge and viewer
-  // count), `thumb` (the others while something is focused) or `grid` (everyone
-  // when nothing is). The element is the same in every role — only its class
-  // changes — so the <video> inside survives focus changes. Both the tile and
-  // its media wrapper are Motion layout nodes, so the tween moves the wrapper
-  // with the tile instead of leaving the media behind.
+  // the main area, with zoom/pan, minimap, codec badge and viewer count), `grid`
+  // (one of several equal tiles sharing the main area when nothing is focused) or
+  // `thumb` (everything else, in the strip). The element is the same in every
+  // role — only its class changes — so the <video> inside survives a move between
+  // the main area and the strip. Both the tile and its media wrapper are Motion
+  // layout nodes, so the tween moves the wrapper with the tile instead of leaving
+  // the media behind.
   const renderTile = (s) => {
     const isFocused = s.tileId === focusedTileId
-    const role = isFocused ? 'focused' : focusedStream ? 'thumb' : 'grid'
+    const role = isFocused ? 'focused' : stripTileIds.has(s.tileId) ? 'thumb' : 'grid'
+    // Grid tiles are placed by hand (the area's size and tile count decide the
+    // cluster); hidden until there's a place for them.
+    const place = role === 'grid' ? gridLayout?.positions[main.indexOf(s)] : null
+    const gridStyle =
+      role !== 'grid'
+        ? undefined
+        : place
+          ? { left: place.left, top: place.top, width: gridLayout.tileWidth }
+          : { visibility: 'hidden' }
     const compact = role === 'thumb'
     // Watching is intent; the stream arrives a moment later once the consumer is
     // created. Keep showing the placeholder until it does, rather than a blank
     // <video>.
     const stopped = isStopped(s) || !s.stream
-    const client = clients?.find((c) => c.id === s.clientId)
+    const client = clientOf(s.clientId)
     const label = resolveLabel(s)
     // Only someone else's screen share carries the badge: our own stream is never
     // played back to us, and a camera has no audio.
@@ -671,14 +767,16 @@ function VideoGrid({
     return (
       <motion.div
         key={s.tileId}
-        layout={animateFocus}
+        layout
+        layoutDependency={tileLayoutGate}
         transition={TILE_TRANSITION}
+        style={gridStyle}
         ref={(el) => {
           if (el) tileElsRef.current.set(s.tileId, el)
           else tileElsRef.current.delete(s.tileId)
         }}
         className={`stream-tile ${role}${stopped ? ' stopped' : ''}${
-          canToggleFocus ? ' focusable' : ''
+          (isFocused ? canUnfocus : canToggleFocus) ? ' focusable' : ''
         }${zoomed ? ' zoomed' : ''}`}
         role="button"
         tabIndex={0}
@@ -689,7 +787,12 @@ function VideoGrid({
         onMouseLeave={isFocused ? handlePanEnd : undefined}
         onContextMenu={(e) => openMenu(s, e)}
       >
-        <motion.div layout={animateFocus} transition={TILE_TRANSITION} className="stream-media">
+        <motion.div
+          layout
+          layoutDependency={tileLayoutGate}
+          transition={TILE_TRANSITION}
+          className="stream-media"
+        >
           {/* Not watching, or watching but the consumer hasn't produced a track
               yet — either way hold the sharer's avatar rather than a blank
               <video>. */}
@@ -796,7 +899,7 @@ function VideoGrid({
               title={s.isSelf ? 'Preview your stream' : 'Play stream'}
               onClick={(e) => {
                 e.stopPropagation()
-                onSetStreamWatched?.(s.tileId, true)
+                setWatched(s, true)
               }}
             >
               <IconPlayerPlayFilled size={compact ? 13 : 15} />
@@ -936,9 +1039,6 @@ function VideoGrid({
   // An open popover pins the chrome — otherwise reading the menu or viewer list
   // without moving the mouse would fade the thing you're reading.
   const chromeShown = chromeAwake || viewersOpen || menuOpen
-  // Thumbnails show (and need the room above the control bar) while a stream is
-  // focused, there are others, and the strip isn't collapsed.
-  const thumbsShown = !!focusedStream && !carouselCollapsed && sortedStreams.length > 1
 
   const barAudio = barAudioClientId != null ? audioOf(barAudioClientId) : null
   const barPercent = barAudio ? audioPercent(barAudio) : 0
@@ -958,7 +1058,7 @@ function VideoGrid({
       }}
       onMouseLeave={wakeChrome}
     >
-      {focusedStream && canToggleFocus && (
+      {hasThumbs && (
         <button
           type="button"
           className="carousel-toggle"
@@ -1043,7 +1143,9 @@ function VideoGrid({
         isSelf={!!s.isSelf}
         audio={audio}
         focused={focused}
-        canToggleFocus={canToggleFocus}
+        // The entry for the focused stream is "unfocus", so it follows
+        // canUnfocus; for any other stream it is "focus".
+        canToggleFocus={focused ? canUnfocus : canToggleFocus}
         onToggleFocus={() => (focused ? onSelect?.(null) : focusStream(s))}
         watched={!isStopped(s)}
         onSetWatched={(watch) => setWatched(s, watch)}
@@ -1085,21 +1187,17 @@ function VideoGrid({
       onMouseMove={wakeChrome}
       onMouseLeave={sleepChrome}
     >
-      {/* One stage, one tile per stream. Grid mode spreads uniform tiles over
-          the area; focus mode is a grid whose first row (held by the spacer)
-          belongs to the focused tile, with the thumbnails wrapping below. */}
+      {/* One stage, one tile per stream, all direct children. A grid whose first row
+          (held by the main area element) is the main area and whose further rows
+          are the thumbnails wrapping below it; the tiles place themselves by
+          role. */}
       <div
-        className={`video-stage ${focusedStream ? 'focus' : 'grid'}${
-          thumbsShown ? ' has-thumbs' : ''
-        }${carouselCollapsed ? ' collapsed' : ''}`}
+        className={`video-stage${thumbsShown ? ' has-thumbs' : ''}${
+          carouselCollapsed ? ' collapsed' : ''
+        }`}
         ref={stageRef}
-        style={
-          !focusedStream && gridTileWidth
-            ? { '--grid-tile-width': `${gridTileWidth}px` }
-            : undefined
-        }
       >
-        {focusedStream && <div className="video-stage-focus-slot" aria-hidden="true" />}
+        <div className="video-stage-main" ref={mainRef} aria-hidden="true" />
         {sortedStreams.map(renderTile)}
         {theatreOverlays}
       </div>
