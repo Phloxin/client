@@ -7,6 +7,7 @@ import {
   setActiveSoundpack,
   setSoundVolume
 } from '../lib/sounds'
+import { setOsNotifyPrefs } from '../lib/osNotifications'
 import { applyAppearanceSettings, applyAnimationSettings, UI_FONTS } from '../lib/uiSettings'
 import { prefersReducedMotion } from '../lib/animation'
 import { normalizeAutoIdleSettings } from '../lib/autoIdle'
@@ -271,6 +272,40 @@ export function SettingsProvider({ children }) {
     setToastStateMap(toastState)
   }, [toastState])
 
+  // Desktop notifications: the master switch (absent = on) and the per-row
+  // toggles, keyed by the same sound id (absent = the row's `os` default, see
+  // OS_DEFAULTS in lib/sounds.js), so only rows the user changed are stored.
+  const [osNotifyEnabled, setOsNotifyEnabledState] = useState(
+    () => localStorage.getItem('osNotifyEnabled') !== 'false'
+  )
+  const [osNotifyState, setOsNotifyStateObj] = useState(() => {
+    try {
+      const saved = localStorage.getItem('osNotifyState')
+      return saved ? JSON.parse(saved) : {}
+    } catch {
+      return {}
+    }
+  })
+
+  // Mirror both into the (non-React) desktop-notification gate, on load and on change.
+  useEffect(() => {
+    setOsNotifyPrefs({ enabled: osNotifyEnabled, rows: osNotifyState })
+  }, [osNotifyEnabled, osNotifyState])
+
+  const setOsNotifyEnabled = (enabled) => {
+    localStorage.setItem('osNotifyEnabled', enabled ? 'true' : 'false')
+    setOsNotifyEnabledState(!!enabled)
+  }
+
+  // `changes` is a map of soundId -> boolean (false = no desktop notification for it).
+  const setOsNotifyState = (changes) => {
+    setOsNotifyStateObj((prev) => {
+      const merged = { ...prev, ...changes }
+      localStorage.setItem('osNotifyState', JSON.stringify(merged))
+      return merged
+    })
+  }
+
   const [soundpack, setSoundpackState] = useState(() => localStorage.getItem('soundpack') || 'default')
 
   // Mirror the chosen soundpack into the sounds module on load and on change.
@@ -356,6 +391,10 @@ export function SettingsProvider({ children }) {
         setSoundState,
         toastState,
         setToastState,
+        osNotifyEnabled,
+        setOsNotifyEnabled,
+        osNotifyState,
+        setOsNotifyState,
         soundpack,
         setSoundpack,
         soundVolume,

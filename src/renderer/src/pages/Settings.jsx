@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   IconPalette,
   IconMicrophone,
@@ -9,6 +9,8 @@ import {
   IconPin,
   IconBreadFilled,
   IconBreadOff,
+  IconDeviceDesktop,
+  IconDeviceDesktopOff,
   IconPlayerPlayFilled,
   IconAdjustments,
   IconSettings,
@@ -25,11 +27,13 @@ import {
   SOUND_SECTIONS,
   SOUND_DEFAULTS,
   SOUNDPACK_OPTIONS,
-  getSoundFilename,
+  sectionSounds,
   playUiSound,
   UNWIRED_SOUNDS,
-  TOAST_SOUNDS
+  TOAST_SOUNDS,
+  OS_ROWS
 } from '../lib/sounds'
+import { osNotifySupported, osRowOn, sendTestOsNotification } from '../lib/osNotifications'
 import { UI_FONTS } from '../lib/uiSettings'
 import './Settings.css'
 
@@ -67,7 +71,7 @@ const sections = [
   {
     id: 'notifications',
     title: 'Notifications',
-    description: 'Adjust volume and toggle notification sounds.',
+    description: 'Sounds, banners and desktop notifications.',
     icon: IconBellRinging
   },
   {
@@ -77,6 +81,18 @@ const sections = [
     icon: IconAdjustments
   }
 ]
+
+const OS_NOTIFY_DESC =
+  "Show notifications from your system while Pylon isn't focused. Your system's Do Not Disturb and Focus still apply."
+const OS_NOTIFY_UNAVAILABLE = 'Not available: no notification service was found on this system.'
+// "Send test" results (sendTestOsNotification's answer) -> the line shown for it.
+const OS_TEST_NOTES = {
+  shown: "Sent. If nothing appeared, your system's Do Not Disturb or Focus is holding it back.",
+  recorded: 'Sent.',
+  dnd: 'Not sent: your Pylon status is Do Not Disturb.',
+  unsupported: OS_NOTIFY_UNAVAILABLE
+}
+const OS_TEST_FAILED = 'The test notification could not be sent.'
 
 // `account` is { connected, username, onChangePassword } from Main. The Account section shows only
 // while connected.
@@ -88,6 +104,10 @@ function Settings({ account }) {
     setSoundState,
     toastState,
     setToastState,
+    osNotifyEnabled,
+    setOsNotifyEnabled,
+    osNotifyState,
+    setOsNotifyState,
     soundpack,
     setSoundpack,
     soundVolume,
@@ -99,6 +119,34 @@ function Settings({ account }) {
   } = useSettings()
   const [activeSection, setActiveSection] = useState('appearance')
   const shownSections = sections.filter((section) => section.id !== 'account' || account?.connected)
+
+  // Desktop notifications need the preload bridge (absent on the web, where the
+  // whole feature is hidden) and a notification service (null until main answers).
+  const hasOsNotify = !!window.api?.notifications
+  const [osSupported, setOsSupported] = useState(null)
+  useEffect(() => {
+    if (!hasOsNotify) return
+    let live = true
+    osNotifySupported().then((supported) => {
+      if (live) setOsSupported(supported)
+    })
+    return () => {
+      live = false
+    }
+  }, [hasOsNotify])
+  const osMasterOn = osNotifyEnabled && osSupported !== false
+
+  // What the last "Send test" did, shown under the description for a few seconds,
+  // so a test held back by Pylon's DND (or with no service) is not silent.
+  const [osTestNote, setOsTestNote] = useState(null)
+  const osTestTimerRef = useRef(null)
+  useEffect(() => () => clearTimeout(osTestTimerRef.current), [])
+  const runOsTest = async () => {
+    const result = await sendTestOsNotification()
+    setOsTestNote(OS_TEST_NOTES[result] ?? OS_TEST_FAILED)
+    clearTimeout(osTestTimerRef.current)
+    osTestTimerRef.current = setTimeout(() => setOsTestNote(null), 8000)
+  }
 
   return (
     <div className="settings-layout">
@@ -499,13 +547,50 @@ function Settings({ account }) {
                     <span className="settings-volume-value">{soundVolume}%</span>
                   </div>
                 </div>
+
+                {hasOsNotify && (
+                  <div className="settings-section settings-toggle-row os-notify-row">
+                    <div className="settings-toggle-copy">
+                      <label htmlFor="os-notify-toggle">Desktop notifications</label>
+                      <p className="settings-section-desc">
+                        {osSupported === false ? OS_NOTIFY_UNAVAILABLE : OS_NOTIFY_DESC}
+                      </p>
+                      {osTestNote && (
+                        <p className="settings-section-desc" role="status">
+                          {osTestNote}
+                        </p>
+                      )}
+                    </div>
+                    <div className="os-notify-controls">
+                      <button
+                        type="button"
+                        className="settings-restart-btn"
+                        disabled={!osMasterOn}
+                        onClick={runOsTest}
+                      >
+                        Send test
+                      </button>
+                      <label className="toggle-switch">
+                        <input
+                          type="checkbox"
+                          id="os-notify-toggle"
+                          checked={osMasterOn}
+                          disabled={osSupported === false}
+                          onChange={(e) => setOsNotifyEnabled(e.target.checked)}
+                        />
+                        <span className="toggle-slider" />
+                      </label>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {SOUND_SECTIONS.map((section) => {
-                // Only show the sounds the active pack actually contains.
-                const sounds = section.sounds
-                  .map((s) => ({ ...s, filename: getSoundFilename(soundpack, s.id) }))
-                  .filter((s) => s.filename)
+                // Only the sounds the active pack contains, plus the rows with no sound
+                // (popup-only, so hidden without the desktop bridge, e.g. on the web).
+                const sounds = sectionSounds(soundpack, section).filter(
+                  (s) => hasOsNotify || !s.noSound
+                )
                 if (sounds.length === 0) return null
 
                 // Master switch enables/disables the whole section; it reads as on
@@ -534,12 +619,29 @@ function Settings({ account }) {
                       </label>
                     </div>
 
-                    {sounds.map(({ id, label, filename }) => {
+                    {sounds.map(({ id, label, filename, noSound }) => {
                       const state = resolve(id)
                       // Only notifications that actually raise a banner get the
                       // toast toggle; absent = shown.
                       const hasToast = TOAST_SOUNDS.has(id)
                       const toastOn = toastState[id] !== false
+                      // Rows whose event can pop up a desktop notification get its
+                      // toggle; absent = the row's default.
+                      const hasOs = hasOsNotify && OS_ROWS.has(id)
+                      const osOn = osRowOn(osNotifyState, id)
+                      const osTitle =
+                        osSupported === false
+                          ? OS_NOTIFY_UNAVAILABLE
+                          : !osNotifyEnabled
+                            ? 'Turn on Desktop notifications above first'
+                            : osOn
+                              ? 'Desktop notification on — click to turn off'
+                              : 'Desktop notification off — click to turn on'
+                      const pinTitle = noSound
+                        ? 'Enabled — shown even when sound is muted'
+                        : hasOs
+                          ? 'Enabled — always heard and shown, even when sound is muted'
+                          : 'Enabled — always heard, even when sound is muted'
                       return (
                         <div key={id} className="settings-section settings-toggle-row">
                           <div className="settings-toggle-copy">
@@ -553,15 +655,17 @@ function Settings({ account }) {
                             </label>
                           </div>
                           <div className="sound-preview-group">
-                            <button
-                              type="button"
-                              className="sound-preview-btn"
-                              title={`Play ${filename}`}
-                              aria-label={`Play ${filename}`}
-                              onClick={() => playUiSound(id, undefined, true)}
-                            >
-                              <IconPlayerPlayFilled size={14} />
-                            </button>
+                            {!noSound && (
+                              <button
+                                type="button"
+                                className="sound-preview-btn"
+                                title={`Play ${filename}`}
+                                aria-label={`Play ${filename}`}
+                                onClick={() => playUiSound(id, undefined, true)}
+                              >
+                                <IconPlayerPlayFilled size={14} />
+                              </button>
+                            )}
                             {hasToast && (
                               <button
                                 type="button"
@@ -577,12 +681,29 @@ function Settings({ account }) {
                                 {toastOn ? <IconBreadFilled size={14} /> : <IconBreadOff size={14} />}
                               </button>
                             )}
+                            {hasOs && (
+                              <button
+                                type="button"
+                                className={`sound-preview-btn sound-os-btn${osOn ? ' active' : ''}`}
+                                title={osTitle}
+                                aria-label={osTitle}
+                                aria-pressed={osOn}
+                                disabled={!osMasterOn}
+                                onClick={() => setOsNotifyState({ [id]: !osOn })}
+                              >
+                                {osOn ? (
+                                  <IconDeviceDesktop size={14} />
+                                ) : (
+                                  <IconDeviceDesktopOff size={14} />
+                                )}
+                              </button>
+                            )}
                           </div>
-                          <div className="sound-state" role="group" aria-label={filename}>
+                          <div className="sound-state" role="group" aria-label={filename || label}>
                             {[
                               ['off', IconX, 'Off'],
                               ['on', IconCheck, 'Enabled'],
-                              ['pin', IconPin, 'Enabled — always heard, even when sound is muted']
+                              ['pin', IconPin, pinTitle]
                             ].map(([val, Icon, title]) => (
                               <button
                                 key={val}

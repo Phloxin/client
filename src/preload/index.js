@@ -34,6 +34,31 @@ const voiceEndpointOverride = import.meta.env.DEV
   ? process.env.PYLON_VOICE_ENDPOINT?.trim() || null
   : null
 
+const isTestHarness = process.env.PYLON_TEST === '1'
+
+// Desktop notifications, shown by main (main/osNotifications.js); whether an event
+// pops up is the renderer's call (renderer/src/lib/osNotifications.js).
+const notifications = {
+  isSupported: () => ipcRenderer.invoke('notifications:supported'),
+  // { key, title, body?, target?, force? } -> 'shown' | 'focused' | 'unsupported' |
+  // 'invalid' | 'recorded'.
+  show: (payload) => ipcRenderer.invoke('notifications:show', payload),
+  close: (key) => ipcRenderer.send('notifications:close', key),
+  // cb(target) when a popup is clicked; target is null when it only brings Pylon
+  // forward. Returns the unsubscribe.
+  onActivate: (cb) => {
+    const handler = (_e, target) => cb(target)
+    ipcRenderer.on('notifications:activate', handler)
+    return () => ipcRenderer.removeListener('notifications:activate', handler)
+  }
+}
+// With PYLON_TEST=1 main records popups instead of showing them (window.pylonTest.osNotify).
+if (isTestHarness) {
+  notifications.testRecorded = () => ipcRenderer.invoke('notifications:test-recorded')
+  notifications.testAssumeUnfocused = (value) =>
+    ipcRenderer.invoke('notifications:test-assume-unfocused', value === true)
+}
+
 // Custom APIs for renderer
 const api = {
   platform: process.platform,
@@ -41,7 +66,8 @@ const api = {
   insecureConnections,
   voiceEndpointOverride,
   // Installs window.pylonTest (renderer lib/testHooks.js) for the e2e harness.
-  isTestHarness: process.env.PYLON_TEST === '1',
+  isTestHarness,
+  notifications,
   // The native media engine's sidecar (main/mediaEngine.js). Whether a screen share goes
   // through it (PYLON_NATIVE_SHARE, else the "Native screen share" setting) is main's call,
   // told in available()'s reply. onEvent hears

@@ -72,6 +72,29 @@ import { selfScreenTileSeen, selfScreenTileWatched } from '../lib/selfPreviewPla
 import { usePreviewWindow } from '../lib/useSelfPreviewWindow'
 import { playUiSound, isToastEnabled, setSoundsDeafened } from '../lib/sounds'
 import {
+  closeOsNotification,
+  notifyOs,
+  onOsNotificationActivate,
+  setOsNotifyDnd,
+  setOsNotifyServer
+} from '../lib/osNotifications'
+import {
+  channelPopupKeys,
+  groupDmName,
+  messagePopup,
+  rememberNotified
+} from '../lib/osNotifyEvents'
+import {
+  CONNECTION_LOST_TITLE,
+  callBody,
+  callTitle,
+  channelJoinTitle,
+  connectionLostBody,
+  removedTitle,
+  roleTitle,
+  streamStartedTitle
+} from '../lib/notificationText'
+import {
   setServerHost,
   apiBase,
   eventSocketUrl,
@@ -419,6 +442,13 @@ function dmOther(channel, selfId) {
   return dmOthers(channel, selfId)[0] ?? { id: undefined, name: undefined }
 }
 
+// A client's display name from the roster, for desktop notifications. Compared as
+// strings: a mention token's id is one, and JSON may carry snowflakes as numbers.
+function clientNameIn(clients, id) {
+  if (id == null) return undefined
+  return clients.find((c) => String(c.id) === String(id))?.name
+}
+
 // The roster's voice fields, from a VoiceStateApiObject (null: not in voice).
 // Self toggles are `self_mute`/`self_deaf`; the server-forced pair (a moderator
 // gag / server deafen) is `server_mute`/`server_deaf`, so `server_mute` alone
@@ -571,6 +601,16 @@ function Main() {
   // The server's own name (GET /server), distinct from the list entry's local
   // nickname. Shown in the title bar and lurking header once connected.
   const [serverName, setServerName] = useState(null)
+  // The server's name in desktop notifications (kicked, banned, connection lost),
+  // read inside the socket handler: serverDisplayName without its "Connected"
+  // placeholder, which the notification text replaces with "the server".
+  const osServerNameRef = useRef(null)
+  useEffect(() => {
+    osServerNameRef.current = serverName ?? connectedServer?.nickname ?? null
+  }, [serverName, connectedServer])
+  // Ids of the messages a desktop notification was considered for, so a replay
+  // never pops up twice (rememberNotified keeps the newest 200).
+  const osNotifiedIdsRef = useRef(new Set())
   // Overall health, including voice recovery: 'reconnecting' while either the
   // events link is down or voice is rebuilding after an outage.
   const [connectionStatus, setConnectionStatus] = useState('connected')
@@ -1109,6 +1149,11 @@ function Main() {
   useEffect(() => {
     getAllStreamAudioState()
   }, [connectedHost])
+  // Desktop notifications carry the server they came from, so a click on one from
+  // an earlier server only brings Pylon forward.
+  useEffect(() => {
+    setOsNotifyServer(connectedHost)
+  }, [connectedHost])
 
   // Mirror the live viewer map for the popout bridge. subscribeStreamViewers
   // fires immediately with the current snapshot, and again on every change, so
@@ -1422,6 +1467,8 @@ function Main() {
   // Read inside the socket handler, which closes over its first render.
   useEffect(() => {
     dndRef.current = dnd
+    // DND also holds back every desktop notification, Pinned ones included.
+    setOsNotifyDnd(dnd)
   }, [dnd])
   useEffect(() => {
     feedRef.current = feed
@@ -1502,6 +1549,16 @@ function Main() {
       for (const id of prev) if (!curIds.has(id)) stopped = true
       if (started) playUiSound('stream-start')
       if (stopped) playUiSound('stream-stop')
+      // A desktop notification per person who started one (not for our own).
+      const starters = new Set(
+        allVideoStreams.filter((s) => !s.isSelf && !prev.has(s.tileId)).map((s) => s.clientId)
+      )
+      for (const clientId of starters) {
+        notifyOs('stream_started', {
+          key: `stream:${clientId}`,
+          title: streamStartedTitle(clientNameIn(clientsRef.current, clientId))
+        })
+      }
     }
     prevStreamIdsRef.current = curIds
   }, [allVideoStreams])
@@ -1667,6 +1724,51 @@ function Main() {
   const handleOpenNotification = (n) => {
     if (n.channelId != null) openTab('chat', n.channelId)
   }
+
+  // A click on a desktop notification opens what it is about; main has already
+  // brought Pylon forward. One from another server (or with no target) does no
+  // more. The handlers are new every render, so the listener reads them here.
+  const osNotifyClickRef = useRef(null)
+  useEffect(() => {
+    osNotifyClickRef.current = {
+      host: connectedHost,
+      openDm: handleOpenDmNotification,
+      openChannel: handleOpenNotification
+    }
+  })
+  useEffect(
+    () =>
+      onOsNotificationActivate((target) => {
+        const click = osNotifyClickRef.current
+        if (!click || target?.server !== click.host) return
+        if (target.kind === 'dm') {
+          click.openDm({ channelId: target.channelId, authorId: target.authorId })
+        } else if (target.kind === 'channel') {
+          click.openChannel({ channelId: target.channelId })
+        }
+      }),
+    []
+  )
+
+  // Reading a channel takes its DM, mention and poke notifications away: when it
+  // comes on screen, and when the window gains focus while it is on screen.
+  const osShownChatIdsRef = useRef(new Set())
+  useEffect(() => {
+    for (const id of visibleChatChannelIds) {
+      if (osShownChatIdsRef.current.has(id)) continue
+      for (const key of channelPopupKeys(id)) closeOsNotification(key)
+    }
+    osShownChatIdsRef.current = visibleChatChannelIds
+  }, [visibleChatChannelIds])
+  useEffect(() => {
+    const onFocus = () => {
+      for (const id of visibleChatChannelIdsRef.current) {
+        for (const key of channelPopupKeys(id)) closeOsNotification(key)
+      }
+    }
+    window.addEventListener('focus', onFocus)
+    return () => window.removeEventListener('focus', onFocus)
+  }, [])
 
   // The connected group follows our roster channel. It is held through the
   // brief channel-less roster right after a reconnect (as the voice session's
@@ -2786,6 +2888,12 @@ function Main() {
       if (!dropAnnounced) {
         dropAnnounced = true
         playUiSound('connection_lost')
+        // Taken away again when the link is back (handleIdentifyReply).
+        notifyOs('connection_lost', {
+          key: 'server:connection',
+          title: CONNECTION_LOST_TITLE,
+          body: connectionLostBody(osServerNameRef.current)
+        })
         // The connection is actually down now, so this counts as an outage
         // no matter what we thought it was before.
         voiceRebuildKindRef.current = 'outage'
@@ -2830,6 +2938,7 @@ function Main() {
         console.warn(
           `[Events] Reconnected after ${reconnectAttempts} attempt(s) (${resumed ? 'resumed' : 'fresh'})`
         )
+        closeOsNotification('server:connection')
       }
       reconnectAttempts = 0
       authFailures = 0
@@ -3033,6 +3142,7 @@ function Main() {
               applyRingEnded(ringsRef.current, { channel_id: newChannelId, reason: 'answered' })
                 .rings
             )
+            closeOsNotification(`call:${newChannelId}`)
           }
         }
         setClients((prev) =>
@@ -3089,6 +3199,11 @@ function Main() {
         } else if (myChannel != null) {
           if (newChannelId === myChannel && oldChannelId !== myChannel) {
             playUiSound('channel-join')
+            const joined = channelsRef.current.find((c) => c.id === myChannel)
+            notifyOs('neutral_switched_tocurrentchannel', {
+              key: 'channel-join',
+              title: channelJoinTitle(previous?.name, joined?.name)
+            })
           } else if (oldChannelId === myChannel && newChannelId !== myChannel) {
             playUiSound('channel-leave')
           }
@@ -3128,18 +3243,27 @@ function Main() {
         if (data.id === selfIdRef.current && 'role_ids' in data) {
           const before = new Set(clientsRef.current.find((c) => c.id === data.id)?.role_ids || [])
           const after = new Set(data.role_ids || [])
-          const roleName = (id) => rolesRef.current.find((r) => r.id === id)?.name ?? 'a role'
+          const roleNameOf = (id) => rolesRef.current.find((r) => r.id === id)?.name
+          const roleName = (id) => roleNameOf(id) ?? 'a role'
           const added = [...after].find((id) => !before.has(id))
           const removed = [...before].find((id) => !after.has(id))
           if (added != null) {
             showSuccess(`You were given the "${roleName(added)}" role`, 'servergroup_assigned')
             playUiSound('servergroup_assigned')
+            notifyOs('servergroup_assigned', {
+              key: 'roles',
+              title: roleTitle(roleNameOf(added), { given: true })
+            })
           } else if (removed != null) {
             showError(`Your "${roleName(removed)}" role was revoked`, {
               silent: true,
               soundId: 'servergroup_revoked'
             })
             playUiSound('servergroup_revoked')
+            notifyOs('servergroup_revoked', {
+              key: 'roles',
+              title: roleTitle(roleNameOf(removed), { given: false })
+            })
           }
         }
         // Same for OUR vanity groups: green when another user adds us to one,
@@ -3148,21 +3272,29 @@ function Main() {
         if (data.id === selfIdRef.current && 'vanity' in data) {
           const before = new Set(clientsRef.current.find((c) => c.id === data.id)?.vanity_ids || [])
           const after = new Set((data.vanity || []).map((v) => v.id))
-          const groupName = (id) =>
+          const groupNameOf = (id) =>
             (data.vanity || []).find((v) => v.id === id)?.name ??
-            vanityRef.current.find((v) => v.id === id)?.name ??
-            'a group'
+            vanityRef.current.find((v) => v.id === id)?.name
+          const groupName = (id) => groupNameOf(id) ?? 'a group'
           const added = [...after].find((id) => !before.has(id))
           const removed = [...before].find((id) => !after.has(id))
           if (added != null) {
             showSuccess(`You were added to the "${groupName(added)}" group`, 'servergroup_assigned')
             playUiSound('servergroup_assigned')
+            notifyOs('servergroup_assigned', {
+              key: 'roles',
+              title: roleTitle(groupNameOf(added), { given: true })
+            })
           } else if (removed != null) {
             showError(`You were removed from the "${groupName(removed)}" group`, {
               silent: true,
               soundId: 'servergroup_revoked'
             })
             playUiSound('servergroup_revoked')
+            notifyOs('servergroup_revoked', {
+              key: 'roles',
+              title: roleTitle(groupNameOf(removed), { given: false })
+            })
           }
         }
         // ClientModified also carries profile changes (avatar / nickname). Merge
@@ -3280,6 +3412,24 @@ function Main() {
             ])
           }
         }
+        // A desktop notification for a DM, a mention or a poke (lib/osNotifyEvents
+        // says which; notifyOs applies the settings, DND and deafen). A channel
+        // still in the 150 ms ChannelCreated batch counts too, so the first message
+        // of a brand-new DM pops up.
+        const popup = messagePopup(data, {
+          selfId: selfIdRef.current,
+          channel:
+            channelsRef.current.find((c) => c.id === data.channel_id) ??
+            pendingChannelUpserts.get(data.channel_id),
+          nameOf: (id) => clientNameIn(clientsRef.current, id),
+          now: Date.now(),
+          notified: osNotifiedIdsRef.current
+        })
+        if (popup) {
+          rememberNotified(osNotifiedIdsRef.current, data.id)
+          const { row, ...shown } = popup
+          notifyOs(row, shown)
+        }
       } else if (ev === 'CallRinging') {
         const now = Date.now()
         const { rings: next, added } = applyRinging(
@@ -3290,11 +3440,23 @@ function Main() {
         )
         commitRings(next)
         // A ring this close to its deadline is a resume replaying it.
-        if (added && data.deadline - now > 5000 && !dndRef.current) playUiSound('new-message')
+        const freshRing = added && data.deadline - now > 5000
+        if (freshRing && !dndRef.current) playUiSound('new-message')
+        if (freshRing) {
+          const nameOf = (id) => clientNameIn(clientsRef.current, id)
+          const dm = channelsRef.current.find((c) => c.id === data.channel_id)
+          notifyOs('call_ringing', {
+            key: `call:${data.channel_id}`,
+            title: callTitle(nameOf(data.caller_id)),
+            body: callBody(groupDmName(dm, selfIdRef.current, nameOf)),
+            target: { kind: 'dm', channelId: data.channel_id, authorId: data.caller_id }
+          })
+        }
       } else if (ev === 'CallRingEnded') {
         const { rings: next, ended } = applyRingEnded(ringsRef.current, data)
         commitRings(next)
         if (ended && isMissedRing(ended.reason)) noteMissedCall(ended)
+        closeOsNotification(`call:${data.channel_id}`)
       } else if (ev === 'ReadStateUpdated') {
         // Private to us: another session (or our own ack) moved a read cursor.
         setReadStates((prev) => ({
@@ -3633,6 +3795,10 @@ function Main() {
               soundId: banned ? 'you_were_banned' : 'you_kicked_server'
             })
             playUiSound(banned ? 'you_were_banned' : 'you_kicked_server')
+            notifyOs(banned ? 'you_were_banned' : 'you_kicked_server', {
+              key: 'server:removed',
+              title: removedTitle(osServerNameRef.current, { banned })
+            })
             handleDisconnect({ skipSound: true })
           } else if (close.action === CloseAction.Update) {
             showError(

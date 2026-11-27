@@ -59,6 +59,12 @@ export function setActiveSoundpack(id) {
 // `toast: true` marks a sound whose event ALSO raises a toast banner in Main.jsx;
 // those rows get a second toggle so the banner can be silenced independently of
 // the sound (see TOAST_SOUNDS / isToastEnabled below).
+// `os: 'on' | 'off'` marks a row whose event can raise a desktop (OS) notification:
+// the row gets a desktop toggle, and the value is that toggle's default (see
+// OS_ROWS / OS_DEFAULTS below and lib/osNotifications.js). The row's three-way
+// state governs its popup the same way it governs its sound.
+// `noSound: true` marks a row with no sound file: it always shows, has no play
+// button, and playUiSound on it does nothing. Such a row is there for its popup.
 // ponytail: grouping and labels are best-guess from the TeamSpeak sound names —
 // reorder / retitle freely, nothing keys off this order.
 export const SOUND_SECTIONS = [
@@ -68,7 +74,7 @@ export const SOUND_SECTIONS = [
     sounds: [
       { id: 'connected', label: 'You connected to a server' },
       { id: 'disconnected', label: 'You disconnected from a server' },
-      { id: 'connection_lost', label: 'You lost connection to a server' },
+      { id: 'connection_lost', label: 'You lost connection to a server', os: 'off' },
       {
         id: 'neutral_connection_connectionlost_currentchannel',
         label: 'Someone lost connection in your channel'
@@ -80,7 +86,10 @@ export const SOUND_SECTIONS = [
     label: 'Messaging',
     sounds: [
       { id: 'chat_message_inbound', label: 'You received a message' },
-      { id: 'chat_message_outbound', label: 'You sent a message' }
+      { id: 'chat_message_outbound', label: 'You sent a message' },
+      { id: 'dm_received', label: 'Direct message', noSound: true, os: 'on' },
+      { id: 'mentioned', label: 'You were mentioned', noSound: true, os: 'on' },
+      { id: 'call_ringing', label: 'Incoming call', noSound: true, os: 'on' }
     ]
   },
   {
@@ -88,7 +97,11 @@ export const SOUND_SECTIONS = [
     label: 'Channel Switching',
     sounds: [
       { id: 'channel_switched', label: 'You moved to another channel' },
-      { id: 'neutral_switched_tocurrentchannel', label: 'Someone joined your channel' },
+      {
+        id: 'neutral_switched_tocurrentchannel',
+        label: 'Someone joined your channel',
+        os: 'off'
+      },
       { id: 'neutral_switched_awayfromcurrentchannel', label: 'Someone has left your channel' },
       { id: 'neutral_moved_tocurrentchannel', label: 'Someone was moved to your channel' },
       {
@@ -108,8 +121,8 @@ export const SOUND_SECTIONS = [
       { id: 'sound_resumed', label: 'Sound unmuted / undeafened', default: 'pin' },
       { id: 'away_activated', label: 'Mark self as away' },
       { id: 'away_deactivated', label: 'Unmark self as away' },
-      { id: 'servergroup_assigned', label: 'Server group assigned', toast: true },
-      { id: 'servergroup_revoked', label: 'Server group revoked', toast: true }
+      { id: 'servergroup_assigned', label: 'Server group assigned', toast: true, os: 'off' },
+      { id: 'servergroup_revoked', label: 'Server group revoked', toast: true, os: 'off' }
     ]
   },
   {
@@ -117,13 +130,18 @@ export const SOUND_SECTIONS = [
     label: 'Moderation',
     sounds: [
       { id: 'you_kicked_channel', label: 'You were kicked from a channel' },
-      { id: 'you_kicked_server', label: 'You were kicked from the server', toast: true },
+      {
+        id: 'you_kicked_server',
+        label: 'You were kicked from the server',
+        toast: true,
+        os: 'off'
+      },
       {
         id: 'neutral_kicked_channel_awayfromcurrentchannel',
         label: 'Someone was kicked from your channel'
       },
       { id: 'neutral_kicked_server_currentchannel', label: 'Someone was kicked from the server' },
-      { id: 'you_were_banned', label: 'You were banned', toast: true },
+      { id: 'you_were_banned', label: 'You were banned', toast: true, os: 'off' },
       { id: 'neutral_banned_server_currentchannel', label: 'Someone was banned from the server' },
       { id: 'you_were_gagged', label: 'You were gagged' },
       { id: 'you_were_ungagged', label: 'You were ungagged' },
@@ -144,13 +162,13 @@ export const SOUND_SECTIONS = [
   {
     id: 'whisper',
     label: 'Whisper',
-    sounds: [{ id: 'you_were_poked', label: 'Someone poked you' }]
+    sounds: [{ id: 'you_were_poked', label: 'Someone poked you', default: 'pin', os: 'on' }]
   },
   {
     id: 'stream',
     label: 'Stream Events',
     sounds: [
-      { id: 'stream_started', label: 'Stream started' },
+      { id: 'stream_started', label: 'Stream started', os: 'off' },
       { id: 'stream_stopped', label: 'Stream stopped' }
     ]
   },
@@ -171,10 +189,21 @@ export const SOUND_DEFAULTS = {}
 // Sound ids whose event also raises a toast banner (from the `toast` field above).
 // Settings only offers the toast toggle for these.
 export const TOAST_SOUNDS = new Set()
+// Row ids that offer a desktop-notification toggle (from the `os` field above),
+// and each one's default (id -> boolean).
+export const OS_ROWS = new Set()
+export const OS_DEFAULTS = {}
+// Row ids with no sound file (from the `noSound` field above).
+const NO_SOUND = new Set()
 for (const section of SOUND_SECTIONS) {
   for (const s of section.sounds) {
     if (s.default) SOUND_DEFAULTS[s.id] = s.default
     if (s.toast) TOAST_SOUNDS.add(s.id)
+    if (s.os) {
+      OS_ROWS.add(s.id)
+      OS_DEFAULTS[s.id] = s.os === 'on'
+    }
+    if (s.noSound) NO_SOUND.add(s.id)
   }
 }
 
@@ -225,6 +254,15 @@ export function getSoundFilename(packId, soundId) {
   return SOUNDPACKS[packId]?.[soundId]?.filename || null
 }
 
+// The rows of `section` that Settings lists for pack `packId`, each with its
+// `filename` (null for a `noSound` row): the sounds the pack contains, so the
+// list follows the selected pack, plus every `noSound` row, which no pack has.
+export function sectionSounds(packId, section) {
+  return section.sounds
+    .map((s) => ({ ...s, filename: s.noSound ? null : getSoundFilename(packId, s.id) }))
+    .filter((s) => s.noSound || s.filename)
+}
+
 // Whether the local user is currently deafened. Mirrored in from the sidebar
 // (setSoundsDeafened) the same way enable prefs and the output device are, so
 // the non-React sounds module can gate notification playback without prop drilling.
@@ -232,6 +270,12 @@ let deafened = false
 
 export function setSoundsDeafened(value) {
   deafened = !!value
+}
+
+// Read by the desktop-notification gate (lib/osNotifications.js), so a popup
+// follows the same deafen state the chimes do.
+export function isSoundsDeafened() {
+  return deafened
 }
 
 // Per-sound state (sound id -> 'off' | 'on' | 'pin'). Absent = 'on' (default).
@@ -244,6 +288,12 @@ let soundState = {}
 
 export function setSoundStateMap(map) {
   soundState = { ...map }
+}
+
+// A row's state resolved with its default, as playUiSound and the
+// desktop-notification gate (lib/osNotifications.js) read it.
+export function soundStateOf(soundId) {
+  return soundState[soundId] || SOUND_DEFAULTS[soundId] || 'on'
 }
 
 // Playback volume (0..1) for all soundpack sounds, its own control separate from
@@ -301,9 +351,11 @@ export function setSoundOutputDevice(deviceId) {
 // so a sound can be auditioned even while toggled off or while deafened.
 export function playUiSound(name, volume, force = false) {
   const soundId = EVENT_SOUND[name] || name
+  // A `noSound` row never plays, even if a pack has a file by its name.
+  if (NO_SOUND.has(soundId)) return
   const entry = SOUNDPACKS[activePack]?.[soundId]
   if (!entry) return
-  const state = soundState[soundId] || SOUND_DEFAULTS[soundId] || 'on'
+  const state = soundStateOf(soundId)
   if (!force && state === 'off') return
   // Non-pinned sounds go silent while deafened; pinned sounds always play.
   if (!force && deafened && state !== 'pin') return
