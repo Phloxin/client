@@ -7,7 +7,7 @@
   makeDesktopItem,
   copyDesktopItems,
   nodejs_22,
-  electron_43,
+  electron_45,
   python3,
   pkg-config,
   libva,
@@ -30,7 +30,7 @@
 
 let
   # Keep in sync with the electron version in package.json
-  electron = electron_43;
+  electron = electron_45;
 
   screenshareCodecs = [
     "H264"
@@ -146,7 +146,7 @@ buildNpmPackage {
   };
 
   nodejs = nodejs_22; # matches engines in package.json
-  npmDepsHash = "sha256-LzoqUgPc368eQGm+1nNY6UnjWKI3Sj9ogtV+WDd171E=";
+  npmDepsHash = "sha256-eNQfShS0GgyWsgrO8PbwAOhodksRAOvmDY8PBQ0EIO4=";
 
   # Skip npm install scripts since the native modules are built below
   npmRebuildFlags = [ "--ignore-scripts" ];
