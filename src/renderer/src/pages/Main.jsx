@@ -4256,7 +4256,9 @@ function Main() {
 
   const connected = !!token
   const serverDisplayName = serverName ?? connectedServer?.nickname ?? 'Connected'
-  const titleText = connectedServer ? serverDisplayName : ''
+  const titleText = connectedServer
+    ? `${serverDisplayName} | Joined as ${connectedServer.username}`
+    : ''
 
   // Names of other clients typing in a channel (self excluded).
   const typingUsersIn = (channelId) =>
@@ -4895,6 +4897,7 @@ function Main() {
               onOpenSettings={openSettings}
               servers={servers}
               connectedServer={connectedServer}
+              serverName={serverName}
               onConnect={handleConnect}
               onRecovered={handleRecovered}
               onDisconnect={handleDisconnect}

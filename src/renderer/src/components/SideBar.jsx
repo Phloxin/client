@@ -45,6 +45,7 @@ function Sidebar({
   onOpenSettings,
   servers,
   connectedServer,
+  serverName,
   onConnect,
   onRecovered,
   onDisconnect,
@@ -426,6 +427,7 @@ function Sidebar({
         <ServerMenu
           servers={servers}
           connectedServer={connectedServer}
+          serverName={serverName}
           onConnect={onConnect}
           onRecovered={onRecovered}
           onDisconnect={onDisconnect}
