@@ -1,403 +1,891 @@
-/* Uno: the seat plates, the table (top card in a ring of the colour in play, the deck), the
-   revealed hands a spectator sees, the status line, and the viewer's hand at the bottom, which
-   wraps. The page scrolls when ten seats and a long hand do not fit. */
+/* Uno: a cloth with the other players around its edge (a fan of card backs over a name plate, in
+   the order of play), the deck and the discard pile in the middle on a mat ringed in the colour in
+   play, and the viewer's hand along the bottom. main.js places the players and the middle and lays
+   the hand out in rows; this sizes everything on the scale it sets. The table and what lies on it
+   keep their own colours on every theme; the dock uses the theme variables. */
 
-/* The card colours and the card back are the game's own and do not follow the theme. */
-:root {
-  --uno-red: #e0453a;
-  --uno-yellow: #f2c230;
-  --uno-green: #33a356;
-  --uno-blue: #2f6fd6;
-  --uno-black: #1e1e24;
-  --uno-back: #2a2d3c;
-  --uno-edge: #ffffff;
-  --uno-crown: #e2b12b;
+.table.uno {
+  --cs-felt: #3a3d9f;
+  --cs-felt-deep: #15164a;
+  --cs-rail: #23264f;
+  --cs-rail-light: #4a4f92;
+  --cs-rail-dark: #101230;
+  --uno-red: #dc3b35;
+  --uno-yellow: #f2bb22;
+  --uno-green: #2f9f57;
+  --uno-blue: #2b72e0;
+  --uno-black: #262835;
+  --uno-paper: #fbfaf5;
+  --uno-panel: rgb(8 9 34 / 50%);
+  --uno-edge: rgb(255 255 255 / 12%);
+  --uno-live: rgb(255 255 255 / 28%);
+  --uno-live-ink: #fff;
+  --uno-s: 1;
+  --uno-cw: 48px;
+  --tw: 100cqw;
+  --th: 100cqh;
+  --u: calc(min(100cqw, 170cqh) / 100);
+  --rail: clamp(5px, calc(var(--u) * 0.9), 9px);
+  --felt-radius: clamp(12px, calc(var(--u) * 2.2), 24px);
+  --uno-pad: clamp(6px, calc(var(--u) * 1.1), 14px);
+  --uno-gap: clamp(5px, calc(var(--u) * 0.9), 12px);
+  --uno-hw: clamp(
+    40px,
+    min(calc(var(--tw) * 0.105), calc(var(--th) * 0.165)),
+    max(78px, calc(var(--u) * 6.6))
+  );
 }
 
-.game {
-  position: relative;
-  overflow-x: hidden;
-  overflow-y: auto;
-  scrollbar-width: thin;
+.uno .felt::after {
+  display: none;
 }
 
-/* Up to ten plates: a wider row than the two-seat games, four plates across when wide and two at
-   320 px. */
-.seats {
-  grid-template-columns: repeat(auto-fit, minmax(min(160px, calc(50% - 4px)), 1fr));
-  max-width: 720px;
-}
-
-.game > * {
-  flex: none;
-}
-
-/* ── Cards ────────────────────────────────────────────────────────────────── */
-
-.card,
-.back {
-  --w: var(--card-w, 56px);
-  position: relative;
-  display: grid;
-  flex: none;
-  place-items: center;
-  width: var(--w);
-  height: calc(var(--w) * 1.5);
-  padding: 0;
-  border: calc(var(--w) * 0.06) solid var(--uno-edge);
-  border-radius: calc(var(--w) * 0.14);
-  box-shadow: 0 0 0 1px rgb(0 0 0 / 22%);
-  font: inherit;
-  line-height: 1;
-}
-
-.card {
-  color: #fff;
-  font-weight: 800;
-}
-
-.card.red {
-  background: var(--uno-red);
-}
-
-.card.yellow {
-  background: var(--uno-yellow);
-  color: var(--uno-black);
-}
-
-.card.green {
-  background: var(--uno-green);
-}
-
-.card.blue {
-  background: var(--uno-blue);
-}
-
-.card.wild {
-  background: var(--uno-black);
-}
-
-.card .face {
-  display: grid;
-  place-items: center;
-  font-size: calc(var(--w) * 0.52);
-  text-shadow: 0 1px 0 rgb(0 0 0 / 25%);
-}
-
-.card .corner {
+.uno .lay {
   position: absolute;
+  inset: calc(var(--rail) + var(--uno-pad));
   display: grid;
-  place-items: center;
-  font-size: calc(var(--w) * 0.2);
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: var(--uno-gap);
 }
 
-.card .corner.top {
-  top: 5%;
-  left: 8%;
+/* ── Cards ───────────────────────────────────────────────────────────────── */
+
+.card.uno {
+  --uno-ink: var(--uno-black);
+  padding: 0;
+  border: 0;
+  background: none;
+  box-shadow:
+    0 0 0 1px rgb(0 0 0 / 34%),
+    0 1px 3px rgb(0 0 0 / 42%);
+  color: #fff;
+  font: inherit;
 }
 
-.card .corner.bottom {
-  right: 8%;
-  bottom: 5%;
-  transform: rotate(180deg);
+.card.uno[data-color='red'] {
+  --uno-ink: var(--uno-red);
 }
 
-/* A 6 and a 9 are underlined, so the turned corner does not read as the other. */
-.card[data-number='6'] :is(.face, .corner),
-.card[data-number='9'] :is(.face, .corner) {
-  text-decoration: underline;
-  text-decoration-thickness: 0.08em;
-  text-underline-offset: 0.08em;
+.card.uno[data-color='yellow'] {
+  --uno-ink: var(--uno-yellow);
+  color: #33270a;
 }
 
-.card svg {
+.card.uno[data-color='green'] {
+  --uno-ink: var(--uno-green);
+}
+
+.card.uno[data-color='blue'] {
+  --uno-ink: var(--uno-blue);
+}
+
+.card.uno .card-in,
+.card.uno .card-face,
+.card.uno .card-back {
   display: block;
-  width: calc(var(--w) * 0.55);
-  height: calc(var(--w) * 0.55);
 }
 
-.card .corner svg {
-  width: calc(var(--w) * 0.2);
-  height: calc(var(--w) * 0.2);
+/* A paper edge around the coloured field, so a card stands off the cloth and off its neighbours
+   in a hand. */
+.card.uno .card-face {
+  border: calc(var(--card-w) * 0.055) solid var(--uno-paper);
+  background: linear-gradient(
+      160deg,
+      color-mix(in srgb, var(--uno-ink) 78%, #fff),
+      var(--uno-ink) 46%,
+      color-mix(in srgb, var(--uno-ink) 72%, #000)
+    )
+    padding-box;
 }
 
-.card[data-face='wild'] .face svg {
-  width: calc(var(--w) * 0.62);
-  height: calc(var(--w) * 0.83);
+.uno-frame {
+  fill: none;
+  stroke: currentColor;
+  stroke-opacity: 0.3;
+  stroke-width: 1.6;
 }
 
-.card[data-face='wild'] .corner svg {
-  height: calc(var(--w) * 0.26);
+.uno-medal {
+  fill: rgb(255 255 255 / 17%);
+  stroke: rgb(255 255 255 / 34%);
+  stroke-width: 3;
+  stroke-linejoin: round;
 }
 
-.q-red {
+.card.uno[data-color='yellow'] .uno-medal {
+  fill: rgb(255 255 255 / 36%);
+  stroke: rgb(255 255 255 / 62%);
+}
+
+.uno-pip,
+.uno-wash {
+  stroke: currentColor;
+  stroke-width: 9;
+  stroke-linejoin: round;
+}
+
+.uno-wash {
+  opacity: 0.2;
+}
+
+.card-face .uno-num {
+  font-weight: 900;
+  font-size: 61px;
+}
+
+.card-face .uno-num.shade {
+  fill: rgb(0 0 0 / 26%);
+}
+
+.card.uno[data-color='yellow'] .uno-num.shade {
+  fill: rgb(255 255 255 / 50%);
+}
+
+.card-face .uno-num.mod {
+  font-size: 45px;
+  letter-spacing: -1px;
+}
+
+.card-face .uno-idx {
+  font-weight: 800;
+  font-size: 21px;
+}
+
+.card-face .uno-idx.mark {
+  text-decoration: underline;
+}
+
+.card-face .uno-idx.mod {
+  font-size: 16.5px;
+  letter-spacing: -0.5px;
+}
+
+.card-face .uno-big {
+  font-weight: 900;
+  font-size: 64px;
+}
+
+.card-face .uno-big.mod {
+  font-size: 44px;
+  letter-spacing: -3px;
+}
+
+.uno-sym {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 12;
+  stroke-linecap: round;
+}
+
+.uno-sym .head {
+  fill: currentColor;
+  stroke: none;
+}
+
+.uno-m {
+  stroke: #fff;
+  stroke-width: 9;
+  stroke-linejoin: round;
+  paint-order: stroke;
+}
+
+.uno-m.red {
   fill: var(--uno-red);
 }
 
-.q-yellow {
+.uno-m.yellow {
   fill: var(--uno-yellow);
 }
 
-.q-green {
+.uno-m.green {
   fill: var(--uno-green);
 }
 
-.q-blue {
+.uno-m.blue {
   fill: var(--uno-blue);
 }
 
-/* The back: one plain design, a dark card with a ring in the middle. */
-.back {
+/* The back: a dark card with a ring of the four colours. */
+.uno .card-back,
+.uno .back {
+  border-width: calc(var(--card-w) * 0.055);
+  border-color: var(--uno-paper);
   background:
-    repeating-linear-gradient(135deg, transparent 0 6%, rgb(255 255 255 / 5%) 6% 12%),
-    var(--uno-back);
+    repeating-linear-gradient(
+      135deg,
+      rgb(255 255 255 / 5%) 0 calc(var(--card-w) * 0.05),
+      transparent calc(var(--card-w) * 0.05) calc(var(--card-w) * 0.12)
+    ),
+    linear-gradient(160deg, #343747, #15161f);
 }
 
-.back-mark {
-  display: grid;
-  place-items: center;
-  width: 70%;
+.uno .back {
+  position: relative;
+}
+
+.uno .card-back::after,
+.uno .back::after {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 62%;
   aspect-ratio: 1;
-  border: calc(var(--w) * 0.05) solid rgb(255 255 255 / 55%);
   border-radius: 50%;
-  color: #fff;
-  font-weight: 700;
-  font-size: calc(var(--w) * 0.18);
+  background:
+    radial-gradient(
+      circle closest-side,
+      #1b1c27 0 52%,
+      rgb(255 255 255 / 85%) 54% 60%,
+      transparent 62%
+    ),
+    conic-gradient(
+      var(--uno-red) 0 25%,
+      var(--uno-blue) 0 50%,
+      var(--uno-green) 0 75%,
+      var(--uno-yellow) 0
+    );
+  box-shadow: 0 0 0 max(1px, calc(var(--card-w) * 0.03)) rgb(255 255 255 / 85%);
+  translate: -50% -50%;
+  content: '';
 }
 
-.back.mini {
-  --w: 12px;
-  border-width: 1px;
-  border-radius: 2px;
+.uno-mark {
+  display: block;
+  width: 1em;
+  height: 1em;
+  fill: currentColor;
+  stroke: currentColor;
+  stroke-width: 9;
+  stroke-linejoin: round;
 }
 
-.back.mini .back-mark {
-  border-width: 1px;
+/* ── The other players ───────────────────────────────────────────────────── */
+
+.around {
+  --av: calc(26px * var(--uno-s));
+  position: relative;
+  min-height: 0;
 }
 
-/* ── Seat plates ──────────────────────────────────────────────────────────── */
+.pods {
+  position: absolute;
+  inset: 0;
+}
 
-/* The open seat's plate is its label and Sit, without the empty avatar, so "Open seat" fits beside
-   Sit four plates across. */
-.seat.empty .avatar {
+/* main.js sets each pod's place; its size follows the scale. */
+.pod {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  width: calc(112px * var(--uno-s));
+  height: calc(76px * var(--uno-s));
+  translate: -50% -50%;
+}
+
+.fan {
+  --card-w: calc(27px * var(--uno-s));
+  --uno-n: 1;
+  position: relative;
+  display: flex;
+  flex: none;
+  align-items: flex-start;
+  justify-content: center;
+  height: calc(var(--card-w) * 1.4);
+  margin-bottom: calc(var(--card-w) * -0.3);
+}
+
+.fan-cards {
+  display: flex;
+  justify-content: center;
+}
+
+.fan .card {
+  --uno-i: 0;
+  transform-origin: 50% 130%;
+  rotate: calc(var(--uno-i) * 5deg);
+}
+
+.fan .card + .card {
+  margin-left: calc(var(--card-w) * -0.72);
+}
+
+/* A hand a watcher is shown: face up and flat, closed up to the pod's width. */
+.fan.open {
+  --card-w: calc(25px * var(--uno-s));
+  width: calc(108px * var(--uno-s));
+}
+
+.fan.open .card {
+  rotate: none;
+}
+
+.fan.open .card + .card {
+  margin-left: calc(
+    min(var(--card-w) * 0.62, (108px * var(--uno-s) - var(--card-w)) / max(1, var(--uno-n) - 1)) -
+      var(--card-w)
+  );
+}
+
+.fan-n {
+  z-index: 2;
+  align-self: center;
+  margin-left: 0.3em;
+  font-size: var(--fs-tiny);
+  line-height: 1.5;
+}
+
+.fan.open .fan-n {
+  position: absolute;
+  top: -0.9em;
+  right: -0.2em;
+}
+
+.fan-n:empty {
   display: none;
 }
 
-/* The card count over the crown or Away. */
-.seat-extra {
-  display: flex;
+.pod .plate {
+  z-index: 1;
   flex: none;
+  min-width: calc(var(--av) * 2.4);
+}
+
+.plate .avatar {
+  background: #2c3165;
+  color: #dadcf6;
+}
+
+/* The leader's crown sits on the avatar and the rounds won hang from it, so the name keeps the
+   plate's width. */
+.avatar-wrap .crown {
+  position: absolute;
+  z-index: 1;
+  top: -34%;
+  left: -20%;
+  font-size: calc(var(--av) * 0.52);
+  filter: drop-shadow(0 1px 1px rgb(0 0 0 / 70%));
+  rotate: -22deg;
+}
+
+.plate .wins {
+  position: absolute;
+  z-index: 1;
+  bottom: -30%;
+  left: -30%;
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  padding: 0 0.4em 0 0.25em;
+  border-radius: 999px;
+  background: linear-gradient(#ffe391, #e8b22c);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 55%);
+  color: #3a2903;
+  font-weight: 800;
+  font-size: var(--fs-tiny);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.35;
+}
+
+.plate .wins svg {
+  width: 0.95em;
+  height: 0.95em;
+  fill: currentColor;
+}
+
+.plate .wins[hidden],
+.tight .pod .wins {
+  display: none;
+}
+
+.pod .tag {
+  right: auto;
+  left: calc(var(--av) * 0.9);
+}
+
+.pod.away .avatar {
+  filter: grayscale(0.8) brightness(0.7);
+}
+
+/* Down to one card. */
+.pod.last .fan .card {
+  box-shadow:
+    0 0 0 max(1.5px, calc(var(--card-w) * 0.07)) var(--cs-gold),
+    0 0 calc(var(--card-w) * 0.6) rgb(243 197 82 / 80%);
+}
+
+.pod.last .fan-n,
+.mine.last .hold {
+  background: linear-gradient(#ffe391, #e8b22c);
+  box-shadow: 0 1px 4px rgb(0 0 0 / 40%);
+  color: #3a2903;
+}
+
+.pod.won .plate,
+.mine.won .plate {
+  box-shadow:
+    0 0 0 2px var(--cs-gold),
+    0 0 calc(var(--av) * 0.8) rgb(243 197 82 / 75%);
+}
+
+/* A watcher picks whose shown hand lies along the bottom. */
+.pod.shown {
+  cursor: pointer;
+}
+
+.pod.watched .plate {
+  box-shadow:
+    0 0 0 2px rgb(255 255 255 / 75%),
+    0 2px 6px rgb(0 0 0 / 40%);
+}
+
+.pod.open {
+  justify-content: center;
+}
+
+.pod.open .seat {
+  display: flex;
   flex-direction: column;
-  align-items: flex-end;
-  gap: 3px;
-  color: var(--color-text-secondary);
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: 100%;
+  min-height: 80%;
+  padding: 4px;
+  border-radius: clamp(8px, calc(14px * var(--uno-s)), 14px);
+  outline: 1px dashed rgb(255 255 255 / 32%);
+  outline-offset: -1px;
+  color: var(--cs-ink-soft);
+  font-size: var(--fs-tiny);
+  white-space: nowrap;
+}
+
+.pod.open .btn {
+  padding: 2px 10px;
   font-size: 12px;
 }
 
-.seat-marks {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.seat-cards {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-
-.away {
-  padding: 0 6px;
-  border: 1px solid var(--color-border-light);
+/* What pops over a seat when something happens to it. */
+.flash {
+  position: absolute;
+  z-index: 9;
+  top: 34%;
+  left: 50%;
+  padding: 0.12em 0.8em;
   border-radius: 999px;
-  font-size: 11px;
+  background: #fff;
+  box-shadow: 0 3px 12px rgb(0 0 0 / 50%);
+  color: #14163a;
+  font-weight: 800;
+  font-size: clamp(11px, calc(var(--u) * 1.7), 17px);
+  white-space: nowrap;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
 }
 
-.crown {
-  display: grid;
-  color: var(--uno-crown);
+.mine > .flash {
+  top: 0;
 }
 
-.crown svg {
-  width: 15px;
-  height: 15px;
+.flash.bad {
+  background: #f25757;
+  color: #fff;
 }
 
-/* Narrow plates put the card count under the name, in one line, rather than squeeze the name. */
-@media (max-width: 380px) {
-  .seat-text {
-    flex-basis: 60px;
-  }
-
-  .seat-extra {
-    flex-direction: row;
-    align-items: center;
-    gap: 6px;
-  }
+.flash.gold {
+  background: linear-gradient(#ffe391, #e8b22c);
+  color: #3a2903;
 }
 
-/* The order of play runs along the plates, this way. */
-.direction {
-  display: flex;
-  justify-content: center;
-  margin: -6px 0;
-  color: var(--color-text-tertiary);
-}
+/* ── The middle: the deck, the pile on its mat, the colour in play ───────── */
 
-.direction svg {
-  width: 64px;
-  height: 12px;
-}
-
-.direction.backward svg {
-  transform: scaleX(-1);
-}
-
-.direction[hidden] {
-  display: none;
-}
-
-/* ── Table ────────────────────────────────────────────────────────────────── */
-
-.table {
-  --card-w: clamp(56px, 15vw, 84px);
-  display: flex;
-  flex: 1 0 auto;
-  align-items: center;
-  justify-content: center;
-  gap: 32px;
-  min-height: calc(var(--card-w) * 1.5 + 40px);
-}
-
-.table[hidden] {
-  display: none;
-}
-
-/* The ring around the top card is the colour in play, which is how a wild's chosen colour
-   shows. */
-.pile {
-  padding: 5px;
-  border: 4px solid var(--ring, var(--color-border));
-  border-radius: calc(var(--card-w) * 0.14 + 9px);
-}
-
-.pile.red {
-  --ring: var(--uno-red);
-}
-
-.pile.yellow {
-  --ring: var(--uno-yellow);
-}
-
-.pile.green {
-  --ring: var(--uno-green);
-}
-
-.pile.blue {
-  --ring: var(--uno-blue);
-}
-
-.deck-spot {
+.centre {
+  --card-w: var(--uno-cw);
+  position: absolute;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
+  justify-content: center;
+  gap: calc(var(--card-w) * 0.3);
+}
+
+.piles {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: calc(var(--card-w) * 0.45);
 }
 
 .deck {
+  position: relative;
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: calc(var(--card-w) + 8px);
+  height: calc(var(--card-w) * 1.4 + 8px);
   padding: 0;
   border: 0;
-  border-radius: calc(var(--card-w) * 0.14);
-  background: none;
+  border-radius: calc(var(--card-w) * 0.16);
+  background: rgb(0 0 0 / 24%);
+  box-shadow:
+    inset 0 1px 3px rgb(0 0 0 / 55%),
+    0 0 0 1px rgb(255 255 255 / 9%);
+  color: inherit;
+  font: inherit;
   cursor: default;
+}
+
+.deck .back {
+  box-shadow:
+    0 0 0 1px var(--cs-card-edge),
+    calc(var(--card-w) * 0.03) calc(var(--card-w) * 0.04) 0 #d9d5c9,
+    calc(var(--card-w) * 0.06) calc(var(--card-w) * 0.08) 0 #b9b4a6,
+    calc(var(--card-w) * 0.09) calc(var(--card-w) * 0.12) 3px rgb(0 0 0 / 50%);
   transition: transform 0.12s;
 }
 
+.deck.thin .back {
+  box-shadow:
+    0 0 0 1px var(--cs-card-edge),
+    calc(var(--card-w) * 0.03) calc(var(--card-w) * 0.04) 2px rgb(0 0 0 / 50%);
+}
+
+.deck.empty .back {
+  visibility: hidden;
+}
+
+/* The viewer's turn: the deck is the way to draw. */
 .deck.open:not(:disabled) {
   cursor: pointer;
 }
 
-.deck.open:not(:disabled):hover {
-  transform: translateY(-3px);
-}
-
 .deck.open .back {
   box-shadow:
-    0 0 0 1px rgb(0 0 0 / 22%),
-    0 0 0 4px var(--color-primary);
+    0 0 0 2px var(--cs-gold),
+    calc(var(--card-w) * 0.03) calc(var(--card-w) * 0.04) 0 #d9d5c9,
+    calc(var(--card-w) * 0.06) calc(var(--card-w) * 0.08) 0 #b9b4a6,
+    0 0 calc(var(--card-w) * 0.5) rgb(243 197 82 / 70%);
+}
+
+.deck.open:not(:disabled):hover .back {
+  transform: translateY(-5%);
 }
 
 .deck:focus-visible {
-  outline: 2px solid var(--color-primary);
+  outline: 2px solid var(--cs-gold);
   outline-offset: 3px;
 }
 
-.deck-count {
-  color: var(--color-text-secondary);
-  font-size: 12px;
+.deck-cue {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  padding: 0.1em 0.7em;
+  border-radius: 999px;
+  background: linear-gradient(#ffe391, #e8b22c);
+  box-shadow: 0 2px 6px rgb(0 0 0 / 50%);
+  color: #3a2903;
+  font-weight: 800;
+  font-size: var(--fs-small);
+  opacity: 0;
+  translate: -50% -50%;
+}
+
+.deck.open .deck-cue {
+  opacity: 1;
+}
+
+.pile-n {
+  position: absolute;
+  bottom: -0.55em;
+  left: 50%;
+  padding: 0 0.5em;
+  border-radius: 999px;
+  background: rgb(8 9 30 / 88%);
+  box-shadow: 0 0 0 1px rgb(255 255 255 / 16%);
+  color: var(--cs-ink);
+  font-weight: 700;
+  font-size: var(--fs-tiny);
   font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+  translate: -50% 0;
 }
 
-/* ── Revealed hands, for spectators ───────────────────────────────────────── */
-
-.revealed {
-  --card-w: 26px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  width: 100%;
-  max-width: 560px;
-  margin: 0 auto;
-}
-
-.revealed[hidden] {
+.pile-n:empty {
   display: none;
 }
 
-.revealed-row {
+.mat {
+  position: relative;
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: calc(var(--card-w) * 2.3);
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgb(8 9 34 / 62%), rgb(8 9 34 / 30%));
+  box-shadow:
+    inset 0 0 0 max(2px, calc(var(--card-w) * 0.06)) var(--uno-live),
+    0 0 calc(var(--card-w) * 0.55) color-mix(in srgb, var(--uno-live) 60%, transparent);
+}
+
+.mat[data-color='red'] {
+  --uno-live: var(--uno-red);
+}
+
+.mat[data-color='yellow'] {
+  --uno-live: var(--uno-yellow);
+  --uno-live-ink: #33270a;
+}
+
+.mat[data-color='green'] {
+  --uno-live: var(--uno-green);
+}
+
+.mat[data-color='blue'] {
+  --uno-live: var(--uno-blue);
+}
+
+/* Two arrows going round the pile the way the turn goes; mirrored when the order is turned. */
+.orbit {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+}
+
+.mat[data-dir] .orbit {
+  opacity: 1;
+}
+
+.mat[data-dir='backward'] .orbit {
+  transform: scaleX(-1);
+}
+
+.orbit svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  fill: none;
+  stroke: rgb(255 255 255 / 55%);
+  stroke-width: 3;
+  stroke-linecap: round;
+  animation: uno-orbit 18s linear infinite;
+}
+
+.orbit .head {
+  fill: rgb(255 255 255 / 80%);
+  stroke: none;
+}
+
+@keyframes uno-orbit {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.pile {
+  position: relative;
+  width: var(--card-w);
+  height: calc(var(--card-w) * 1.4);
+  border-radius: calc(var(--card-w) * 0.09);
+}
+
+.pile:empty {
+  outline: 1px dashed rgb(255 255 255 / 26%);
+  outline-offset: -1px;
+}
+
+/* More cards lie under the ones seen going on: the edge of a stack. */
+.pile.deep::before {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: #d9d5c9;
+  box-shadow:
+    0 0 0 1px rgb(0 0 0 / 30%),
+    calc(var(--card-w) * 0.03) calc(var(--card-w) * 0.04) 0 #b9b4a6,
+    calc(var(--card-w) * 0.06) calc(var(--card-w) * 0.09) calc(var(--card-w) * 0.08)
+      rgb(0 0 0 / 50%);
+  rotate: -6deg;
+  content: '';
+}
+
+.pile .card {
+  --uno-tilt: 0deg;
+  --uno-dx: 0px;
+  --uno-dy: 0px;
+  position: absolute;
+  inset: 0;
+  box-shadow:
+    0 0 0 1px rgb(0 0 0 / 34%),
+    0 calc(var(--card-w) * 0.03) calc(var(--card-w) * 0.1) rgb(0 0 0 / 50%);
+  rotate: var(--uno-tilt);
+  translate: var(--uno-dx) var(--uno-dy);
+}
+
+.live {
+  position: absolute;
+  bottom: calc(var(--card-w) * -0.1);
+  left: 50%;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+  padding: 0.05em 0.7em 0.05em 0.55em;
+  border-radius: 999px;
+  background: var(--uno-live);
+  box-shadow:
+    0 0 0 1.5px rgb(255 255 255 / 85%),
+    0 2px 6px rgb(0 0 0 / 45%);
+  color: var(--uno-live-ink);
+  font-weight: 800;
+  font-size: var(--fs-small);
+  white-space: nowrap;
+  translate: -50% 0;
+}
+
+.live[hidden] {
+  display: none;
+}
+
+.live .uno-mark {
+  width: 0.8em;
+  height: 0.8em;
+}
+
+.lobby {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 36ch;
+  margin: 0;
+  color: var(--cs-ink-soft);
+  font-size: var(--fs-small);
+  text-align: center;
+  text-wrap: balance;
+}
+
+.lobby[hidden] {
+  display: none;
+}
+
+.lobby b {
+  color: var(--cs-gold);
+  font-weight: 800;
+  font-size: var(--fs-name);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+/* ── The viewer's own seat ───────────────────────────────────────────────── */
+
+.mine {
+  --av: clamp(18px, calc(var(--u) * 2.6), 26px);
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 4px;
+  min-width: 0;
+  padding: clamp(5px, calc(var(--u) * 0.9), 10px);
+  border-radius: clamp(8px, calc(var(--u) * 1.2), 14px);
+  background: var(--uno-panel);
+  box-shadow: 0 0 0 1px var(--uno-edge);
+}
+
+.mine[hidden] {
+  display: none;
+}
+
+.mine.acting {
+  box-shadow:
+    0 0 0 2px var(--cs-gold),
+    0 0 calc(var(--av) * 0.8) rgb(243 197 82 / 45%);
+}
+
+.mine-head {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
 }
 
-.revealed-name {
+.mine .plate {
   flex: none;
-  max-width: 30%;
+  max-width: 62%;
+  background: rgb(8 9 34 / 55%);
+}
+
+.hold {
+  flex: none;
+  padding: 0 0.55em;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 14%);
+  font-weight: 700;
+  font-size: var(--fs-tiny);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.6;
+}
+
+.hold[hidden],
+.watch[hidden] {
+  display: none;
+}
+
+.watch {
+  display: flex;
+  flex: none;
+  gap: 4px;
+}
+
+.watch button {
+  display: grid;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  opacity: 0.55;
+  cursor: pointer;
+}
+
+.watch button[aria-pressed='true'] {
+  box-shadow: 0 0 0 2px #fff;
+  opacity: 1;
+}
+
+.watch .avatar {
+  width: var(--av);
+  height: var(--av);
+  background: #2c3165;
+  color: #dadcf6;
+  font-size: calc(var(--av) * 0.44);
+}
+
+.hint {
+  min-width: 0;
+  margin-left: auto;
   overflow: hidden;
-  font-weight: 600;
-  font-size: 12px;
+  color: var(--cs-ink-soft);
+  font-size: var(--fs-small);
+  text-align: right;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
 
-.revealed-cards {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 3px;
-  min-width: 0;
+/* main.js sets the height and each card's place: rows that overlap, a card's index always in
+   view. */
+.hand-area {
+  position: relative;
 }
-
-/* ── Hand ─────────────────────────────────────────────────────────────────── */
 
 .hand {
-  --card-w: clamp(40px, 11vw, 60px);
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 10px 6px;
-  width: 100%;
-  max-width: 720px;
-  margin: 0 auto;
-  padding-top: 10px;
-}
-
-.hand[hidden] {
-  display: none;
+  --card-w: var(--uno-hw);
+  position: relative;
+  min-height: calc(var(--card-w) * 1.68);
 }
 
 .hand .card {
+  position: absolute;
   cursor: default;
   transition:
     transform 0.12s,
@@ -405,32 +893,526 @@
 }
 
 .hand .card.playable {
-  transform: translateY(-8px);
   box-shadow:
-    0 0 0 1px rgb(0 0 0 / 22%),
-    0 6px 12px rgb(0 0 0 / 30%);
+    0 0 0 1px rgb(0 0 0 / 34%),
+    0 calc(var(--card-w) * 0.08) calc(var(--card-w) * 0.2) rgb(0 0 0 / 50%);
   cursor: pointer;
+  transform: translateY(-11%);
 }
 
-.hand .card.playable:hover {
-  transform: translateY(-11px);
+.hand .card.playable:hover,
+.hand .card.playable:focus-visible,
+.hand .card.choosing {
+  transform: translateY(-19%);
 }
 
-.hand .card.dim {
-  opacity: 0.45;
-  filter: saturate(0.6);
+/* Not `dim`: casino.css fades a card of that class. */
+.hand .card.off {
+  filter: brightness(0.7) saturate(0.85);
 }
 
 .hand .card.choosing {
-  transform: translateY(-11px);
   box-shadow:
-    0 0 0 1px rgb(0 0 0 / 22%),
-    0 0 0 4px var(--color-primary);
+    0 0 0 3px #fff,
+    0 calc(var(--card-w) * 0.08) calc(var(--card-w) * 0.2) rgb(0 0 0 / 50%);
+}
+
+/* While a round is dealt the hand can be played from already, but nothing in it stands out until
+   the first card lies on the pile. */
+.dealing .hand .card {
+  box-shadow:
+    0 0 0 1px rgb(0 0 0 / 34%),
+    0 1px 3px rgb(0 0 0 / 42%);
+  filter: none;
+  transform: none;
+}
+
+.dealing .deck-cue {
+  opacity: 0;
 }
 
 .hand .card:focus-visible {
-  outline: 2px solid var(--color-primary);
+  outline: 2px solid #fff;
+  outline-offset: 1px;
+}
+
+/* A card just drawn, so it can be found once the hand has taken it in. */
+.hand .card.new {
+  box-shadow:
+    0 0 0 2px var(--cs-gold),
+    0 0 calc(var(--card-w) * 0.3) rgb(243 197 82 / 80%);
+}
+
+.hand-note[hidden] {
+  display: none;
+}
+
+.hand-note {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  border-radius: 8px;
+  outline: 1px dashed rgb(255 255 255 / 22%);
+  outline-offset: -1px;
+  color: var(--cs-ink-soft);
+  font-size: var(--fs-small);
+  text-align: center;
+}
+
+/* A wide pane that is short: the viewer's plate goes beside the hand, not above it. */
+@container (max-height: 330px) and (min-width: 560px) {
+  .mine {
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 10px;
+  }
+
+  .mine-head {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+    max-width: 150px;
+  }
+
+  .mine .plate {
+    max-width: 100%;
+  }
+
+  .hint {
+    margin-left: 0;
+    text-align: left;
+    white-space: normal;
+  }
+}
+
+/* ── The colour picker for a wild ────────────────────────────────────────── */
+
+.colors {
+  position: absolute;
+  z-index: 20;
+  display: grid;
+  grid-template-columns: repeat(4, auto);
+  gap: 8px;
+  padding: 8px 10px 10px;
+  border-radius: 14px;
+  background: #14163d;
+  box-shadow:
+    0 0 0 1px rgb(255 255 255 / 18%),
+    0 10px 30px rgb(0 0 0 / 60%);
+}
+
+.colors[hidden] {
+  display: none;
+}
+
+.colors::before {
+  grid-column: 1 / -1;
+  color: var(--cs-ink-soft);
+  font-weight: 700;
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  text-align: center;
+  text-transform: uppercase;
+  content: 'Pick a colour';
+}
+
+.swatch {
+  --uno-ink: var(--uno-black);
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 12px;
+  background: linear-gradient(
+    160deg,
+    color-mix(in srgb, var(--uno-ink) 78%, #fff),
+    var(--uno-ink) 46%,
+    color-mix(in srgb, var(--uno-ink) 72%, #000)
+  );
+  box-shadow:
+    inset 0 0 0 2px rgb(255 255 255 / 85%),
+    0 2px 6px rgb(0 0 0 / 40%);
+  color: #fff;
+  font: inherit;
+  font-size: 20px;
+  cursor: pointer;
+  transition: transform 0.12s;
+}
+
+.swatch[data-color='red'] {
+  --uno-ink: var(--uno-red);
+}
+
+.swatch[data-color='yellow'] {
+  --uno-ink: var(--uno-yellow);
+  color: #33270a;
+}
+
+.swatch[data-color='green'] {
+  --uno-ink: var(--uno-green);
+}
+
+.swatch[data-color='blue'] {
+  --uno-ink: var(--uno-blue);
+}
+
+.swatch:hover {
+  transform: scale(1.08);
+}
+
+.swatch:focus-visible {
+  outline: 2px solid #fff;
   outline-offset: 2px;
+}
+
+/* How many cards of that colour the viewer holds. */
+.swatch b {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  min-width: 17px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 50%);
+  color: #14163a;
+  font-weight: 800;
+  font-size: 10.5px;
+  line-height: 17px;
+}
+
+.swatch b:empty {
+  display: none;
+}
+
+/* ── What plays over the table ───────────────────────────────────────────── */
+
+/* Nothing thrown over the table falls off it. */
+.uno .fx {
+  overflow: hidden;
+  border-radius: var(--felt-radius);
+}
+
+.banner {
+  position: absolute;
+  left: 50%;
+  padding: 0.15em 1em;
+  border-radius: 999px;
+  background: rgb(8 9 30 / 90%);
+  box-shadow:
+    0 0 0 2px var(--cs-gold),
+    0 6px 24px rgb(0 0 0 / 55%);
+  color: var(--cs-gold);
+  font-style: italic;
+  font-weight: 900;
+  font-size: clamp(15px, calc(var(--u) * 2.8), 32px);
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+  text-transform: uppercase;
+  transform: translate(-50%, -50%);
+}
+
+.banner.gold {
+  background: linear-gradient(#ffe391, #e8b22c);
+  box-shadow: 0 6px 24px rgb(0 0 0 / 55%);
+  color: #3a2903;
+}
+
+.banner.note {
+  box-shadow:
+    0 0 0 1.5px var(--cs-gold),
+    0 4px 14px rgb(0 0 0 / 55%);
+  font-size: clamp(11px, calc(var(--u) * 1.7), 18px);
+}
+
+.bit {
+  position: absolute;
+  width: 7px;
+  height: 11px;
+  border-radius: 2px;
+}
+
+.bit.round {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+/* The turn on its way from one seat to the next. */
+.spark {
+  position: absolute;
+  border-radius: 50%;
+  background: radial-gradient(circle, #fff 0 25%, var(--cs-gold) 45%, transparent 70%);
+}
+
+/* The colour in play going out from the mat when it changes. */
+.burst {
+  position: absolute;
+  border: 4px solid var(--uno-live);
+  border-radius: 50%;
+}
+
+.burst[data-color='red'] {
+  --uno-live: var(--uno-red);
+}
+
+.burst[data-color='yellow'] {
+  --uno-live: var(--uno-yellow);
+}
+
+.burst[data-color='green'] {
+  --uno-live: var(--uno-green);
+}
+
+.burst[data-color='blue'] {
+  --uno-live: var(--uno-blue);
+}
+
+/* ── Sheets: the result and the rules ────────────────────────────────────── */
+
+.sheet {
+  position: absolute;
+  z-index: 30;
+  inset: 0;
+  display: grid;
+  /* One cell the size of the table, so a long sheet scrolls inside itself. */
+  grid-template: minmax(0, 1fr) / minmax(0, 1fr);
+  place-items: center;
+  padding: calc(var(--rail) + 8px);
+  border-radius: var(--felt-radius);
+  background: rgb(6 7 24 / 66%);
+}
+
+.sheet[hidden] {
+  display: none;
+}
+
+.sheet-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  width: min(100%, 360px);
+  max-height: 100%;
+  padding: 16px 18px;
+  border-radius: 14px;
+  background: #14163d;
+  box-shadow:
+    0 0 0 1px rgb(255 255 255 / 15%),
+    0 14px 44px rgb(0 0 0 / 60%);
+  color: var(--cs-ink);
+  font-size: 13px;
+}
+
+.sheet-title {
+  margin: 0;
+  font-weight: 800;
+  font-size: 19px;
+  text-align: center;
+}
+
+.trophy {
+  display: grid;
+  flex: none;
+  width: 46px;
+  height: 46px;
+  color: var(--cs-gold);
+}
+
+.trophy svg {
+  fill: currentColor;
+}
+
+.trophy[hidden] {
+  display: none;
+}
+
+.standings {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+  scrollbar-width: thin;
+  scrollbar-color: rgb(255 255 255 / 28%) transparent;
+}
+
+.standings li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px 4px 6px;
+  border-radius: 8px;
+  background: rgb(255 255 255 / 6%);
+}
+
+.standings li.first {
+  background: linear-gradient(90deg, rgb(243 197 82 / 30%), rgb(243 197 82 / 8%));
+  box-shadow: inset 0 0 0 1px rgb(243 197 82 / 55%);
+}
+
+.standings .avatar {
+  width: 24px;
+  height: 24px;
+  background: #2c3165;
+  color: #dadcf6;
+  font-size: 11px;
+}
+
+.standings .who {
+  overflow: hidden;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.standings .left {
+  color: var(--cs-ink-soft);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.standings .won {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 2.4em;
+  color: var(--cs-gold);
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.standings .won svg {
+  width: 1.05em;
+  height: 1.05em;
+  fill: currentColor;
+}
+
+.sheet-note {
+  margin: 0;
+  color: var(--cs-ink-soft);
+  font-size: 12px;
+  text-align: center;
+}
+
+.sheet-note:empty {
+  display: none;
+}
+
+.sheet-actions {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+
+.sheet .btn {
+  white-space: nowrap;
+}
+
+.sheet .btn:not(.primary) {
+  border-color: rgb(255 255 255 / 22%);
+  background: rgb(255 255 255 / 8%);
+  color: var(--cs-ink);
+}
+
+.rules .sheet-card {
+  align-items: stretch;
+  width: min(100%, 470px);
+}
+
+.rules-body {
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgb(255 255 255 / 28%) transparent;
+}
+
+.rules-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 0 0 12px;
+  padding-left: 1.2em;
+}
+
+.shapes {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  margin: 0 0 12px;
+  color: var(--cs-ink-soft);
+}
+
+.shape {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--cs-ink);
+  font-weight: 600;
+}
+
+.shape.red .uno-mark {
+  color: var(--uno-red);
+}
+
+.shape.yellow .uno-mark {
+  color: var(--uno-yellow);
+}
+
+.shape.green .uno-mark {
+  color: var(--uno-green);
+}
+
+.shape.blue .uno-mark {
+  color: var(--uno-blue);
+}
+
+.legend {
+  --card-w: 30px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px 12px;
+  margin: 0;
+}
+
+.legend dt {
+  display: flex;
+  gap: 3px;
+}
+
+.legend dd {
+  margin: 0;
+}
+
+.legend dd b {
+  display: block;
+}
+
+/* ── Dock ────────────────────────────────────────────────────────────────── */
+
+.dock kbd {
+  margin-left: 4px;
+  padding: 0 4px;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  font: inherit;
+  font-weight: 600;
+  font-size: 10.5px;
+  opacity: 0.6;
 }
 
 .reveal {
@@ -452,55 +1434,14 @@
   accent-color: var(--color-primary);
 }
 
-/* ── The colour picker for a wild ─────────────────────────────────────────── */
-
-.colors {
-  position: absolute;
-  z-index: 5;
-  display: flex;
-  gap: 8px;
-  padding: 8px;
-  border: 1px solid var(--color-border-light);
-  border-radius: var(--border-radius-md, 10px);
-  background: var(--color-surface);
-  box-shadow: 0 6px 18px rgb(0 0 0 / 35%);
+@media (max-width: 420px), (pointer: coarse) {
+  .dock kbd {
+    display: none;
+  }
 }
 
-.colors[hidden] {
-  display: none;
-}
-
-.swatch {
-  width: 36px;
-  height: 36px;
-  padding: 0;
-  border: 3px solid var(--uno-edge);
-  border-radius: 50%;
-  box-shadow: 0 0 0 1px rgb(0 0 0 / 25%);
-  cursor: pointer;
-}
-
-.swatch:hover {
-  transform: scale(1.08);
-}
-
-.swatch:focus-visible {
-  outline: 2px solid var(--color-primary);
-  outline-offset: 2px;
-}
-
-.swatch.red {
-  background: var(--uno-red);
-}
-
-.swatch.yellow {
-  background: var(--uno-yellow);
-}
-
-.swatch.green {
-  background: var(--uno-green);
-}
-
-.swatch.blue {
-  background: var(--uno-blue);
+@media (max-width: 380px) {
+  .roomy {
+    display: none;
+  }
 }

@@ -9,6 +9,7 @@ import {
   activityFooterLabel,
   activityMessageLabel,
   clientLookup,
+  formatScore,
   hasTrophy,
   isActivityMessage,
   sortResults
@@ -149,6 +150,88 @@ test('the sort puts zero scores last and keeps ties in server order', () => {
   ])
   assert.equal(sortResults(undefined), null)
   assert.equal(sortResults([]), null)
+})
+
+test('negative scores (a poker net) rank below zero, the most behind last', () => {
+  const sorted = sortResults([
+    { client_id: 'behind', score: -2000 },
+    { client_id: 'even', score: 0 },
+    { client_id: 'ahead', score: 1005 },
+    { client_id: 'little', score: -5 }
+  ])
+  assert.deepEqual(
+    sorted.map((r) => [r.clientId, r.score]),
+    [
+      ['ahead', 1005],
+      ['even', 0],
+      ['little', -5],
+      ['behind', -2000]
+    ]
+  )
+  assert.equal(hasTrophy(sorted), true)
+  // Everyone behind but one tie at the top still has no trophy.
+  assert.equal(
+    hasTrophy(
+      sortResults([
+        { client_id: 'a', score: -5 },
+        { client_id: 'b', score: -5 },
+        { client_id: 'c', score: -10 }
+      ])
+    ),
+    false
+  )
+})
+
+test('a score prints with thousands separators, a negative one with a real minus sign', () => {
+  assert.equal(formatScore(-2000), '−2,000')
+  assert.equal(formatScore(-5), '−5')
+  assert.equal(formatScore(0), '0')
+  assert.equal(formatScore(3), '3')
+  assert.equal(formatScore(1005), '1,005')
+  assert.equal(formatScore(1234567), '1,234,567')
+  assert.equal(formatScore('-40'), '−40')
+  assert.equal(formatScore(undefined), '0')
+})
+
+test('a signed score puts a + on the positive ones only', () => {
+  assert.equal(formatScore(1005, true), '+1,005')
+  assert.equal(formatScore(3, true), '+3')
+  assert.equal(formatScore(0, true), '0')
+  assert.equal(formatScore(-1005, true), '−1,005')
+  assert.equal(formatScore(1005, false), '1,005')
+})
+
+test('a card is signed when any score on it is negative', () => {
+  const net = activityCardModel(
+    endedCard({
+      results: [
+        { client_id: 'a', score: -1005 },
+        { client_id: 'b', score: 1005 },
+        { client_id: 'c', score: 0 }
+      ]
+    }),
+    null
+  )
+  assert.equal(net.signed, true)
+  assert.deepEqual(
+    net.results.map((r) => formatScore(r.score, net.signed)),
+    ['+1,005', '0', '−1,005']
+  )
+  const wins = activityCardModel(
+    endedCard({
+      results: [
+        { client_id: 'a', score: 3 },
+        { client_id: 'b', score: 0 }
+      ]
+    }),
+    null
+  )
+  assert.equal(wins.signed, false)
+  assert.deepEqual(
+    wins.results.map((r) => formatScore(r.score, wins.signed)),
+    ['3', '0']
+  )
+  assert.equal(activityCardModel(endedCard({}), null).signed, false)
 })
 
 test('the trophy needs a single holder of the top score', () => {

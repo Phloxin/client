@@ -4,38 +4,144 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <link rel="stylesheet" href="../shared/base.css" />
+    <link rel="stylesheet" href="../shared/casino.css" />
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
-    <main class="game" id="game" hidden>
-      <header class="seats"></header>
-      <div class="direction" id="direction" hidden></div>
-      <section class="table" id="table" hidden>
-        <div class="pile" id="pile"></div>
-        <div class="deck-spot">
-          <button class="deck" id="deck" type="button" disabled></button>
-          <span class="deck-count" id="deck-count"></span>
+    <main class="game casino" id="game" hidden>
+      <section class="table-area">
+        <div class="table uno" id="table">
+          <div class="felt"></div>
+          <div class="lay">
+            <div class="around" id="around">
+              <div class="pods" id="pods"></div>
+              <div class="centre" id="centre">
+                <div class="piles">
+                  <button class="deck" id="deck" type="button" disabled>
+                    <span class="back" id="deck-top"></span>
+                    <span class="deck-cue">Draw</span>
+                    <span class="pile-n" id="deck-n"></span>
+                  </button>
+                  <div class="mat" id="mat">
+                    <span class="orbit" id="orbit">
+                      <svg viewBox="0 0 100 100" aria-hidden="true">
+                        <path d="M7.7 42.5A43 43 0 0 1 80.4 19.6" />
+                        <path class="head" d="M86.8 26 85 15 75.8 24.2z" />
+                        <path d="M92.3 57.5A43 43 0 0 1 19.6 80.4" />
+                        <path class="head" d="M13.2 74 15 85 24.2 75.8z" />
+                      </svg>
+                    </span>
+                    <div class="pile" id="pile"></div>
+                    <span class="live" id="live" hidden></span>
+                  </div>
+                </div>
+                <p class="lobby" id="lobby" hidden>
+                  <b id="lobby-seats"></b>
+                  <span>Match the colour or the symbol. The first to play every card wins.</span>
+                </p>
+              </div>
+            </div>
+            <div class="mine" id="mine" hidden>
+              <div class="mine-head">
+                <div class="plate" id="my-plate">
+                  <span class="avatar-wrap" id="my-avatar">
+                    <span class="wins" id="my-wins" title="Rounds won" hidden></span>
+                  </span>
+                  <span class="plate-name" id="my-name"><span></span></span>
+                  <span class="hold" id="my-count" title="Cards in hand" hidden></span>
+                </div>
+                <div class="watch" id="watch" hidden></div>
+                <span class="hint" id="hint"></span>
+              </div>
+              <div class="hand-area">
+                <div class="hand" id="hand"></div>
+                <p class="hand-note" id="hand-note" hidden></p>
+              </div>
+            </div>
+          </div>
+          <div class="colors" id="colors" role="group" aria-label="Pick a colour" hidden></div>
+          <div class="fx" id="fx"></div>
+          <div class="sheet results" id="results" hidden>
+            <div class="sheet-card" role="dialog" aria-labelledby="results-title">
+              <span class="trophy" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path
+                    d="M7 3h10v2h3v3a4 4 0 0 1-3.4 3.95A5 5 0 0 1 13 14.9V18h3v3H8v-3h3v-3.1a5 5 0 0 1-3.6-2.95A4 4 0 0 1 4 8V5h3zm0 4H6v1a2 2 0 0 0 1 1.73zm10 0v2.73A2 2 0 0 0 18 8V7z"
+                  />
+                </svg>
+              </span>
+              <h2 class="sheet-title" id="results-title"></h2>
+              <ol class="standings" id="standings"></ol>
+              <p class="sheet-note" id="results-note"></p>
+              <div class="sheet-actions">
+                <button class="btn" id="results-close" type="button">View table</button>
+                <button class="btn primary" id="again" type="button" hidden>
+                  Start next round
+                </button>
+              </div>
+            </div>
+          </div>
+          <div class="sheet rules" id="rules" hidden>
+            <div class="sheet-card" role="dialog" aria-labelledby="rules-title">
+              <h2 class="sheet-title" id="rules-title">How to play</h2>
+              <div class="rules-body">
+                <ul class="rules-list">
+                  <li>
+                    On your turn, play a card that matches the top of the pile by
+                    <b>colour</b> or by <b>symbol</b>. A wild goes on anything.
+                  </li>
+                  <li>
+                    Nothing to play, or you would rather not? <b>Draw</b> a card from the deck: you
+                    keep it and your turn ends.
+                  </li>
+                  <li>The first player to play their last card <b>wins the round</b>.</li>
+                  <li>
+                    A player who leaves keeps their seat until the round ends; the table draws for
+                    them.
+                  </li>
+                </ul>
+                <p class="shapes" id="shapes">Each colour has a shape of its own:</p>
+                <dl class="legend" id="legend"></dl>
+              </div>
+              <div class="sheet-actions">
+                <button class="btn primary" id="rules-close" type="button">Got it</button>
+              </div>
+            </div>
+          </div>
         </div>
       </section>
-      <section class="revealed" id="revealed" hidden></section>
-      <footer class="footer">
-        <div class="status-row">
-          <span class="status" id="status"></span>
-          <span class="watching" id="watching" hidden>Watching</span>
+      <footer class="dock">
+        <div class="bar">
+          <div class="bar-left">
+            <button class="btn quiet" id="leave" type="button" hidden>
+              Leave<span class="roomy"> seat</span>
+            </button>
+            <button class="btn quiet" id="sit" type="button" hidden>Sit</button>
+            <button class="btn quiet" id="help" type="button">Rules</button>
+          </div>
+          <div class="status-row">
+            <span class="status" id="status"></span>
+            <span class="watching" id="watching" hidden>Watching</span>
+          </div>
+          <div class="bar-right">
+            <button class="btn primary" id="start" type="button" hidden>Start</button>
+            <button class="btn" id="draw" type="button" hidden>
+              Draw <kbd aria-hidden="true">D</kbd>
+            </button>
+          </div>
         </div>
         <p class="notice" id="notice" role="status"></p>
-        <button class="btn primary" id="action" type="button" hidden>Start</button>
+        <label class="reveal" id="reveal-row" hidden>
+          <input type="checkbox" id="reveal" />
+          <span>Show my hand to spectators</span>
+        </label>
       </footer>
-      <section class="hand" id="hand" hidden></section>
-      <label class="reveal" id="reveal-row" hidden>
-        <input type="checkbox" id="reveal" />
-        <span>Show my hand to spectators</span>
-      </label>
-      <div class="colors" id="colors" hidden></div>
     </main>
     <script src="../shared/bridge.js"></script>
     <script src="../shared/room.js"></script>
-    <script src="../shared/seats.js"></script>
+    <script src="../shared/cards.js"></script>
+    <script src="faces.js"></script>
+    <script src="steps.js"></script>
     <script src="main.js"></script>
   </body>
 </html>

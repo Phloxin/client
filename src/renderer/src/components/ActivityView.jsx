@@ -2,8 +2,9 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { IconDeviceGamepad2 } from '@tabler/icons-react'
 import { activityCapabilities, activitySrcdoc } from '../activities/ui'
-import { bridgeClients, readUiMessage, themeValues } from '../lib/activities/bridge'
+import { BUNDLE_SOUNDS, bridgeClients, readUiMessage, themeValues } from '../lib/activities/bridge'
 import { exportImage } from '../lib/activities/exportImage'
+import { playUiSound } from '../lib/sounds'
 import ActivityPlayer from './ActivityPlayer'
 import { ActivityPlaceholder } from './ActivityHostLayer'
 import './ActivityView.css'
@@ -13,7 +14,9 @@ const CLOSE_REASONS = new Map([
   ['forced', 'The activity was ended'],
   ['shutdown', 'The server is restarting'],
   ['channel_deleted', 'The channel was deleted'],
-  ['error', 'The activity stopped because of an error']
+  ['error', 'The activity stopped because of an error'],
+  // Sent only to this client's own session, such as when it was kicked or banned.
+  ['removed', 'You were removed from this activity']
 ])
 const MAX_AVATARS = 5
 // What a tab shows for a room this client has no controller for.
@@ -32,7 +35,8 @@ function bannerText(state) {
 // connection and the close through. Messages from anything but this frame are ignored. For a
 // bundle with the `player` capability (`player` is the surface's handle, `bodyRef` what goes
 // fullscreen) it also routes `player` and `fullscreen`, which any other bundle has dropped; for one
-// whose `capabilities` include `export`, it saves or shares the bundle's picture.
+// whose `capabilities` include `export`, it saves or shares the bundle's picture; for one with
+// `sound`, it plays the sounds the bundle asks for while the frame is on screen.
 function useBridge(
   frameRef,
   controller,
@@ -168,6 +172,9 @@ function useBridge(
               post({ type: 'export', id: message.id, ...result })
             )
           }
+          return
+        case 'sound':
+          if (frame.getClientRects().length > 0) playUiSound(BUNDLE_SOUNDS[message.name])
           return
         default:
           console.warn('[Activity] Dropped a message from the activity:', message.why)

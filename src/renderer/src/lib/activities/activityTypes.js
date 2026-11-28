@@ -6,6 +6,7 @@ import {
   IconChalkboard,
   IconChess,
   IconCircles,
+  IconClover,
   IconDeviceGamepad2,
   IconDeviceTv,
   IconPokerChip,
@@ -21,7 +22,8 @@ export const ACTIVITY_TYPES = {
   watch_together: { icon: IconDeviceTv, endedVerb: 'watched' },
   blackjack: { icon: IconSpade, endedVerb: 'played' },
   poker: { icon: IconPokerChip, endedVerb: 'played' },
-  whiteboard: { icon: IconChalkboard, endedVerb: 'joined' }
+  whiteboard: { icon: IconChalkboard, endedVerb: 'joined' },
+  lucky_seven: { icon: IconClover, endedVerb: 'played' }
 }
 
 export const FALLBACK_ACTIVITY_TYPE = { icon: IconDeviceGamepad2, endedVerb: 'took part' }

@@ -173,6 +173,16 @@ export const SOUND_SECTIONS = [
     ]
   },
   {
+    id: 'activities',
+    label: 'Activities',
+    sounds: [
+      { id: 'activity_card_deal', label: 'A card is dealt or flipped' },
+      { id: 'activity_card_slide', label: 'A card is passed or discarded' },
+      { id: 'activity_card_shuffle', label: 'The deck is shuffled' },
+      { id: 'activity_card_place', label: 'A card is played onto the pile' }
+    ]
+  },
+  {
     id: 'warnings',
     label: 'Warnings',
     sounds: [

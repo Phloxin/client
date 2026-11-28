@@ -33,6 +33,19 @@ export function sortResults(results) {
     .sort((a, b) => b.score - a.score)
 }
 
+// A score as the scoreboard prints it, with thousands separators (1,005). Scores may be negative
+// (poker reports each player's net); those get a real minus sign (U+2212) rather than a hyphen.
+// `signed` is set on a card where some score is negative: positive scores then get a `+`.
+export function formatScore(score, signed = false) {
+  const n = Number(score) || 0
+  const digits = Math.abs(n).toLocaleString('en-US')
+  if (n < 0) return `−${digits}`
+  return signed && n > 0 ? `+${digits}` : digits
+}
+
+// A net-ranked card (some score below 0) prints its scores signed.
+export const hasSignedScores = (sorted) => !!sorted?.some((r) => r.score < 0)
+
 // The top row earns the trophy only when nobody shares its score.
 export const hasTrophy = (sorted) =>
   !!sorted?.length && (sorted.length === 1 || sorted[0].score !== sorted[1].score)
@@ -61,6 +74,7 @@ export function activityCardModel(entry, room) {
     detail: live ? text(room.detail) : null,
     participants: live ? ids(room.clients) : ids(ended?.participants),
     results,
+    signed: hasSignedScores(results),
     trophy: hasTrophy(results),
     summary: ended ? text(ended.summary) : null,
     footer

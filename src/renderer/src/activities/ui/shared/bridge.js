@@ -2,7 +2,7 @@
 // shell posts init, state, volatile, clients, ok, rejected, theme, closed, connection and export;
 // this decodes state and volatile payloads (JSON bytes), applies the theme, and keeps each action's
 // promise until its ok has come and state at least that new has been seen, or until it is
-// rejected, and each export's until the shell answers it.
+// rejected, and each export's until the shell answers it. A sound it asks for gets no answer.
 ;(() => {
   const decoder = new TextDecoder()
   const encoder = new TextEncoder()
@@ -149,6 +149,11 @@
         exporting.set(id, { resolve, reject })
         post({ type: 'export', op, id, name, data })
       })
+    },
+    // Asks the shell to play one of its sounds, by a name in BUNDLE_SOUNDS
+    // (lib/activities/bridge.js), for a bundle with the sound capability.
+    sound(name) {
+      post({ type: 'sound', name })
     },
     // Sends a value's JSON as an input datagram.
     input(value) {
