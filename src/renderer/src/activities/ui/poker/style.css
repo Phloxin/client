@@ -35,6 +35,12 @@
   translate: -50% -50%;
 }
 
+/* The room's notice pill (casino.css draws it) sits over the middle of the table, above the pot
+   and the board, where no plate is: in the dock it lay over the viewer's own. */
+.pk .centre > .notice {
+  bottom: calc(100% + var(--u) * 1.2);
+}
+
 .pot {
   display: flex;
   align-items: flex-end;
@@ -446,6 +452,16 @@
     translate: none;
   }
 
+  /* The deck stands above the board here, past the pot, so the notice clears it too; a long one
+     wraps rather than run under the side columns' plates. */
+  .pk .centre > .notice {
+    bottom: calc(100% + var(--u) * 5.5);
+    width: max-content;
+    max-width: calc(var(--u) * 56);
+    white-space: normal;
+    text-wrap: balance;
+  }
+
   /* A pod is a small column: the cards, then the avatar over the name over the stack. */
   .pod .plate {
     flex-direction: column;
@@ -601,19 +617,42 @@
   gap: 6px;
 }
 
-.raise-range {
+.raise-amount {
   flex: 1 1 0;
   min-width: 0;
-  height: 18px;
+  height: 22px;
   margin: 0;
-  accent-color: var(--color-primary);
+  padding: 0 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-background);
+  color: var(--color-text);
+  font: inherit;
+  font-weight: 600;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
 }
 
-/* As tall as the slider, so the row keeps its height. */
+.raise-amount:focus {
+  border-color: var(--color-primary);
+  outline: none;
+}
+
+.raise-amount:disabled {
+  opacity: 0.5;
+}
+
+/* Typed past the limits: the raise button shows the amount it was held to. */
+.raise-amount.out {
+  border-color: var(--color-danger);
+}
+
+/* As tall as the amount box, so the row keeps its height. */
 .raise-row .btn.step {
   flex: none;
   width: 28px;
-  height: 18px;
+  height: 22px;
   padding: 0;
   font-size: 14px;
   line-height: 1;
@@ -676,5 +715,329 @@
 
   .turn-buttons .btn.act {
     font-size: 13px;
+  }
+}
+
+/* ── The net line, the Lend button and the lend popover ──────────────────── */
+
+/* Under the stack: what the player is up or down on what they bought in, plus loans. */
+.plate-net {
+  font-weight: 700;
+  font-size: var(--fs-tiny);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.plate-net[hidden] {
+  display: none;
+}
+
+.plate-net.up,
+.ledger-table .net.up {
+  color: #5fd38d;
+}
+
+.plate-net.down,
+.ledger-table .net.down {
+  color: #ff7d7d;
+}
+
+/* On a broke player's plate, where the winnings would lie on its lower edge. */
+.pod .btn.lend {
+  position: absolute;
+  z-index: 4;
+  top: 100%;
+  left: 50%;
+  padding: 1px 10px;
+  border-color: rgb(243 197 82 / 60%);
+  border-radius: 999px;
+  background: var(--cs-plate);
+  color: var(--cs-gold);
+  font-weight: 700;
+  font-size: var(--fs-tiny);
+  line-height: 1.5;
+  white-space: nowrap;
+  translate: -50% -15%;
+}
+
+/* The stood-up table's column plate ends on the net line, so the button hangs below it. */
+@container (max-width: 519px) {
+  .pod .btn.lend {
+    translate: -50% 15%;
+  }
+}
+
+.pod .btn.lend:hover:not(:disabled),
+.pod .btn.lend.open {
+  border-color: var(--cs-gold);
+  background: #2a2412;
+}
+
+.pod .btn.lend[hidden] {
+  display: none;
+}
+
+/* A loan's chips on their way, half again the size of a payout's so the move reads. */
+.table.pk {
+  --loan-chip: calc(var(--chip) * 1.5);
+}
+
+.fx .chips.loan {
+  --chip: var(--loan-chip);
+}
+
+/* By the borrower's plate; main.js places it with left and top. */
+.lend-pop {
+  position: fixed;
+  z-index: 90;
+  top: 0;
+  left: 0;
+  display: grid;
+  /* The amount box's own width would widen an auto track past the popover. */
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+  width: 216px;
+  padding: 9px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-surface);
+  box-shadow: 0 10px 28px rgb(0 0 0 / 50%);
+  color: var(--color-text);
+}
+
+.lend-pop[hidden] {
+  display: none;
+}
+
+.lend-title {
+  overflow: hidden;
+  margin: 0;
+  font-weight: 700;
+  font-size: 13px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.lend-presets {
+  display: flex;
+  gap: 4px;
+}
+
+.lend-presets .btn {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 2px 4px;
+  font-size: 12px;
+}
+
+.lend-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.lend-row .raise-amount {
+  height: 26px;
+}
+
+#lend-send {
+  flex: none;
+  padding: 3px 10px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* ── Floating tiles: the hands guide and the ledger ──────────────────────── */
+
+/* casino.css draws the tiles (.tile); these are their sizes. */
+.hands {
+  width: min(440px, calc(100vw - 16px));
+  height: min(600px, calc(100vh - 16px));
+}
+
+/* As tall as its rows until it is resized. */
+.ledger {
+  width: min(500px, calc(100vw - 16px));
+  height: auto;
+}
+
+.hands-lead {
+  margin: 0 0 12px;
+  color: var(--cs-ink-soft);
+  font-size: 14px;
+}
+
+.legend {
+  --card-w: 34px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px 14px;
+  margin: 0;
+}
+
+.legend dt {
+  display: flex;
+  gap: 4px;
+}
+
+.legend .card.kicker {
+  opacity: 0.42;
+}
+
+.legend dd {
+  margin: 0;
+  color: var(--cs-ink-soft);
+  font-size: 14px;
+}
+
+.legend dd b {
+  display: block;
+  color: var(--cs-ink);
+  font-size: 16px;
+}
+
+.hands-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 14px 0 0;
+  padding-left: 1.2em;
+  font-size: 14px;
+}
+
+/* ── The ledger ──────────────────────────────────────────────────────────── */
+
+.ledger-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ledger-table th {
+  padding: 0 6px 6px;
+  border-bottom: 1px solid rgb(255 255 255 / 14%);
+  color: var(--cs-ink-soft);
+  font-weight: 600;
+  font-size: 12px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.ledger-table td {
+  padding: 6px;
+  border-bottom: 1px solid rgb(255 255 255 / 7%);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.ledger-table th:first-child,
+.ledger-table td:first-child {
+  padding-left: 0;
+  text-align: left;
+}
+
+.ledger-table th:last-child,
+.ledger-table td:last-child {
+  padding-right: 0;
+}
+
+/* The name takes what the numbers leave and is cut short to fit. */
+.ledger-table td.who {
+  width: 100%;
+  max-width: 0;
+}
+
+.who-inner {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.who-inner .avatar {
+  width: 22px;
+  height: 22px;
+  background: #2c3644;
+  color: #d5dbe3;
+  font-size: 11px;
+}
+
+.who-name {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+}
+
+.ledger-table tr.me .who-name {
+  color: var(--cs-gold);
+}
+
+.ledger-table td.loans {
+  color: var(--cs-ink-soft);
+}
+
+.ledger-table td.loans span + span {
+  margin-left: 6px;
+}
+
+.ledger-table td.net {
+  font-weight: 700;
+}
+
+.ledger-empty {
+  margin: 10px 0 0;
+  color: var(--cs-ink-soft);
+  font-size: 14px;
+}
+
+.ledger-empty[hidden] {
+  display: none;
+}
+
+.ledger-loans {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 12px 0 0;
+  padding-left: 1.2em;
+  color: var(--cs-ink-soft);
+  font-size: 13px;
+}
+
+.ledger-loans:empty {
+  display: none;
+}
+
+@media (max-width: 420px) {
+  .ledger-table {
+    font-size: 13px;
+  }
+
+  .ledger-table th,
+  .ledger-table td {
+    padding-right: 4px;
+    padding-left: 4px;
+  }
+
+  .legend {
+    --card-w: 27px;
+    gap: 8px 10px;
+  }
+
+  .legend dt {
+    gap: 2px;
+  }
+
+  .legend dd,
+  .hands-lead,
+  .hands-notes {
+    font-size: 13px;
+  }
+
+  .legend dd b {
+    font-size: 15px;
   }
 }

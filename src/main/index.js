@@ -10,7 +10,8 @@ import {
   screen,
   powerMonitor,
   powerSaveBlocker,
-  Menu
+  Menu,
+  Notification
 } from 'electron'
 import { basename, join } from 'path'
 import { createRequire } from 'node:module'
@@ -28,6 +29,7 @@ import { setupMediaEngine } from './mediaEngine'
 import { captureTarget } from './captureTarget'
 import { setupUpdater } from './updater'
 import { setupTray, setTrayVoiceState, destroyTray } from './tray'
+import { createOsNotifier } from './osNotifications'
 import {
   authorizationFor,
   clearSession,
@@ -1103,6 +1105,36 @@ app.whenReady().then(() => {
       win.webContents.send('theme-changed-ipc', themeId)
     })
   })
+
+  // ─── Desktop notifications (see osNotifications.js) ──────────────────
+  // The renderer decides whether an event pops up; main holds it back while any
+  // Pylon window has focus, and a click brings the main window forward and tells
+  // its renderer what to open. With PYLON_TEST=1 popups are recorded, not shown,
+  // so e2e clients never pop up on the real desktop.
+  const notificationsTestMode = process.env.PYLON_TEST === '1'
+  const notifier = createOsNotifier({
+    Notification,
+    anyWindowFocused: () =>
+      BrowserWindow.getAllWindows().some((win) => !win.isDestroyed() && win.isFocused()),
+    onActivate: (target) => {
+      focusMainWindow()
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('notifications:activate', target)
+      }
+    },
+    platform: process.platform,
+    icon: iconPng,
+    testMode: notificationsTestMode
+  })
+  ipcMain.handle('notifications:supported', () => notifier.supported())
+  ipcMain.handle('notifications:show', (_, payload) => notifier.show(payload))
+  ipcMain.on('notifications:close', (_, key) => notifier.close(key))
+  if (notificationsTestMode) {
+    ipcMain.handle('notifications:test-recorded', () => notifier.recorded())
+    ipcMain.handle('notifications:test-assume-unfocused', (_, value) =>
+      notifier.setAssumeUnfocused(value === true)
+    )
+  }
 
   createWindow()
 

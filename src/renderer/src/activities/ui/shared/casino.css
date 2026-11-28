@@ -1,6 +1,7 @@
 /* Shared by the casino bundles (blackjack, poker), on top of base.css: the table (rail and felt),
    cards, chips, the seat plate with its timer ring, the labels that lie on the felt, the layer the
-   moves are played on, and the dock under the table. The table and what lies on it keep their own
+   moves are played on, the dock under the table and the tiles floating over the game. The table
+   and what lies on it keep their own
    colours on every theme; the dock uses the theme variables. Each bundle's style.css sets the
    table's size variables (--tw, --th, --u and the sizes built on --u) and places the seats. */
 
@@ -771,4 +772,97 @@
   .bar .status {
     font-size: 13.5px;
   }
+}
+
+/* ── Floating tiles ──────────────────────────────────────────────────────── */
+
+/* A panel over the game that leaves it playable (casino.tile in cards.js). It places the tile with
+   left and top; the browser resizes it from the corner. Each bundle sets its tiles' sizes. */
+.tile {
+  position: fixed;
+  z-index: 100;
+  top: 8px;
+  left: 8px;
+  display: flex;
+  flex-direction: column;
+  min-width: 260px;
+  max-width: calc(100vw - 16px);
+  min-height: 140px;
+  max-height: calc(100vh - 16px);
+  overflow: hidden;
+  border-radius: 12px;
+  background: #0f2438;
+  box-shadow:
+    0 0 0 1px rgb(255 255 255 / 18%),
+    0 12px 36px rgb(0 0 0 / 55%);
+  color: var(--cs-ink);
+  font-size: 15px;
+  line-height: 1.3;
+  resize: both;
+}
+
+.tile[hidden] {
+  display: none;
+}
+
+.tile-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 8px 8px 12px;
+  border-bottom: 1px solid rgb(255 255 255 / 10%);
+  background: rgb(255 255 255 / 5%);
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+
+.tile.dragging .tile-head {
+  cursor: grabbing;
+}
+
+/* Six dots: the handle. */
+.tile-head .grip {
+  flex: none;
+  width: 10px;
+  height: 16px;
+  background: radial-gradient(circle, var(--cs-ink-soft) 1.3px, transparent 1.6px) 0 0 / 5px 5.4px;
+}
+
+.tile-title {
+  flex: 1;
+  margin: 0;
+  font-weight: 800;
+  font-size: 17px;
+}
+
+.tile-x {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--cs-ink-soft);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.tile-x:hover {
+  background: rgb(255 255 255 / 10%);
+  color: var(--cs-ink);
+}
+
+.tile-body {
+  flex: 1;
+  min-height: 0;
+  padding: 12px 14px 14px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgb(255 255 255 / 28%) transparent;
 }

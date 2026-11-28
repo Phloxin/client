@@ -71,37 +71,24 @@
   display: none;
 }
 
-/* ── Stage: one tile per stream, in grid or focus layout ─────────────────── */
+/* ── Stage: every stream's tile, in the main area or the thumbnail strip ─── */
 
-/* Every stream's tile is a direct child in either layout, so a focus change only
-   restyles and re-places tiles (Motion tweens the move) and never remounts a
-   <video>. Also the anchor for the theatre overlays. */
+/* Every tile is a direct child whatever its role, so moving a stream between
+   the main area and the strip only restyles and re-places its tile (Motion
+   tweens the move) and never remounts a <video>. Also the anchor for the
+   theatre overlays.
+
+   A CSS grid: the first row is the main area (held by .video-stage-main, and
+   taking whatever height the thumbnail rows leave); the thumbnails are fixed
+   200px 16:9 cells that auto-place onto further rows, left-aligned. With no
+   thumbnails the main area is the whole stage. */
 .video-stage {
   position: relative;
   flex: 1;
   min-height: 0;
-  /* Tiles are sized to fit (in JS for the grid, by the rows when focused), so
-     the area itself never needs to scroll. */
+  /* Tiles are sized to fit (by JS in the main area, by the rows in the strip),
+     so the area itself never needs to scroll. */
   overflow: hidden;
-}
-
-/* No stream focused: spread every stream across the whole area. Center the
-   cluster on both axes so tiles sit in the middle of the area and a partial last
-   row centers under the others (Discord-style), rather than stretching to fill
-   the height. */
-.video-stage.grid {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  justify-content: center;
-  align-content: center;
-  align-items: center;
-}
-
-/* A stream focused: the focused tile owns the first row, which takes whatever
-   height the thumbnail rows leave; thumbnails are fixed 200px 16:9 cells that
-   wrap onto further rows, left-aligned. */
-.video-stage.focus {
   display: grid;
   grid-template-columns: repeat(auto-fill, 200px);
   grid-template-rows: minmax(0, 1fr);
@@ -112,21 +99,22 @@
 
 /* Ride the thumbnails above the control bar (46px) and its carousel toggle (24px
    + gaps), which float over this same bottom edge. */
-.video-stage.focus.has-thumbs {
+.video-stage.has-thumbs {
   padding-bottom: 86px;
 }
 
 /* Holds the first row's cells so the thumbnails auto-place from row 2. The
-   focused tile can't hold them itself: it's absolutely positioned (to span the
-   full stage width), and absolute items occupy no cells. */
-.video-stage-focus-slot {
+   tiles in the main area can't hold them themselves: they're absolutely
+   positioned, and absolute items occupy no cells. Also what JS measures for the
+   main area's height. */
+.video-stage-main {
   grid-row: 1;
   grid-column: 1 / -1;
 }
 
 /* Collapsed strip: the thumbnails stay mounted (their video keeps its element)
    but drop out of the layout. */
-.video-stage.focus.collapsed .stream-tile.thumb {
+.video-stage.collapsed .stream-tile.thumb {
   display: none;
 }
 
@@ -139,8 +127,9 @@
   padding: 0;
 }
 
-/* Clicking focuses / unfocuses only while there's more than one stream, but
-   clicking a stream we aren't watching always starts it. */
+/* Clicking focuses / unfocuses only while that changes the view (the sole or
+   only watched stream has nothing to go back to), but clicking a stream we
+   aren't watching always starts it. */
 .stream-tile.focusable,
 .stream-tile.stopped {
   cursor: pointer;
@@ -173,13 +162,15 @@
   display: block;
 }
 
-/* Grid role (nothing focused). */
+/* Grid role (nothing focused: the watched streams share the main area).
+   Uniform 16:9 tiles whose left, top and width come from JS inline (see
+   layoutUniformTiles) so every tile is identical, the whole set fits the area
+   without scrolling and the cluster sits in the middle of it. Absolutely
+   positioned in the main area's row, like the focused tile (see below): that
+   row is the offset origin vertically, the stage's padding box horizontally. */
 .stream-tile.grid {
-  /* Uniform 16:9 tiles sized in JS (see bestUniformTileWidth) so every tile is
-     identical and the whole set fits the area without scrolling. flex grow/
-     shrink are 0 so the computed width is honored exactly. */
-  flex: 0 0 auto;
-  width: var(--grid-tile-width, 360px);
+  position: absolute;
+  grid-row: 1 / 2;
   aspect-ratio: 16 / 9;
   border-radius: 12px;
   border: 2px solid transparent;
@@ -193,7 +184,7 @@
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-primary) 30%, transparent);
 }
 
-/* Thumbnail role (the others while one is focused). */
+/* Thumbnail role (every stream that isn't in the main area). */
 .stream-tile.thumb {
   width: 200px;
   aspect-ratio: 16 / 9;
@@ -518,7 +509,7 @@
   box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.55);
 }
 
-/* ── Focused stream's name, codec badge, viewer count ────────────────────── */
+/* ── Focused stream's name, debug overlay, viewer count ──────────────────── */
 
 .focus-label {
   position: absolute;
@@ -550,32 +541,70 @@
   opacity: 1;
 }
 
-/* Codec badge, top-left of the focused frame. */
-.focus-codec-badge {
+/* Debug Information (the stream menu's toggle), top-left of each main-area
+   tile. Stays up whatever the chrome does: it is there to be read while
+   watching. Over the video, so white on a dark scrim in every theme. */
+.stream-debug-overlay {
   position: absolute;
   top: 12px;
   left: 12px;
-  padding: 3px 8px;
+  z-index: 2;
+  max-width: calc(100% - 24px);
+  padding: 6px 9px;
   border-radius: 6px;
-  font-size: 0.72rem;
-  font-weight: 600;
-  letter-spacing: 0.04em;
+  display: grid;
+  grid-template-columns: auto auto;
+  column-gap: 10px;
+  row-gap: 1px;
+  font-family: ui-monospace, 'SF Mono', 'Cascadia Mono', 'DejaVu Sans Mono', monospace;
+  font-size: 0.7rem;
+  line-height: 1.35;
   color: #fff;
-  background: rgba(0, 0, 0, 0.55);
+  background: rgba(0, 0, 0, 0.62);
   backdrop-filter: blur(4px);
   pointer-events: none;
-  display: flex;
-  gap: 6px;
-  align-items: center;
+  font-variant-numeric: tabular-nums;
 }
 
-/* HW = green (accelerated, good), SW = amber (software fallback — the case worth
-   spotting, e.g. software AV1 on a GPU without AV1 encode). Only shown on the
-   sharer's own tile. */
-.focus-codec-badge .enc-hw {
+/* Each line's label and value sit in the overlay's two columns. */
+.stream-debug-line {
+  display: contents;
+}
+
+.stream-debug-label {
+  color: rgba(255, 255, 255, 0.62);
+  white-space: nowrap;
+}
+
+.stream-debug-value {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Worth a look: software coding, a limited encoder, drops, loss. */
+.stream-debug-value.warn {
+  color: #fbbf24;
+}
+
+/* The codec line's HW / SW: green accelerated, amber software (the case worth
+   spotting, e.g. software AV1 on a GPU without AV1 encode or decode). */
+.stream-debug-chip {
+  padding: 0 4px;
+  border-radius: 3px;
+  font-weight: 700;
+  font-size: 0.62rem;
+  letter-spacing: 0.04em;
+  background: rgba(255, 255, 255, 0.12);
+}
+.stream-debug-chip.good {
   color: #4ade80;
 }
-.focus-codec-badge .enc-sw {
+.stream-debug-chip.warn {
   color: #fbbf24;
 }
 

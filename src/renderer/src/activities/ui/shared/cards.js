@@ -1,7 +1,7 @@
 // Shared by the casino bundles (blackjack, poker): playing cards and chip stacks as elements, the
-// turn-timer ring, a keyed child sync, and `stage`, which plays one render's moves over the table
-// and ends them all at once when the next snapshot arrives. One global, `casino`. Styles are in
-// casino.css.
+// turn-timer ring, a keyed child sync, `stage`, which plays one render's moves over the table and
+// ends them all at once when the next snapshot arrives, and `tile`, a panel floating over the game.
+// One global, `casino`. Styles are in casino.css.
 ;(() => {
   const RANK_TEXT = { 11: 'J', 12: 'Q', 13: 'K', 14: 'A' }
   const RANK_NAME = { 11: 'Jack', 12: 'Queen', 13: 'King', 14: 'Ace' }
@@ -604,6 +604,60 @@
     }
   }
 
+  // ── Floating tiles ────────────────────────────────────────────────────────
+
+  // A tile (`.tile`, casino.css) that floats over the game and leaves it playable: dragged by its
+  // head, resized from its corner, kept inside the frame. It opens at the top of the frame on
+  // `side` ('left' or 'right'); once moved it keeps its place while the bundle runs (the frame is
+  // sandboxed, so there is no storage to keep it longer). The one opened or touched last is on top.
+  let tileZ = 100
+  function tile(el, head, side) {
+    let pos = null
+    const place = () => {
+      if (el.hidden || !el.offsetWidth) return
+      const maxX = Math.max(0, innerWidth - el.offsetWidth)
+      const maxY = Math.max(0, innerHeight - el.offsetHeight)
+      const x = pos ? pos.x : side === 'left' ? 8 : innerWidth - el.offsetWidth - 8
+      const y = pos ? pos.y : 8
+      el.style.left = `${Math.min(Math.max(0, x), maxX)}px`
+      el.style.top = `${Math.min(Math.max(0, y), maxY)}px`
+    }
+    const front = () => (el.style.zIndex = String(++tileZ))
+    const show = (on) => {
+      el.hidden = !on
+      if (on) front()
+      place()
+    }
+    addEventListener('resize', place)
+    new ResizeObserver(place).observe(el)
+    el.addEventListener('pointerdown', front)
+    head.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0 || event.target.closest('button')) return
+      event.preventDefault()
+      const rect = el.getBoundingClientRect()
+      const dx = event.clientX - rect.left
+      const dy = event.clientY - rect.top
+      head.setPointerCapture(event.pointerId)
+      el.classList.add('dragging')
+      const move = (e) => {
+        pos = { x: e.clientX - dx, y: e.clientY - dy }
+        place()
+      }
+      const end = () => {
+        head.removeEventListener('pointermove', move)
+        head.removeEventListener('pointerup', end)
+        head.removeEventListener('pointercancel', end)
+        el.classList.remove('dragging')
+        // Where it was clamped to, so a later resize starts from what is on screen.
+        if (pos) pos = { x: el.offsetLeft, y: el.offsetTop }
+      }
+      head.addEventListener('pointermove', move)
+      head.addEventListener('pointerup', end)
+      head.addEventListener('pointercancel', end)
+    })
+    return { show, toggle: () => show(el.hidden), close: () => show(false) }
+  }
+
   window.casino = {
     card,
     setCard,
@@ -615,6 +669,7 @@
     timer,
     sync,
     stage,
+    tile,
     motion,
     money,
     rankText

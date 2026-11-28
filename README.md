@@ -16,7 +16,7 @@ system-wide (WASAPI process loopback on Windows, PipeWire on Linux).
 
 | Layer              | Technology                                                                     |
 | ------------------ | ------------------------------------------------------------------------------ |
-| Desktop shell      | Electron 43 (frameless window, custom title bar)                               |
+| Desktop shell      | Electron 45 (frameless window, custom title bar)                               |
 | Frontend framework | React 19                                                                       |
 | Build tooling      | electron-vite + Vite 7, packaged with electron-builder                         |
 | Routing            | React Router 7 (HashRouter)                                                    |

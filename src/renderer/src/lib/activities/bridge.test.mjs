@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 import {
+  BUNDLE_SOUNDS,
   BUNDLE_CSP,
   MAX_EXPORT_BYTES,
   THEME_VARS,
@@ -176,6 +177,9 @@ test('player ops are read as the player protocol gives them', () => {
   for (const rate of [25, 50, 75, 100, 125, 150, 175, 200]) {
     assert.deepEqual(read({ op: 'rate', rate }), { type: 'player', op: 'rate', rate })
   }
+  for (const on of [true, false]) {
+    assert.deepEqual(read({ op: 'captions', on }), { type: 'player', op: 'captions', on })
+  }
   assert.deepEqual(read({ op: 'describe', id: 4294967295, videoId: 'M7lc1UVf-VE' }), {
     type: 'player',
     op: 'describe',
@@ -213,6 +217,9 @@ test('a malformed player op is dropped with a reason', () => {
     { op: 'rate', rate: 110 },
     { op: 'rate', rate: '100' },
     { op: 'rate', rate: 1.5 },
+    { op: 'captions' },
+    { op: 'captions', on: 'true' },
+    { op: 'captions', on: 1 },
     { op: 'describe', id: -1, videoId: 'M7lc1UVf-VE' },
     { op: 'describe', id: 1.5, videoId: 'M7lc1UVf-VE' },
     { op: 'describe', id: 2 ** 32, videoId: 'M7lc1UVf-VE' },
@@ -235,6 +242,23 @@ test('fullscreen needs on as a boolean', () => {
   })
   for (const bad of [{}, { on: 1 }, { on: 'true' }, { on: null }]) {
     assert.equal(readUiMessage({ type: 'fullscreen', ...bad }).type, 'drop', JSON.stringify(bad))
+  }
+})
+
+test('a sound is read for a bundle with the capability, by a name the shell has a sound for', () => {
+  for (const name of Object.keys(BUNDLE_SOUNDS)) {
+    assert.deepEqual(readUiMessage({ type: 'sound', name }, ['sound']), { type: 'sound', name })
+  }
+  const packs = new URL('../../assets/soundpacks/', import.meta.url)
+  for (const id of Object.values(BUNDLE_SOUNDS)) {
+    assert.ok(readFileSync(new URL(`default/${id}.wav`, packs)).length > 44, id)
+  }
+  for (const capabilities of [undefined, [], ['player', 'export']]) {
+    assert.equal(readUiMessage({ type: 'sound', name: 'deal' }, capabilities).type, 'drop')
+  }
+  const others = ['connected', 'activity_card_deal', 'activity_card_place', 'toString', '', 7]
+  for (const name of [...others, null, undefined]) {
+    assert.equal(readUiMessage({ type: 'sound', name }, ['sound']).type, 'drop', String(name))
   }
 })
 
@@ -358,31 +382,39 @@ test('theme values are read for the fixed variable list, trimmed', () => {
 const UI = new URL('../../activities/ui/', import.meta.url)
 const STYLES = new URL('../../styles/', import.meta.url)
 const read = (base, path) => readFileSync(new URL(path, base), 'utf8')
-// The shared layers each bundle loads, in order. Uno has no duel; Watch Together has no seats
-// layer and has the player; blackjack and poker have the casino cards and no seats layer; the
+// The shared layers each bundle loads, in order. Watch Together has no seats layer and has the
+// player; blackjack, poker, Lucky Seven and Uno have the casino cards and no seats layer; the
 // whiteboard has the bridge and room only.
 const DUEL_LAYERS = ['bridge', 'room', 'seats', 'duel']
 const LAYERS = {
   tic_tac_toe: DUEL_LAYERS,
   connect4: DUEL_LAYERS,
   chess: DUEL_LAYERS,
-  uno: ['bridge', 'room', 'seats'],
+  uno: ['bridge', 'room', 'cards'],
   watch_together: ['bridge', 'room', 'player'],
   blackjack: ['bridge', 'room', 'cards'],
   poker: ['bridge', 'room', 'cards'],
-  whiteboard: ['bridge', 'room']
+  whiteboard: ['bridge', 'room'],
+  lucky_seven: ['bridge', 'room', 'cards']
 }
 const BUNDLES = Object.keys(LAYERS)
 // The shared stylesheets a bundle loads after base.css.
-const SHARED_CSS = { blackjack: ['casino'], poker: ['casino'] }
+const SHARED_CSS = {
+  blackjack: ['casino'],
+  poker: ['casino'],
+  lucky_seven: ['casino'],
+  uno: ['casino']
+}
 const sharedCss = (id) => SHARED_CSS[id] ?? []
 // A bundle's own scripts loaded between the shared layers and main.js: chess's pieces, Watch
 // Together's sync, icons and scene, the whiteboard's net layer, icons, stamps, engine, board and
-// widgets.
+// widgets, Lucky Seven's and Uno's card faces and steps.
 const OWN_SCRIPTS = {
   chess: ['pieces.js'],
+  uno: ['faces.js', 'steps.js'],
   watch_together: ['sync.js', 'icons.js', 'scene.js'],
-  whiteboard: ['net.js', 'icons.js', 'stamps.js', 'engine.js', 'board.js', 'widgets.js']
+  whiteboard: ['net.js', 'icons.js', 'stamps.js', 'engine.js', 'board.js', 'widgets.js'],
+  lucky_seven: ['faces.js', 'steps.js']
 }
 const ownScripts = (id) => OWN_SCRIPTS[id] ?? []
 const bundleFiles = (id) => ({
@@ -398,9 +430,10 @@ const bundleFiles = (id) => ({
   'main.js': read(UI, `${id}/main.js`)
 })
 // The bundles' own variables, not the client's: the board's gap and fall, Connect 4's discs,
-// chess's squares, picker edge and marks, Uno's cards and their sizes, Watch Together's house
-// palette and its layout sizes, the casino table's fixed colours and its sizes on the table unit.
+// chess's squares, picker edge and marks, Watch Together's house palette and its layout sizes, the
+// casino table's fixed colours and its sizes on the table unit.
 const BUNDLE_OWN_VARS = new Set([
+  '--loan-chip',
   '--gap',
   '--fall',
   '--disc-red',
@@ -412,17 +445,7 @@ const BUNDLE_OWN_VARS = new Set([
   '--mark-selected',
   '--mark-target',
   '--mark-check',
-  '--uno-red',
-  '--uno-yellow',
-  '--uno-green',
-  '--uno-blue',
-  '--uno-black',
-  '--uno-back',
-  '--uno-edge',
-  '--uno-crown',
   '--card-w',
-  '--w',
-  '--ring',
   '--house',
   '--curtain',
   '--curtain-fold',
@@ -500,8 +523,9 @@ const BUNDLE_OWN_VARS = new Set([
   '--by'
 ])
 // A bundle may instead give all its own variables its prefix, each one it reads set by its
-// stylesheet or its scripts: the whiteboard's start with `--wb-`.
-const OWN_PREFIXES = { whiteboard: '--wb-' }
+// stylesheet or its scripts: the whiteboard's start with `--wb-`, Lucky Seven's with `--l7-`,
+// Uno's with `--uno-`.
+const OWN_PREFIXES = { whiteboard: '--wb-', lucky_seven: '--l7-', uno: '--uno-' }
 const hasOwnPrefix = (name) => Object.values(OWN_PREFIXES).some((p) => name.startsWith(p))
 
 for (const id of BUNDLES) {

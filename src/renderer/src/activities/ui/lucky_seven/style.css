@@ -1,0 +1,1183 @@
+/* Lucky Seven: a cloth with every player's board on it. The viewer's own board lies along the
+   bottom, the others in a grid above, and the deck, the discard pile and the action card waiting
+   for a target between them. A board has seven slots for number cards, a row for the bonus and
+   action cards, the round's points and the total on its way to 200. The table and what lies on it
+   keep their own colours on every theme; the dock uses the theme variables. */
+
+@property --card-w {
+  syntax: '<length>';
+  inherits: true;
+  initial-value: 40px;
+}
+
+@property --l7-cw {
+  syntax: '<length>';
+  inherits: true;
+  initial-value: 40px;
+}
+
+.table.l7 {
+  --cs-felt: #3a3d9f;
+  --cs-felt-deep: #15164a;
+  --cs-rail: #23264f;
+  --cs-rail-light: #4a4f92;
+  --cs-rail-dark: #101230;
+  --cs-back: #f3a531;
+  --cs-back-deep: #c5651a;
+  --l7-ice: #86d4ff;
+  --l7-hot: #ff8a4a;
+  --l7-rose: #ff7fa8;
+  --l7-good: #46d483;
+  --l7-bad: #f25757;
+  --l7-panel: rgb(8 9 34 / 48%);
+  --l7-edge: rgb(255 255 255 / 12%);
+  --l7-pick: var(--cs-gold);
+  --tw: 100cqw;
+  --th: 100cqh;
+  --u: calc(min(100cqw, 170cqh) / 100);
+  --rail: clamp(5px, calc(var(--u) * 0.9), 9px);
+  --av: clamp(20px, calc(var(--u) * 2.9), 30px);
+  --felt-radius: clamp(12px, calc(var(--u) * 2.2), 24px);
+  --l7-pad: clamp(6px, calc(var(--u) * 1.1), 14px);
+  --l7-gap: clamp(5px, calc(var(--u) * 0.9), 12px);
+}
+
+.table.l7[data-pick='freeze'] {
+  --l7-pick: var(--l7-ice);
+}
+
+.table.l7[data-pick='flip_three'] {
+  --l7-pick: var(--l7-hot);
+}
+
+.table.l7[data-pick='second_chance'] {
+  --l7-pick: var(--l7-rose);
+}
+
+.l7 .felt::after {
+  display: none;
+}
+
+.l7 .lay {
+  position: absolute;
+  inset: calc(var(--rail) + var(--l7-pad));
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto auto;
+  gap: var(--l7-gap);
+}
+
+.l7 .mine:empty {
+  display: none;
+}
+
+/* A wide pane that is short: the other boards go beside the viewer's own, not above it. */
+@container (max-height: 400px) and (min-width: 560px) {
+  .l7.seated .lay {
+    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+  }
+
+  .l7.seated .others {
+    grid-row: 1 / 3;
+  }
+
+  .l7.seated .mine {
+    align-self: center;
+  }
+}
+
+/* ── Cards ───────────────────────────────────────────────────────────────── */
+
+.card.l7 {
+  box-shadow:
+    0 0 0 1px rgb(0 0 0 / 32%),
+    0 1px 3px rgb(0 0 0 / 40%);
+  color: #fff;
+}
+
+.card.l7 .card-face {
+  background: linear-gradient(
+    160deg,
+    color-mix(in srgb, var(--l7-ink) 80%, #fff),
+    var(--l7-ink) 46%,
+    color-mix(in srgb, var(--l7-ink) 70%, #000)
+  );
+}
+
+.card.l7[data-face='plus'] .card-face {
+  background: linear-gradient(160deg, #ffeaa0, #f1bf3f 50%, #cf8f14);
+  color: #3a2903;
+}
+
+.card.l7[data-face='double'] .card-face {
+  background: linear-gradient(160deg, #414859, #1c1f28);
+  color: #f6cc5c;
+}
+
+.card.l7[data-face='freeze'] .card-face {
+  background: linear-gradient(160deg, #d9f4ff, #6cc0f5 55%, #2e8cd6);
+  color: #0b3a5e;
+}
+
+.card.l7[data-face='flip_three'] .card-face {
+  background: linear-gradient(160deg, #ffc566, #f2702f 55%, #cc3a1d);
+}
+
+.card.l7[data-face='second_chance'] .card-face {
+  background: linear-gradient(160deg, #ffb1ca, #ea4d86 55%, #bb2866);
+}
+
+.l7-frame {
+  fill: none;
+  stroke: currentColor;
+  stroke-opacity: 0.4;
+  stroke-width: 2;
+}
+
+.l7-disc {
+  fill: rgb(255 255 255 / 15%);
+}
+
+.l7-coin {
+  fill: rgb(255 255 255 / 28%);
+  stroke: currentColor;
+  stroke-opacity: 0.22;
+  stroke-width: 2;
+}
+
+.card-face .l7-num {
+  font-weight: 900;
+  font-size: 60px;
+}
+
+.card-face .l7-num.wide {
+  font-size: 50px;
+  letter-spacing: -3px;
+}
+
+.card-face .l7-num.mod {
+  font-size: 44px;
+}
+
+.card-face .l7-num.mod.wide {
+  font-size: 37px;
+  letter-spacing: -2px;
+}
+
+.card-face .l7-idx {
+  font-weight: 800;
+  font-size: 19px;
+}
+
+.card-face .l7-idx.mark {
+  text-decoration: underline;
+}
+
+.card-face .l7-idx.wide {
+  font-size: 16px;
+  letter-spacing: -1px;
+}
+
+.card-face .l7-big {
+  font-weight: 900;
+  font-size: 86px;
+}
+
+.card-face .l7-big.wide {
+  font-size: 68px;
+  letter-spacing: -7px;
+}
+
+.card-face .l7-big.mod {
+  font-size: 60px;
+  letter-spacing: -4px;
+}
+
+.card-face .l7-big.mod.wide {
+  font-size: 48px;
+  letter-spacing: -5px;
+}
+
+.card-face .l7-label {
+  font-weight: 800;
+  font-size: 12.5px;
+  letter-spacing: 1.2px;
+}
+
+.card-face .l7-three {
+  fill: #cc3a1d;
+  font-weight: 900;
+  font-size: 30px;
+}
+
+.card-face .l7-three.big {
+  font-size: 40px;
+}
+
+.l7 .card-back,
+.l7 .back {
+  border-width: calc(var(--card-w) * 0.06);
+}
+
+.l7 .back {
+  position: relative;
+}
+
+.l7 .card-back::after,
+.l7 .back::after {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  font-style: italic;
+  font-weight: 900;
+  font-size: calc(var(--card-w) * 0.66);
+  line-height: 1;
+  text-shadow: 0 calc(var(--card-w) * 0.03) 0 rgb(0 0 0 / 30%);
+  content: '7';
+}
+
+/* ── The other players ───────────────────────────────────────────────────── */
+
+.others {
+  min-height: 0;
+  overflow: hidden auto;
+  container-type: size;
+  scrollbar-width: thin;
+  scrollbar-color: rgb(255 255 255 / 25%) transparent;
+}
+
+/* main.js sets the columns and rows that give the boards the largest cards. */
+.others-grid {
+  --l7-cols: 1;
+  --l7-rows: 1;
+  display: grid;
+  grid-template-columns: repeat(var(--l7-cols), minmax(0, 1fr));
+  align-content: center;
+  justify-items: center;
+  gap: var(--l7-gap);
+  min-height: 100%;
+}
+
+/* ── A board ─────────────────────────────────────────────────────────────── */
+
+/* The box is only the measure the cards are sized on; `.board-in` is what is seen. */
+.board {
+  display: grid;
+  justify-items: center;
+  width: 100%;
+  min-width: 0;
+  max-width: 460px;
+  container-type: inline-size;
+}
+
+.board-in {
+  --l7-bp: clamp(4px, 2.6cqw, 9px);
+  --l7-fixed: calc(var(--av) + var(--l7-bp) * 2 + 24px);
+  --l7-cw: clamp(
+    14px,
+    min(
+      calc((100cqw - var(--l7-bp) * 2) / 7.5),
+      calc((100cqh / var(--l7-rows) - var(--l7-gap) - var(--l7-fixed)) / 2.56)
+    ),
+    58px
+  );
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: fit-content;
+  min-width: min(100%, 138px);
+  max-width: 100%;
+  padding: var(--l7-bp);
+  border-radius: clamp(6px, calc(var(--u) * 1), 12px);
+  background: var(--l7-panel);
+  box-shadow: 0 0 0 1px var(--l7-edge);
+  transition:
+    box-shadow 0.2s,
+    opacity 0.2s;
+}
+
+.mine .board {
+  max-width: none;
+}
+
+.mine .board-in {
+  --l7-bp: clamp(6px, 2cqw, 12px);
+  --l7-cw: clamp(20px, min(calc((100cqw - var(--l7-bp) * 2) / 7.5), calc(var(--th) * 0.12)), 72px);
+  background: rgb(8 9 34 / 62%);
+}
+
+/* With five or more boards above it, the viewer's own gives up some height and the avatars
+   shrink. */
+.table.crowded .others {
+  --av: clamp(18px, calc(var(--u) * 2.2), 24px);
+}
+
+.table.crowded .mine .board-in {
+  --l7-cw: clamp(20px, min(calc((100cqw - var(--l7-bp) * 2) / 7.5), calc(var(--th) * 0.09)), 72px);
+}
+
+.board.acting .board-in {
+  box-shadow:
+    0 0 0 2px var(--cs-gold),
+    0 0 calc(var(--av) * 0.7) rgb(243 197 82 / 50%);
+}
+
+.board[data-state='stayed'] .board-in {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--l7-good) 60%, transparent);
+}
+
+.board[data-state='seven'] .board-in {
+  box-shadow:
+    0 0 0 2px var(--cs-gold),
+    0 0 24px rgb(243 197 82 / 60%);
+}
+
+/* These take the width the seven slots give the board, never add to it. */
+.board-head,
+.meter,
+.board-foot {
+  width: 0;
+  min-width: 100%;
+}
+
+.board-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.board .avatar {
+  width: var(--av);
+  height: var(--av);
+  background: #2c3165;
+  color: #dadcf6;
+  font-size: calc(var(--av) * 0.44);
+}
+
+.board-name {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 0.35em;
+  min-width: 0;
+  font-weight: 600;
+  font-size: var(--fs-name);
+}
+
+.board-name > span:first-child {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.dealer-chip {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 1.45em;
+  height: 1.45em;
+  border-radius: 50%;
+  background: #f6f3ea;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 50%);
+  color: #1b1e25;
+  font-weight: 800;
+  font-size: var(--fs-tiny);
+  line-height: 1;
+}
+
+.board-wins {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  color: var(--cs-ink-soft);
+  font-weight: 600;
+  font-size: var(--fs-tiny);
+}
+
+.board-wins svg {
+  width: 1.1em;
+  height: 1.1em;
+  fill: currentColor;
+}
+
+.board-total {
+  display: flex;
+  flex: none;
+  align-items: baseline;
+  gap: 1px;
+  font-variant-numeric: tabular-nums;
+}
+
+.board-total b {
+  color: var(--cs-gold);
+  font-weight: 800;
+  font-size: calc(var(--fs-name) * 1.3);
+  line-height: 1;
+}
+
+.board-total i {
+  color: var(--cs-ink-soft);
+  font-style: normal;
+  font-size: var(--fs-tiny);
+}
+
+@container (max-width: 215px) {
+  .board-total i {
+    display: none;
+  }
+}
+
+.board-total[hidden],
+.dealer-chip[hidden],
+.board-wins[hidden] {
+  display: none;
+}
+
+/* The total on its way to 200: what is banked, and striped beyond it what this round would add. */
+.meter {
+  position: relative;
+  height: 5px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: rgb(255 255 255 / 13%);
+}
+
+.meter i {
+  position: absolute;
+  inset: 0;
+  transform: scaleX(0);
+  transform-origin: 0 50%;
+  transition: transform 0.45s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.meter-next {
+  background: repeating-linear-gradient(
+    -45deg,
+    rgb(243 197 82 / 62%) 0 3px,
+    rgb(243 197 82 / 26%) 3px 6px
+  );
+}
+
+.meter-fill {
+  background: linear-gradient(90deg, #dfa524, #ffe391);
+}
+
+.board-cards {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.numbers {
+  display: grid;
+  justify-items: center;
+}
+
+.numbers > * {
+  grid-area: 1 / 1;
+}
+
+.slots,
+.nums {
+  --card-w: var(--l7-cw);
+  display: grid;
+  grid-template-columns: repeat(7, var(--l7-cw));
+  gap: calc(var(--l7-cw) * 0.07);
+}
+
+.slot {
+  height: calc(var(--l7-cw) * 1.4);
+  border: 1px dashed rgb(255 255 255 / 17%);
+  border-radius: calc(var(--l7-cw) * 0.09);
+  transition: opacity 0.3s;
+}
+
+.board:not([data-state='active']) .slot {
+  opacity: 0.35;
+}
+
+.board-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: calc(var(--l7-cw) * 1.12);
+}
+
+.extras {
+  --card-w: calc(var(--l7-cw) * 0.8);
+  display: flex;
+  flex: 1 0 auto;
+}
+
+.extras .card + .card {
+  margin-left: min(
+    calc(var(--card-w) * 0.1),
+    calc((var(--l7-cw) * 4.3 - var(--n) * var(--card-w)) / max(1, var(--n) - 1))
+  );
+}
+
+.sum {
+  overflow: hidden;
+  color: var(--cs-ink-soft);
+  font-size: var(--fs-tiny);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.others .sum {
+  display: none;
+}
+
+.points {
+  flex: none;
+}
+
+.points.banked {
+  background: #1d8a4e;
+}
+
+.points.iced {
+  background: #2472b4;
+}
+
+.points[hidden] {
+  display: none;
+}
+
+/* A busted hand: every card greys but the pair that repeats. */
+.board[data-state='busted'] .card:not(.dup) {
+  filter: grayscale(0.85) brightness(0.6);
+}
+
+.card.dup {
+  z-index: 1;
+  box-shadow:
+    0 0 0 2px var(--l7-bad),
+    0 0 10px rgb(242 87 87 / 75%);
+}
+
+.frost {
+  position: absolute;
+  z-index: 4;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(
+    160deg,
+    rgb(134 212 255 / 30%),
+    rgb(134 212 255 / 6%) 45%,
+    rgb(214 244 255 / 26%)
+  );
+  box-shadow:
+    inset 0 0 0 1.5px rgb(170 228 255 / 78%),
+    inset 0 0 18px rgb(134 212 255 / 45%);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.4s;
+}
+
+.board[data-state='frozen'] .frost {
+  opacity: 1;
+}
+
+.board .tag {
+  right: 6px;
+  translate: 0 -55%;
+}
+
+/* What pops on a board's upper edge when something happens to it. */
+.flash {
+  position: absolute;
+  z-index: 9;
+  top: 0;
+  left: 50%;
+  padding: 0.12em 0.8em;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 3px 12px rgb(0 0 0 / 50%);
+  color: #14163a;
+  font-weight: 800;
+  font-size: clamp(11px, calc(var(--l7-cw) * 0.42), 20px);
+  white-space: nowrap;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+}
+
+.flash.bad {
+  background: var(--l7-bad);
+  color: #fff;
+}
+
+.flash.ice {
+  background: var(--l7-ice);
+}
+
+.flash.hot {
+  background: var(--l7-hot);
+}
+
+.flash.rose {
+  background: var(--l7-rose);
+}
+
+.flash.good {
+  background: var(--l7-good);
+}
+
+.flash.gold {
+  background: linear-gradient(#ffe391, #e8b22c);
+  color: #3a2903;
+}
+
+/* ── Picking a target ────────────────────────────────────────────────────── */
+
+.table.picking .board:not(.can-pick) .board-in {
+  opacity: 0.4;
+}
+
+.pick {
+  position: absolute;
+  z-index: 8;
+  inset: 0;
+  display: grid;
+  place-items: end center;
+  padding: 0 0 max(5px, calc(var(--l7-cw) * 0.16));
+  border: 0;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--l7-pick) 14%, transparent);
+  box-shadow: inset 0 0 0 2px var(--l7-pick);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.pick[hidden] {
+  display: none;
+}
+
+.pick::before {
+  position: absolute;
+  inset: -4px;
+  border: 2px solid var(--l7-pick);
+  border-radius: inherit;
+  animation: l7-beckon 1.3s ease-in-out infinite;
+  content: '';
+}
+
+.pick span {
+  padding: 0.2em 0.95em;
+  border-radius: 999px;
+  background: var(--l7-pick);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 45%);
+  color: #10122b;
+  font-weight: 800;
+  font-size: var(--fs-name);
+  white-space: nowrap;
+}
+
+.pick:hover:not(:disabled),
+.pick:focus-visible {
+  background: color-mix(in srgb, var(--l7-pick) 30%, transparent);
+  outline: none;
+}
+
+.pick:disabled {
+  cursor: default;
+}
+
+@keyframes l7-beckon {
+  0%,
+  100% {
+    opacity: 0;
+  }
+
+  50% {
+    opacity: 0.75;
+  }
+}
+
+/* ── An open seat ────────────────────────────────────────────────────────── */
+
+.board.open .board-in {
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: min(100%, 150px);
+  min-height: calc(var(--av) + 46px);
+  background: transparent;
+  box-shadow: none;
+  outline: 1px dashed rgb(255 255 255 / 30%);
+  outline-offset: -1px;
+  color: var(--cs-ink-soft);
+  font-size: var(--fs-small);
+}
+
+/* ── The middle: piles, the round, the card in play ──────────────────────── */
+
+.middle {
+  --card-w: clamp(24px, calc(var(--u) * 4.4), 50px);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--l7-gap);
+  min-height: calc(var(--card-w) * 1.4 + 8px);
+  padding-inline: clamp(4px, calc(var(--u) * 2), 28px);
+}
+
+.pile {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: calc(var(--card-w) + 8px);
+  height: calc(var(--card-w) * 1.4 + 8px);
+  border-radius: calc(var(--card-w) * 0.16);
+  background: rgb(0 0 0 / 24%);
+  box-shadow:
+    inset 0 1px 3px rgb(0 0 0 / 55%),
+    0 0 0 1px rgb(255 255 255 / 9%);
+}
+
+.pile .back {
+  visibility: hidden;
+}
+
+.pile.has .back {
+  visibility: visible;
+}
+
+.deck .back {
+  box-shadow:
+    0 0 0 1px var(--cs-card-edge),
+    calc(var(--card-w) * 0.03) calc(var(--card-w) * 0.04) 0 #d9d5c9,
+    calc(var(--card-w) * 0.06) calc(var(--card-w) * 0.08) 0 #b9b4a6,
+    calc(var(--card-w) * 0.09) calc(var(--card-w) * 0.12) 3px rgb(0 0 0 / 50%);
+}
+
+.discard .back {
+  rotate: -5deg;
+  filter: saturate(0.55) brightness(0.8);
+}
+
+.pile-n {
+  position: absolute;
+  bottom: -0.55em;
+  left: 50%;
+  padding: 0 0.5em;
+  border-radius: 999px;
+  background: rgb(8 9 30 / 88%);
+  box-shadow: 0 0 0 1px rgb(255 255 255 / 16%);
+  color: var(--cs-ink);
+  font-weight: 700;
+  font-size: var(--fs-tiny);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+  translate: -50% 0;
+}
+
+.pile-n:empty {
+  display: none;
+}
+
+.center {
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  text-align: center;
+}
+
+.center > * {
+  grid-area: 1 / 1;
+}
+
+.center > [hidden] {
+  display: none;
+}
+
+.lobby,
+.round,
+.next {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+}
+
+.wordmark {
+  color: var(--cs-gold);
+  font-style: italic;
+  font-weight: 900;
+  font-size: clamp(17px, calc(var(--u) * 3.4), 36px);
+  line-height: 1.05;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  text-shadow: 0 2px 0 rgb(0 0 0 / 35%);
+}
+
+.lobby-line {
+  max-width: 44ch;
+  color: var(--cs-ink-soft);
+  font-size: var(--fs-small);
+  text-wrap: balance;
+}
+
+.round-n {
+  color: var(--cs-gold);
+  font-weight: 800;
+  font-size: calc(var(--fs-name) * 1.25);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  opacity: 0.85;
+}
+
+.round-goal {
+  color: var(--cs-ink-soft);
+  font-weight: 600;
+  font-size: var(--fs-tiny);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.play {
+  display: flex;
+  align-items: center;
+  gap: clamp(6px, calc(var(--u) * 1.2), 14px);
+  min-width: 0;
+}
+
+.play-slot {
+  display: grid;
+  flex: none;
+  border-radius: calc(var(--card-w) * 0.09);
+  box-shadow:
+    0 0 0 2px var(--l7-pick),
+    0 0 18px color-mix(in srgb, var(--l7-pick) 70%, transparent);
+}
+
+.play-text {
+  min-width: 0;
+  font-weight: 700;
+  font-size: var(--fs-name);
+  text-align: left;
+  text-wrap: balance;
+}
+
+.next-text {
+  font-weight: 700;
+  font-size: var(--fs-name);
+}
+
+.next-bar {
+  width: clamp(90px, calc(var(--u) * 18), 200px);
+  height: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: rgb(255 255 255 / 16%);
+}
+
+.next-bar i {
+  display: block;
+  height: 100%;
+  background: var(--cs-gold);
+  transform-origin: 0 50%;
+}
+
+/* ── What plays over the table ───────────────────────────────────────────── */
+
+.banner {
+  position: absolute;
+  left: 50%;
+  padding: 0.15em 1em;
+  border-radius: 999px;
+  background: rgb(8 9 30 / 90%);
+  box-shadow:
+    0 0 0 2px var(--cs-gold),
+    0 6px 24px rgb(0 0 0 / 55%);
+  color: var(--cs-gold);
+  font-style: italic;
+  font-weight: 900;
+  font-size: clamp(15px, calc(var(--u) * 2.8), 32px);
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+  text-transform: uppercase;
+  transform: translate(-50%, -50%);
+}
+
+.banner.gold {
+  background: linear-gradient(#ffe391, #e8b22c);
+  box-shadow: 0 6px 24px rgb(0 0 0 / 55%);
+  color: #3a2903;
+}
+
+.bit {
+  position: absolute;
+  width: 7px;
+  height: 11px;
+  border-radius: 2px;
+}
+
+.bit.round {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+/* ── Sheets: the result and the rules ────────────────────────────────────── */
+
+.sheet {
+  position: absolute;
+  z-index: 30;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: calc(var(--rail) + 8px);
+  border-radius: var(--felt-radius);
+  background: rgb(6 7 24 / 66%);
+}
+
+.sheet[hidden] {
+  display: none;
+}
+
+.sheet-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  width: min(100%, 360px);
+  max-height: 100%;
+  padding: 16px 18px;
+  border-radius: 14px;
+  background: #14163d;
+  box-shadow:
+    0 0 0 1px rgb(255 255 255 / 15%),
+    0 14px 44px rgb(0 0 0 / 60%);
+  color: var(--cs-ink);
+  font-size: 13px;
+}
+
+.sheet-title {
+  margin: 0;
+  font-weight: 800;
+  font-size: 19px;
+  text-align: center;
+}
+
+.trophy {
+  display: grid;
+  width: 46px;
+  height: 46px;
+  color: var(--cs-gold);
+}
+
+.trophy svg {
+  fill: currentColor;
+}
+
+.trophy[hidden] {
+  display: none;
+}
+
+.standings {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.standings li {
+  display: grid;
+  grid-template-columns: 1.4em auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px 4px 8px;
+  border-radius: 8px;
+  background: rgb(255 255 255 / 6%);
+}
+
+.standings li.first {
+  background: linear-gradient(90deg, rgb(243 197 82 / 30%), rgb(243 197 82 / 8%));
+  box-shadow: inset 0 0 0 1px rgb(243 197 82 / 55%);
+}
+
+.standings .rank {
+  color: var(--cs-ink-soft);
+  font-weight: 700;
+  text-align: center;
+}
+
+.standings .avatar {
+  width: 24px;
+  height: 24px;
+  background: #2c3165;
+  color: #dadcf6;
+  font-size: 11px;
+}
+
+.standings .who {
+  overflow: hidden;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.standings .score {
+  color: var(--cs-gold);
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.sheet-note {
+  margin: 0;
+  color: var(--cs-ink-soft);
+  font-size: 12px;
+  text-align: center;
+}
+
+.sheet-note:empty {
+  display: none;
+}
+
+.sheet-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.sheet .btn:not(.primary) {
+  border-color: rgb(255 255 255 / 22%);
+  background: rgb(255 255 255 / 8%);
+  color: var(--cs-ink);
+}
+
+.rules .sheet-card {
+  align-items: stretch;
+  width: min(100%, 470px);
+}
+
+.rules-body {
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.rules-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 0 0 12px;
+  padding-left: 1.2em;
+}
+
+.legend {
+  --card-w: 30px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px 12px;
+  margin: 0;
+}
+
+.legend dt {
+  display: flex;
+  gap: 3px;
+}
+
+.legend dd {
+  margin: 0;
+}
+
+.legend dd b {
+  display: block;
+}
+
+/* ── Dock ────────────────────────────────────────────────────────────────── */
+
+.actions {
+  position: relative;
+}
+
+.playing {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+  max-width: 420px;
+  margin: 0 auto;
+}
+
+.playing kbd {
+  margin-left: 4px;
+  padding: 0 4px;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  font: inherit;
+  font-weight: 600;
+  font-size: 10.5px;
+  opacity: 0.6;
+}
+
+.choosing {
+  display: flex;
+  align-items: center;
+  justify-content: safe center;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.btn.target {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 3px 12px 3px 4px;
+  border-radius: 999px;
+}
+
+.btn.target .avatar {
+  width: 26px;
+  height: 26px;
+  font-size: 11px;
+}
+
+.idle {
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  text-align: center;
+}
+
+/* The viewer's own clock, under the buttons. */
+.actions > .clock {
+  position: absolute;
+  bottom: -5px;
+  left: 50%;
+  width: min(100%, 420px);
+  height: 3px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--color-border);
+  translate: -50% 0;
+}
+
+.clock i {
+  display: block;
+  height: 100%;
+  background: var(--color-primary);
+  transform-origin: 0 50%;
+}
+
+@media (max-width: 420px), (pointer: coarse) {
+  .playing kbd {
+    display: none;
+  }
+}

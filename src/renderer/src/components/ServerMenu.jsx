@@ -54,6 +54,7 @@ const DEVICE_NAME = 'Pylon Desktop'
 function ServerMenu({
   servers,
   connectedServer,
+  serverName,
   onConnect,
   onRecovered,
   onDisconnect,
@@ -424,11 +425,13 @@ function ServerMenu({
           e.preventDefault()
           setCtxPos({ x: e.clientX, y: e.clientY })
         }}
-        title={connected ? `Connected to ${connectedServer.nickname}` : 'Not connected'}
+        title={
+          connected ? `Connected to ${serverName || connectedServer.nickname}` : 'Not connected'
+        }
       >
         <span className={`server-status-dot${connected ? ' connected' : ''}`} />
         <span className="server-menu-label">
-          {connected ? connectedServer.nickname : 'Not connected'}
+          {connected ? serverName || connectedServer.nickname : 'Not connected'}
         </span>
         {connected && (
           <button

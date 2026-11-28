@@ -73,6 +73,21 @@
   let seatCard = null
   let volume = 100
   let muted = false
+  // The volume unmuting returns to when the slider was left at 0.
+  let lastVolume = 100
+  const silent = () => muted || volume === 0
+  // The speaker button and M: mute, or unmute back to the last volume heard.
+  const toggleMute = () => {
+    if (silent()) {
+      muted = false
+      if (volume === 0) volume = lastVolume
+    } else {
+      muted = true
+    }
+    player.setVolume(volume, muted)
+    render()
+  }
+  let captions = false
   let ready = false
   let status = null
   let statusAt = 0
@@ -384,20 +399,13 @@
   scrub.type = 'range'
   scrub.min = '0'
   scrub.step = '1000'
-  const muteBtn = iconButton(
-    'volume',
-    () => {
-      muted = !muted
-      player.setVolume(volume, muted)
-      render()
-    },
-    'Mute'
-  )
+  const muteBtn = iconButton('volume', toggleMute, 'Mute')
   const volumeEl = el('input', 'volume')
   volumeEl.type = 'range'
   volumeEl.min = '0'
   volumeEl.max = '100'
   volumeEl.setAttribute('aria-label', 'Volume')
+  const ccBtn = iconButton('badge-cc', () => toggleCaptions(), 'Subtitles')
   const speedBtn = button('speed-btn', '1×', () => {
     if (!canControl() || !current()) return
     speedOpen = !speedOpen
@@ -419,7 +427,7 @@
   )
   const reactMenu = el('div', 'menu react-menu')
   reactMenu.hidden = true
-  // Speed, the controls lock and the reactions go in here when the bar is narrow.
+  // Subtitles, speed, the controls lock and the reactions go in here when the bar is narrow.
   const moreBtn = iconButton(
     'dots',
     () => {
@@ -458,6 +466,7 @@
     timeEl,
     scrub,
     el('span', 'volume-group', muteBtn, volumeEl),
+    ccBtn,
     speedAnchor,
     lockBtn,
     reactAnchor,
@@ -468,18 +477,19 @@
     reactionsRow
   )
 
-  // Where speed, the lock and the reactions sit: 'bar' (all in the bar, the reactions at its
-  // right end), 'reactions' (the reactions in More) or 'narrow' (all three in More).
+  // Where subtitles, speed, the lock and the reactions sit: 'bar' (all in the bar, the reactions
+  // at its right end), 'reactions' (the reactions in More) or 'narrow' (all four in More).
   let barArrangement = null
   function arrangeBar(mode) {
     if (mode === barArrangement) return
     barArrangement = mode
     if (mode === 'narrow') {
-      moreMenu.append(speedAnchor, lockBtn, reactionsRow)
+      moreMenu.append(ccBtn, speedAnchor, lockBtn, reactionsRow)
     } else {
       // Moved only out of More: a node moved under a press loses its click.
       if (speedAnchor.parentNode !== bar) bar.insertBefore(speedAnchor, reactAnchor)
       if (lockBtn.parentNode !== bar) bar.insertBefore(lockBtn, reactAnchor)
+      if (ccBtn.parentNode !== bar) bar.insertBefore(ccBtn, speedAnchor)
       if (mode === 'bar') bar.append(reactionsRow)
       else moreMenu.append(reactionsRow)
     }
@@ -529,9 +539,23 @@
     player.setVolume(volume, muted)
     renderBar()
   })
+  // Kept on release, not on every step, so a drag down to 0 remembers where it started.
+  volumeEl.addEventListener('change', () => {
+    if (volume > 0) lastVolume = volume
+  })
 
   const durationMs = () =>
     status && mem.loadedEntry === current()?.entry.id ? status.durationMs : 0
+  // Subtitles can be asked for once the video on screen is loaded. Whether it has any is not
+  // known: the embed lists no auto-generated track.
+  const captionsAvailable = () => !!status && mem.loadedEntry === current()?.entry.id
+
+  function toggleCaptions() {
+    if (!captionsAvailable()) return
+    captions = !captions
+    player.setCaptions(captions)
+    render()
+  }
 
   function renderBar() {
     const cur = current()
@@ -560,11 +584,16 @@
       `${duration ? (Math.min(position, duration) / duration) * 100 : 0}%`
     )
     bar.classList.toggle('locked', !canControl())
-    setIcon(muteBtn, muted || volume === 0 ? 'volume-off' : 'volume')
-    const muteTitle = muted ? 'Unmute' : 'Mute'
+    setIcon(muteBtn, silent() ? 'volume-off' : 'volume')
+    const muteTitle = silent() ? 'Unmute' : 'Mute'
     muteBtn.title = muteTitle
     muteBtn.setAttribute('aria-label', muteTitle)
     volumeEl.value = String(muted ? 0 : volume)
+    const ccTitle = !captionsAvailable() ? 'Subtitles' : captions ? 'Subtitles on' : 'Subtitles off'
+    ccBtn.title = ccTitle
+    ccBtn.setAttribute('aria-label', ccTitle)
+    ccBtn.disabled = !captionsAvailable()
+    ccBtn.classList.toggle('on', captions)
     speedBtn.textContent = rateLabel(cur?.rate ?? 100)
     speedBtn.classList.toggle('inert', !canControl() || !cur)
     speedBtn.title = canControl() ? 'Speed' : CONTROL_LOCKED
@@ -1085,9 +1114,11 @@
         break
       case 'm':
       case 'M':
-        muted = !muted
-        player.setVolume(volume, muted)
-        render()
+        toggleMute()
+        break
+      case 'c':
+      case 'C':
+        toggleCaptions()
         break
       case 'Escape':
         if (seatCard || speedOpen || reactOpen || moreOpen) {
@@ -1193,7 +1224,9 @@
   player.onReady((r) => {
     ready = true
     volume = typeof r.volume === 'number' ? r.volume : 100
+    if (volume > 0) lastVolume = volume
     muted = !!r.muted
+    captions = !!r.captions
     reconcile()
     render()
   })

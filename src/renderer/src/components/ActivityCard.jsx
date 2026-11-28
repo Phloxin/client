@@ -3,7 +3,12 @@ import { useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { IconPlayerPlay, IconTrophy } from '@tabler/icons-react'
 import { useAnimationCategory } from '../context/SettingsContext'
-import { activityCardMeta, activityCardModel, activityFooterLabel } from '../lib/activities/cards'
+import {
+  activityCardMeta,
+  activityCardModel,
+  activityFooterLabel,
+  formatScore
+} from '../lib/activities/cards'
 import { activityType } from '../lib/activities/activityTypes'
 import { useElapsed } from '../lib/activities/useElapsed'
 import { avatarStack, avatarStackItem } from '../lib/motionPresets'
@@ -59,7 +64,7 @@ function AvatarStack({ ids, lookup, anim }) {
   )
 }
 
-function Scoreboard({ results, trophy, lookup }) {
+function Scoreboard({ results, signed, trophy, lookup }) {
   const [expanded, setExpanded] = useState(false)
   const rows = expanded ? results : results.slice(0, SCOREBOARD_ROWS)
   return (
@@ -82,7 +87,7 @@ function Scoreboard({ results, trophy, lookup }) {
                   aria-label="Winner"
                 />
               )}
-              <span className="activity-card-score-value">{r.score}</span>
+              <span className="activity-card-score-value">{formatScore(r.score, signed)}</span>
             </li>
           )
         })}
@@ -163,7 +168,12 @@ export default function ActivityCard({
         {model.footer && (
           <motion.div key={model.footer} className="activity-card-footer" {...fade}>
             {model.footer === 'scoreboard' ? (
-              <Scoreboard results={model.results} trophy={model.trophy} lookup={lookup} />
+              <Scoreboard
+                results={model.results}
+                signed={model.signed}
+                trophy={model.trophy}
+                lookup={lookup}
+              />
             ) : (
               <>
                 <AvatarStack ids={model.participants} lookup={lookup} anim={anim} />

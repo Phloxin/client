@@ -761,6 +761,11 @@ export async function startNativeShare({
       undo()
     },
     getStats: async () => new Map(),
+    // The engine's latest once-a-second statistics, for the stream debug overlay and the
+    // connection panel (soup/streamDiagnostics.js). Null until the first arrives.
+    get debugStats() {
+      return lastStats
+    },
     replaceTrack: async () => {
       throw new Error('A native screen share has no track to replace')
     },

@@ -422,7 +422,7 @@ button .icon {
   flex-direction: row;
 }
 
-/* Speed, the lock and the reactions, above the "more" button. */
+/* Subtitles, speed, the lock and the reactions, above the "more" button. */
 .more-menu {
   flex-direction: row;
   flex-wrap: wrap;

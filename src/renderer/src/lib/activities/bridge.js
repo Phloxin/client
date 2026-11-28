@@ -94,6 +94,9 @@ function readPlayerOp(data) {
     case 'rate':
       if (!RATES.has(data.rate)) return drop('player rate is not one of the eight')
       return player({ rate: data.rate })
+    case 'captions':
+      if (typeof data.on !== 'boolean') return drop('player captions on is not a boolean')
+      return player({ on: data.on })
     case 'describe':
       if (!isId(data.id)) return drop('player describe id is not an integer from 0 to 2^32 - 1')
       if (!isVideoId(data.videoId)) return drop('player describe videoId is not a video id')
@@ -125,9 +128,18 @@ function readExport(data) {
   return { type: 'export', op: data.op, id: data.id, name: data.name, data: data.data }
 }
 
+// The `sound` capability: what a bundle may ask the shell to play, each by the soundpack sound
+// it plays (lib/sounds.js), so the user's volume, output device and sound settings apply.
+export const BUNDLE_SOUNDS = {
+  deal: 'activity_card_deal',
+  slide: 'activity_card_slide',
+  shuffle: 'activity_card_shuffle',
+  place: 'activity_card_place'
+}
+
 // A message a bundle with `capabilities` posted, checked: { type: 'ready' | 'action' | 'input' |
-// 'status' | 'player' | 'fullscreen' | 'export', ... }, or { type: 'drop', why } for anything
-// malformed, which the shell drops with a warning.
+// 'status' | 'player' | 'fullscreen' | 'export' | 'sound', ... }, or { type: 'drop', why } for
+// anything malformed, which the shell drops with a warning.
 export function readUiMessage(data, capabilities = []) {
   if (!data || typeof data !== 'object') return drop('not an object')
   switch (data.type) {
@@ -155,6 +167,14 @@ export function readUiMessage(data, capabilities = []) {
         return drop('export from a bundle without the capability')
       }
       return readExport(data)
+    case 'sound':
+      if (!capabilities.includes('sound')) {
+        return drop('sound from a bundle without the capability')
+      }
+      if (typeof data.name !== 'string' || !Object.hasOwn(BUNDLE_SOUNDS, data.name)) {
+        return drop(`unknown sound ${String(data.name).slice(0, 40)}`)
+      }
+      return { type: 'sound', name: data.name }
     default:
       return drop(`unknown type ${String(data.type).slice(0, 40)}`)
   }

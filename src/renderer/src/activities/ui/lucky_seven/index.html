@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="../shared/base.css" />
+    <link rel="stylesheet" href="../shared/casino.css" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main class="game casino" id="game" hidden>
+      <section class="table-area">
+        <div class="table l7" id="table">
+          <div class="felt"></div>
+          <div class="lay">
+            <div class="others" id="others">
+              <div class="others-grid" id="others-grid"></div>
+            </div>
+            <div class="middle">
+              <div class="pile discard" id="discard" title="Discard pile">
+                <span class="back"></span>
+                <span class="pile-n" id="discard-n"></span>
+              </div>
+              <div class="center">
+                <div class="lobby" id="lobby" hidden>
+                  <span class="wordmark">Lucky Seven</span>
+                  <span class="lobby-line">
+                    Flip cards and bank points. Repeat a number and you bust. First to 200 wins.
+                  </span>
+                </div>
+                <div class="round" id="round" hidden>
+                  <span class="round-n" id="round-n"></span>
+                  <span class="round-goal">First to 200</span>
+                </div>
+                <div class="play" id="play" hidden>
+                  <div class="play-slot" id="play-slot"></div>
+                  <span class="play-text" id="play-text"></span>
+                </div>
+                <div class="next" id="next" hidden>
+                  <span class="next-text" id="next-text"></span>
+                  <span class="next-bar"><i id="next-fill"></i></span>
+                </div>
+              </div>
+              <div class="pile deck" id="deck" title="Deck">
+                <span class="back" id="deck-top"></span>
+                <span class="pile-n" id="deck-n"></span>
+              </div>
+            </div>
+            <div class="mine" id="mine"></div>
+          </div>
+          <div class="fx" id="fx"></div>
+          <div class="sheet results" id="results" hidden>
+            <div class="sheet-card" role="dialog" aria-labelledby="results-title">
+              <span class="trophy" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path
+                    d="M7 3h10v2h3v3a4 4 0 0 1-3.4 3.95A5 5 0 0 1 13 14.9V18h3v3H8v-3h3v-3.1a5 5 0 0 1-3.6-2.95A4 4 0 0 1 4 8V5h3zm0 4H6v1a2 2 0 0 0 1 1.73zm10 0v2.73A2 2 0 0 0 18 8V7z"
+                  />
+                </svg>
+              </span>
+              <h2 class="sheet-title" id="results-title"></h2>
+              <ol class="standings" id="standings"></ol>
+              <p class="sheet-note" id="results-note"></p>
+              <div class="sheet-actions">
+                <button class="btn" id="results-close" type="button">View table</button>
+                <button class="btn primary" id="again" type="button" hidden>Play again</button>
+              </div>
+            </div>
+          </div>
+          <div class="sheet rules" id="rules" hidden>
+            <div class="sheet-card" role="dialog" aria-labelledby="rules-title">
+              <h2 class="sheet-title" id="rules-title">How to play</h2>
+              <div class="rules-body">
+                <ul class="rules-list">
+                  <li>
+                    On your turn, <b>Hit</b> to flip a card or <b>Stay</b> to bank what you have.
+                  </li>
+                  <li>Flip a number you already hold and you <b>bust</b>: nothing this round.</li>
+                  <li>
+                    Collect <b>seven different numbers</b> and the round ends at once, with 15 extra
+                    points for you.
+                  </li>
+                  <li>
+                    Your round score is your numbers added up, doubled by ×2, plus your bonus cards.
+                  </li>
+                  <li>
+                    The game ends after a round with someone at <b>200</b> or more. The highest
+                    total wins.
+                  </li>
+                </ul>
+                <dl class="legend" id="legend"></dl>
+              </div>
+              <div class="sheet-actions">
+                <button class="btn primary" id="rules-close" type="button">Got it</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+      <footer class="dock">
+        <div class="bar">
+          <div class="bar-left">
+            <button class="btn quiet" id="leave" type="button" hidden>Leave seat</button>
+            <button class="btn quiet" id="help" type="button">Rules</button>
+          </div>
+          <div class="status-row">
+            <span class="status" id="status"></span>
+            <span class="watching" id="watching" hidden>Watching</span>
+          </div>
+          <div class="bar-right">
+            <button class="btn primary" id="start" type="button" hidden>Start game</button>
+          </div>
+        </div>
+        <p class="notice" id="notice" role="status"></p>
+        <div class="actions" id="actions" hidden>
+          <div class="playing" id="playing" hidden>
+            <button class="btn act primary" id="hit" type="button">
+              Hit <kbd aria-hidden="true">H</kbd>
+            </button>
+            <button class="btn act" id="stay" type="button">
+              <span id="stay-text">Stay</span> <kbd aria-hidden="true">S</kbd>
+            </button>
+          </div>
+          <div class="choosing" id="choosing" hidden></div>
+          <div class="idle" id="idle" hidden></div>
+          <div class="clock" id="clock" hidden><i id="clock-fill"></i></div>
+        </div>
+      </footer>
+    </main>
+    <script src="../shared/bridge.js"></script>
+    <script src="../shared/room.js"></script>
+    <script src="../shared/cards.js"></script>
+    <script src="faces.js"></script>
+    <script src="steps.js"></script>
+    <script src="main.js"></script>
+  </body>
+</html>

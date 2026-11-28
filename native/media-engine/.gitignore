@@ -1,8 +1,10 @@
 target/
-# Staged by windows/stage-sidecar.ps1 for the installer (electron-builder.yml, extraResources):
-# ignored but for the placeholder that keeps the folder (the top .gitignore ignores every dist).
+# Staged by windows/stage-sidecar.ps1 and linux/stage-sidecar.sh for the packages
+# (electron-builder.yml, extraResources): ignored but for the placeholder that keeps the folder
+# (the top .gitignore ignores every dist).
 !dist/
 dist/*
 !dist/.gitkeep
-# The FFmpeg prefix the GitHub workflows build and cache on Windows.
+# The FFmpeg prefixes the GitHub workflows build and cache, on Windows and on Linux.
 ffmpeg-win/
+ffmpeg-linux/

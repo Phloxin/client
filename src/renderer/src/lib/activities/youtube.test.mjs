@@ -4,6 +4,8 @@ import test from 'node:test'
 import {
   EMBED_ORIGIN,
   SUBSCRIBE,
+  captionCommands,
+  captionsShowing,
   commandMessage,
   commandsFor,
   describedFrom,
@@ -13,6 +15,7 @@ import {
   listeningMessage,
   nextPlayer,
   oembedUrl,
+  pickTrack,
   readEmbedMessage,
   statusOf
 } from './youtube.js'
@@ -82,6 +85,10 @@ test('each player op becomes its embed commands', () => {
   ])
   assert.deepEqual(funcs({ op: 'volume', volume: 100, muted: true }), [
     ['setVolume', [100]],
+    ['mute', []]
+  ])
+  assert.deepEqual(funcs({ op: 'volume', volume: 0, muted: false }), [
+    ['setVolume', [0]],
     ['mute', []]
   ])
   assert.deepEqual(funcs({ op: 'rate', rate: 150 }), [['setPlaybackRate', [1.5]]])
@@ -217,6 +224,92 @@ test('an unload is idle again, at 0, with no title', () => {
     title: null,
     rate: 100
   })
+})
+
+// As the real embed sends them when a video loads: first with no tracks, then with them.
+const EN = { languageCode: 'en', languageName: 'English', kind: '' }
+const EN_ASR = { languageCode: 'en', languageName: 'English (auto-generated)', kind: 'asr' }
+const DE = { languageCode: 'de', languageName: 'German', kind: '' }
+const apiInfo = (track, tracklist) =>
+  embed('apiInfoDelivery', { namespaces: ['captions'], captions: { track, tracklist } })
+
+test('apiInfoDelivery keeps the subtitle tracks, and a load or unload forgets them', () => {
+  let p = run([embed('onReady'), { type: 'load' }, apiInfo({}, [])])
+  assert.deepEqual(p.captions, { track: {}, tracklist: [] })
+  p = nextPlayer(p, apiInfo({ ...EN }, [EN, DE]))
+  assert.deepEqual(p.captions, { track: EN, tracklist: [EN, DE] })
+  // A tracklist that is not an array is none.
+  assert.deepEqual(nextPlayer(p, apiInfo({}, 'x')).captions, { track: {}, tracklist: [] })
+  // An apiInfoDelivery about something else leaves them.
+  assert.equal(nextPlayer(p, embed('apiInfoDelivery', { namespaces: [] })), p)
+  assert.equal(nextPlayer(p, embed('apiInfoDelivery')), p)
+  assert.equal(nextPlayer(p, { type: 'load' }).captions, undefined)
+  assert.equal(nextPlayer(p, { type: 'unload' }).captions, undefined)
+})
+
+test('apiInfoDelivery does not clear an error', () => {
+  const p = run([embed('onReady'), { type: 'load' }, embed('onError', 150), apiInfo({}, [EN])])
+  assert.equal(p.error, 150)
+})
+
+test("the track turned on is the viewer's language first, made by a person before auto-generated", () => {
+  const FR_ASR = { languageCode: 'fr', kind: 'asr' }
+  const EN_GB = { languageCode: 'en-GB', kind: '' }
+  // The viewer's language by its base, a person's track first.
+  assert.equal(pickTrack([DE, EN_ASR, EN_GB], {}, 'en-US'), 'en-GB')
+  assert.equal(pickTrack([DE, EN_ASR], {}, 'en-US'), 'en')
+  assert.equal(pickTrack([DE, EN_ASR], { languageCode: 'de' }, 'EN'), 'en')
+  // Then the one the embed has on.
+  assert.equal(pickTrack([DE, EN, FR_ASR], { languageCode: 'fr' }, 'ja'), 'fr')
+  // Then the first made by a person, then the first.
+  assert.equal(pickTrack([FR_ASR, DE, EN], {}, 'ja'), 'de')
+  assert.equal(pickTrack([FR_ASR, EN_ASR], {}, 'ja'), 'fr')
+  assert.equal(pickTrack([FR_ASR, DE], undefined, ''), 'de')
+  assert.equal(pickTrack([FR_ASR, DE], { languageCode: '' }, undefined), 'de')
+  // With no track known, the viewer's language by its base: the embed lists no auto-generated
+  // track but turns one on when asked for its language.
+  assert.equal(pickTrack([], {}, 'en'), 'en')
+  assert.equal(pickTrack(undefined, undefined, 'en-US'), 'en')
+  assert.equal(pickTrack([{ kind: '' }, { languageCode: '' }], {}, 'PT-br'), 'pt')
+  // Nothing to turn on.
+  assert.equal(pickTrack([], {}, ''), null)
+  assert.equal(pickTrack(undefined, undefined, undefined), null)
+  assert.equal(pickTrack([], { languageCode: '' }, null), null)
+})
+
+test('subtitles are turned on with the picked track and off with an empty one', () => {
+  const funcs = (messages) => decode(messages).map((m) => [m.func, m.args])
+  const p = run([embed('onReady'), { type: 'load' }, apiInfo({}, [DE, EN_ASR])])
+  assert.deepEqual(funcs(captionCommands(p, true, 'en-US')), [
+    ['setOption', ['captions', 'track', { languageCode: 'en' }]]
+  ])
+  assert.deepEqual(funcs(captionCommands(p, true, 'fr')), [
+    ['setOption', ['captions', 'track', { languageCode: 'de' }]]
+  ])
+  assert.deepEqual(funcs(captionCommands(p, false, 'en')), [
+    ['setOption', ['captions', 'track', {}]]
+  ])
+  // No track known: the viewer's language.
+  assert.deepEqual(funcs(captionCommands(nextPlayer(p, apiInfo({}, [])), true, 'en-US')), [
+    ['setOption', ['captions', 'track', { languageCode: 'en' }]]
+  ])
+  assert.deepEqual(funcs(captionCommands(nextPlayer(p, { type: 'load' }), true, 'de')), [
+    ['setOption', ['captions', 'track', { languageCode: 'de' }]]
+  ])
+  // Nothing to ask for: no command.
+  assert.deepEqual(captionCommands(nextPlayer(p, { type: 'load' }), true, ''), [])
+  // Off needs no track.
+  assert.deepEqual(funcs(captionCommands(initialPlayer(), false, 'en')), [
+    ['setOption', ['captions', 'track', {}]]
+  ])
+})
+
+test('subtitles are showing when the embed has a track on', () => {
+  const p = run([embed('onReady'), { type: 'load' }])
+  assert.equal(captionsShowing(p), false)
+  assert.equal(captionsShowing(nextPlayer(p, apiInfo({}, [EN]))), false)
+  assert.equal(captionsShowing(nextPlayer(p, apiInfo({ languageCode: '' }, [EN]))), false)
+  assert.equal(captionsShowing(nextPlayer(p, apiInfo({ ...EN }, [EN]))), true)
 })
 
 test('the oEmbed URL asks for the watch URL as JSON', () => {

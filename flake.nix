@@ -55,7 +55,7 @@
       devShells = forAllSystems (
         pkgs:
         let
-          # Matches devDependencies electron ^43.1.0. Keep the two in sync.
+          # Matches devDependencies electron ^45.5.0. Keep the two in sync.
           #
           # Chromium dlopens libva.so.2 at runtime for VAAPI. Without it the GPU
           # process silently falls back to software WebRTC codecs, which drops
@@ -63,14 +63,14 @@
           # advertised RTP capabilities — mediasoup then fails to consume High-
           # profile H.264 producers with "No compatible media codecs".
           electron = pkgs.symlinkJoin {
-            name = "electron-vaapi-${pkgs.electron_43.version}";
-            paths = [ pkgs.electron_43 ];
+            name = "electron-vaapi-${pkgs.electron_45.version}";
+            paths = [ pkgs.electron_45 ];
             nativeBuildInputs = [ pkgs.makeWrapper ];
             postBuild = ''
               wrapProgram "$out/bin/electron" \
                 --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath [ pkgs.libva ]}
             '';
-            inherit (pkgs.electron_43) version;
+            inherit (pkgs.electron_45) version;
           };
 
           # The binary npm downloads into node_modules/electron/dist is a

@@ -1,7 +1,9 @@
 // Blackjack against the house for 1 to 7 seats. Draws each snapshot on the casino helpers
 // (cards.js): the dealer and the shoe, seven spots with their plates, bets and hands kept by key,
 // and the moves the change from the snapshot before calls for. The dock holds the chip rack and
-// the play buttons, and sends sit, stand, bet, deal, hit, stay, double, split and rebuy.
+// the play buttons, and sends sit, stand, bet, deal, hit, stay, double, split and rebuy. Each plate
+// shows the player's net from the server's ledger, and the Ledger tile lists what everyone bought,
+// holds and is up or down.
 /* global bridge, room, casino */
 ;(() => {
   const $ = (id) => document.getElementById(id)
@@ -41,6 +43,9 @@
     if (text != null) el.textContent = text
     return el
   }
+  // A net as the plate and the ledger print it: +340, −2,000 (a real minus sign), 0.
+  const signed = (n) =>
+    n > 0 ? `+${casino.money(n)}` : n < 0 ? `−${casino.money(-n)}` : casino.money(0)
 
   // ── The table's fixed parts ───────────────────────────────────────────────
 
@@ -81,7 +86,9 @@
     const text = span('plate-text')
     const name = span('plate-name')
     name.append(span('', room.nameOf(id)))
-    text.append(name, span('plate-stack'))
+    const net = span('plate-net')
+    net.hidden = true
+    text.append(name, span('plate-stack'), net)
     const tag = span('tag')
     tag.hidden = true
     el.append(wrap, text, tag)
@@ -128,6 +135,9 @@
   const playing = (view) => view.status?.kind === 'playing'
   const playerOf = (view, id) => view.round?.players.find((p) => same(p.client, id)) ?? null
   const chipsOf = (view, id) => view.chips[String(id)] ?? 0
+  // The server works the net out, counting what is on the table, so it only moves when a round
+  // settles. On the plate a net that went up waits for that player's payout to land (finish).
+  const netOf = (view, id) => Number(view.net[String(id)] ?? 0)
   const betOf = (view, id) => view.bets[String(id)] ?? null
   const busted = (hand) => hand.total > 21
   const live = () => room.connected && !room.closed
@@ -193,6 +203,16 @@
   }
 
   // ── Drawing ───────────────────────────────────────────────────────────────
+
+  // The net line under the stack: green above 0, red below, hidden at 0.
+  function setNet(spot, net) {
+    const el = spot.plate?.querySelector('.plate-net')
+    if (!el) return
+    el.hidden = !net
+    el.textContent = net ? signed(net) : ''
+    el.classList.toggle('up', net > 0)
+    el.classList.toggle('down', net < 0)
+  }
 
   function drawTotal(el, t, show) {
     el.hidden = !show
@@ -314,6 +334,7 @@
     if (spot.plate) {
       refreshPlate(spot)
       spot.plate.querySelector('.plate-stack').textContent = casino.money(chipsOf(view, id))
+      setNet(spot, netOf(view, id))
       const name = spot.plate.querySelector('.plate-name')
       const crown = name.querySelector('.crown')
       if (same(view.leader, id) && !crown) name.appendChild(casino.crown())
@@ -407,6 +428,7 @@
       spot.sit.hidden = spot.client != null || isSeated
       spot.sit.disabled = !act
     }
+    drawLedger(view)
     $('actions').hidden = !isSeated
     $('broke').hidden = !broke
     $('rebuy').disabled = !act
@@ -633,10 +655,19 @@
         }
       })
       if (won) {
+        // The stack counts up and a net that went up changes as the payout lands; a net that went
+        // down was drawn at once.
+        const land = t + 860
         fx.count(stack, chipsOf(a, spot.client), chipsOf(view, spot.client), {
-          delay: t + 860,
+          delay: land,
           duration: 300
         })
+        const netWas = netOf(a, spot.client)
+        const netNow = netOf(view, spot.client)
+        if (netNow > netWas) {
+          setNet(spot, netWas)
+          fx.at(land, () => setNet(spot, netNow))
+        }
       }
       if (spot.leaving) vacate(spot, view, last + VACATE_AFTER_MS)
     }
@@ -825,6 +856,52 @@
   }
   for (const [id, type] of Object.entries(sends)) {
     $(id).addEventListener('click', () => room.send({ type }))
+  }
+
+  // ── The ledger ────────────────────────────────────────────────────────────
+
+  // A tile over the game on casino.tile (cards.js): dragged by the head, resized from the corner,
+  // kept inside the frame.
+  const ledgerTile = casino.tile($('ledger'), $('ledger-head'), 'left')
+  $('ledger-btn').addEventListener('click', () => {
+    ledgerTile.toggle()
+    if (room.view) drawLedger(room.view)
+  })
+  $('ledger-close').addEventListener('click', ledgerTile.close)
+  addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') ledgerTile.close()
+  })
+
+  // Everyone who sat down, highest net first: what they bought from the bank, the chips they hold
+  // and the net the server worked out.
+  function drawLedger(view) {
+    if ($('ledger').hidden) return
+    const net = view.net ?? {}
+    const ids = Object.keys(net).sort((a, b) => netOf(view, b) - netOf(view, a))
+    const cell = (text, className = '') => {
+      const td = document.createElement('td')
+      if (className) td.className = className
+      if (text != null) td.textContent = text
+      return td
+    }
+    const rows = ids.map((id) => {
+      const tr = document.createElement('tr')
+      tr.classList.toggle('me', same(id, room.you))
+      const who = cell(null, 'who')
+      const inner = span('who-inner')
+      inner.append(room.avatarEl(id), span('who-name', room.nameOf(id)))
+      who.append(inner)
+      const n = netOf(view, id)
+      tr.append(
+        who,
+        cell(casino.money(view.bought[id] ?? 0)),
+        cell(casino.money(chipsOf(view, id))),
+        cell(signed(n), `net${n > 0 ? ' up' : n < 0 ? ' down' : ''}`)
+      )
+      return tr
+    })
+    $('ledger-rows').replaceChildren(...rows)
+    $('ledger-empty').hidden = ids.length > 0
   }
 
   room.onRender(() => {

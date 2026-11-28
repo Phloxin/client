@@ -1,5 +1,7 @@
 // window.pylonTest, the e2e harness's handle (client/e2e). Installed only when the preload says
 // the app was launched with PYLON_TEST=1. soup hands in its state through configureTestHooks.
+import { setOsNotifyPrefs } from './osNotifications'
+import { setSoundStateMap } from './sounds'
 import { nativePreviewTally } from './soup/nativeShare'
 import { setStreamPreviewBehind, streamPreviewBehind } from './soup/nativeStreamPreview'
 import { frameJitterMs, interFrameSnapshot } from './streamStats'
@@ -157,6 +159,28 @@ function nativePreview() {
   }
 }
 
+// Desktop-notification settings for a test: the master switch, a row's desktop toggle and a
+// row's three-way state ('off' | 'on' | 'pin'), handed to the modules the popup gate reads, as
+// SettingsContext mirrors them in. Laid over what the profile has saved and never saved
+// themselves, so a reload goes back to the saved ones.
+const osPrefs = { enabled: null, rows: {}, states: {} }
+
+function savedMap(key) {
+  try {
+    return JSON.parse(localStorage.getItem(key) || '{}') || {}
+  } catch {
+    return {}
+  }
+}
+
+function applyOsPrefs() {
+  setOsNotifyPrefs({
+    enabled: osPrefs.enabled ?? localStorage.getItem('osNotifyEnabled') !== 'false',
+    rows: { ...savedMap('osNotifyState'), ...osPrefs.rows }
+  })
+  setSoundStateMap({ ...savedMap('soundState'), ...osPrefs.states })
+}
+
 if (typeof window !== 'undefined' && window.api?.isTestHarness) {
   listenForPreviews()
   window.pylonTest = {
@@ -165,6 +189,27 @@ if (typeof window !== 'undefined' && window.api?.isTestHarness) {
     nativeShare,
     nativePreview,
     setStreamPreviewBehind: (value) => setStreamPreviewBehind(value === true),
-    dropVoiceSocket: () => dropVoiceSocket()
+    dropVoiceSocket: () => dropVoiceSocket(),
+    // Desktop notifications (main/osNotifications.js), which main records instead of showing
+    // under PYLON_TEST=1: recorded() lists them ({ key, title, body, target, force }) and the
+    // closes of recorded ones ({ key, closed: true }), in order; assumeUnfocused(true) lets
+    // them through while a Pylon window has focus. setEnabled, setRow and setRowState set the
+    // gate's settings (osPrefs above).
+    osNotify: {
+      recorded: () => window.api.notifications.testRecorded(),
+      assumeUnfocused: (value) => window.api.notifications.testAssumeUnfocused(value === true),
+      setEnabled: (value) => {
+        osPrefs.enabled = value === true
+        applyOsPrefs()
+      },
+      setRow: (id, value) => {
+        osPrefs.rows[id] = value === true
+        applyOsPrefs()
+      },
+      setRowState: (id, state) => {
+        osPrefs.states[id] = state
+        applyOsPrefs()
+      }
+    }
   }
 }

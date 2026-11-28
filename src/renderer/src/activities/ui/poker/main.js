@@ -2,7 +2,9 @@
 // the board, the pot and nine pods around the oval with their plates, hole cards and street bets
 // kept by key, and the moves the change from the snapshot before calls for. The dock holds the
 // raise panel and the turn's buttons, and sends sit, stand, start, fold, check, call, raise,
-// reveal and rebuy.
+// reveal and rebuy. Each plate shows the player's net from the server's ledger, a broke player's
+// plate offers the viewer a loan (lend), and the Ledger tile lists what everyone bought, holds,
+// lent and borrowed.
 /* global bridge, room, casino */
 ;(() => {
   const $ = (id) => document.getElementById(id)
@@ -36,7 +38,13 @@
     not_broke: 'You still have chips',
     not_seated: 'Take a seat first',
     already_seated: 'You already have a seat',
-    no_free_seat: 'Every seat is taken'
+    no_free_seat: 'Every seat is taken',
+    lend_self: "You can't lend to yourself",
+    target_not_seated: "They aren't seated",
+    target_not_broke: 'They still have chips',
+    target_in_hand: "They're in this hand",
+    lend_too_small: 'Lend at least the big blind',
+    lender_in_hand: 'Wait for this hand to end'
   })
 
   const fx = casino.stage($('fx'))
@@ -49,6 +57,9 @@
     if (text != null) el.textContent = text
     return el
   }
+  // A net as the plate and the ledger print it: +340, −2,000 (a real minus sign), 0.
+  const signed = (n) =>
+    n > 0 ? `+${casino.money(n)}` : n < 0 ? `−${casino.money(-n)}` : casino.money(0)
 
   // ── The table's fixed parts ───────────────────────────────────────────────
 
@@ -66,12 +77,19 @@
     sit.className = 'btn sit'
     sit.textContent = 'Sit'
     sit.hidden = true
-    el.appendChild(sit)
+    // On a broke player's plate, for a viewer who can lend to them.
+    const lend = document.createElement('button')
+    lend.type = 'button'
+    lend.className = 'btn lend'
+    lend.textContent = 'Lend'
+    lend.hidden = true
+    el.append(sit, lend)
     $('pods').appendChild(el)
     const q = (s) => el.querySelector(s)
     return {
       el,
       sit,
+      lend,
       hole: q('.hole'),
       dealer: q('.marker.dealer'),
       blind: q('.marker.blind'),
@@ -93,7 +111,9 @@
     const text = span('plate-text')
     const name = span('plate-name')
     name.append(span('', room.nameOf(id)))
-    text.append(name, span('plate-stack'))
+    const net = span('plate-net')
+    net.hidden = true
+    text.append(name, span('plate-stack'), net)
     const tag = span('tag')
     tag.hidden = true
     el.append(wrap, text, tag, span('pill best'), span('pill gold won'))
@@ -118,7 +138,16 @@
 
   // The viewer's own input: the raise amount on the slider, for the decision it was set on, and
   // the reveal asked for and not yet applied or refused.
-  const local = { raiseTo: null, decision: '', presets: {}, reveal: null }
+  // `typed` is the amount box's text while the viewer is typing in it, else null.
+  const local = { raiseTo: null, typed: null, decision: '', presets: {}, reveal: null }
+  // The lend popover: the broke player it lends to (null while closed), the amount it would send
+  // and, like the raise box, the box's text while the viewer is typing in it.
+  const loan = { to: null, amount: 0, typed: null }
+  // The whole chips in a typed amount ("1,500" is 1500), or null when there are none.
+  const amountOf = (text) => {
+    const digits = String(text).replace(/[^\d]/g, '')
+    return digits ? Number(digits) : null
+  }
   // The snapshot drawn last.
   let prev = null
   // The next snapshot is drawn without moves: the first one, and the first after a reconnect.
@@ -131,6 +160,22 @@
   const playing = (view) => view.status?.kind === 'playing'
   const playerOf = (hand, id) => hand?.players.find((p) => same(p.client, id)) ?? null
   const chipsOf = (view, id) => view.chips[String(id)] ?? 0
+  // The server works the net out; it only moves when a hand ends. On the plate a net that went up
+  // waits for that player's winnings to land (countStacks), like the stack.
+  const netOf = (view, id) => Number(view.net[String(id)] ?? 0)
+  // Seated, out of chips and not in the hand being played: they may rebuy or borrow.
+  const broke = (view, id) =>
+    id != null &&
+    seated(view, id) &&
+    chipsOf(view, id) === 0 &&
+    !(playing(view) && playerOf(view.hand, id))
+  // The most the viewer may lend now: seated, out of the hand being played (folded or not, the
+  // stack lives in the hand until it ends) and holding at least the big blind. 0 when they can't.
+  const lendable = (view) => {
+    if (!seated(view, room.you) || (playing(view) && playerOf(view.hand, room.you))) return 0
+    const chips = chipsOf(view, room.you)
+    return chips >= view.blinds[1] ? chips : 0
+  }
   const live = () => room.connected && !room.closed
   const slotOf = (view, seat) => {
     const mine = view.seats.findIndex((s) => same(s, room.you))
@@ -187,6 +232,16 @@
   }
 
   // ── Drawing ───────────────────────────────────────────────────────────────
+
+  // The net line under the stack: green above 0, red below, hidden at 0.
+  function setNet(pod, net) {
+    const el = pod.plate?.querySelector('.plate-net')
+    if (!el) return
+    el.hidden = !net
+    el.textContent = net ? signed(net) : ''
+    el.classList.toggle('up', net > 0)
+    el.classList.toggle('down', net < 0)
+  }
 
   function drawPod(pod, seat, view) {
     const id = view.seats[seat] ?? null
@@ -251,6 +306,7 @@
     pod.plate.querySelector('.plate-stack').textContent = casino.money(
       view.chips[String(id)] ?? p?.stack ?? 0
     )
+    setNet(pod, netOf(view, id))
     const name = pod.plate.querySelector('.plate-name')
     const crown = name.querySelector('.crown')
     if (same(view.leader, id) && !crown) name.appendChild(casino.crown())
@@ -363,8 +419,10 @@
     if (decision !== local.decision) {
       local.decision = decision
       local.raiseTo = null
+      local.typed = null
     }
     local.raiseTo = clamp(local.raiseTo ?? minTo)
+    const typed = local.typed == null ? null : amountOf(local.typed)
 
     $('call').textContent =
       toCall === 0
@@ -373,13 +431,15 @@
           ? `All in ${casino.money(toCall)}`
           : `Call ${casino.money(toCall)}`
     $('raise').hidden = $('raise-btn').hidden = !canRaise
-    const range = $('raise-range')
-    range.min = String(minTo)
-    range.max = String(maxTo)
-    range.value = String(local.raiseTo)
-    range.disabled = !live() || minTo === maxTo
-    $('raise-less').disabled = range.disabled || local.raiseTo <= minTo
-    $('raise-more').disabled = range.disabled || local.raiseTo >= maxTo
+    // While the viewer types, the box keeps their text; the raise button shows what would be sent.
+    const box = $('raise-amount')
+    if (local.typed == null) box.value = casino.money(local.raiseTo)
+    box.title = `${casino.money(minTo)} to ${casino.money(maxTo)}`
+    box.disabled = !live() || minTo === maxTo
+    box.classList.toggle('out', typed != null && (typed < minTo || typed > maxTo))
+    if (local.typed != null && typed == null) $('raise-btn').disabled = true
+    $('raise-less').disabled = box.disabled || local.raiseTo <= minTo
+    $('raise-more').disabled = box.disabled || local.raiseTo >= maxTo
     $('raise-btn').textContent =
       local.raiseTo === maxTo
         ? `All in ${casino.money(maxTo)}`
@@ -419,10 +479,16 @@
     $('start').disabled = !act || withChips.length < 2
     $('rebuy').hidden = !(isSeated && chipsOf(view, me) === 0 && !mine)
     $('rebuy').disabled = !act
+    const canLend = lendable(view) > 0
     for (const pod of pods) {
       pod.sit.hidden = pod.client != null || isSeated
       pod.sit.disabled = !act
+      pod.lend.hidden = !(canLend && !same(pod.client, me) && broke(view, pod.client))
+      pod.lend.disabled = !act
+      pod.lend.classList.toggle('open', same(loan.to, pod.client))
     }
+    drawLend(view)
+    drawLedger(view)
     $('actions').hidden = !isSeated
     $('turn').hidden = !turn
     $('reveal-row').hidden = !isSeated
@@ -642,11 +708,72 @@
     return awards
   }
 
-  function moves(a, b, m, kind) {
+  const LOAN_MS = 700
+
+  // Each loan whose total went up since `a`: its chips (drawn larger than a payout's, style.css
+  // .chips.loan) fly from the lender's avatar to the borrower's, one loan after another 150 ms
+  // apart, each pod saying what it lent or borrowed, and the borrower's avatar bumps as they land.
+  // A pod with no plate gets no flight, only the new numbers. Returns when each borrower's chips
+  // land and every pod a loan moved chips at.
+  function flyLoans(a, b) {
+    const lands = new Map()
+    const ids = new Set()
+    const key = (l) => `${l.from}>${l.to}`
+    const before = new Map(a.loans.map((l) => [key(l), l.amount]))
+    let t = 0
+    for (const l of b.loans) {
+      const delta = l.amount - (before.get(key(l)) ?? 0)
+      if (delta <= 0) continue
+      ids.add(String(l.from)).add(String(l.to))
+      const lender = podOf(l.from)
+      const borrower = podOf(l.to)
+      if (!lender?.plate || !borrower?.plate) continue
+      say(lender, `Lent ${casino.money(delta)}`)
+      say(borrower, `Borrowed ${casino.money(delta)}`)
+      const stack = casino.chips(delta, 2)
+      stack.classList.add('loan')
+      fx.fly(stack, {
+        from: avatarOf(lender),
+        to: avatarOf(borrower),
+        delay: t,
+        duration: LOAN_MS,
+        fade: 'out',
+        auto: true
+      })
+      const land = t + LOAN_MS
+      fx.pulse(avatarOf(borrower), 'bump', { delay: land })
+      lands.set(String(l.to), Math.max(land, lands.get(String(l.to)) ?? 0))
+      t += 150
+    }
+    return { lands, ids }
+  }
+
+  // Stacks count to their new value and net lines change to theirs by the same rule: down at once,
+  // up after `delays` (when that player's chips land). `only` limits it to those clients.
+  function countStacks(a, b, delays, duration, only = null) {
+    for (const pod of pods) {
+      if (!pod.plate || (only && !only.has(String(pod.client)))) continue
+      const land = delays.get(String(pod.client)) ?? 0
+      const was = chipsOf(a, pod.client)
+      const now = chipsOf(b, pod.client)
+      if (was !== now) {
+        fx.count(stackOf(pod), was, now, { delay: now > was ? land : 0, duration })
+      }
+      const netWas = netOf(a, pod.client)
+      const netNow = netOf(b, pod.client)
+      if (netNow > netWas && land > 0) {
+        setNet(pod, netWas)
+        fx.at(land, () => setNet(pod, netNow))
+      }
+    }
+  }
+
+  function moves(a, b, m, kind, loans) {
     const ha = a.hand
     const hb = b.hand
     if (kind === 'deal') {
       dealHand(b, m)
+      if (loans.ids.size) countStacks(a, b, loans.lands, 300, loans.ids)
       return
     }
     let awards = new Map()
@@ -695,15 +822,10 @@
       if (ending) awards = finish(hb, ha, t, potRect)
     }
 
-    // Stacks count to their new value: down at once, up when the chips land.
-    for (const pod of pods) {
-      if (!pod.plate) continue
-      const was = chipsOf(a, pod.client)
-      const now = chipsOf(b, pod.client)
-      if (was === now) continue
-      const delay = now > was ? (awards.get(String(pod.client)) ?? 0) : 0
-      fx.count(stackOf(pod), was, now, { delay, duration: kind === 'idle' ? 400 : 300 })
-    }
+    // Stacks and net lines: down at once, up when the pot's or a loan's chips land.
+    const delays = new Map(loans.lands)
+    for (const [id, land] of awards) delays.set(id, Math.max(land, delays.get(id) ?? 0))
+    countStacks(a, b, delays, kind === 'idle' ? 400 : 300)
   }
 
   function drawSnapshot(view) {
@@ -720,28 +842,58 @@
     drawControls()
     $('game').hidden = false
 
-    if (kind) moves(a, view, m, kind)
-    else for (const pod of pods) clearSay(pod)
+    if (!kind) for (const pod of pods) clearSay(pod)
+    // A loan plays on any change, between hands included.
+    const loans = a ? flyLoans(a, view) : { lands: new Map(), ids: new Set() }
+    if (kind) moves(a, view, m, kind, loans)
+    else if (loans.ids.size) countStacks(a, view, loans.lands, 300, loans.ids)
     prev = view
   }
 
   // ── Input ─────────────────────────────────────────────────────────────────
 
-  $('raise-range').addEventListener('input', () => {
+  // The amount box. Its text stays as typed until it is left, Enter is pressed or another control
+  // sets the amount; drawControls (and drawTurn in it) clamps what would be sent meanwhile.
+  const box = $('raise-amount')
+  const settle = () => {
+    local.typed = null
+    if (myTurn(room.view)) drawControls()
+  }
+  box.addEventListener('input', () => {
     if (!myTurn(room.view)) return
-    local.raiseTo = Number($('raise-range').value)
-    drawTurn(room.view)
+    local.typed = box.value
+    const n = amountOf(box.value)
+    if (n != null) local.raiseTo = n
+    drawControls()
+  })
+  box.addEventListener('change', settle)
+  box.addEventListener('blur', settle)
+  // After the click that focused it, which would otherwise drop the selection.
+  box.addEventListener('focus', () => setTimeout(() => box.select()))
+  box.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      if (local.typed != null && amountOf(local.typed) == null) return
+      settle()
+      $('raise-btn').click()
+    } else if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+      event.preventDefault()
+      step(event.key === 'ArrowUp' ? 1 : -1)
+      box.select()
+    }
   })
   $('presets').addEventListener('click', (event) => {
     const preset = event.target.closest('[data-preset]')?.dataset.preset
     if (!preset || !myTurn(room.view)) return
     local.raiseTo = local.presets[preset]
+    local.typed = null
     drawTurn(room.view)
   })
-  // A big blind a press, clamped to the slider's range by drawTurn.
-  const step = (sign) => {
+  // A big blind a press, clamped to the allowed range by drawTurn.
+  function step(sign) {
     if (!myTurn(room.view) || local.raiseTo == null) return
     local.raiseTo += sign * room.view.blinds[1]
+    local.typed = null
     drawTurn(room.view)
   }
   $('raise-less').addEventListener('click', () => step(-1))
@@ -761,10 +913,247 @@
   })
   $('pods').addEventListener('click', (event) => {
     if (event.target.closest('.btn.sit')) room.send({ type: 'sit' })
+    const lend = event.target.closest('.btn.lend')
+    const pod = lend && pods.find((p) => p.lend === lend)
+    if (pod) {
+      if (same(loan.to, pod.client)) closeLend()
+      else openLend(pod.client)
+    }
   })
   const sends = { leave: 'stand', start: 'start', rebuy: 'rebuy', fold: 'fold' }
   for (const [id, type] of Object.entries(sends)) {
     $(id).addEventListener('click', () => room.send({ type }))
+  }
+
+  // ── The lend popover ──────────────────────────────────────────────────────
+
+  // By the broke player's plate: an amount box that behaves like the raise box (its text stays as
+  // typed until it is left, Enter is pressed or a preset sets the amount; what would be sent is
+  // held between the big blind and the viewer's chips meanwhile), presets and the Lend button.
+  // It closes once the borrower has chips again (a lend that went through does that), when the
+  // viewer can no longer lend, on Escape and on a click outside it.
+  const pop = $('lend')
+  const lendBox = $('lend-amount')
+
+  function openLend(id) {
+    const view = room.view
+    if (!view || !lendable(view)) return
+    loan.to = id
+    loan.amount = Math.min(500, lendable(view))
+    loan.typed = null
+    drawControls()
+    lendBox.focus()
+  }
+  function closeLend() {
+    if (loan.to == null) return
+    loan.to = null
+    loan.typed = null
+    pop.hidden = true
+    if (room.view) drawControls()
+  }
+
+  // Below the plate, or above it when there is no room below, kept inside the frame.
+  function placeLend(plateEl) {
+    const rect = plateEl.getBoundingClientRect()
+    const w = pop.offsetWidth
+    const h = pop.offsetHeight
+    let y = rect.bottom + 8
+    if (y + h > innerHeight - 8) y = rect.top - h - 8
+    const x = rect.left + rect.width / 2 - w / 2
+    pop.style.left = `${Math.min(Math.max(8, x), Math.max(8, innerWidth - w - 8))}px`
+    pop.style.top = `${Math.min(Math.max(8, y), Math.max(8, innerHeight - h - 8))}px`
+  }
+
+  function drawLend(view) {
+    if (loan.to == null) {
+      pop.hidden = true
+      return
+    }
+    const most = lendable(view)
+    const pod = podOf(loan.to)
+    if (!most || !broke(view, loan.to) || !pod?.plate) {
+      loan.to = null
+      loan.typed = null
+      pop.hidden = true
+      for (const p of pods) p.lend.classList.remove('open')
+      return
+    }
+    const least = view.blinds[1]
+    loan.amount = Math.max(least, Math.min(most, Math.round(loan.amount)))
+    const typed = loan.typed == null ? null : amountOf(loan.typed)
+    $('lend-title').textContent = `Lend to ${room.nameOf(loan.to)}`
+    if (loan.typed == null) lendBox.value = casino.money(loan.amount)
+    lendBox.title = `${casino.money(least)} to ${casino.money(most)}`
+    lendBox.disabled = !live()
+    // Out of range (the red outline) the button reads just "Lend" and can't be pressed; the raise
+    // box instead sends the clamped amount.
+    const out = typed != null && (typed < least || typed > most)
+    lendBox.classList.toggle('out', out)
+    const send = $('lend-send')
+    send.disabled = !room.canAct() || out || (loan.typed != null && typed == null)
+    send.textContent = out ? 'Lend' : `Lend ${casino.money(loan.amount)}`
+    for (const btn of $('lend-presets').children) btn.disabled = !live()
+    pop.hidden = false
+    placeLend(pod.plate)
+  }
+
+  const sendLend = () => {
+    const view = room.view
+    if (loan.to == null || !view || !lendable(view)) return
+    room.send({ type: 'lend', to: String(loan.to), amount: loan.amount })
+  }
+  const settleLend = () => {
+    loan.typed = null
+    if (loan.to != null && room.view) drawLend(room.view)
+  }
+  lendBox.addEventListener('input', () => {
+    if (loan.to == null || !room.view) return
+    loan.typed = lendBox.value
+    const n = amountOf(lendBox.value)
+    if (n != null) loan.amount = n
+    drawLend(room.view)
+  })
+  lendBox.addEventListener('change', settleLend)
+  lendBox.addEventListener('blur', settleLend)
+  lendBox.addEventListener('focus', () => setTimeout(() => lendBox.select()))
+  lendBox.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter') return
+    event.preventDefault()
+    // Enter does what the button would: nothing while it is disabled (empty or out of range).
+    if (loan.typed != null && $('lend-send').disabled) return
+    settleLend()
+    sendLend()
+  })
+  $('lend-presets').addEventListener('click', (event) => {
+    const preset = event.target.closest('[data-lend]')?.dataset.lend
+    if (!preset || loan.to == null || !room.view) return
+    loan.amount = preset === 'all' ? lendable(room.view) : Number(preset)
+    loan.typed = null
+    drawLend(room.view)
+  })
+  $('lend-send').addEventListener('click', sendLend)
+  // A press outside closes it; the Lend buttons on the plates open and close it themselves.
+  addEventListener(
+    'pointerdown',
+    (event) => {
+      if (loan.to == null || pop.contains(event.target)) return
+      if (event.target.closest?.('.btn.lend')) return
+      closeLend()
+    },
+    true
+  )
+  addEventListener('resize', () => loan.to != null && room.view && drawLend(room.view))
+
+  // ── Floating tiles: the hands guide and the ledger ────────────────────────
+
+  // Both float over the game on casino.tile (cards.js): dragged by the head, resized from the
+  // corner, kept inside the frame, the one touched last on top.
+  const handsTile = casino.tile($('hands'), $('hands-head'), 'right')
+  const ledgerTile = casino.tile($('ledger'), $('ledger-head'), 'left')
+  $('help').addEventListener('click', handsTile.toggle)
+  $('hands-close').addEventListener('click', handsTile.close)
+  $('ledger-btn').addEventListener('click', () => {
+    ledgerTile.toggle()
+    if (room.view) drawLedger(room.view)
+  })
+  $('ledger-close').addEventListener('click', ledgerTile.close)
+  // Escape closes the lend popover first, then the tiles.
+  addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return
+    if (loan.to != null) return closeLend()
+    handsTile.close()
+    ledgerTile.close()
+  })
+
+  // ── The ledger ────────────────────────────────────────────────────────────
+
+  // Everyone who sat down, highest net first: what they bought from the bank, the chips they hold,
+  // what they lent (+) and borrowed (−), and the net the server worked out. Then each loan.
+  function drawLedger(view) {
+    if ($('ledger').hidden) return
+    const net = view.net ?? {}
+    const loans = view.loans
+    const lent = new Map()
+    const borrowed = new Map()
+    for (const l of loans) {
+      lent.set(String(l.from), (lent.get(String(l.from)) ?? 0) + l.amount)
+      borrowed.set(String(l.to), (borrowed.get(String(l.to)) ?? 0) + l.amount)
+    }
+    const ids = Object.keys(net).sort((a, b) => netOf(view, b) - netOf(view, a))
+    const cell = (text, className = '') => {
+      const td = document.createElement('td')
+      if (className) td.className = className
+      if (text != null) td.textContent = text
+      return td
+    }
+    const rows = ids.map((id) => {
+      const tr = document.createElement('tr')
+      tr.classList.toggle('me', same(id, room.you))
+      const who = cell(null, 'who')
+      const inner = span('who-inner')
+      inner.append(room.avatarEl(id), span('who-name', room.nameOf(id)))
+      who.append(inner)
+      const loansCell = cell(null, 'loans')
+      if (lent.has(id)) loansCell.append(span('lent', `+${casino.money(lent.get(id))}`))
+      if (borrowed.has(id)) {
+        loansCell.append(span('borrowed', `−${casino.money(borrowed.get(id))}`))
+      }
+      if (!loansCell.childElementCount) loansCell.append(span('none', '–'))
+      const n = netOf(view, id)
+      tr.append(
+        who,
+        cell(casino.money(view.bought[id] ?? 0)),
+        cell(casino.money(chipsOf(view, id))),
+        loansCell,
+        cell(signed(n), `net${n > 0 ? ' up' : n < 0 ? ' down' : ''}`)
+      )
+      return tr
+    })
+    $('ledger-rows').replaceChildren(...rows)
+    $('ledger-empty').hidden = ids.length > 0
+    $('ledger-loans').replaceChildren(
+      ...loans.map((l) => {
+        const li = document.createElement('li')
+        li.textContent = `${room.nameOf(l.from)} lent ${room.nameOf(l.to)} ${casino.money(l.amount)}`
+        return li
+      })
+    )
+  }
+
+  // ── The hands guide ───────────────────────────────────────────────────────
+
+  // Best first: an example of each category, its cards as rank and suit letter, with the kickers
+  // (cards that only break ties) after a '|'.
+  const GUIDE = [
+    ['straight_flush', 'As Ks Qs Js Ts', 'Five in a row, all one suit. Ace high is a royal flush.'],
+    ['four_of_a_kind', '9s 9h 9d 9c | Kh', 'Four cards of one rank.'],
+    ['full_house', 'Qs Qh Qd 7c 7s', 'Three of one rank and a pair of another.'],
+    ['flush', 'Kh Th 7h 4h 2h', 'Five of one suit, in any order.'],
+    ['straight', '9c 8d 7s 6h 5c', 'Five in a row. The ace plays high or low: A 2 3 4 5.'],
+    ['three_of_a_kind', '8s 8h 8d | Kc 3s', 'Three cards of one rank.'],
+    ['two_pair', 'Js Jd 4c 4h | As', 'Two different pairs.'],
+    ['pair', 'Th Tc | Ad 7s 3h', 'Two cards of one rank.'],
+    ['high_card', 'Ad | Jc 8h 5s 2d', 'Nothing else: the highest card plays.']
+  ]
+  const RANK = { A: 14, K: 13, Q: 12, J: 11, T: 10 }
+  const SUIT = { s: 'spades', h: 'hearts', d: 'diamonds', c: 'clubs' }
+  for (const [category, hand, text] of GUIDE) {
+    const dt = document.createElement('dt')
+    let kicker = false
+    for (const code of hand.split(' ')) {
+      if (code === '|') {
+        kicker = true
+        continue
+      }
+      const el = casino.card({ rank: RANK[code[0]] ?? Number(code[0]), suit: SUIT[code[1]] })
+      el.classList.toggle('kicker', kicker)
+      dt.append(el)
+    }
+    const dd = document.createElement('dd')
+    const b = document.createElement('b')
+    b.textContent = CATEGORY[category][0]
+    dd.append(b, text)
+    $('legend').append(dt, dd)
   }
 
   room.onRender(() => {

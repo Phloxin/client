@@ -2,7 +2,8 @@
 // with no build step, read here as text and inlined into the frame's srcdoc
 // (lib/activities/bridge.js) until the server's asset origin exists. A bundle may have
 // capabilities: 'player' lets it drive the video surface the shell hosts under its frame; 'export'
-// lets it save a PNG it made or share it to the room's channel.
+// lets it save a PNG it made or share it to the room's channel; 'sound' lets it play the client's
+// card sounds.
 
 import { buildSrcdoc } from '../../lib/activities/bridge.js'
 import baseCss from './shared/base.css?raw'
@@ -21,6 +22,8 @@ import c4Css from './connect4/style.css?raw'
 import c4Js from './connect4/main.js?raw'
 import unoHtml from './uno/index.html?raw'
 import unoCss from './uno/style.css?raw'
+import unoFacesJs from './uno/faces.js?raw'
+import unoStepsJs from './uno/steps.js?raw'
 import unoJs from './uno/main.js?raw'
 import chessHtml from './chess/index.html?raw'
 import chessCss from './chess/style.css?raw'
@@ -47,6 +50,11 @@ import wbEngineJs from './whiteboard/engine.js?raw'
 import wbBoardJs from './whiteboard/board.js?raw'
 import wbWidgetsJs from './whiteboard/widgets.js?raw'
 import wbJs from './whiteboard/main.js?raw'
+import l7Html from './lucky_seven/index.html?raw'
+import l7Css from './lucky_seven/style.css?raw'
+import l7FacesJs from './lucky_seven/faces.js?raw'
+import l7StepsJs from './lucky_seven/steps.js?raw'
+import l7Js from './lucky_seven/main.js?raw'
 
 // Every shared file a bundle may load; each bundle's index.html names the ones it uses.
 const SHARED = {
@@ -63,7 +71,17 @@ const SHARED = {
 const BUNDLES = {
   tic_tac_toe: { html: tttHtml, files: { ...SHARED, 'style.css': tttCss, 'main.js': tttJs } },
   connect4: { html: c4Html, files: { ...SHARED, 'style.css': c4Css, 'main.js': c4Js } },
-  uno: { html: unoHtml, files: { ...SHARED, 'style.css': unoCss, 'main.js': unoJs } },
+  uno: {
+    html: unoHtml,
+    files: {
+      ...SHARED,
+      'style.css': unoCss,
+      'faces.js': unoFacesJs,
+      'steps.js': unoStepsJs,
+      'main.js': unoJs
+    },
+    capabilities: ['sound']
+  },
   chess: {
     html: chessHtml,
     files: { ...SHARED, 'style.css': chessCss, 'pieces.js': chessPiecesJs, 'main.js': chessJs }
@@ -96,6 +114,17 @@ const BUNDLES = {
       'main.js': wbJs
     },
     capabilities: ['export']
+  },
+  lucky_seven: {
+    html: l7Html,
+    files: {
+      ...SHARED,
+      'style.css': l7Css,
+      'faces.js': l7FacesJs,
+      'steps.js': l7StepsJs,
+      'main.js': l7Js
+    },
+    capabilities: ['sound']
   }
 }
 

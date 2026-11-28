@@ -70,7 +70,7 @@
     if (s.kind === 'won') {
       // A forfeit, or a way duel does not know, falls through to duel's own line.
       if (!Object.hasOwn(WON_BY, s.by)) return null
-      const name = playerOf(s.winner)
+      const name = duel.resultPlayer(s.winner_client)
       return (name == null ? 'You won' : `${name} won`) + WON_BY[s.by]
     }
     if (s.kind === 'draw') return Object.hasOwn(DRAW_BY, s.by) ? DRAW_BY[s.by] : null
